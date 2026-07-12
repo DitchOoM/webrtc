@@ -11,7 +11,7 @@ import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.crc32
 import com.ditchoom.buffer.crypto.HMAC_SHA1_BYTES
 import com.ditchoom.buffer.crypto.HmacSha1Mac
-import com.ditchoom.buffer.regionEquals
+import com.ditchoom.buffer.crypto.constantTimeEquals
 import com.ditchoom.webrtc.stun.StunDecodeResult.Reject
 import com.ditchoom.webrtc.stun.StunDecodeResult.Success
 
@@ -38,6 +38,19 @@ public class StunMessage internal constructor(
 
     /** The first attribute of [type], or null if absent. */
     public fun firstOrNull(type: StunAttributeType): RawAttribute? = attributes.firstOrNull { it.type == type }
+
+    /**
+     * The comprehension-required attribute types present that are not in [recognized] (RFC 8489 §6.3):
+     * a receiver that hits any of these must reply 420 with UNKNOWN-ATTRIBUTES listing them. Drives
+     * that response at the ICE/TURN layer (W3).
+     */
+    public fun unknownComprehensionRequired(recognized: Set<StunAttributeType>): List<StunAttributeType> =
+        attributes
+            .asSequence()
+            .map { it.type }
+            .filter { it.isComprehensionRequired && it !in recognized }
+            .distinct()
+            .toList()
 
     /**
      * Recomputes FINGERPRINT (RFC 8489 §14.7) over the decoded bytes and compares it to the value on
@@ -80,7 +93,10 @@ public class StunMessage internal constructor(
             .update(src.sliceOf(sourceStart + TYPE_FIELD_BYTES + LENGTH_FIELD_BYTES, miAt)) // cookie‖txid‖attrs
             .doFinalInto(out)
         out.resetForRead()
-        return out.regionEquals(0, src, miAt + TLV_HEADER_BYTES, HMAC_SHA1_BYTES)
+        // Constant-time compare: a short-circuiting compare of a secret-derived MAC against an
+        // attacker-supplied value is a timing oracle enabling byte-by-byte forgery.
+        val onWire = src.sliceOf(miAt + TLV_HEADER_BYTES, miAt + TLV_HEADER_BYTES + HMAC_SHA1_BYTES)
+        return out.constantTimeEquals(onWire)
     }
 
     /**

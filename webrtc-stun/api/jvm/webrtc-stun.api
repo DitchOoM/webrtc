@@ -203,6 +203,7 @@ public final class com/ditchoom/webrtc/stun/StunMessage {
 	public final fun getHeader ()Lcom/ditchoom/webrtc/stun/StunHeader;
 	public final fun getMessageType-HLhQuLA ()S
 	public final fun getTransactionId ()Lcom/ditchoom/webrtc/stun/TransactionId;
+	public final fun unknownComprehensionRequired (Ljava/util/Set;)Ljava/util/List;
 	public final fun verifyFingerprint ()Z
 	public final fun verifyMessageIntegrity (Lcom/ditchoom/buffer/ReadBuffer;)Z
 }
@@ -451,6 +452,19 @@ public final class com/ditchoom/webrtc/stun/StunTransactionOutput$SendRequest : 
 	public final fun getDatagram ()Lcom/ditchoom/buffer/ReadBuffer;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/stun/StunTurnAttributesKt {
+	public static final field TURN_TRANSPORT_UDP B
+	public static final fun asChannelNumber (Lcom/ditchoom/webrtc/stun/RawAttribute;)Lkotlin/UShort;
+	public static final fun asLifetimeSeconds (Lcom/ditchoom/webrtc/stun/RawAttribute;)Lkotlin/UInt;
+	public static final fun asRequestedTransport (Lcom/ditchoom/webrtc/stun/RawAttribute;)Lkotlin/UByte;
+	public static final fun asUnknownAttributes (Lcom/ditchoom/webrtc/stun/RawAttribute;)Ljava/util/List;
+	public static final fun ofChannelNumber-i8woANY (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;S)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static final fun ofLifetime-Qn1smSk (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;I)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static final fun ofRequestedTransport-EK-6454 (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;B)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static synthetic fun ofRequestedTransport-EK-6454$default (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;BILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static final fun ofUnknownAttributes (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;Ljava/util/List;)Lcom/ditchoom/webrtc/stun/RawAttribute;
 }
 
 public final class com/ditchoom/webrtc/stun/TransactionId {

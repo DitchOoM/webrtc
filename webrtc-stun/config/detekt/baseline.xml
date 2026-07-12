@@ -18,6 +18,7 @@
     <ID>MaxLineLength:StunMessage.kt:internal</ID>
     <ID>MaxLineLength:StunMessageBuilder.kt:StunMessageBuilder$attributes += RawAttribute.ofValue(StunAttributeType.MessageIntegrity, hmacSha1(key, prefix, BufferFactory.Default))</ID>
     <ID>MaxLineLength:StunMessageBuilder.kt:StunMessageBuilder$public</ID>
+    <ID>MaxLineLength:StunTurnAttributes.kt:public</ID>
     <ID>ReturnCount:StunAttributeDecoders.kt:private fun RawAttribute.decodeAddress: TransportAddress?</ID>
     <ID>ReturnCount:StunMessage.kt:StunMessage$public fun verifyFingerprint: Boolean</ID>
     <ID>ReturnCount:StunMessage.kt:StunMessage$public fun verifyMessageIntegrity: Boolean</ID>

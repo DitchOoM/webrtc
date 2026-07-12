@@ -35,7 +35,19 @@ jobs:
         with:
           distribution: 'zulu'
           java-version: '21'
-          cache: gradle
+
+      # Dependency + Gradle build cache (smarter than setup-java's cache:gradle; matches socket).
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      # Kotlin/Native toolchain + prebuilts (linuxX64/linuxArm64 compiles, qemu-aarch64). Mirrors the
+      # Apple lane; keyed on the version catalog so a Kotlin bump busts it.
+      - name: Cache Konan
+        uses: actions/cache@v5
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-${{ runner.os }}-
 
       - name: Setup Chrome (jsBrowserTest / wasmJsBrowserTest)
         uses: browser-actions/setup-chrome@v2

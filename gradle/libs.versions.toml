@@ -16,10 +16,10 @@ kotlinxCoroutines = "1.11.0"
 # DitchOoM buffer stack — the zero-copy substrate this library is built on.
 # 6.9.4 (latest): raw ByteStreamMux primitive (data-channel mux target), buffer-pool use-after-release
 # fail-fast, codec-framed streaming layer + typed pipe, okio/sqldelight bridges. See RFC §4 (reuse audit).
-# DEV PIN (W1): 6.10.0-SNAPSHOT adds HMAC-SHA1 (buffer-crypto) + ReadBuffer.crc32 (buffer core) —
-# DitchOoM/buffer#288 — needed for STUN MESSAGE-INTEGRITY + FINGERPRINT. Consumed from mavenLocal
-# while #288 is in flight; SWAP TO THE RELEASED VERSION (6.10.0) before merging the W1 PR.
-buffer = "6.10.0-SNAPSHOT"
+# 6.10.0 adds HMAC-SHA1 (buffer-crypto) + ReadBuffer.crc32 (buffer core) — DitchOoM/buffer#288 —
+# consumed by webrtc-stun for STUN MESSAGE-INTEGRITY (HMAC-SHA1/SHA256) + FINGERPRINT (CRC-32). The
+# 6.9.4 raw ByteStreamMux / pool fail-fast / codec-framing surface (RFC §4 reuse audit) still applies.
+buffer = "6.10.0"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"

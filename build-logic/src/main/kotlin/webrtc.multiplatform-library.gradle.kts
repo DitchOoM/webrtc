@@ -96,11 +96,6 @@ val benchmarkRuntime =
         .get()
 
 repositories {
-    // DEV PIN (W1): mavenLocal first so the 6.10.0-SNAPSHOT buffer stack (HMAC-SHA1 + CRC-32,
-    // DitchOoM/buffer#288) resolves locally while that PR is in flight. On CI mavenLocal is empty,
-    // so resolution falls through to Central — which is exactly the gate: the webrtc W1 PR merges
-    // only once buffer#288 is released and the catalog is pinned to that real version.
-    mavenLocal()
     google()
     mavenCentral()
 }

@@ -3,7 +3,7 @@
 Live state of the current wave. A resumed session reads `RFC_KMP_WEBRTC.md` → `EXECUTION_PLAN.md` →
 this file. Update it whenever you stop mid-wave.
 
-## Where we are: **W1 `webrtc-stun` — code complete, on branch `feat/w1-webrtc-stun`, gated on a buffer release**
+## Where we are: **W1 `webrtc-stun` — code complete, unblocked (buffer 6.10.0 released), PR #4 ready for review**
 
 W1 is built and **green on all 7 local lanes** (JVM, JS node+browser, wasmJs node+browser, Linux/native,
 Android host — 34 tests each). What landed on `feat/w1-webrtc-stun`:
@@ -28,13 +28,19 @@ non-UTF-8 bytes → now returns `null` (must `catch (Throwable)`, not `Exception
 throws a raw JS error); (2) a short MESSAGE-INTEGRITY/FINGERPRINT declared length made the fixed-size
 verify read past the datagram → both `verify*` now guard the attribute length.
 
-### The cross-repo gate (why W1 can't merge yet)
+### The cross-repo dependency (resolved)
 STUN MI/FINGERPRINT needed HMAC-SHA1 + CRC-32, which `buffer-crypto`/`buffer` lacked. Added upstream in
-**DitchOoM/buffer#288** (`HmacSha1Mac` + `hmacSha1`; `ReadBuffer.crc32`), published locally as
-**`6.10.0-SNAPSHOT`** and consumed from **mavenLocal** (convention `repositories { mavenLocal() }` first;
-catalog `buffer = "6.10.0-SNAPSHOT"`). **Before merging W1:** land buffer#288, cut the buffer release,
-then pin the catalog to the real version and drop the SNAPSHOT/mavenLocal dev pin. Until then webrtc CI is
-red on dependency resolution (expected). Both pins are commented `DEV PIN (W1)`.
+**DitchOoM/buffer#288** (`HmacSha1Mac` + `hmacSha1`; `ReadBuffer.crc32`), **released as `buffer 6.10.0`**
+(minor bump; on Maven Central). The catalog now pins the released `buffer = "6.10.0"` and the mavenLocal
+dev-pin has been removed from the convention — a clean `:webrtc-stun:allTests` against Central passes on
+all local lanes. The W0 discipline held: cross-repo primitive landed upstream + released *before* webrtc
+consumes it (no unpublished-snapshot dependency on `main`).
+
+**Release decision for merging #4:** the W0 plan intended W1's merge to be the **first real webrtc
+Central release**. Decide `skip-release` (draft/hold the first publish) vs. letting the merge publish
+`0.0.1`/`0.1.0`. Trap (from W0): `gh pr edit --add-label skip-release` fails silently here — use
+`gh api repos/DitchOoM/webrtc/issues/4/labels -f 'labels[]=skip-release'` and verify, or dispatch
+`merged.yaml` directly.
 
 ---
 

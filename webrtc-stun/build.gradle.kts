@@ -51,6 +51,21 @@ tasks
         dependsOn("kspCommonMainKotlinMetadata")
     }
 
+// Publishing tasks (`sourcesJar`, per-target `<target>SourcesJar`, the Dokka-backed `javadocJar`)
+// package commonMain sources, which now include the KSP-generated srcDir — so they read
+// kspCommonMainKotlinMetadata's output and Gradle reports the same implicit-dependency validation
+// error at publish time (build/test/apiCheck don't hit it, only `publishToMavenLocal` does). Match by
+// name — the KMP source Jars are the base Jar type that `withType<Jar>` misses. (Mirrors socket-http3.)
+tasks
+    .matching {
+        it.name == "sourcesJar" ||
+            it.name.endsWith("SourcesJar") ||
+            it.name == "javadocJar" ||
+            it.name.endsWith("JavadocJar")
+    }.configureEach {
+        dependsOn("kspCommonMainKotlinMetadata")
+    }
+
 // ── Coverage-guided fuzzing (Jazzer) — T0′ (RFC §7) ──
 // `stunCodecFuzz` drives StunCodecFuzzer (src/jvmTest) — the pure-Kotlin STUN decoder — under
 // Jazzer/libFuzzer. Because the parser is JVM bytecode (not opaque native), Jazzer gets REAL edge

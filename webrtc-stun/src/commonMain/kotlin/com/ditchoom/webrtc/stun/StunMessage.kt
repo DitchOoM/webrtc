@@ -43,6 +43,19 @@ public class StunMessage internal constructor(
     public fun firstOrNull(type: StunAttributeType): RawAttribute? = attributes.firstOrNull { it.type == type }
 
     /**
+     * The attributes actually covered by MESSAGE-INTEGRITY — those **before** it on the wire — or null
+     * if there is no MESSAGE-INTEGRITY attribute. RFC 8489 §14.5 requires a receiver to ignore every
+     * attribute that follows MESSAGE-INTEGRITY (except MESSAGE-INTEGRITY-SHA256 / FINGERPRINT), because
+     * only the preceding bytes are authenticated: a MITM can splice attributes after a valid MI and
+     * recompute the (unkeyed) FINGERPRINT, and both checks still pass. After a successful
+     * [verifyMessageIntegrity], trust only these — never the raw [attributes] tail.
+     */
+    public fun attributesCoveredByMessageIntegrity(): List<RawAttribute>? {
+        val idx = attributes.indexOfFirst { it.type == StunAttributeType.MessageIntegrity }
+        return if (idx < 0) null else attributes.subList(0, idx)
+    }
+
+    /**
      * The comprehension-required attribute types present that are not in [recognized] (RFC 8489 §6.3):
      * a receiver that hits any of these must reply 420 with UNKNOWN-ATTRIBUTES listing them. Drives
      * that response at the ICE/TURN layer (W3).

@@ -52,7 +52,11 @@ public sealed interface StunTransactionEvent {
 
 /** A side effect the driver must perform, returned from [StunTransaction.handle]. */
 public sealed interface StunTransactionOutput {
-    /** Transmit these request bytes on the wire (the same buffer each time — a retransmission). */
+    /**
+     * Transmit these request bytes on the wire. A **fresh read-view** of the request is handed out on
+     * every (re)transmission, so a driver whose socket write advances the buffer position cannot
+     * exhaust the shared request on retransmit #2+.
+     */
     public data class SendRequest(
         public val datagram: ReadBuffer,
     ) : StunTransactionOutput
@@ -121,7 +125,7 @@ public class StunTransaction(
         transmissions = 1
         currentInterval = policy.rto
         armAfterSend(now)
-        return listOf(StunTransactionOutput.SendRequest(request))
+        return listOf(StunTransactionOutput.SendRequest(request.slice()))
     }
 
     private fun onTimer(now: Instant): List<StunTransactionOutput> {
@@ -133,7 +137,7 @@ public class StunTransaction(
         transmissions++
         currentInterval *= 2 // RTO, 2·RTO, 4·RTO, … (RFC 8489 §6.2.1)
         armAfterSend(now)
-        return listOf(StunTransactionOutput.SendRequest(request))
+        return listOf(StunTransactionOutput.SendRequest(request.slice()))
     }
 
     // After sending the k-th request, arm either the next (doubled) retransmit or, once the Rc-th

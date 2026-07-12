@@ -8,6 +8,7 @@ import com.ditchoom.buffer.ReadBuffer
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -49,6 +50,37 @@ class StunEncodeRoundTripTest {
         assertTrue(msg.verifyMessageIntegritySha256(key))
         assertTrue(!msg.verifyMessageIntegritySha256(ascii("wrong-key")))
         assertTrue(msg.verifyFingerprint())
+    }
+
+    @Test
+    fun messageIntegritySha256TruncatedVerifies() {
+        // RFC 8489 §14.6 truncation: a 16-byte tag must verify (exercises the truncated length-rewrite).
+        val txId = TransactionId(7u, 8u, 9u)
+        val encoded =
+            StunMessageBuilder
+                .of(StunClass.Request, StunMethod.Binding, txId)
+                .add(RawAttribute.ofText(StunAttributeType.Username, "carol"))
+                .addMessageIntegritySha256(key, tagLengthBytes = 16)
+                .encode()
+        val msg = success(encoded)
+        assertEquals(16, msg.firstOrNull(StunAttributeType.MessageIntegritySha256)?.length)
+        assertTrue(msg.verifyMessageIntegritySha256(key))
+        assertTrue(!msg.verifyMessageIntegritySha256(ascii("wrong-key")))
+    }
+
+    @Test
+    fun builderRejectsIntegrityAfterFingerprint() {
+        val b = StunMessageBuilder.of(StunClass.Request, StunMethod.Binding, TransactionId(1u, 2u, 3u)).addFingerprint()
+        assertFailsWith<IllegalArgumentException> { b.addMessageIntegrity(key) }
+        assertFailsWith<IllegalArgumentException> { b.addMessageIntegritySha256(key) }
+    }
+
+    @Test
+    fun builderRejectsOutOfRangeSha256TagLength() {
+        val b = StunMessageBuilder.of(StunClass.Request, StunMethod.Binding, TransactionId(1u, 2u, 3u))
+        assertFailsWith<IllegalArgumentException> { b.addMessageIntegritySha256(key, tagLengthBytes = 18) } // not %4
+        assertFailsWith<IllegalArgumentException> { b.addMessageIntegritySha256(key, tagLengthBytes = 12) } // < 16
+        assertFailsWith<IllegalArgumentException> { b.addMessageIntegritySha256(key, tagLengthBytes = 36) } // > 32
     }
 
     @Test

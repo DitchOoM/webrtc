@@ -42,6 +42,23 @@ Central release**. Decide `skip-release` (draft/hold the first publish) vs. lett
 `gh api repos/DitchOoM/webrtc/issues/4/labels -f 'labels[]=skip-release'` and verify, or dispatch
 `merged.yaml` directly.
 
+### W1 adversarial-review gate (pre-merge)
+A subagent review pass (the EXECUTION_PLAN §1 gate) found **no wire-correctness or crash defects** — it
+independently re-verified the type bit-interleaving, XOR-address (v4/v6), the MI/FINGERPRINT
+length-rewrite + constant-time compare, decode totality, and the retransmit schedule against RFC
+8489/8656. Six hardening findings; five fixed before 0.0.1:
+- exposed `attributesCoveredByMessageIntegrity()` — only attributes *before* MI are authenticated
+  (RFC 8489 §14.5; FINGERPRINT is unkeyed, so a spliced post-MI attribute must not be trusted);
+- builder now guards MI-before-FINGERPRINT ordering and supports truncated MI-SHA256 (16..32), with tests;
+- `StunTransaction` hands out a fresh `request.slice()` per (re)transmit so a position-advancing driver
+  can't exhaust it; non-default-policy + `Rc=1` schedule tests added.
+
+**Deferred to a post-0.0.1 follow-up (tracked):** thread a `BufferFactory` seam through the
+`decode`/`verify*`/builder hot paths (they hardwire `BufferFactory.Default`; additive/non-breaking to
+add later) and add a `TrackingBufferFactory` no-leak harness (directive #6). The leak-harness half is
+**blocked on the deferred W0 simulation-engine promotion** (`TrackingBufferFactory` isn't a published
+artifact webrtc can consume yet) — so it lands with, or after, the §11.1 resolution.
+
 ---
 
 ## W0 (foundations) — skeleton landed, **CI green on the 3-runner matrix**

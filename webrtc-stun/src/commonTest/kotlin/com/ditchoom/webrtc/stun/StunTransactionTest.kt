@@ -61,6 +61,43 @@ class StunTransactionTest {
     }
 
     @Test
+    fun customPolicyScheduleIsHonored() {
+        val policy = StunRetransmitPolicy(rto = 100.milliseconds, maxTransmissions = 3, finalWaitRtoMultiple = 4)
+        val request = StunMessageBuilder.of(StunClass.Request, StunMethod.Binding, txId).encode()
+        val tx = StunTransaction(txId, request, policy)
+        var now = t0
+        var prev = t0
+        val intervals = mutableListOf<Long>()
+        var sends = tx.handle(StunTransactionEvent.Start, now).sends()
+        var failed = false
+        while (!failed) {
+            val deadline = tx.nextDeadline() ?: error("disarmed early")
+            intervals += (deadline - prev).inWholeMilliseconds
+            now = deadline
+            prev = deadline
+            val out = tx.handle(StunTransactionEvent.TimerExpired, now)
+            sends += out.sends()
+            failed = out.any { it is StunTransactionOutput.Failed }
+        }
+        assertEquals(3, sends)
+        assertEquals(listOf(100L, 200, 400), intervals) // 100, 2×100, then Rm×RTO = 4×100 final wait
+    }
+
+    @Test
+    fun singleTransmissionPolicyGoesStraightToFinalWait() {
+        // Rc = 1: after the sole request, the next timer is the final wait, then TimedOut.
+        val policy = StunRetransmitPolicy(maxTransmissions = 1)
+        val request = StunMessageBuilder.of(StunClass.Request, StunMethod.Binding, txId).encode()
+        val tx = StunTransaction(txId, request, policy)
+        assertEquals(1, tx.handle(StunTransactionEvent.Start, t0).sends())
+        // Straight to the Rm×RTO wait (500 × 16 = 8000 ms), no second request.
+        assertEquals(t0 + (StunRetransmitPolicy.DEFAULT_RM * 500).milliseconds, tx.nextDeadline())
+        val out = tx.handle(StunTransactionEvent.TimerExpired, tx.nextDeadline()!!)
+        assertEquals(0, out.sends())
+        assertTrue(out.any { it is StunTransactionOutput.Failed })
+    }
+
+    @Test
     fun matchingResponseCompletesAndStopsRetransmission() {
         val tx = newTransaction()
         tx.handle(StunTransactionEvent.Start, t0)

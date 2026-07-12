@@ -29,6 +29,7 @@ public class StunMessageBuilder(
 
     /** Appends MESSAGE-INTEGRITY (HMAC-SHA1 under [key]) over everything added so far. */
     public fun addMessageIntegrity(key: ReadBuffer): StunMessageBuilder {
+        requireNoFingerprintYet("MESSAGE-INTEGRITY")
         val prefix = serializePrefix(lengthAddend = MESSAGE_INTEGRITY_TLV_BYTES)
         attributes += RawAttribute.ofValue(StunAttributeType.MessageIntegrity, hmacSha1(key, prefix, BufferFactory.Default))
         return this
@@ -36,14 +37,31 @@ public class StunMessageBuilder(
 
     /**
      * Appends MESSAGE-INTEGRITY-SHA256 (HMAC-SHA256 under [key], RFC 8489 §14.6) over everything added
-     * so far — the full 32-byte tag (this builder does not negotiate truncation). Add it after
-     * [addMessageIntegrity] when both are present, and before [addFingerprint].
+     * so far. [tagLengthBytes] defaults to the full 32-byte tag; a STUN Usage that negotiated
+     * truncation may pass a smaller multiple of 4 in 16..32. Add after [addMessageIntegrity] when both
+     * are present, and before [addFingerprint].
      */
-    public fun addMessageIntegritySha256(key: ReadBuffer): StunMessageBuilder {
-        val prefix = serializePrefix(lengthAddend = MESSAGE_INTEGRITY_SHA256_TLV_BYTES)
-        val tag = hmacSha256(key, prefix, BufferFactory.Default)
+    public fun addMessageIntegritySha256(
+        key: ReadBuffer,
+        tagLengthBytes: Int = HMAC_SHA256_BYTES,
+    ): StunMessageBuilder {
+        require(tagLengthBytes in MIN_SHA256_MI_BYTES..HMAC_SHA256_BYTES && tagLengthBytes % ALIGNMENT == 0) {
+            "MESSAGE-INTEGRITY-SHA256 tag must be a multiple of 4 in $MIN_SHA256_MI_BYTES..$HMAC_SHA256_BYTES, got $tagLengthBytes"
+        }
+        requireNoFingerprintYet("MESSAGE-INTEGRITY-SHA256")
+        val prefix = serializePrefix(lengthAddend = StunMessage.TLV_HEADER_BYTES + tagLengthBytes)
+        val full = hmacSha256(key, prefix, BufferFactory.Default)
+        val tag = if (tagLengthBytes == HMAC_SHA256_BYTES) full else full.sliceOf(0, tagLengthBytes)
         attributes += RawAttribute.ofValue(StunAttributeType.MessageIntegritySha256, tag)
         return this
+    }
+
+    // FINGERPRINT must be the last attribute (RFC 8489 §14.7) and MESSAGE-INTEGRITY* must precede it,
+    // else the far side's checks silently fail to verify. Make the misuse a typed error, not a mystery.
+    private fun requireNoFingerprintYet(what: String) {
+        require(attributes.none { it.type == StunAttributeType.Fingerprint }) {
+            "$what must be added before FINGERPRINT (FINGERPRINT must be the last attribute)"
+        }
     }
 
     /** Appends FINGERPRINT (CRC-32 XOR 0x5354554E) over everything added so far. */
@@ -83,7 +101,8 @@ public class StunMessageBuilder(
         private const val UINT_BYTES = 4
         private const val FINGERPRINT_TLV_BYTES = StunMessage.TLV_HEADER_BYTES + UINT_BYTES // 8
         private const val MESSAGE_INTEGRITY_TLV_BYTES = StunMessage.TLV_HEADER_BYTES + HMAC_SHA1_BYTES // 24
-        private const val MESSAGE_INTEGRITY_SHA256_TLV_BYTES = StunMessage.TLV_HEADER_BYTES + HMAC_SHA256_BYTES // 36
+        private const val ALIGNMENT = 4 // STUN attribute 4-byte boundary (RFC 8489 §14)
+        private const val MIN_SHA256_MI_BYTES = 16 // smallest negotiable MI-SHA256 tag (RFC 8489 §14.6)
 
         /** Starts a builder for `(stunClass, method)` with the given transaction id. */
         public fun of(

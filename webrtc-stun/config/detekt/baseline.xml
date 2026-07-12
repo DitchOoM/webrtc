@@ -17,6 +17,7 @@
     <ID>MaxLineLength:StunAttributeDecoders.kt:return StunErrorCode(classDigit * ERROR_CLASS_MULTIPLIER + number, readUtf8OrNull(v, ERROR_HEADER_BYTES, length) ?: "")</ID>
     <ID>MaxLineLength:StunEncodeRoundTripTest.kt:StunEncodeRoundTripTest$assertEquals(address, success(encoded).firstOrNull(StunAttributeType.XorMappedAddress)?.asXorMappedAddress(txId))</ID>
     <ID>MaxLineLength:StunMessage.kt:internal</ID>
+    <ID>MaxLineLength:StunMessageBuilder.kt:StunMessageBuilder$"MESSAGE-INTEGRITY-SHA256 tag must be a multiple of 4 in $MIN_SHA256_MI_BYTES..$HMAC_SHA256_BYTES, got $tagLengthBytes"</ID>
     <ID>MaxLineLength:StunMessageBuilder.kt:StunMessageBuilder$attributes += RawAttribute.ofValue(StunAttributeType.MessageIntegrity, hmacSha1(key, prefix, BufferFactory.Default))</ID>
     <ID>MaxLineLength:StunMessageBuilder.kt:StunMessageBuilder$public</ID>
     <ID>MaxLineLength:StunTurnAttributes.kt:public</ID>

@@ -71,6 +71,34 @@ class StunTurnAndExtrasTest {
     }
 
     @Test
+    fun attributesCoveredByMessageIntegrityExcludesTheTail() {
+        val key = keyOf()
+        // SOFTWARE, USERNAME are covered; MESSAGE-INTEGRITY and the trailing FINGERPRINT are not.
+        val encoded =
+            StunMessageBuilder
+                .of(StunClass.Request, StunMethod.Binding, txId)
+                .add(RawAttribute.ofText(StunAttributeType.Software, "s"))
+                .add(RawAttribute.ofText(StunAttributeType.Username, "u"))
+                .addMessageIntegrity(key)
+                .addFingerprint()
+                .encode()
+        val msg = (StunMessage.decode(encoded) as StunDecodeResult.Success).message
+        val covered = msg.attributesCoveredByMessageIntegrity()
+        assertEquals(listOf(StunAttributeType.Software, StunAttributeType.Username), covered?.map { it.type })
+    }
+
+    @Test
+    fun attributesCoveredByMessageIntegrityIsNullWhenAbsent() {
+        val encoded =
+            StunMessageBuilder
+                .of(StunClass.Request, StunMethod.Binding, txId)
+                .add(RawAttribute.ofText(StunAttributeType.Software, "s"))
+                .encode()
+        val msg = (StunMessage.decode(encoded) as StunDecodeResult.Success).message
+        assertNull(msg.attributesCoveredByMessageIntegrity())
+    }
+
+    @Test
     fun constantTimeMessageIntegrityStillVerifies() {
         val key = keyOf()
         val encoded =

@@ -196,6 +196,7 @@ public final class com/ditchoom/webrtc/stun/StunHeaderCodec : com/ditchoom/buffe
 public final class com/ditchoom/webrtc/stun/StunMessage {
 	public static final field Companion Lcom/ditchoom/webrtc/stun/StunMessage$Companion;
 	public static final field FINGERPRINT_XOR I
+	public final fun attributesCoveredByMessageIntegrity ()Ljava/util/List;
 	public final fun encode (Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/PlatformBuffer;
 	public static synthetic fun encode$default (Lcom/ditchoom/webrtc/stun/StunMessage;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/buffer/PlatformBuffer;
 	public final fun firstOrNull-qyveuPQ (S)Lcom/ditchoom/webrtc/stun/RawAttribute;
@@ -219,7 +220,8 @@ public final class com/ditchoom/webrtc/stun/StunMessageBuilder {
 	public final fun add (Lcom/ditchoom/webrtc/stun/RawAttribute;)Lcom/ditchoom/webrtc/stun/StunMessageBuilder;
 	public final fun addFingerprint ()Lcom/ditchoom/webrtc/stun/StunMessageBuilder;
 	public final fun addMessageIntegrity (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/stun/StunMessageBuilder;
-	public final fun addMessageIntegritySha256 (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/stun/StunMessageBuilder;
+	public final fun addMessageIntegritySha256 (Lcom/ditchoom/buffer/ReadBuffer;I)Lcom/ditchoom/webrtc/stun/StunMessageBuilder;
+	public static synthetic fun addMessageIntegritySha256$default (Lcom/ditchoom/webrtc/stun/StunMessageBuilder;Lcom/ditchoom/buffer/ReadBuffer;IILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/StunMessageBuilder;
 	public final fun build ()Lcom/ditchoom/webrtc/stun/StunMessage;
 	public final fun encode (Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/PlatformBuffer;
 	public static synthetic fun encode$default (Lcom/ditchoom/webrtc/stun/StunMessageBuilder;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/buffer/PlatformBuffer;

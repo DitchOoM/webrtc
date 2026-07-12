@@ -151,6 +151,16 @@ class StunMalformedCorpusTest {
         assertTrue(!fpMsg.verifyFingerprint())
     }
 
+    @Test
+    fun sha256IntegrityWithOutOfRangeLengthVerifiesFalseNeverThrows() {
+        val cookie = listOf(0x21, 0x12, 0xA4, 0x42).map { it.toByte() }
+        val txId = zeros(12)
+        // MESSAGE-INTEGRITY-SHA256 (0x001C) with declared length 8 (< 16, non-conforming) at the end.
+        val shortSha256 = bytes(0x01, 0x01, 0x00, 0x0C) + cookie + txId + bytes(0x00, 0x1C, 0x00, 0x08) + zeros(8)
+        val msg = (StunMessage.decode(fill(shortSha256)) as StunDecodeResult.Success).message
+        assertTrue(!msg.verifyMessageIntegritySha256(emptyKey()))
+    }
+
     private fun emptyKey() = fill(bytes(0x6B, 0x65, 0x79)) // "key"
 
     @Test

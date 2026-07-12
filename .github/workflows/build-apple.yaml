@@ -54,11 +54,10 @@ jobs:
       - name: Build + test (host macOS + iOS simulator)
         run: ./gradlew macosArm64Test iosSimulatorArm64Test ${{ inputs.gradle-args }} --no-configuration-cache
 
-      - name: Compile remaining Apple targets
-        run: ./gradlew compileKotlinMacosX64 compileKotlinIosArm64 ${{ inputs.gradle-args }} --no-configuration-cache
-
       - name: Publish Apple klibs to local Maven repo
-        run: ./gradlew publishToMavenLocal ${{ inputs.gradle-args }} --no-configuration-cache
+        # -PskipPrePublishCheck: the macOS lane has no Chrome/JS-browser toolchain for the full gate;
+        # its Apple tests ran above, the cross-platform tests run on the Linux lane.
+        run: ./gradlew publishToMavenLocal -PskipPrePublishCheck=true ${{ inputs.gradle-args }} --no-configuration-cache
 
       - name: Stage published artifacts
         run: |

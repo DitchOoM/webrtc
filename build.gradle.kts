@@ -28,9 +28,15 @@ tasks.register("prePublishCheck") {
     dependsOn(subprojects.map { "${it.path}:jsBrowserTest" })
 }
 
+// Gate the local-publish safety net so CI can skip it: the build lanes already run the full test
+// suite before publishing (and a single lane can't run cross-platform tests it has no toolchain for —
+// e.g. the macOS lane has no Chrome for jsBrowserTest). Pass -PskipPrePublishCheck=true on CI.
+val skipPrePublishCheck = providers.gradleProperty("skipPrePublishCheck").map { it.toBoolean() }.getOrElse(false)
 subprojects {
     tasks.matching { it.name == "publishToMavenLocal" }.configureEach {
-        dependsOn(rootProject.tasks.named("prePublishCheck"))
+        if (!skipPrePublishCheck) {
+            dependsOn(rootProject.tasks.named("prePublishCheck"))
+        }
     }
 }
 

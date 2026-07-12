@@ -56,7 +56,8 @@ jobs:
         run: ./gradlew apiCheck ${{ inputs.gradle-args }} --no-configuration-cache
 
       - name: Publish to local Maven repo
-        run: ./gradlew publishToMavenLocal ${{ inputs.gradle-args }} --no-configuration-cache
+        # -PskipPrePublishCheck: tests already ran in "Build + test" above; don't re-run the gate.
+        run: ./gradlew publishToMavenLocal -PskipPrePublishCheck=true ${{ inputs.gradle-args }} --no-configuration-cache
 
       - name: Stage published artifacts
         run: |

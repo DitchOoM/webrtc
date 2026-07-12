@@ -29,3 +29,9 @@ docs/static/api/
 **/testcerts/*.p12
 **/testcerts/*.crt
 **/testcerts/*.key
+
+# Jazzer writes crash/repro files to the working dir on a finding (committed corpus lives in fuzz/corpus).
+Crash_*.java
+crash-*
+timeout-*
+oom-*

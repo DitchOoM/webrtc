@@ -33,6 +33,10 @@ plugins {
     // src/commonBenchmark/kotlin source set and run on demand; results tracked in PERFORMANCE.md.
     id("org.jetbrains.kotlin.plugin.allopen")
     id("org.jetbrains.kotlinx.benchmark")
+    // KSP applied here (not via a module `alias`) so it shares the classloader with the Kotlin
+    // Gradle plugin — a module-level alias against the included-build convention loads KGP twice.
+    // Inert unless a module wires `kspCommonMainMetadata` deps + the generated srcDir (webrtc-stun).
+    id("com.google.devtools.ksp")
     id("signing")
 }
 
@@ -92,6 +96,11 @@ val benchmarkRuntime =
         .get()
 
 repositories {
+    // DEV PIN (W1): mavenLocal first so the 6.10.0-SNAPSHOT buffer stack (HMAC-SHA1 + CRC-32,
+    // DitchOoM/buffer#288) resolves locally while that PR is in flight. On CI mavenLocal is empty,
+    // so resolution falls through to Central — which is exactly the gate: the webrtc W1 PR merges
+    // only once buffer#288 is released and the catalog is pinned to that real version.
+    mavenLocal()
     google()
     mavenCentral()
 }
@@ -199,7 +208,11 @@ ktlint {
     outputToConsole.set(true)
     android.set(true)
     filter {
+        // KSP writes generated codecs into build/generated/ksp/** and that dir is added as a
+        // commonMain srcDir (webrtc-stun). The Ant glob alone doesn't match the absolute build path
+        // ktlint sees, so also exclude by path predicate (the buffer-codec-test convention).
         exclude("**/generated/**")
+        exclude { it.file.path.contains("/generated/") || it.file.path.contains("/build/") }
     }
 }
 

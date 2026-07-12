@@ -3,7 +3,42 @@
 Live state of the current wave. A resumed session reads `RFC_KMP_WEBRTC.md` → `EXECUTION_PLAN.md` →
 this file. Update it whenever you stop mid-wave.
 
-## Where we are: W0 (foundations) — skeleton landed, **CI green on the 3-runner matrix**
+## Where we are: **W1 `webrtc-stun` — code complete, on branch `feat/w1-webrtc-stun`, gated on a buffer release**
+
+W1 is built and **green on all 7 local lanes** (JVM, JS node+browser, wasmJs node+browser, Linux/native,
+Android host — 34 tests each). What landed on `feat/w1-webrtc-stun`:
+
+- **STUN codec (RFC 8489):** header via a KSP `@ProtocolMessage` schema (`StunHeaderCodec`); the TLV
+  attribute layer hand-written (STUN's 4-byte padding + MI/FINGERPRINT span-with-rewritten-length are
+  outside the declarative codec). Attributes are **zero-copy slice views** over the datagram. Typed
+  attributes: MAPPED / XOR-MAPPED-ADDRESS (v4/v6, array-free `IpAddress`), USERNAME/REALM/NONCE/SOFTWARE,
+  ERROR-CODE, UNKNOWN-ATTRIBUTES; TURN (RFC 8656) types codec-only. Typed `StunRejectReason` (decode is
+  total — never throws).
+- **MESSAGE-INTEGRITY (HMAC-SHA1) + FINGERPRINT (CRC-32)** verified/appended in place via the new
+  `buffer-crypto` `hmacSha1` + `buffer` `ReadBuffer.crc32`.
+- **Sans-io `StunTransaction`** — `handle(event, now)` + `nextDeadline()`, RFC 8489 §6.2.1 retransmit
+  schedule, injected clock + seeded transaction ids.
+- **T0/T0′:** RFC 5769 §2.1–2.3 vectors (decode + MI/FINGERPRINT recompute + XOR-address + byte-exact
+  round-trip), malformed corpus + 20k-input totality property, wrapper-transparency, builder round-trips.
+  **Jazzer lane** (`stunCodecFuzz`, wired into `review.yaml`, 25M+ execs clean) with committed seed corpus.
+- Benchmark numbers in `PERFORMANCE.md`; `.api` committed; ktlint/apiCheck/standing-directive greps green.
+
+**The two Jazzer finds are fixed with committed fixtures** (directive #5): (1) `asText()` threw on
+non-UTF-8 bytes → now returns `null` (must `catch (Throwable)`, not `Exception` — Kotlin/JS's TextDecoder
+throws a raw JS error); (2) a short MESSAGE-INTEGRITY/FINGERPRINT declared length made the fixed-size
+verify read past the datagram → both `verify*` now guard the attribute length.
+
+### The cross-repo gate (why W1 can't merge yet)
+STUN MI/FINGERPRINT needed HMAC-SHA1 + CRC-32, which `buffer-crypto`/`buffer` lacked. Added upstream in
+**DitchOoM/buffer#288** (`HmacSha1Mac` + `hmacSha1`; `ReadBuffer.crc32`), published locally as
+**`6.10.0-SNAPSHOT`** and consumed from **mavenLocal** (convention `repositories { mavenLocal() }` first;
+catalog `buffer = "6.10.0-SNAPSHOT"`). **Before merging W1:** land buffer#288, cut the buffer release,
+then pin the catalog to the real version and drop the SNAPSHOT/mavenLocal dev pin. Until then webrtc CI is
+red on dependency resolution (expected). Both pins are commented `DEV PIN (W1)`.
+
+---
+
+## W0 (foundations) — skeleton landed, **CI green on the 3-runner matrix**
 
 Repo is live and public: **https://github.com/DitchOoM/webrtc** (org `DitchOoM`, default branch `main`,
 settings mirror socket, auto-delete-branch-on-merge on). The W0 skeleton + all CI fixes are merged to

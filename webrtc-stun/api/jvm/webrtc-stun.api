@@ -1,7 +1,115 @@
+public abstract interface class com/ditchoom/webrtc/stun/IpAddress {
+	public abstract fun getFamily-w2LRezQ ()B
+}
+
+public final class com/ditchoom/webrtc/stun/IpAddress$V4 : com/ditchoom/webrtc/stun/IpAddress {
+	public static final field Companion Lcom/ditchoom/webrtc/stun/IpAddress$V4$Companion;
+	public static final field FAMILY B
+	public static final field SIZE_BYTES I
+	public synthetic fun <init> (ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-pVg5ArA ()I
+	public final fun copy-WZ4Q5Ns (I)Lcom/ditchoom/webrtc/stun/IpAddress$V4;
+	public static synthetic fun copy-WZ4Q5Ns$default (Lcom/ditchoom/webrtc/stun/IpAddress$V4;IILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/IpAddress$V4;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getBits-pVg5ArA ()I
+	public fun getFamily-w2LRezQ ()B
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/stun/IpAddress$V4$Companion {
+}
+
+public final class com/ditchoom/webrtc/stun/IpAddress$V6 : com/ditchoom/webrtc/stun/IpAddress {
+	public static final field Companion Lcom/ditchoom/webrtc/stun/IpAddress$V6$Companion;
+	public static final field FAMILY B
+	public static final field SIZE_BYTES I
+	public synthetic fun <init> (JJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-s-VKNKU ()J
+	public final fun component2-s-VKNKU ()J
+	public final fun copy-PWzV0Is (JJ)Lcom/ditchoom/webrtc/stun/IpAddress$V6;
+	public static synthetic fun copy-PWzV0Is$default (Lcom/ditchoom/webrtc/stun/IpAddress$V6;JJILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/IpAddress$V6;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getFamily-w2LRezQ ()B
+	public final fun getHi-s-VKNKU ()J
+	public final fun getLo-s-VKNKU ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/stun/IpAddress$V6$Companion {
+}
+
+public final class com/ditchoom/webrtc/stun/RawAttribute {
+	public static final field Companion Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getLength ()I
+	public final fun getType-HYjsODs ()S
+	public final fun getValue ()Lcom/ditchoom/buffer/ReadBuffer;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/stun/RawAttribute$Companion {
+	public final fun ofErrorCode (Lcom/ditchoom/webrtc/stun/StunErrorCode;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public final fun ofMappedAddress (Lcom/ditchoom/webrtc/stun/TransportAddress;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public final fun ofText-1i-FKtQ (SLjava/lang/String;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public final fun ofXorMappedAddress (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransactionId;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+}
+
 public final class com/ditchoom/webrtc/stun/Stun {
 	public static final field INSTANCE Lcom/ditchoom/webrtc/stun/Stun;
 	public static final field MAGIC_COOKIE I
+	public static final field MAGIC_COOKIE_HIGH_SHORT S
 	public static final field MODULE Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/stun/StunAttributeDecodersKt {
+	public static final fun asErrorCode (Lcom/ditchoom/webrtc/stun/RawAttribute;)Lcom/ditchoom/webrtc/stun/StunErrorCode;
+	public static final fun asText (Lcom/ditchoom/webrtc/stun/RawAttribute;)Ljava/lang/String;
+	public static final fun asTransportAddress (Lcom/ditchoom/webrtc/stun/RawAttribute;)Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public static final fun asXorMappedAddress (Lcom/ditchoom/webrtc/stun/RawAttribute;Lcom/ditchoom/webrtc/stun/TransactionId;)Lcom/ditchoom/webrtc/stun/TransportAddress;
+}
+
+public final class com/ditchoom/webrtc/stun/StunAttributeType {
+	public static final field Companion Lcom/ditchoom/webrtc/stun/StunAttributeType$Companion;
+	public static final synthetic fun box-impl (S)Lcom/ditchoom/webrtc/stun/StunAttributeType;
+	public static fun constructor-impl (S)S
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (SLjava/lang/Object;)Z
+	public static final fun equals-impl0 (SS)Z
+	public final fun getValue-Mh2AYeg ()S
+	public fun hashCode ()I
+	public static fun hashCode-impl (S)I
+	public static final fun isComprehensionRequired-impl (S)Z
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (S)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()S
+}
+
+public final class com/ditchoom/webrtc/stun/StunAttributeType$Companion {
+	public final fun getAlternateServer-HYjsODs ()S
+	public final fun getChannelNumber-HYjsODs ()S
+	public final fun getData-HYjsODs ()S
+	public final fun getDontFragment-HYjsODs ()S
+	public final fun getErrorCode-HYjsODs ()S
+	public final fun getEvenPort-HYjsODs ()S
+	public final fun getFingerprint-HYjsODs ()S
+	public final fun getLifetime-HYjsODs ()S
+	public final fun getMappedAddress-HYjsODs ()S
+	public final fun getMessageIntegrity-HYjsODs ()S
+	public final fun getMessageIntegritySha256-HYjsODs ()S
+	public final fun getNonce-HYjsODs ()S
+	public final fun getRealm-HYjsODs ()S
+	public final fun getRequestedAddressFamily-HYjsODs ()S
+	public final fun getRequestedTransport-HYjsODs ()S
+	public final fun getReservationToken-HYjsODs ()S
+	public final fun getSoftware-HYjsODs ()S
+	public final fun getUnknownAttributes-HYjsODs ()S
+	public final fun getUsername-HYjsODs ()S
+	public final fun getXorMappedAddress-HYjsODs ()S
+	public final fun getXorPeerAddress-HYjsODs ()S
+	public final fun getXorRelayedAddress-HYjsODs ()S
 }
 
 public final class com/ditchoom/webrtc/stun/StunClass : java/lang/Enum {
@@ -14,22 +122,379 @@ public final class com/ditchoom/webrtc/stun/StunClass : java/lang/Enum {
 	public static fun values ()[Lcom/ditchoom/webrtc/stun/StunClass;
 }
 
+public abstract interface class com/ditchoom/webrtc/stun/StunDecodeResult {
+}
+
+public final class com/ditchoom/webrtc/stun/StunDecodeResult$Reject : com/ditchoom/webrtc/stun/StunDecodeResult {
+	public fun <init> (Lcom/ditchoom/webrtc/stun/StunRejectReason;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/stun/StunRejectReason;
+	public final fun copy (Lcom/ditchoom/webrtc/stun/StunRejectReason;)Lcom/ditchoom/webrtc/stun/StunDecodeResult$Reject;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/stun/StunDecodeResult$Reject;Lcom/ditchoom/webrtc/stun/StunRejectReason;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/StunDecodeResult$Reject;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReason ()Lcom/ditchoom/webrtc/stun/StunRejectReason;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/stun/StunDecodeResult$Success : com/ditchoom/webrtc/stun/StunDecodeResult {
+	public fun <init> (Lcom/ditchoom/webrtc/stun/StunMessage;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/stun/StunMessage;
+	public final fun copy (Lcom/ditchoom/webrtc/stun/StunMessage;)Lcom/ditchoom/webrtc/stun/StunDecodeResult$Success;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/stun/StunDecodeResult$Success;Lcom/ditchoom/webrtc/stun/StunMessage;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/StunDecodeResult$Success;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getMessage ()Lcom/ditchoom/webrtc/stun/StunMessage;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/stun/StunErrorCode {
+	public fun <init> (ILjava/lang/String;)V
+	public final fun component1 ()I
+	public final fun component2 ()Ljava/lang/String;
+	public final fun copy (ILjava/lang/String;)Lcom/ditchoom/webrtc/stun/StunErrorCode;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/stun/StunErrorCode;ILjava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/StunErrorCode;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCode ()I
+	public final fun getReason ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/stun/StunHeader {
+	public static final field Companion Lcom/ditchoom/webrtc/stun/StunHeader$Companion;
+	public static final field SIZE_BYTES I
+	public synthetic fun <init> (SSILcom/ditchoom/webrtc/stun/TransactionId;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-HLhQuLA ()S
+	public final fun component2-Mh2AYeg ()S
+	public final fun component3-pVg5ArA ()I
+	public final fun component4 ()Lcom/ditchoom/webrtc/stun/TransactionId;
+	public final fun copy-85I-nKg (SSILcom/ditchoom/webrtc/stun/TransactionId;)Lcom/ditchoom/webrtc/stun/StunHeader;
+	public static synthetic fun copy-85I-nKg$default (Lcom/ditchoom/webrtc/stun/StunHeader;SSILcom/ditchoom/webrtc/stun/TransactionId;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/StunHeader;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getMagicCookie-pVg5ArA ()I
+	public final fun getMessageLength-Mh2AYeg ()S
+	public final fun getMessageType-HLhQuLA ()S
+	public final fun getTransactionId ()Lcom/ditchoom/webrtc/stun/TransactionId;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/stun/StunHeader$Companion {
+}
+
+public final class com/ditchoom/webrtc/stun/StunHeaderCodec : com/ditchoom/buffer/codec/Codec {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/stun/StunHeaderCodec;
+	public fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Lcom/ditchoom/webrtc/stun/StunHeader;
+	public synthetic fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Ljava/lang/Object;
+	public fun encode (Lcom/ditchoom/buffer/WriteBuffer;Lcom/ditchoom/webrtc/stun/StunHeader;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public synthetic fun encode (Lcom/ditchoom/buffer/WriteBuffer;Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+	public fun wireSize (Lcom/ditchoom/webrtc/stun/StunHeader;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+	public synthetic fun wireSize (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+}
+
+public final class com/ditchoom/webrtc/stun/StunMessage {
+	public static final field Companion Lcom/ditchoom/webrtc/stun/StunMessage$Companion;
+	public static final field FINGERPRINT_XOR I
+	public final fun encode (Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/PlatformBuffer;
+	public static synthetic fun encode$default (Lcom/ditchoom/webrtc/stun/StunMessage;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/buffer/PlatformBuffer;
+	public final fun firstOrNull-qyveuPQ (S)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public final fun getAttributes ()Ljava/util/List;
+	public final fun getHeader ()Lcom/ditchoom/webrtc/stun/StunHeader;
+	public final fun getMessageType-HLhQuLA ()S
+	public final fun getTransactionId ()Lcom/ditchoom/webrtc/stun/TransactionId;
+	public final fun verifyFingerprint ()Z
+	public final fun verifyMessageIntegrity (Lcom/ditchoom/buffer/ReadBuffer;)Z
+}
+
+public final class com/ditchoom/webrtc/stun/StunMessage$Companion {
+	public final fun decode (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/stun/StunDecodeResult;
+}
+
+public final class com/ditchoom/webrtc/stun/StunMessageBuilder {
+	public static final field Companion Lcom/ditchoom/webrtc/stun/StunMessageBuilder$Companion;
+	public synthetic fun <init> (SLcom/ditchoom/webrtc/stun/TransactionId;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun add (Lcom/ditchoom/webrtc/stun/RawAttribute;)Lcom/ditchoom/webrtc/stun/StunMessageBuilder;
+	public final fun addFingerprint ()Lcom/ditchoom/webrtc/stun/StunMessageBuilder;
+	public final fun addMessageIntegrity (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/stun/StunMessageBuilder;
+	public final fun build ()Lcom/ditchoom/webrtc/stun/StunMessage;
+	public final fun encode (Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/PlatformBuffer;
+	public static synthetic fun encode$default (Lcom/ditchoom/webrtc/stun/StunMessageBuilder;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/buffer/PlatformBuffer;
+}
+
+public final class com/ditchoom/webrtc/stun/StunMessageBuilder$Companion {
+	public final fun of-CxgZA5U (Lcom/ditchoom/webrtc/stun/StunClass;SLcom/ditchoom/webrtc/stun/TransactionId;)Lcom/ditchoom/webrtc/stun/StunMessageBuilder;
+}
+
+public final class com/ditchoom/webrtc/stun/StunMessageType {
+	public static final field Companion Lcom/ditchoom/webrtc/stun/StunMessageType$Companion;
+	public static final synthetic fun box-impl (S)Lcom/ditchoom/webrtc/stun/StunMessageType;
+	public static fun constructor-impl (S)S
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (SLjava/lang/Object;)Z
+	public static final fun equals-impl0 (SS)Z
+	public static final fun getMethod-lPHZO0E (S)S
+	public final fun getRaw-Mh2AYeg ()S
+	public static final fun getStunClass-impl (S)Lcom/ditchoom/webrtc/stun/StunClass;
+	public fun hashCode ()I
+	public static fun hashCode-impl (S)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (S)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()S
+}
+
+public final class com/ditchoom/webrtc/stun/StunMessageType$Companion {
+	public final fun of-JMQyjBk (Lcom/ditchoom/webrtc/stun/StunClass;S)S
+}
+
+public final class com/ditchoom/webrtc/stun/StunMessageTypeCodec : com/ditchoom/buffer/codec/Codec {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/stun/StunMessageTypeCodec;
+	public synthetic fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Ljava/lang/Object;
+	public fun decode-hhdjEO4 (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)S
+	public synthetic fun encode (Lcom/ditchoom/buffer/WriteBuffer;Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun encode-pwSA_Ts (Lcom/ditchoom/buffer/WriteBuffer;SLcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+	public synthetic fun wireSize (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+	public fun wireSize-OGupplg (SLcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+}
+
+public final class com/ditchoom/webrtc/stun/StunMethod {
+	public static final field Companion Lcom/ditchoom/webrtc/stun/StunMethod$Companion;
+	public static final field MAX_VALUE I
+	public static final synthetic fun box-impl (S)Lcom/ditchoom/webrtc/stun/StunMethod;
+	public static fun constructor-impl (S)S
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (SLjava/lang/Object;)Z
+	public static final fun equals-impl0 (SS)Z
+	public final fun getValue-Mh2AYeg ()S
+	public fun hashCode ()I
+	public static fun hashCode-impl (S)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (S)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()S
+}
+
+public final class com/ditchoom/webrtc/stun/StunMethod$Companion {
+	public final fun getAllocate-lPHZO0E ()S
+	public final fun getBinding-lPHZO0E ()S
+	public final fun getChannelBind-lPHZO0E ()S
+	public final fun getCreatePermission-lPHZO0E ()S
+	public final fun getData-lPHZO0E ()S
+	public final fun getRefresh-lPHZO0E ()S
+	public final fun getSend-lPHZO0E ()S
+}
+
+public abstract interface class com/ditchoom/webrtc/stun/StunRejectReason {
+}
+
+public final class com/ditchoom/webrtc/stun/StunRejectReason$BadMagicCookie : com/ditchoom/webrtc/stun/StunRejectReason {
+	public synthetic fun <init> (ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-pVg5ArA ()I
+	public final fun copy-WZ4Q5Ns (I)Lcom/ditchoom/webrtc/stun/StunRejectReason$BadMagicCookie;
+	public static synthetic fun copy-WZ4Q5Ns$default (Lcom/ditchoom/webrtc/stun/StunRejectReason$BadMagicCookie;IILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/StunRejectReason$BadMagicCookie;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getActual-pVg5ArA ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/stun/StunRejectReason$LengthNotAligned : com/ditchoom/webrtc/stun/StunRejectReason {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/webrtc/stun/StunRejectReason$LengthNotAligned;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/stun/StunRejectReason$LengthNotAligned;IILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/StunRejectReason$LengthNotAligned;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getMessageLength ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/stun/StunRejectReason$MalformedAttribute : com/ditchoom/webrtc/stun/StunRejectReason {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/webrtc/stun/StunRejectReason$MalformedAttribute;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/stun/StunRejectReason$MalformedAttribute;IILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/StunRejectReason$MalformedAttribute;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getOffset ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/stun/StunRejectReason$NotStunMethod : com/ditchoom/webrtc/stun/StunRejectReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/stun/StunRejectReason$NotStunMethod;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/stun/StunRejectReason$ShorterThanHeader : com/ditchoom/webrtc/stun/StunRejectReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/stun/StunRejectReason$ShorterThanHeader;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/stun/StunRejectReason$Truncated : com/ditchoom/webrtc/stun/StunRejectReason {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/webrtc/stun/StunRejectReason$Truncated;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/stun/StunRejectReason$Truncated;IIILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/StunRejectReason$Truncated;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAvailable ()I
+	public final fun getNeeded ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/stun/StunRetransmitPolicy {
+	public static final field Companion Lcom/ditchoom/webrtc/stun/StunRetransmitPolicy$Companion;
+	public static final field DEFAULT_RC I
+	public static final field DEFAULT_RM I
+	public synthetic fun <init> (JIIILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JIILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun component2 ()I
+	public final fun component3 ()I
+	public final fun copy-KLykuaI (JII)Lcom/ditchoom/webrtc/stun/StunRetransmitPolicy;
+	public static synthetic fun copy-KLykuaI$default (Lcom/ditchoom/webrtc/stun/StunRetransmitPolicy;JIIILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/StunRetransmitPolicy;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFinalWaitRtoMultiple ()I
+	public final fun getMaxTransmissions ()I
+	public final fun getRto-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/stun/StunRetransmitPolicy$Companion {
+	public final fun getDEFAULT_RTO-UwyO8pc ()J
+}
+
+public final class com/ditchoom/webrtc/stun/StunTransaction {
+	public fun <init> (Lcom/ditchoom/webrtc/stun/TransactionId;Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/webrtc/stun/StunRetransmitPolicy;)V
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/stun/TransactionId;Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/webrtc/stun/StunRetransmitPolicy;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getTransactionId ()Lcom/ditchoom/webrtc/stun/TransactionId;
+	public final fun handle (Lcom/ditchoom/webrtc/stun/StunTransactionEvent;Lkotlin/time/Instant;)Ljava/util/List;
+	public final fun isTerminal ()Z
+	public final fun nextDeadline ()Lkotlin/time/Instant;
+}
+
+public abstract interface class com/ditchoom/webrtc/stun/StunTransactionEvent {
+}
+
+public final class com/ditchoom/webrtc/stun/StunTransactionEvent$ResponseReceived : com/ditchoom/webrtc/stun/StunTransactionEvent {
+	public fun <init> (Lcom/ditchoom/webrtc/stun/StunMessage;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/stun/StunMessage;
+	public final fun copy (Lcom/ditchoom/webrtc/stun/StunMessage;)Lcom/ditchoom/webrtc/stun/StunTransactionEvent$ResponseReceived;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/stun/StunTransactionEvent$ResponseReceived;Lcom/ditchoom/webrtc/stun/StunMessage;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/StunTransactionEvent$ResponseReceived;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getMessage ()Lcom/ditchoom/webrtc/stun/StunMessage;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/stun/StunTransactionEvent$Start : com/ditchoom/webrtc/stun/StunTransactionEvent {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/stun/StunTransactionEvent$Start;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/stun/StunTransactionEvent$TimerExpired : com/ditchoom/webrtc/stun/StunTransactionEvent {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/stun/StunTransactionEvent$TimerExpired;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/stun/StunTransactionFailure {
+}
+
+public final class com/ditchoom/webrtc/stun/StunTransactionFailure$TimedOut : com/ditchoom/webrtc/stun/StunTransactionFailure {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/stun/StunTransactionFailure$TimedOut;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/stun/StunTransactionOutput {
+}
+
+public final class com/ditchoom/webrtc/stun/StunTransactionOutput$Completed : com/ditchoom/webrtc/stun/StunTransactionOutput {
+	public fun <init> (Lcom/ditchoom/webrtc/stun/StunMessage;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/stun/StunMessage;
+	public final fun copy (Lcom/ditchoom/webrtc/stun/StunMessage;)Lcom/ditchoom/webrtc/stun/StunTransactionOutput$Completed;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/stun/StunTransactionOutput$Completed;Lcom/ditchoom/webrtc/stun/StunMessage;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/StunTransactionOutput$Completed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getResponse ()Lcom/ditchoom/webrtc/stun/StunMessage;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/stun/StunTransactionOutput$Failed : com/ditchoom/webrtc/stun/StunTransactionOutput {
+	public fun <init> (Lcom/ditchoom/webrtc/stun/StunTransactionFailure;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/stun/StunTransactionFailure;
+	public final fun copy (Lcom/ditchoom/webrtc/stun/StunTransactionFailure;)Lcom/ditchoom/webrtc/stun/StunTransactionOutput$Failed;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/stun/StunTransactionOutput$Failed;Lcom/ditchoom/webrtc/stun/StunTransactionFailure;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/StunTransactionOutput$Failed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReason ()Lcom/ditchoom/webrtc/stun/StunTransactionFailure;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/stun/StunTransactionOutput$SendRequest : com/ditchoom/webrtc/stun/StunTransactionOutput {
+	public fun <init> (Lcom/ditchoom/buffer/ReadBuffer;)V
+	public final fun component1 ()Lcom/ditchoom/buffer/ReadBuffer;
+	public final fun copy (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/stun/StunTransactionOutput$SendRequest;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/stun/StunTransactionOutput$SendRequest;Lcom/ditchoom/buffer/ReadBuffer;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/StunTransactionOutput$SendRequest;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDatagram ()Lcom/ditchoom/buffer/ReadBuffer;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/stun/TransactionId {
 	public static final field Companion Lcom/ditchoom/webrtc/stun/TransactionId$Companion;
-	public static final field HEX_LENGTH I
-	public static final synthetic fun box-impl (Ljava/lang/String;)Lcom/ditchoom/webrtc/stun/TransactionId;
-	public static fun constructor-impl (Ljava/lang/String;)Ljava/lang/String;
+	public synthetic fun <init> (IIILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-pVg5ArA ()I
+	public final fun component2-pVg5ArA ()I
+	public final fun component3-pVg5ArA ()I
+	public final fun copy-zly0blg (III)Lcom/ditchoom/webrtc/stun/TransactionId;
+	public static synthetic fun copy-zly0blg$default (Lcom/ditchoom/webrtc/stun/TransactionId;IIIILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/TransactionId;
 	public fun equals (Ljava/lang/Object;)Z
-	public static fun equals-impl (Ljava/lang/String;Ljava/lang/Object;)Z
-	public static final fun equals-impl0 (Ljava/lang/String;Ljava/lang/String;)Z
-	public final fun getHex ()Ljava/lang/String;
+	public final fun getW0-pVg5ArA ()I
+	public final fun getW1-pVg5ArA ()I
+	public final fun getW2-pVg5ArA ()I
 	public fun hashCode ()I
-	public static fun hashCode-impl (Ljava/lang/String;)I
+	public final fun toHex ()Ljava/lang/String;
 	public fun toString ()Ljava/lang/String;
-	public static fun toString-impl (Ljava/lang/String;)Ljava/lang/String;
-	public final synthetic fun unbox-impl ()Ljava/lang/String;
 }
 
 public final class com/ditchoom/webrtc/stun/TransactionId$Companion {
+	public final fun random (Lkotlin/random/Random;)Lcom/ditchoom/webrtc/stun/TransactionId;
+}
+
+public final class com/ditchoom/webrtc/stun/TransactionIdCodec : com/ditchoom/buffer/codec/Codec {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/stun/TransactionIdCodec;
+	public fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Lcom/ditchoom/webrtc/stun/TransactionId;
+	public synthetic fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Ljava/lang/Object;
+	public fun encode (Lcom/ditchoom/buffer/WriteBuffer;Lcom/ditchoom/webrtc/stun/TransactionId;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public synthetic fun encode (Lcom/ditchoom/buffer/WriteBuffer;Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+	public fun wireSize (Lcom/ditchoom/webrtc/stun/TransactionId;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+	public synthetic fun wireSize (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+}
+
+public final class com/ditchoom/webrtc/stun/TransportAddress {
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/stun/IpAddress;SLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/stun/IpAddress;
+	public final fun component2-Mh2AYeg ()S
+	public final fun copy-i8woANY (Lcom/ditchoom/webrtc/stun/IpAddress;S)Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public static synthetic fun copy-i8woANY$default (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/IpAddress;SILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getIp ()Lcom/ditchoom/webrtc/stun/IpAddress;
+	public final fun getPort-Mh2AYeg ()S
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
 }
 

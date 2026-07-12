@@ -3,9 +3,12 @@
 Live state of the current wave. A resumed session reads `RFC_KMP_WEBRTC.md` → `EXECUTION_PLAN.md` →
 this file. Update it whenever you stop mid-wave.
 
-## Where we are: W0 (foundations) — repo skeleton landed
+## Where we are: W0 (foundations) — skeleton landed, **CI green on the 3-runner matrix**
 
-The greenfield repo has been bootstrapped from buffer/socket conventions. What exists:
+Repo is live and public: **https://github.com/DitchOoM/webrtc** (org `DitchOoM`, default branch `main`,
+settings mirror socket, auto-delete-branch-on-merge on). The W0 skeleton + all CI fixes are merged to
+`main` (`e43e637`). **Nothing published to Central yet** (by design — see next steps). The greenfield
+repo has been bootstrapped from buffer/socket conventions. What exists:
 
 - **Gradle**: root `settings.gradle.kts` (includes `build-logic` + 7 modules), root `build.gradle.kts`
   (detekt allprojects + aggregate tasks), `gradle.properties`, `gradle/libs.versions.toml`, the Gradle
@@ -43,22 +46,34 @@ A real bug was caught + fixed during this: `@JvmInline` needs an explicit `impor
 for the JS/Native targets (JVM auto-imports it) — `jvmTest` alone masked it; `apiDump` (all targets)
 surfaced it.
 
-**NOT yet run here** (environment-gated, not code-gated):
-- **Apple targets** — need a macOS runner (`build-apple.yaml`); compile-faithful only on this box.
-- **`jsBrowserTest` / `wasmJsBrowserTest`** — need Chrome (`review.yaml` installs it).
-- **`publishToMavenLocal`** — gated behind `prePublishCheck`, which includes the browser tests above;
-  the per-publication mechanics and version/coordinates are validated, the full gated run is not.
-- **`publish-to-central` / release flow** — need the signing + Central secrets.
+**Confirmed green on CI (PR #3, three-runner matrix — the real proof):**
+- `build-linux` (JVM/JS/WASM/Android/Linux K/N), `build-apple` (macOS/iOS K/N), `standing-directives`,
+  and `validate` all pass. This closes the Apple + browser + Android lanes that couldn't run locally.
+- CI produces **`maven-local-merged`** (~63 MB) every green run — the combined all-platform Maven repo.
+  Download + test a consumer against it: `gh run download <run> -n maven-local-merged -D /tmp/webrtc-m2`
+  then `cp -r /tmp/webrtc-m2/com ~/.m2/repository/`.
 
-Net: the EXECUTION_PLAN W0 exit criterion ("empty tree builds + publishes 0.0.x on every target, CI
-green") is **met for JVM/JS/wasm/Linux locally**; Apple + browser + Central remain to be confirmed on
-their respective CI runners on the first PR.
+Three CI-only issues were found + fixed on the smoke PR (none in library code): (1) ktlint choked on
+kotlinx-benchmark's *generated* source set (Gradle 9 implicit-dependency validation) → ktlint disabled
+on benchmark sources; (2) `prePublishCheck` re-ran on CI where a single lane lacks the cross-platform
+toolchain (macOS has no Chrome) → gated behind `-PskipPrePublishCheck`; (3) the Apple target matrix was
+broader than `buffer-crypto` publishes (it omits `watchosArm64`) → **matched buffer-crypto's exact Apple
+set** (restored the x64 tiers, dropped `watchosArm64`; the target matrix is now bounded by buffer-crypto,
+not chosen freely). Earlier local find: `@JvmInline` needs an explicit `import kotlin.jvm.JvmInline` for
+JS/Native (JVM auto-imports it).
+
+Net: the EXECUTION_PLAN W0 exit criterion "CI green on the three-runner matrix" is **met**. The only
+remaining W0 item is the first actual Central publish (`0.0.x`), which is deliberately deferred.
+
+**NOT yet done:** the Central publish / release flow — needs the org signing + Central secrets wired to
+this repo, and a *deliberate* release (see next steps + the label trap below).
 
 ## Immediate next steps
 
-1. Open the first PR so CI proves the environment-gated lanes (Apple on macOS, browser tests with
-   Chrome, then a `draft-release` to exercise `publish-to-central`). The `.api` files are committed;
-   `apiCheck` is wired into `build-linux`.
+1. **Cut the first release, deliberately.** Confirm the org secrets (`GPG_KEY_CONTENTS`,
+   `SIGNING_PASSWORD`, `MAVEN_CENTRAL_USERNAME`/`PASSWORD`, `RELEASE_PAT`) are wired to this repo, then
+   dry-run then release via dispatch (NOT by merging a PR — see the label trap):
+   `gh workflow run merged.yaml -R DitchOoM/webrtc -f flow=dry-run`, then `-f flow=release`.
 2. Add committed `config/detekt/baseline.xml` per module once `detektAll` runs (currently referenced but
    absent — detekt tolerates a missing baseline, but commit real ones after first run).
 3. Resolve RFC §11.1 (**simulation-engine home** — recommend standalone `ditchoom-simulation`) — this is
@@ -76,3 +91,13 @@ their respective CI runners on the first PR.
   the PR (the `V6_MAC_VALIDATION` convention).
 - The standing-directive greps are live from day one — new production code must respect No-array +
   seamed-entropy or annotate the documented allowance.
+- **Release trap (bit us once):** `merged.yaml` treats a merged PR that touched *code* files as
+  `flow=release` and auto-publishes to Central. `gh pr edit --add-label skip-release` **fails silently**
+  on this repo (deprecated Projects-classic GraphQL in `gh`), so the label doesn't apply and the merge
+  publishes. PR #3's merge triggered a real release run; it was **cancelled before the publish job ran**
+  (nothing shipped). Lessons: (a) prefer `gh workflow run merged.yaml -f flow=dry-run|release` (dispatch)
+  over relying on merge+label; (b) if you must label, use the REST API:
+  `gh api repos/DitchOoM/webrtc/issues/<n>/labels -f 'labels[]=skip-release'`; (c) verify the label is
+  actually present (`gh api repos/.../issues/<n>/labels`) before merging a code PR.
+- The Apple target matrix is **bounded by `buffer-crypto`** (webrtc-dtls depends on it): it omits
+  `watchosArm64`. Do not add Apple targets the buffer deps don't publish, or resolution breaks on CI.

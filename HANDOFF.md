@@ -62,26 +62,41 @@ set** (restored the x64 tiers, dropped `watchosArm64`; the target matrix is now 
 not chosen freely). Earlier local find: `@JvmInline` needs an explicit `import kotlin.jvm.JvmInline` for
 JS/Native (JVM auto-imports it).
 
-Net: the EXECUTION_PLAN W0 exit criterion "CI green on the three-runner matrix" is **met**. The only
-remaining W0 item is the first actual Central publish (`0.0.x`), which is deliberately deferred.
+The **full release pipeline is proven** end-to-end via a `flow=draft` dispatch: build → validate → GPG
+sign → bundle → upload → **Central VALIDATED** → draft GitHub release. Two more fixes came out of it:
+CI **caching** improved (`gradle/actions/setup-gradle` on both lanes + `~/.konan` cache on Linux —
+build-linux 8→5 min, build-apple 11→4.8 min warm); and a **POM bug** (every POM shipped with no
+`<description>` → Central rejected it) fixed — `providers.gradleProperty()` ignores *subproject*
+`gradle.properties`, so `POM_NAME`/`POM_DESCRIPTION` must be read via `findProperty` (now fail-fast).
+The draft `0.0.1` was **cancelled** (dropped from staging, draft release deleted) — the first real
+Central release is deliberately deferred until W1 ships actual code, so `0.0.1` isn't a public placeholder.
 
-**NOT yet done:** the Central publish / release flow — needs the org signing + Central secrets wired to
-this repo, and a *deliberate* release (see next steps + the label trap below).
+Net: **W0 is complete** — CI green on the three-runner matrix, mavenLocal + all-platform signed-bundle
+publish paths both proven. Org secrets (`GPG_KEY_CONTENTS`, `SIGNING_PASSWORD`, `MAVEN_CENTRAL_*`,
+`RELEASE_PAT`) are confirmed wired to this repo (the draft's GPG import + Central upload succeeded).
 
-## Immediate next steps
+## Immediate next steps — **W1 `webrtc-stun` is the active wave**
 
-1. **Cut the first release, deliberately.** Confirm the org secrets (`GPG_KEY_CONTENTS`,
-   `SIGNING_PASSWORD`, `MAVEN_CENTRAL_USERNAME`/`PASSWORD`, `RELEASE_PAT`) are wired to this repo, then
-   dry-run then release via dispatch (NOT by merging a PR — see the label trap):
-   `gh workflow run merged.yaml -R DitchOoM/webrtc -f flow=dry-run`, then `-f flow=release`.
-2. Add committed `config/detekt/baseline.xml` per module once `detektAll` runs (currently referenced but
-   absent — detekt tolerates a missing baseline, but commit real ones after first run).
-3. Resolve RFC §11.1 (**simulation-engine home** — recommend standalone `ditchoom-simulation`) — this is
-   the W0 cross-repo decision that unblocks W2 (vnet). The two upstream promotions (unconnected
-   `DatagramChannel` seam into socket-core; TimelineInterpreter/vnet into the published sim home) are
-   separate PRs against socket, released to Central *before* webrtc consumes them.
-4. First substantive code wave is **W1 `webrtc-stun`** — pure codec, zero seam dependency, buildable and
-   testable today without real UDP.
+W1 is pure codec with zero seam dependency — buildable and testable today, no real UDP, no vnet.
+Recommended path (RFC §7 + EXECUTION_PLAN W1 exit criteria):
+1. **STUN message codec (RFC 8489)** as `buffer-codec` KSP schemas (`@ProtocolMessage`), not hand-written
+   — header (type/length/magic-cookie/txid) + TLV attributes, decoded as *views* over the datagram
+   buffer (RFC §6), never extracted to arrays. Add the `ksp` + `buffer-codec-processor` deps to
+   `webrtc-stun` (already in the version catalog). Replace the placeholder `Stun.kt`.
+2. **T0 floor**: round-trip + property tests + committed malformed-corpus + the **RFC 5769 sample
+   vectors** (MESSAGE-INTEGRITY / FINGERPRINT) — an interop-grade corpus on day one. Parse-fail must be
+   a typed reject, never a throw-through.
+3. **Sans-io transaction machine**: `handle(event, now)` + `nextDeadline` retransmit schedule; seeded
+   `Random` for transaction IDs from day one (standing directive #2).
+4. **TURN message extensions (RFC 8656)** codec-only.
+5. **Jazzer fuzz lane** (`jvmTest`, time-boxed) with a committed seed corpus; a parse-throughput
+   benchmark in `PERFORMANCE.md` (the benchmark wiring is ready — replace the placeholder benchmark).
+   Wrapper-transparency tests (works on `PooledBuffer`/`TrackedSlice`).
+
+Deferred (not W1): commit per-module `config/detekt/baseline.xml` after a first `detektAll`; resolve
+RFC §11.1 (simulation-engine home → recommend standalone `ditchoom-simulation`) before W2; the first
+real Central release rides W1's merge (dispatch `merged.yaml -f flow=release`, or a PR whose label is
+verified — see the release trap).
 
 ## Traps / notes
 
@@ -101,3 +116,8 @@ this repo, and a *deliberate* release (see next steps + the label trap below).
   actually present (`gh api repos/.../issues/<n>/labels`) before merging a code PR.
 - The Apple target matrix is **bounded by `buffer-crypto`** (webrtc-dtls depends on it): it omits
   `watchosArm64`. Do not add Apple targets the buffer deps don't publish, or resolution breaks on CI.
+- **Per-module Gradle properties trap:** `providers.gradleProperty(name)` does NOT read a *subproject's*
+  `gradle.properties` (only root / `-P` / user-home); use `findProperty(name)` for per-module values.
+  This silently emptied every POM's `<description>` and Central rejected the deployment. The convention
+  now reads `POM_NAME`/`POM_DESCRIPTION` via `findProperty` and **fails fast** if a module lacks
+  `POM_DESCRIPTION`. Every new module needs a `gradle.properties` with `POM_NAME` + `POM_DESCRIPTION`.

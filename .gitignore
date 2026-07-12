@@ -1,0 +1,31 @@
+build
+bin
+.idea
+*.iml
+.gradle
+*.swp
+.project
+.kotlin/
+
+!.idea/vcs.xml
+!.idea/runConfigurations
+!.idea/codeStyles
+
+local.properties
+.claude/
+.vscode
+.mcp.json
+
+# Built native libraries (BoringSSL for webrtc-dtls, built by Gradle in W4)
+libs/
+
+# Docusaurus
+docs/node_modules/
+docs/build/
+docs/.docusaurus/
+docs/static/api/
+
+# Generated test identities (DTLS a=fingerprint certs) — short-lived by design, never committed
+**/testcerts/*.p12
+**/testcerts/*.crt
+**/testcerts/*.key

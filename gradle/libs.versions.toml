@@ -1,0 +1,63 @@
+
+[versions]
+kotlin = "2.4.0"
+androidGradlePlugin = "9.2.1"
+ktlint = "14.2.0"
+# detekt 2.0.0-alpha.5 is built against Kotlin 2.4.0 (matches `kotlin` above).
+# Plugin id moved to `dev.detekt` in 2.0. Run non-blocking with a committed baseline —
+# detekt is the only static analyzer that sees the Native/JS/WASM actuals (CodeQL only
+# traces JVM bytecode), so it is the multiplatform-coverage tool here.
+detekt = "2.0.0-alpha.5"
+mavenPublish = "0.37.0"
+dokka = "2.2.0"
+kover = "0.9.8"
+binaryCompatibilityValidator = "0.18.1"
+kotlinxCoroutines = "1.11.0"
+# DitchOoM buffer stack — the zero-copy substrate this library is built on.
+# 6.9.4 (latest): raw ByteStreamMux primitive (data-channel mux target), buffer-pool use-after-release
+# fail-fast, codec-framed streaming layer + typed pipe, okio/sqldelight bridges. See RFC §4 (reuse audit).
+buffer = "6.9.4"
+ksp = "2.3.10"
+androidxCore = "1.18.0"
+androidxTestRunner = "1.7.0"
+androidxTestRules = "1.7.0"
+androidxTestCore = "1.7.0"
+androidxTestJunit = "1.3.0"
+kotlinWrappers = "2026.6.0"
+# Jazzer — coverage-guided fuzzing driver for the pure-Kotlin parsers (STUN/SDP/SCTP);
+# runtime-only on the fuzz tasks, never a test dependency. Wired in W1.
+jazzer = "0.30.0"
+# kotlinx-benchmark — parse/crypto throughput benchmarks in a shared commonBenchmark source set
+# (the buffer pattern); results tracked in PERFORMANCE.md. Runs on demand + release, JVM + Linux K/N.
+kotlinxBenchmark = "0.4.17"
+
+[libraries]
+buffer = { module = "com.ditchoom:buffer", version.ref = "buffer" }
+buffer-flow = { module = "com.ditchoom:buffer-flow", version.ref = "buffer" }
+buffer-codec = { module = "com.ditchoom:buffer-codec", version.ref = "buffer" }
+buffer-codec-processor = { module = "com.ditchoom:buffer-codec-processor", version.ref = "buffer" }
+buffer-crypto = { module = "com.ditchoom:buffer-crypto", version.ref = "buffer" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinxCoroutines" }
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
+androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidxTestRunner" }
+androidx-test-rules = { module = "androidx.test:rules", version.ref = "androidxTestRules" }
+androidx-test-core-ktx = { module = "androidx.test:core-ktx", version.ref = "androidxTestCore" }
+androidx-test-ext-junit = { module = "androidx.test.ext:junit", version.ref = "androidxTestJunit" }
+kotlin-web = { module = "org.jetbrains.kotlin-wrappers:kotlin-web", version.ref = "kotlinWrappers" }
+kotlin-js = { module = "org.jetbrains.kotlin-wrappers:kotlin-js", version.ref = "kotlinWrappers" }
+jazzer = { module = "com.code-intelligence:jazzer", version.ref = "jazzer" }
+kotlinx-benchmark-runtime = { module = "org.jetbrains.kotlinx:kotlinx-benchmark-runtime", version.ref = "kotlinxBenchmark" }
+
+[plugins]
+kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+kotlin-allopen = { id = "org.jetbrains.kotlin.plugin.allopen", version.ref = "kotlin" }
+kotlinx-benchmark = { id = "org.jetbrains.kotlinx.benchmark", version.ref = "kotlinxBenchmark" }
+android-kmp-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "androidGradlePlugin" }
+ktlint = { id = "org.jlleitschuh.gradle.ktlint", version.ref = "ktlint" }
+detekt = { id = "dev.detekt", version.ref = "detekt" }
+maven-publish = { id = "com.vanniktech.maven.publish", version.ref = "mavenPublish" }
+dokka = { id = "org.jetbrains.dokka", version.ref = "dokka" }
+kover = { id = "org.jetbrains.kotlinx.kover", version.ref = "kover" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+binary-compatibility-validator = { id = "org.jetbrains.kotlinx.binary-compatibility-validator", version.ref = "binaryCompatibilityValidator" }

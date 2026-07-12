@@ -1,0 +1,33 @@
+public final class com/ditchoom/webrtc/sctp/Sctp {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/Sctp;
+	public static final field MODULE Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/StreamId {
+	public static final synthetic fun box-impl (I)Lcom/ditchoom/webrtc/sctp/StreamId;
+	public static fun constructor-impl (I)I
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (ILjava/lang/Object;)Z
+	public static final fun equals-impl0 (II)Z
+	public final fun getValue ()I
+	public fun hashCode ()I
+	public static fun hashCode-impl (I)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (I)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()I
+}
+
+public final class com/ditchoom/webrtc/sctp/Tsn {
+	public static final synthetic fun box-impl (I)Lcom/ditchoom/webrtc/sctp/Tsn;
+	public static fun constructor-impl (I)I
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (ILjava/lang/Object;)Z
+	public static final fun equals-impl0 (II)Z
+	public final fun getValue-pVg5ArA ()I
+	public fun hashCode ()I
+	public static fun hashCode-impl (I)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (I)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()I
+}
+

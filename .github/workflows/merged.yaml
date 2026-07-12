@@ -1,0 +1,185 @@
+name: "Build Test and Deploy"
+on:
+  pull_request_target:
+    branches: [ main ]
+    types:
+      - closed
+  workflow_dispatch:
+    inputs:
+      version-bump:
+        description: "Version bump"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+      flow:
+        description: "Release flow"
+        type: choice
+        options:
+          - release
+          - draft
+          - dry-run
+        default: release
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  check-release:
+    name: Check if release is needed
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    outputs:
+      flow: ${{ steps.check.outputs.flow }}
+      gradle-args: ${{ steps.check.outputs.gradle-args }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Determine release flow
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Manual dispatch: take flow + version bump straight from inputs (lets us recover from a
+          # failed publish without opening a sham PR to flip the classifier).
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            case "${{ inputs.version-bump }}" in
+              major) echo "gradle-args=-PincrementMajor=true" >> $GITHUB_OUTPUT ;;
+              minor) echo "gradle-args=-PincrementMinor=true" >> $GITHUB_OUTPUT ;;
+              *)     echo "gradle-args=" >> $GITHUB_OUTPUT ;;
+            esac
+            echo "flow=${{ inputs.flow }}" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          gradle_args=""
+          if ${{ contains(github.event.pull_request.labels.*.name, 'major') }}; then
+            gradle_args="-PincrementMajor=true"
+          elif ${{ contains(github.event.pull_request.labels.*.name, 'minor') }}; then
+            gradle_args="-PincrementMinor=true"
+          fi
+          echo "gradle-args=${gradle_args}" >> $GITHUB_OUTPUT
+
+          if ${{ contains(github.event.pull_request.labels.*.name, 'skip-release') }}; then
+            echo "flow=dry-run" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          if ${{ contains(github.event.pull_request.labels.*.name, 'draft-release') }}; then
+            echo "flow=draft" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Skip release when only non-code files changed. Use the paginated PR-files API (not
+          # `gh pr diff`, which 406s on large PRs).
+          changed_files=$(gh api --paginate \
+            "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
+            --jq '.[].filename')
+          for file in $changed_files; do
+            case "$file" in
+              .github/*|*.md|.gitignore|.editorconfig|CLAUDE.md|LICENSE*|*.txt)
+                ;;
+              *)
+                echo "Code file changed: $file"
+                echo "flow=release" >> $GITHUB_OUTPUT
+                exit 0
+                ;;
+            esac
+          done
+          echo "Only non-code files changed, skipping"
+          echo "flow=skip" >> $GITHUB_OUTPUT
+
+  build-linux:
+    needs: check-release
+    if: needs.check-release.outputs.flow != 'skip'
+    uses: ./.github/workflows/build-linux.yaml
+    with:
+      gradle-args: ${{ needs.check-release.outputs.gradle-args }}
+
+  build-apple:
+    needs: check-release
+    if: needs.check-release.outputs.flow != 'skip'
+    uses: ./.github/workflows/build-apple.yaml
+    with:
+      gradle-args: ${{ needs.check-release.outputs.gradle-args }}
+
+  validate:
+    needs: [check-release, build-linux, build-apple]
+    if: needs.check-release.outputs.flow != 'skip'
+    uses: ./.github/workflows/validate-artifacts.yaml
+    with:
+      version: ${{ needs.build-linux.outputs.version }}
+
+  publish:
+    needs: [check-release, build-linux, validate]
+    if: needs.check-release.outputs.flow == 'draft' || needs.check-release.outputs.flow == 'release'
+    uses: ./.github/workflows/publish-to-central.yaml
+    with:
+      publishing-type: ${{ needs.check-release.outputs.flow == 'draft' && 'USER_MANAGED' || 'AUTOMATIC' }}
+      version: ${{ needs.build-linux.outputs.version }}
+    secrets:
+      GPG_KEY_CONTENTS: ${{ secrets.GPG_KEY_CONTENTS }}
+      SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+      MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+      MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+
+  finalize:
+    name: Finalize Release
+    needs: [check-release, build-linux, publish]
+    if: always() && needs.check-release.outputs.flow != 'skip' && needs.check-release.outputs.flow != 'dry-run'
+    runs-on: ubuntu-latest
+    steps:
+      # RELEASE_PAT (workflow scope) so a tag push whose tree touches .github/workflows/* succeeds;
+      # falls back to GITHUB_TOKEN when unset.
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Create draft GitHub release
+        if: needs.check-release.outputs.flow == 'draft' && needs.publish.result == 'success'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_TITLE: ${{ github.event.pull_request.title || 'Manual release' }}
+          PR_URL: ${{ github.event.pull_request.html_url || format('{0}/{1}', github.server_url, github.repository) }}
+        run: |
+          version="${{ needs.build-linux.outputs.version }}"
+          deployment_id="${{ needs.publish.outputs.deployment-id }}"
+          staging_url="https://central.sonatype.com/publishing/deployments"
+          gh release create "v${version}" \
+              --draft --repo="$GITHUB_REPOSITORY" --title="v${version}" \
+              --notes="$(cat <<EOF
+          ## [${PR_TITLE}](${PR_URL})
+
+          **Status:** Awaiting validation in [Maven Central Staging](${staging_url})
+          **Deployment ID:** \`${deployment_id}\`
+
+          Complete or cancel via the 'Complete or Cancel Release' workflow with version '${version}'.
+          EOF
+          )"
+
+      - name: Create tag and GitHub release
+        if: needs.check-release.outputs.flow == 'release' && needs.publish.result == 'success'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_TITLE: ${{ github.event.pull_request.title || 'Manual release' }}
+          PR_URL: ${{ github.event.pull_request.html_url || format('{0}/{1}', github.server_url, github.repository) }}
+        run: |
+          version="${{ needs.build-linux.outputs.version }}"
+          tag="v${version}"
+          if git rev-parse "$tag" >/dev/null 2>&1; then echo "Tag $tag exists, skipping"; exit 0; fi
+          git tag "$tag"
+          git push origin "$tag"
+          maven_url="https://central.sonatype.com/artifact/com.ditchoom/webrtc/${version}"
+          gh release create "$tag" --repo="$GITHUB_REPOSITORY" --title="${tag}" \
+              --notes="$(cat <<EOF
+          ## [${PR_TITLE}](${PR_URL})
+
+          **Maven Central:** [com.ditchoom:webrtc:${version}](${maven_url})
+          EOF
+          )"

@@ -1,0 +1,55 @@
+public final class com/ditchoom/webrtc/ice/Ice {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/Ice;
+	public static final field MODULE Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/IceFailureReason {
+}
+
+public final class com/ditchoom/webrtc/ice/IceFailureReason$AllPairsFailed : com/ditchoom/webrtc/ice/IceFailureReason {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/webrtc/ice/IceFailureReason$AllPairsFailed;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/IceFailureReason$AllPairsFailed;IILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceFailureReason$AllPairsFailed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getPairsTried ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/IceFailureReason$ConsentExpired : com/ditchoom/webrtc/ice/IceFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/IceFailureReason$ConsentExpired;
+}
+
+public final class com/ditchoom/webrtc/ice/IceFailureReason$NoCandidatePairs : com/ditchoom/webrtc/ice/IceFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/IceFailureReason$NoCandidatePairs;
+}
+
+public final class com/ditchoom/webrtc/ice/IcePassword {
+	public static final synthetic fun box-impl (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/IcePassword;
+	public static fun constructor-impl (Ljava/lang/String;)Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (Ljava/lang/String;Ljava/lang/Object;)Z
+	public static final fun equals-impl0 (Ljava/lang/String;Ljava/lang/String;)Z
+	public final fun getValue ()Ljava/lang/String;
+	public fun hashCode ()I
+	public static fun hashCode-impl (Ljava/lang/String;)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (Ljava/lang/String;)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/Ufrag {
+	public static final synthetic fun box-impl (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/Ufrag;
+	public static fun constructor-impl (Ljava/lang/String;)Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (Ljava/lang/String;Ljava/lang/Object;)Z
+	public static final fun equals-impl0 (Ljava/lang/String;Ljava/lang/String;)Z
+	public final fun getValue ()Ljava/lang/String;
+	public fun hashCode ()I
+	public static fun hashCode-impl (Ljava/lang/String;)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (Ljava/lang/String;)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()Ljava/lang/String;
+}
+

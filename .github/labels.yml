@@ -1,0 +1,58 @@
+# Canonical PR labels, synced to the repo by .github/workflows/labels.yaml.
+# The release pipeline (merged.yaml) reads the version-bump + flow labels; keep them in sync here.
+
+# ── Version bump (merged.yaml → -PincrementMajor / -PincrementMinor; patch is the default) ──
+- name: major
+  color: "b60205"
+  description: "Breaking change — bump the major version on release"
+- name: minor
+  color: "0e8a16"
+  description: "New module or additive feature — bump the minor version on release"
+- name: patch
+  color: "c2e0c6"
+  description: "Bug fix / internal change — default patch bump (informational)"
+
+# ── Release flow overrides ──
+- name: skip-release
+  color: "fbca04"
+  description: "Merge without publishing (dry-run flow)"
+- name: draft-release
+  color: "fef2c0"
+  description: "Publish to Central staging as a draft, awaiting manual completion"
+
+# ── Wave tracking (EXECUTION_PLAN.md W0–W7) ──
+- name: "wave:W0"
+  color: "5319e7"
+  description: "Foundations — repo skeleton, upstream promotions"
+- name: "wave:W1-stun"
+  color: "5319e7"
+  description: "webrtc-stun codec + sans-io transactions"
+- name: "wave:W2-vnet"
+  color: "5319e7"
+  description: "Virtual network (NAT models, virtual TURN)"
+- name: "wave:W3-ice"
+  color: "5319e7"
+  description: "webrtc-ice agent + gathering"
+- name: "wave:W4-dtls"
+  color: "5319e7"
+  description: "webrtc-dtls BoringSSL backends"
+- name: "wave:W5-sctp"
+  color: "5319e7"
+  description: "webrtc-sctp + DCEP + DataChannel"
+- name: "wave:W6-pc"
+  color: "5319e7"
+  description: "PeerConnection + JSEP/SDP + browser actuals"
+- name: "wave:W7-harness"
+  color: "5319e7"
+  description: "Container harness, interop, testsuite publish"
+
+# ── General (parity with buffer/socket) ──
+- name: dependencies
+  color: "0366d6"
+  description: "Dependency updates (dependabot / weekly agent)"
+- name: documentation
+  color: "0075ca"
+  description: "Docs-only change"
+- name: integration-test
+  color: "d4c5f9"
+  description: "Run the container-harness integration lane on this PR"

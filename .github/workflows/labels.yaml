@@ -1,0 +1,25 @@
+name: "Sync labels"
+
+# Keep the repo's PR labels in lockstep with .github/labels.yml (the source of truth the release
+# pipeline depends on). Runs when the label file changes on main, or on demand.
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/labels.yml'
+      - '.github/workflows/labels.yaml'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  labeler:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Apply labels
+        uses: crazy-max/ghaction-github-labeler@v5
+        with:
+          yaml-file: .github/labels.yml
+          skip-delete: true

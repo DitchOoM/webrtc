@@ -1,0 +1,28 @@
+name: "Build and Test"
+on:
+  pull_request:
+    paths-ignore:
+      - '*.md'
+    types:
+      - synchronize
+      - opened
+
+concurrency:
+  group: review-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  standing-directives:
+    uses: ./.github/workflows/standing-directives.yaml
+
+  build-linux:
+    uses: ./.github/workflows/build-linux.yaml
+
+  build-apple:
+    uses: ./.github/workflows/build-apple.yaml
+
+  validate:
+    needs: [build-linux, build-apple]
+    uses: ./.github/workflows/validate-artifacts.yaml
+    with:
+      version: ${{ needs.build-linux.outputs.version }}

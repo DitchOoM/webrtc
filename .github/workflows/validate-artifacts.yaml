@@ -1,0 +1,69 @@
+name: "Validate Artifacts"
+
+# Reusable lane: merge the Linux + Apple maven-local halves into one repo (`maven-local-merged`),
+# then validate the published shape a consumer would resolve — every expected module + target
+# variant is present, POMs and Gradle module metadata exist, and the version is consistent.
+#
+# This is the deliberate gate the socket #188 lesson enforces: every published artifact — including
+# webrtc-testsuite — goes through validation from its first release, so a broken/absent variant is
+# caught here, not by a downstream consumer.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version being validated"
+        required: true
+        type: string
+
+jobs:
+  validate:
+    name: "Merge + validate maven-local"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download linux maven-local
+        uses: actions/download-artifact@v4
+        with:
+          name: maven-local-linux
+          path: /tmp/maven-local-merged
+
+      - name: Download apple maven-local
+        uses: actions/download-artifact@v4
+        with:
+          name: maven-local-apple
+          path: /tmp/maven-local-merged
+        continue-on-error: true
+
+      - name: Validate module presence + metadata
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          root="/tmp/maven-local-merged/com/ditchoom"
+          modules="webrtc webrtc-sdp webrtc-stun webrtc-ice webrtc-dtls webrtc-sctp webrtc-testsuite"
+          fail=0
+          for m in $modules; do
+            # KMP publishes an umbrella module plus per-target modules (e.g. webrtc-stun-jvm).
+            umbrella="$root/$m/$version"
+            if [ ! -d "$umbrella" ]; then
+              echo "::error::missing umbrella artifact for $m@$version"; fail=1; continue
+            fi
+            pom=$(ls "$umbrella"/*.pom 2>/dev/null | head -1 || true)
+            module=$(ls "$umbrella"/*.module 2>/dev/null | head -1 || true)
+            [ -n "$pom" ]    || { echo "::error::$m: no .pom in $umbrella"; fail=1; }
+            [ -n "$module" ] || { echo "::error::$m: no Gradle .module metadata in $umbrella"; fail=1; }
+            # jvm variant is present on every lane and must always exist.
+            [ -d "$root/$m-jvm/$version" ] || { echo "::error::$m: missing -jvm variant"; fail=1; }
+            echo "  ok: $m@$version"
+          done
+          [ "$fail" = 0 ] || { echo "=== artifact validation FAILED ==="; exit 1; }
+          echo "=== all modules present + well-formed ==="
+
+      - name: Upload merged maven-local
+        uses: actions/upload-artifact@v4
+        with:
+          name: maven-local-merged
+          path: /tmp/maven-local-merged
+          retention-days: 3

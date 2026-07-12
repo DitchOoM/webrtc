@@ -1,0 +1,63 @@
+name: "Standing Directives"
+
+# Tripwire greps for the project's non-negotiable disciplines (CLAUDE.md / EXECUTION_PLAN §4). These
+# run on every PR and are the automated half of the per-wave adversarial review gate:
+#
+#   1. No ByteArray or any primitive array in production (`*Main/`) source sets — zero-copy is the
+#      reason this library exists. Genuine platform edges annotate the line `@Suppress("NoByteArrayInProd")`
+#      with a comment naming the API surface; those lines are allowed.
+#   2. No hardwired Clock.System / Random.Default / Dispatchers.* inside cores — determinism requires
+#      these to be constructor-injected seams. A genuine production-default construction annotates the
+#      line `@Suppress("UnseamedEntropy")` naming why.
+#
+# Tests (`*Test/`) are exempt from both — the disciplines apply only to production source sets.
+
+on:
+  pull_request:
+    paths:
+      - '**/*.kt'
+      - '.github/workflows/standing-directives.yaml'
+  workflow_call:
+
+jobs:
+  greps:
+    name: "No-array + seamed-entropy greps"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: No ByteArray / primitive arrays in production source sets
+        run: |
+          set -uo pipefail
+          # Production main source sets only (commonMain, jvmMain, appleMain, linuxMain, jsMain, ...).
+          files=$(find . -type f -name '*.kt' -path '*/src/*Main/*' 2>/dev/null || true)
+          [ -z "$files" ] && { echo "no production .kt files yet"; exit 0; }
+          pattern='\b(Byte|UByte|Short|UShort|Int|UInt|Long|ULong|Float|Double|Char|Boolean)Array\b'
+          # Flag every match except: the documented boundary allowance, and comment lines (KDoc/`//`
+          # may legitimately name a type in prose — the rule is about code, not documentation).
+          hits=$(grep -REn "$pattern" $files \
+            | grep -v 'NoByteArrayInProd' \
+            | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)' || true)
+          if [ -n "$hits" ]; then
+            echo "::error::primitive array in production code (use ReadBuffer/WriteBuffer/PlatformBuffer, or annotate the boundary line @Suppress(\"NoByteArrayInProd\"))"
+            echo "$hits"
+            exit 1
+          fi
+          echo "OK: no unannotated primitive arrays in *Main/"
+
+      - name: No unseamed Clock / Random / Dispatchers in cores
+        run: |
+          set -uo pipefail
+          files=$(find . -type f -name '*.kt' -path '*/src/*Main/*' 2>/dev/null || true)
+          [ -z "$files" ] && { echo "no production .kt files yet"; exit 0; }
+          pattern='(Clock\.System|Random\.Default|Dispatchers\.(Default|IO|Main|Unconfined))'
+          hits=$(grep -REn "$pattern" $files \
+            | grep -v 'UnseamedEntropy' \
+            | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)' || true)
+          if [ -n "$hits" ]; then
+            echo "::error::hardwired clock/random/dispatcher in production code — inject the seam (constructor param with a production default), or annotate the line @Suppress(\"UnseamedEntropy\")"
+            echo "$hits"
+            exit 1
+          fi
+          echo "OK: no unseamed entropy/dispatcher in *Main/"

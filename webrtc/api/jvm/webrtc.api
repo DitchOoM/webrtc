@@ -1,0 +1,56 @@
+public final class com/ditchoom/webrtc/DataChannelId {
+	public static final synthetic fun box-impl (I)Lcom/ditchoom/webrtc/DataChannelId;
+	public static fun constructor-impl (I)I
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (ILjava/lang/Object;)Z
+	public static final fun equals-impl0 (II)Z
+	public final fun getValue ()I
+	public fun hashCode ()I
+	public static fun hashCode-impl (I)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (I)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()I
+}
+
+public abstract interface class com/ditchoom/webrtc/PeerConnectionState {
+}
+
+public final class com/ditchoom/webrtc/PeerConnectionState$Closed : com/ditchoom/webrtc/PeerConnectionState {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/PeerConnectionState$Closed;
+}
+
+public final class com/ditchoom/webrtc/PeerConnectionState$Connected : com/ditchoom/webrtc/PeerConnectionState {
+	public fun <init> (J)V
+	public final fun component1 ()J
+	public final fun copy (J)Lcom/ditchoom/webrtc/PeerConnectionState$Connected;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/PeerConnectionState$Connected;JILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionState$Connected;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getSelectedPairId ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/PeerConnectionState$Connecting : com/ditchoom/webrtc/PeerConnectionState {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/PeerConnectionState$Connecting;
+}
+
+public final class com/ditchoom/webrtc/PeerConnectionState$Failed : com/ditchoom/webrtc/PeerConnectionState {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/webrtc/PeerConnectionState$Failed;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/PeerConnectionState$Failed;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionState$Failed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReason ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/PeerConnectionState$New : com/ditchoom/webrtc/PeerConnectionState {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/PeerConnectionState$New;
+}
+
+public final class com/ditchoom/webrtc/WebRtc {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/WebRtc;
+	public static final field MODULE Ljava/lang/String;
+}
+

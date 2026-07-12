@@ -16,6 +16,8 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
   REALM / NONCE / SOFTWARE, ERROR-CODE, plus TURN (RFC 8656) attribute types (codec-only).
 - **MESSAGE-INTEGRITY (HMAC-SHA1) + FINGERPRINT (CRC-32)** verified/appended in place over buffer
   slices, using the new `buffer-crypto` `hmacSha1` and `ReadBuffer.crc32` (DitchOoM/buffer#288).
+  MESSAGE-INTEGRITY is compared **constant-time** (`constantTimeEquals` — a MAC compare is a timing
+  oracle otherwise); **MESSAGE-INTEGRITY-SHA256** (RFC 8489 §14.6, truncation-aware) via `hmacSha256`.
 - **Typed rejects (T0):** `StunMessage.decode` is total — a hostile datagram yields a sealed
   `StunRejectReason`, never a throw.
 - **Sans-io transaction machine:** `StunTransaction.handle(event, now)` + `nextDeadline()` with the

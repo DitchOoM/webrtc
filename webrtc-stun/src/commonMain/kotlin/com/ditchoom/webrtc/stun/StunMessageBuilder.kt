@@ -6,7 +6,9 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.crc32
 import com.ditchoom.buffer.crypto.HMAC_SHA1_BYTES
+import com.ditchoom.buffer.crypto.HMAC_SHA256_BYTES
 import com.ditchoom.buffer.crypto.hmacSha1
+import com.ditchoom.buffer.crypto.hmacSha256
 
 /**
  * Assembles an outgoing STUN message (RFC 8489). Add attributes in wire order, then optionally
@@ -32,6 +34,18 @@ public class StunMessageBuilder(
         return this
     }
 
+    /**
+     * Appends MESSAGE-INTEGRITY-SHA256 (HMAC-SHA256 under [key], RFC 8489 §14.6) over everything added
+     * so far — the full 32-byte tag (this builder does not negotiate truncation). Add it after
+     * [addMessageIntegrity] when both are present, and before [addFingerprint].
+     */
+    public fun addMessageIntegritySha256(key: ReadBuffer): StunMessageBuilder {
+        val prefix = serializePrefix(lengthAddend = MESSAGE_INTEGRITY_SHA256_TLV_BYTES)
+        val tag = hmacSha256(key, prefix, BufferFactory.Default)
+        attributes += RawAttribute.ofValue(StunAttributeType.MessageIntegritySha256, tag)
+        return this
+    }
+
     /** Appends FINGERPRINT (CRC-32 XOR 0x5354554E) over everything added so far. */
     public fun addFingerprint(): StunMessageBuilder {
         val prefix = serializePrefix(lengthAddend = FINGERPRINT_TLV_BYTES)
@@ -47,7 +61,7 @@ public class StunMessageBuilder(
     public fun build(): StunMessage {
         val attrBytes = attributes.sumOf { StunMessage.TLV_HEADER_BYTES + StunMessage.paddedLength(it.length) }
         val header = StunHeader(messageType, attrBytes.toUShort(), Stun.MAGIC_COOKIE, transactionId)
-        return StunMessage(header, attributes.toList(), source = null, sourceStart = 0, null, null)
+        return StunMessage(header, attributes.toList(), source = null, sourceStart = 0, null, null, null)
     }
 
     /** Convenience: build then [StunMessage.encode]. */
@@ -69,6 +83,7 @@ public class StunMessageBuilder(
         private const val UINT_BYTES = 4
         private const val FINGERPRINT_TLV_BYTES = StunMessage.TLV_HEADER_BYTES + UINT_BYTES // 8
         private const val MESSAGE_INTEGRITY_TLV_BYTES = StunMessage.TLV_HEADER_BYTES + HMAC_SHA1_BYTES // 24
+        private const val MESSAGE_INTEGRITY_SHA256_TLV_BYTES = StunMessage.TLV_HEADER_BYTES + HMAC_SHA256_BYTES // 36
 
         /** Starts a builder for `(stunClass, method)` with the given transaction id. */
         public fun of(

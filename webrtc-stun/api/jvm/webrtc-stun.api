@@ -206,6 +206,7 @@ public final class com/ditchoom/webrtc/stun/StunMessage {
 	public final fun unknownComprehensionRequired (Ljava/util/Set;)Ljava/util/List;
 	public final fun verifyFingerprint ()Z
 	public final fun verifyMessageIntegrity (Lcom/ditchoom/buffer/ReadBuffer;)Z
+	public final fun verifyMessageIntegritySha256 (Lcom/ditchoom/buffer/ReadBuffer;)Z
 }
 
 public final class com/ditchoom/webrtc/stun/StunMessage$Companion {
@@ -218,6 +219,7 @@ public final class com/ditchoom/webrtc/stun/StunMessageBuilder {
 	public final fun add (Lcom/ditchoom/webrtc/stun/RawAttribute;)Lcom/ditchoom/webrtc/stun/StunMessageBuilder;
 	public final fun addFingerprint ()Lcom/ditchoom/webrtc/stun/StunMessageBuilder;
 	public final fun addMessageIntegrity (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/stun/StunMessageBuilder;
+	public final fun addMessageIntegritySha256 (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/stun/StunMessageBuilder;
 	public final fun build ()Lcom/ditchoom/webrtc/stun/StunMessage;
 	public final fun encode (Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/PlatformBuffer;
 	public static synthetic fun encode$default (Lcom/ditchoom/webrtc/stun/StunMessageBuilder;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/buffer/PlatformBuffer;

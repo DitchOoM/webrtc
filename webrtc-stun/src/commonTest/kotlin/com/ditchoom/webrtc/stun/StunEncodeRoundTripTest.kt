@@ -36,6 +36,40 @@ class StunEncodeRoundTripTest {
     }
 
     @Test
+    fun messageIntegritySha256Verifies() {
+        val txId = TransactionId(0xFEEDu, 0xF00Du, 0xCAFEu)
+        val encoded =
+            StunMessageBuilder
+                .of(StunClass.Request, StunMethod.Binding, txId)
+                .add(RawAttribute.ofText(StunAttributeType.Username, "alice"))
+                .addMessageIntegritySha256(key)
+                .addFingerprint()
+                .encode()
+        val msg = success(encoded)
+        assertTrue(msg.verifyMessageIntegritySha256(key))
+        assertTrue(!msg.verifyMessageIntegritySha256(ascii("wrong-key")))
+        assertTrue(msg.verifyFingerprint())
+    }
+
+    @Test
+    fun bothMessageIntegritiesVerifyTogether() {
+        // RFC 8489: MESSAGE-INTEGRITY then MESSAGE-INTEGRITY-SHA256 then FINGERPRINT — all must verify.
+        val txId = TransactionId(1u, 2u, 3u)
+        val encoded =
+            StunMessageBuilder
+                .of(StunClass.Request, StunMethod.Binding, txId)
+                .add(RawAttribute.ofText(StunAttributeType.Username, "bob"))
+                .addMessageIntegrity(key)
+                .addMessageIntegritySha256(key)
+                .addFingerprint()
+                .encode()
+        val msg = success(encoded)
+        assertTrue(msg.verifyMessageIntegrity(key), "HMAC-SHA1 MI must verify")
+        assertTrue(msg.verifyMessageIntegritySha256(key), "HMAC-SHA256 MI must verify")
+        assertTrue(msg.verifyFingerprint(), "FINGERPRINT must verify")
+    }
+
+    @Test
     fun ipv4XorMappedAddressRoundTrips() {
         val txId = TransactionId(0xAABBCCDDu, 0x11223344u, 0x55667788u)
         val address = TransportAddress(IpAddress.V4(0xC0A80101u), 40000u) // 192.168.1.1:40000

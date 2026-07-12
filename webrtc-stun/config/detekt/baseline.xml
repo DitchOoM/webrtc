@@ -2,6 +2,7 @@
 <SmellBaseline>
   <ManuallySuppressedIssues/>
   <CurrentIssues>
+    <ID>CyclomaticComplexMethod:StunMessage.kt:StunMessage.Companion$public fun decode: StunDecodeResult</ID>
     <ID>MagicNumber:StunAttribute.kt:RawAttribute.Companion$0x80</ID>
     <ID>MagicNumber:StunAttribute.kt:RawAttribute.Companion$0x800</ID>
     <ID>MagicNumber:StunAttribute.kt:RawAttribute.Companion$3</ID>
@@ -22,6 +23,7 @@
     <ID>ReturnCount:StunAttributeDecoders.kt:private fun RawAttribute.decodeAddress: TransportAddress?</ID>
     <ID>ReturnCount:StunMessage.kt:StunMessage$public fun verifyFingerprint: Boolean</ID>
     <ID>ReturnCount:StunMessage.kt:StunMessage$public fun verifyMessageIntegrity: Boolean</ID>
+    <ID>ReturnCount:StunMessage.kt:StunMessage$public fun verifyMessageIntegritySha256: Boolean</ID>
     <ID>ReturnCount:StunMessage.kt:StunMessage.Companion$public fun decode: StunDecodeResult</ID>
   </CurrentIssues>
 </SmellBaseline>

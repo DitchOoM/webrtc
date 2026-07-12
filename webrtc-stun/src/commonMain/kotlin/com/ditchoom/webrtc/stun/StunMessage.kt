@@ -10,7 +10,9 @@ import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.crc32
 import com.ditchoom.buffer.crypto.HMAC_SHA1_BYTES
+import com.ditchoom.buffer.crypto.HMAC_SHA256_BYTES
 import com.ditchoom.buffer.crypto.HmacSha1Mac
+import com.ditchoom.buffer.crypto.HmacSha256Mac
 import com.ditchoom.buffer.crypto.constantTimeEquals
 import com.ditchoom.webrtc.stun.StunDecodeResult.Reject
 import com.ditchoom.webrtc.stun.StunDecodeResult.Success
@@ -31,6 +33,7 @@ public class StunMessage internal constructor(
     private val source: ReadBuffer?,
     private val sourceStart: Int,
     private val messageIntegrityOffset: Int?,
+    private val messageIntegritySha256Offset: Int?,
     private val fingerprintOffset: Int?,
 ) {
     public val messageType: StunMessageType get() = header.messageType
@@ -81,22 +84,53 @@ public class StunMessage internal constructor(
         // A conforming MESSAGE-INTEGRITY value is exactly 20 bytes (HMAC-SHA1); a malformed short
         // length would make the 20-byte compare below run off the datagram (Jazzer regression).
         if (src.u16be(miAt + TYPE_FIELD_BYTES) != HMAC_SHA1_BYTES) return false
-        val patchedLength = (miAt - (sourceStart + StunHeader.SIZE_BYTES)) + MESSAGE_INTEGRITY_TLV_BYTES
+        val out = BufferFactory.Default.allocate(HMAC_SHA1_BYTES, ByteOrder.BIG_ENDIAN)
+        val mac = HmacSha1Mac(key)
+        feedIntegrityPrefix(src, miAt, TLV_HEADER_BYTES + HMAC_SHA1_BYTES) { mac.update(it) }
+        mac.doFinalInto(out)
+        out.resetForRead()
+        return out.constantTimeEquals(src.sliceOf(miAt + TLV_HEADER_BYTES, miAt + TLV_HEADER_BYTES + HMAC_SHA1_BYTES))
+    }
+
+    /**
+     * Recomputes MESSAGE-INTEGRITY-SHA256 (RFC 8489 §14.6) with [key] and compares it to the value on
+     * the wire, constant-time. Returns false if absent or not decoded. HMAC-SHA256 over the same
+     * length-rewritten prefix as [verifyMessageIntegrity]; the on-wire value may be **truncated** to a
+     * multiple of 4 in 16..32 bytes (RFC 8489 §14.6), so only the declared prefix of the MAC is compared.
+     */
+    public fun verifyMessageIntegritySha256(key: ReadBuffer): Boolean {
+        val src = source ?: return false
+        val miAt = messageIntegritySha256Offset ?: return false
+        val declaredLen = src.u16be(miAt + TYPE_FIELD_BYTES)
+        if (declaredLen < MIN_SHA256_MI_BYTES || declaredLen > HMAC_SHA256_BYTES || declaredLen % ALIGNMENT != 0) {
+            return false
+        }
+        val out = BufferFactory.Default.allocate(HMAC_SHA256_BYTES, ByteOrder.BIG_ENDIAN)
+        val mac = HmacSha256Mac(key)
+        feedIntegrityPrefix(src, miAt, TLV_HEADER_BYTES + declaredLen) { mac.update(it) }
+        mac.doFinalInto(out)
+        out.resetForRead()
+        // Compare only the declared (possibly truncated) prefix of the computed MAC.
+        val computed = out.sliceOf(0, declaredLen)
+        return computed.constantTimeEquals(src.sliceOf(miAt + TLV_HEADER_BYTES, miAt + TLV_HEADER_BYTES + declaredLen))
+    }
+
+    // Feeds the integrity-covered prefix to [update]: the 20-byte header with its length field
+    // rewritten to cover through the integrity attribute at [attrAt] (wire size [attrWireSize]), then
+    // the cookie‖transaction-id‖preceding-attributes span — as three slices, no datagram mutation.
+    private inline fun feedIntegrityPrefix(
+        src: ReadBuffer,
+        attrAt: Int,
+        attrWireSize: Int,
+        update: (ReadBuffer) -> Unit,
+    ) {
+        val patchedLength = (attrAt - (sourceStart + StunHeader.SIZE_BYTES)) + attrWireSize
         val patched = BufferFactory.Default.allocate(LENGTH_FIELD_BYTES, ByteOrder.BIG_ENDIAN)
         patched.writeUShort(patchedLength.toUShort())
         patched.resetForRead()
-
-        val out = BufferFactory.Default.allocate(HMAC_SHA1_BYTES, ByteOrder.BIG_ENDIAN)
-        HmacSha1Mac(key)
-            .update(src.sliceOf(sourceStart, sourceStart + TYPE_FIELD_BYTES)) // message type
-            .update(patched) // rewritten length
-            .update(src.sliceOf(sourceStart + TYPE_FIELD_BYTES + LENGTH_FIELD_BYTES, miAt)) // cookie‖txid‖attrs
-            .doFinalInto(out)
-        out.resetForRead()
-        // Constant-time compare: a short-circuiting compare of a secret-derived MAC against an
-        // attacker-supplied value is a timing oracle enabling byte-by-byte forgery.
-        val onWire = src.sliceOf(miAt + TLV_HEADER_BYTES, miAt + TLV_HEADER_BYTES + HMAC_SHA1_BYTES)
-        return out.constantTimeEquals(onWire)
+        update(src.sliceOf(sourceStart, sourceStart + TYPE_FIELD_BYTES)) // message type
+        update(patched) // rewritten length
+        update(src.sliceOf(sourceStart + TYPE_FIELD_BYTES + LENGTH_FIELD_BYTES, attrAt)) // cookie‖txid‖attrs
     }
 
     /**
@@ -121,7 +155,9 @@ public class StunMessage internal constructor(
         private const val LENGTH_FIELD_BYTES = 2
         private const val ALIGNMENT = 4
         private const val UINT_BYTES = 4 // the FINGERPRINT value is a single u32 CRC (RFC 8489 §14.7)
-        private const val MESSAGE_INTEGRITY_TLV_BYTES = TLV_HEADER_BYTES + HMAC_SHA1_BYTES // 24
+
+        /** Smallest permitted MESSAGE-INTEGRITY-SHA256 value (RFC 8489 §14.6: 16..32, multiple of 4). */
+        private const val MIN_SHA256_MI_BYTES = 16
 
         /** Padded on-wire length of a [len]-byte value (RFC 8489 §14: pad to a 4-byte boundary). */
         internal fun paddedLength(len: Int): Int = len + ((ALIGNMENT - (len % ALIGNMENT)) % ALIGNMENT)
@@ -157,6 +193,7 @@ public class StunMessage internal constructor(
 
             val attributes = mutableListOf<RawAttribute>()
             var miOffset: Int? = null
+            var miSha256Offset: Int? = null
             var fpOffset: Int? = null
             var pos = attrStart
             while (pos < attrEnd) {
@@ -168,12 +205,13 @@ public class StunMessage internal constructor(
                 if (paddedEnd > attrEnd) return Reject(StunRejectReason.MalformedAttribute(pos))
                 attributes += RawAttribute.ofWire(type, len, source.sliceOf(valueStart, paddedEnd))
                 if (type == StunAttributeType.MessageIntegrity && miOffset == null) miOffset = pos
+                if (type == StunAttributeType.MessageIntegritySha256 && miSha256Offset == null) miSha256Offset = pos
                 if (type == StunAttributeType.Fingerprint && fpOffset == null) fpOffset = pos
                 pos = paddedEnd
             }
             if (pos != attrEnd) return Reject(StunRejectReason.MalformedAttribute(pos))
 
-            return Success(StunMessage(header, attributes, source, start, miOffset, fpOffset))
+            return Success(StunMessage(header, attributes, source, start, miOffset, miSha256Offset, fpOffset))
         }
 
         /** Writes [header] then each attribute (type, length, value, zero-padding). */

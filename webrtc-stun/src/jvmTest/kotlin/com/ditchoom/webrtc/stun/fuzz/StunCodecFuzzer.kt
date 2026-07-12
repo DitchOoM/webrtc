@@ -63,6 +63,7 @@ object StunCodecFuzzer {
         message.encode() // re-serialization must not throw
         message.verifyFingerprint() // CRC-32 over the decoded span
         message.verifyMessageIntegrity(key) // HMAC-SHA1 slicing + compare
+        message.verifyMessageIntegritySha256(key) // HMAC-SHA256, truncation-aware
         for (attr in message.attributes) {
             attr.asText()
             attr.asTransportAddress()

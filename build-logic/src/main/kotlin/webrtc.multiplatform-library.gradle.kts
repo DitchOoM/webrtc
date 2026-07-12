@@ -198,6 +198,13 @@ ktlint {
     }
 }
 
+// kotlinx-benchmark generates JMH sources into build/benchmarks/** and registers them as source sets;
+// ktlint auto-creates a check task over that generated set, which (a) we never want to lint and
+// (b) trips Gradle 9's implicit-dependency validation (consumes the *Generate task's output without a
+// declared dependency). Disable ktlint on every benchmark source set — benchmark code is non-production.
+tasks.matching { it.name.contains("Benchmark") && it.name.lowercase().contains("ktlint") }
+    .configureEach { enabled = false }
+
 // ── Publishing / signing (POM prose from module gradle.properties; shared fields from root) ──
 val pomName = providers.gradleProperty("POM_NAME").orElse(moduleArtifactId)
 val pomDescription = providers.gradleProperty("POM_DESCRIPTION").orElse("")

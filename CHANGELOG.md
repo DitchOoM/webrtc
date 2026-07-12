@@ -6,6 +6,35 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Added — W1: `webrtc-stun` (STUN/TURN codec + sans-io transactions)
+- **STUN message codec (RFC 8489):** the 20-byte header (bit-interleaved message type, magic cookie,
+  96-bit transaction id) as a `buffer-codec` KSP `@ProtocolMessage` schema (`StunHeaderCodec`); the
+  TLV attribute layer hand-written for STUN's 4-byte value padding and the in-place MESSAGE-INTEGRITY /
+  FINGERPRINT computations. Attributes decode as **zero-copy slice views** over the datagram (RFC §6).
+- **Typed attribute surface:** value-class `StunMessageType` / `StunMethod` / `StunAttributeType` /
+  `TransactionId`; MAPPED-ADDRESS + XOR-MAPPED-ADDRESS (IPv4/IPv6, array-free `IpAddress`), USERNAME /
+  REALM / NONCE / SOFTWARE, ERROR-CODE, plus TURN (RFC 8656) attribute types (codec-only).
+- **MESSAGE-INTEGRITY (HMAC-SHA1) + FINGERPRINT (CRC-32)** verified/appended in place over buffer
+  slices, using the new `buffer-crypto` `hmacSha1` and `ReadBuffer.crc32` (DitchOoM/buffer#288).
+  MESSAGE-INTEGRITY is compared **constant-time** (`constantTimeEquals` — a MAC compare is a timing
+  oracle otherwise); **MESSAGE-INTEGRITY-SHA256** (RFC 8489 §14.6, truncation-aware) via `hmacSha256`.
+- **Typed rejects (T0):** `StunMessage.decode` is total — a hostile datagram yields a sealed
+  `StunRejectReason`, never a throw.
+- **Sans-io transaction machine:** `StunTransaction.handle(event, now)` + `nextDeadline()` with the
+  RFC 8489 §6.2.1 retransmission schedule (RTO doubling, `Rc`/`Rm`), injected clock + seeded
+  transaction ids — runs under virtual time on every platform.
+- **Tests:** RFC 5769 §2.1–2.3 interop vectors (decode + MI/FINGERPRINT recompute + XOR-address +
+  byte-exact round-trip), malformed corpus + 20k-input totality property, wrapper-transparency
+  (pooled buffer / non-zero-offset slice), builder round-trips — **34 tests green on JVM, JS, wasmJs,
+  Linux/native, and Android host**.
+- **Coverage-guided Jazzer fuzz lane** (`stunCodecFuzz`, time-boxed in CI) with a committed seed
+  corpus; the two bugs it found in W1 (non-UTF-8 text throwing; short MESSAGE-INTEGRITY/FINGERPRINT
+  length reading past the datagram) are fixed with committed regression fixtures + corpus seeds.
+- Parse-throughput benchmark tracked in `PERFORMANCE.md`.
+
+**Depends on** DitchOoM/buffer#288 (`hmacSha1` + `ReadBuffer.crc32`); pinned to `6.10.0-SNAPSHOT` from
+mavenLocal during development — swap to the released `buffer` before merge.
+
 ### Added — W0: foundations (repo skeleton)
 - Multi-module Gradle build across the full KMP target matrix (JVM, Android, JS Node/Browser, wasmJs,
   Linux x64/arm64, Apple), JDK 21 toolchain.

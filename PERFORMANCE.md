@@ -28,5 +28,18 @@ Benchmarks are on-demand — they are not part of `build` / `check`.
 
 ## Results
 
-_No baselines yet — the current benchmark is a placeholder that validates the wiring. Real numbers
-land with each module's codec._
+### `webrtc-stun` (W1)
+
+`StunBenchmark` over the RFC 5769 §2.2 IPv4 response (an 80-byte datagram: header + SOFTWARE +
+XOR-MAPPED-ADDRESS + MESSAGE-INTEGRITY + FINGERPRINT):
+
+| Benchmark | What it covers | JVM (quick) |
+|---|---|---|
+| `decode` | header decode + TLV walk (zero-copy views) + XOR-MAPPED-ADDRESS un-XOR | ~2.5M ops/s |
+| `decodeAndVerify` | `decode` + FINGERPRINT (CRC-32) + MESSAGE-INTEGRITY (HMAC-SHA1) in place | ~0.42M ops/s |
+
+Indicative only — `quick` profile (1 warmup, 2 iterations) on a dev workstation, not a release
+baseline. The decode path is allocation-light (attribute values are slices over the datagram); the
+verify path is dominated by the two message-spanning digests. Re-run with
+`./gradlew :webrtc-stun:jvmBenchmarkBenchmark` for the `main` profile, and add the Linux K/N column
+from `linuxX64BenchmarkBenchmark` at release.

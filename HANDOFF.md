@@ -3,7 +3,65 @@
 Live state of the current wave. A resumed session reads `RFC_KMP_WEBRTC.md` → `EXECUTION_PLAN.md` →
 this file. Update it whenever you stop mid-wave.
 
-## Where we are: W0 (foundations) — skeleton landed, **CI green on the 3-runner matrix**
+## Where we are: **W1 `webrtc-stun` — code complete, unblocked (buffer 6.10.0 released), PR #4 ready for review**
+
+W1 is built and **green on all 7 local lanes** (JVM, JS node+browser, wasmJs node+browser, Linux/native,
+Android host — 34 tests each). What landed on `feat/w1-webrtc-stun`:
+
+- **STUN codec (RFC 8489):** header via a KSP `@ProtocolMessage` schema (`StunHeaderCodec`); the TLV
+  attribute layer hand-written (STUN's 4-byte padding + MI/FINGERPRINT span-with-rewritten-length are
+  outside the declarative codec). Attributes are **zero-copy slice views** over the datagram. Typed
+  attributes: MAPPED / XOR-MAPPED-ADDRESS (v4/v6, array-free `IpAddress`), USERNAME/REALM/NONCE/SOFTWARE,
+  ERROR-CODE, UNKNOWN-ATTRIBUTES; TURN (RFC 8656) types codec-only. Typed `StunRejectReason` (decode is
+  total — never throws).
+- **MESSAGE-INTEGRITY (HMAC-SHA1) + FINGERPRINT (CRC-32)** verified/appended in place via the new
+  `buffer-crypto` `hmacSha1` + `buffer` `ReadBuffer.crc32`.
+- **Sans-io `StunTransaction`** — `handle(event, now)` + `nextDeadline()`, RFC 8489 §6.2.1 retransmit
+  schedule, injected clock + seeded transaction ids.
+- **T0/T0′:** RFC 5769 §2.1–2.3 vectors (decode + MI/FINGERPRINT recompute + XOR-address + byte-exact
+  round-trip), malformed corpus + 20k-input totality property, wrapper-transparency, builder round-trips.
+  **Jazzer lane** (`stunCodecFuzz`, wired into `review.yaml`, 25M+ execs clean) with committed seed corpus.
+- Benchmark numbers in `PERFORMANCE.md`; `.api` committed; ktlint/apiCheck/standing-directive greps green.
+
+**The two Jazzer finds are fixed with committed fixtures** (directive #5): (1) `asText()` threw on
+non-UTF-8 bytes → now returns `null` (must `catch (Throwable)`, not `Exception` — Kotlin/JS's TextDecoder
+throws a raw JS error); (2) a short MESSAGE-INTEGRITY/FINGERPRINT declared length made the fixed-size
+verify read past the datagram → both `verify*` now guard the attribute length.
+
+### The cross-repo dependency (resolved)
+STUN MI/FINGERPRINT needed HMAC-SHA1 + CRC-32, which `buffer-crypto`/`buffer` lacked. Added upstream in
+**DitchOoM/buffer#288** (`HmacSha1Mac` + `hmacSha1`; `ReadBuffer.crc32`), **released as `buffer 6.10.0`**
+(minor bump; on Maven Central). The catalog now pins the released `buffer = "6.10.0"` and the mavenLocal
+dev-pin has been removed from the convention — a clean `:webrtc-stun:allTests` against Central passes on
+all local lanes. The W0 discipline held: cross-repo primitive landed upstream + released *before* webrtc
+consumes it (no unpublished-snapshot dependency on `main`).
+
+**Release decision for merging #4:** the W0 plan intended W1's merge to be the **first real webrtc
+Central release**. Decide `skip-release` (draft/hold the first publish) vs. letting the merge publish
+`0.0.1`/`0.1.0`. Trap (from W0): `gh pr edit --add-label skip-release` fails silently here — use
+`gh api repos/DitchOoM/webrtc/issues/4/labels -f 'labels[]=skip-release'` and verify, or dispatch
+`merged.yaml` directly.
+
+### W1 adversarial-review gate (pre-merge)
+A subagent review pass (the EXECUTION_PLAN §1 gate) found **no wire-correctness or crash defects** — it
+independently re-verified the type bit-interleaving, XOR-address (v4/v6), the MI/FINGERPRINT
+length-rewrite + constant-time compare, decode totality, and the retransmit schedule against RFC
+8489/8656. Six hardening findings; five fixed before 0.0.1:
+- exposed `attributesCoveredByMessageIntegrity()` — only attributes *before* MI are authenticated
+  (RFC 8489 §14.5; FINGERPRINT is unkeyed, so a spliced post-MI attribute must not be trusted);
+- builder now guards MI-before-FINGERPRINT ordering and supports truncated MI-SHA256 (16..32), with tests;
+- `StunTransaction` hands out a fresh `request.slice()` per (re)transmit so a position-advancing driver
+  can't exhaust it; non-default-policy + `Rc=1` schedule tests added.
+
+**Deferred to a post-0.0.1 follow-up (tracked):** thread a `BufferFactory` seam through the
+`decode`/`verify*`/builder hot paths (they hardwire `BufferFactory.Default`; additive/non-breaking to
+add later) and add a `TrackingBufferFactory` no-leak harness (directive #6). The leak-harness half is
+**blocked on the deferred W0 simulation-engine promotion** (`TrackingBufferFactory` isn't a published
+artifact webrtc can consume yet) — so it lands with, or after, the §11.1 resolution.
+
+---
+
+## W0 (foundations) — skeleton landed, **CI green on the 3-runner matrix**
 
 Repo is live and public: **https://github.com/DitchOoM/webrtc** (org `DitchOoM`, default branch `main`,
 settings mirror socket, auto-delete-branch-on-merge on). The W0 skeleton + all CI fixes are merged to

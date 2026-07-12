@@ -1,0 +1,26 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>MagicNumber:StunAttribute.kt:RawAttribute.Companion$0x80</ID>
+    <ID>MagicNumber:StunAttribute.kt:RawAttribute.Companion$0x800</ID>
+    <ID>MagicNumber:StunAttribute.kt:RawAttribute.Companion$3</ID>
+    <ID>MagicNumber:StunBenchmark.kt:StunBenchmark$16</ID>
+    <ID>MagicNumber:StunMessage.kt:0xFF</ID>
+    <ID>MagicNumber:TransportAddress.kt:IpAddress.V4$0xFFu</ID>
+    <ID>MagicNumber:TransportAddress.kt:IpAddress.V4$16</ID>
+    <ID>MagicNumber:TransportAddress.kt:IpAddress.V4$24</ID>
+    <ID>MagicNumber:TransportAddress.kt:IpAddress.V4$8</ID>
+    <ID>MaxLineLength:StunAttribute.kt:RawAttribute.Companion$/** Wraps a decoded on-wire span: [paddedView] is the padding-inclusive slice, [length] the declared value length. */</ID>
+    <ID>MaxLineLength:StunAttributeDecoders.kt:public</ID>
+    <ID>MaxLineLength:StunAttributeDecoders.kt:return StunErrorCode(classDigit * ERROR_CLASS_MULTIPLIER + number, readUtf8OrNull(v, ERROR_HEADER_BYTES, length) ?: "")</ID>
+    <ID>MaxLineLength:StunEncodeRoundTripTest.kt:StunEncodeRoundTripTest$assertEquals(address, success(encoded).firstOrNull(StunAttributeType.XorMappedAddress)?.asXorMappedAddress(txId))</ID>
+    <ID>MaxLineLength:StunMessage.kt:internal</ID>
+    <ID>MaxLineLength:StunMessageBuilder.kt:StunMessageBuilder$attributes += RawAttribute.ofValue(StunAttributeType.MessageIntegrity, hmacSha1(key, prefix, BufferFactory.Default))</ID>
+    <ID>MaxLineLength:StunMessageBuilder.kt:StunMessageBuilder$public</ID>
+    <ID>ReturnCount:StunAttributeDecoders.kt:private fun RawAttribute.decodeAddress: TransportAddress?</ID>
+    <ID>ReturnCount:StunMessage.kt:StunMessage$public fun verifyFingerprint: Boolean</ID>
+    <ID>ReturnCount:StunMessage.kt:StunMessage$public fun verifyMessageIntegrity: Boolean</ID>
+    <ID>ReturnCount:StunMessage.kt:StunMessage.Companion$public fun decode: StunDecodeResult</ID>
+  </CurrentIssues>
+</SmellBaseline>

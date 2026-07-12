@@ -1,4 +1,5 @@
 @file:OptIn(ExperimentalWasmDsl::class, kotlinx.validation.ExperimentalBCVApi::class)
+@file:Suppress("DEPRECATION") // x64 Apple tiers warn as deprecated but stay for consumer compatibility (matches buffer/socket)
 
 import com.ditchoom.webrtc.gradle.computeNextVersion
 import org.gradle.api.publish.PublishingExtension
@@ -125,17 +126,21 @@ kotlin {
     }
     // Apple targets register on macOS hosts only (compile-faithful locally, runtime-validated on the
     // macOS runner). Linux K/N always registers — the server-side lane and a downstream consumer.
-    // The deprecated x64 Apple tiers (macosX64/watchosX64/tvosX64) are intentionally omitted —
-    // runners and modern devices are arm64.
+    // This set MATCHES com.ditchoom:buffer-crypto's Apple matrix (webrtc-dtls depends on it), so every
+    // module resolves: notably watchosArm64 — the 32-bit arm64_32 device — is omitted exactly as
+    // buffer-crypto omits it. The x64 tiers stay (deprecation suppressed file-wide) for consumer
+    // compatibility, matching buffer/socket (RFC §8: same target matrix as socket).
     if (HostManager.hostIsMac) {
+        macosX64()
         macosArm64()
         iosArm64()
         iosSimulatorArm64()
         iosX64()
-        watchosArm64()
         watchosSimulatorArm64()
+        watchosX64()
         tvosArm64()
         tvosSimulatorArm64()
+        tvosX64()
     }
     linuxX64 {
         compilations.create("benchmark") {

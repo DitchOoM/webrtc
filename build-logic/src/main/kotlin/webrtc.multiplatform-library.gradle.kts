@@ -211,8 +211,13 @@ tasks.matching { it.name.contains("Benchmark") && it.name.lowercase().contains("
     .configureEach { enabled = false }
 
 // ── Publishing / signing (POM prose from module gradle.properties; shared fields from root) ──
-val pomName = providers.gradleProperty("POM_NAME").orElse(moduleArtifactId)
-val pomDescription = providers.gradleProperty("POM_DESCRIPTION").orElse("")
+// NB: use findProperty (not providers.gradleProperty) for the per-module fields — the provider API
+// deliberately ignores *subproject* gradle.properties, so POM_NAME/POM_DESCRIPTION (which live in each
+// module's gradle.properties) are only visible via findProperty. Central rejects a POM with no
+// <description>, so an empty value here would fail publishing (it did, on the first draft run).
+val pomName = (findProperty("POM_NAME") as String?)?.takeIf { it.isNotBlank() } ?: moduleArtifactId
+val pomDescription = (findProperty("POM_DESCRIPTION") as String?)?.takeIf { it.isNotBlank() }
+    ?: error("POM_DESCRIPTION missing for :$name — add it to $name/gradle.properties (Central requires a POM description)")
 val publishedGroupId = providers.gradleProperty("publishedGroupId").get()
 val siteUrl = providers.gradleProperty("siteUrl").get()
 val gitUrl = providers.gradleProperty("gitUrl").get()

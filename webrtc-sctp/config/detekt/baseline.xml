@@ -1,0 +1,49 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>CyclomaticComplexMethod:SctpChunk.kt:SctpChunk.Companion$internal fun decodeBody: SctpChunk?</ID>
+    <ID>MagicNumber:DataChannelMessage.kt:DataChannelMessage.Companion$0x80</ID>
+    <ID>MagicNumber:DataChannelMessage.kt:DataChannelMessage.Companion$0x800</ID>
+    <ID>MagicNumber:DataChannelMessage.kt:DataChannelMessage.Companion$0xFF</ID>
+    <ID>MagicNumber:DataChannelMessage.kt:DataChannelMessage.Companion$16</ID>
+    <ID>MagicNumber:DataChannelMessage.kt:DataChannelMessage.Companion$8</ID>
+    <ID>MagicNumber:SctpBenchmark.kt:SctpBenchmark$16</ID>
+    <ID>MagicNumber:SctpChunk.kt:SctpChunk.Companion$10</ID>
+    <ID>MagicNumber:SctpChunk.kt:SctpChunk.Companion$12</ID>
+    <ID>MagicNumber:SctpChunk.kt:SctpChunk.Companion$4</ID>
+    <ID>MagicNumber:SctpChunk.kt:SctpChunk.Companion$6</ID>
+    <ID>MagicNumber:SctpChunk.kt:SctpChunk.Companion$8</ID>
+    <ID>MagicNumber:SctpWire.kt:0xFF</ID>
+    <ID>MaxLineLength:DataChannelMessage.kt:DataChannelMessage.Companion$private const val OPEN_FIXED_BYTES = 12 // type(1) + channel type(1) + priority(2) + reliability(4) + label len(2) + protocol len(2)</ID>
+    <ID>MaxLineLength:DcepRoundTripTest.kt:DcepRoundTripTest$assertEquals(ct.raw, rebuilt.raw, "channel type 0x${raw.toString(16)} did not round-trip through its projection")</ID>
+    <ID>MaxLineLength:SctpChunk.kt:SctpChunk.Companion$SctpChunkType.Abort -> decodeCauses(value, 0, n)?.let { Abort(flags.toInt() and T_BIT.toInt() != 0, it) }</ID>
+    <ID>MaxLineLength:SctpChunk.kt:SctpChunk.Companion$SctpChunkType.ShutdownComplete -> if (n != 0) null else ShutdownComplete(flags.toInt() and T_BIT.toInt() != 0)</ID>
+    <ID>MaxLineLength:SctpChunk.kt:SctpChunk.Companion$private const val INIT_FIXED_BYTES = 16 // initiate tag(4) + a_rwnd(4) + out streams(2) + in streams(2) + initial TSN(4)</ID>
+    <ID>MaxLineLength:SctpChunk.kt:SctpChunk.Companion$streams += ForwardTsnStream(StreamId(value.u16(off)), StreamSequenceNumber(value.u16(off + 2).toUShort()))</ID>
+    <ID>MaxLineLength:SctpChunk.kt:SctpChunk.Init$writeInitFixedAndParams(dest, initiateTag, advertisedReceiverWindow, outboundStreams, inboundStreams, initialTsn, parameters)</ID>
+    <ID>MaxLineLength:SctpChunk.kt:SctpChunk.InitAck$writeInitFixedAndParams(dest, initiateTag, advertisedReceiverWindow, outboundStreams, inboundStreams, initialTsn, parameters)</ID>
+    <ID>MaxLineLength:SctpChunk.kt:SctpChunk.Sack$override val valueSize: Int get() = SACK_FIXED_BYTES + gapAckBlocks.size * GAP_BLOCK_BYTES + duplicateTsns.size * TSN_BYTES</ID>
+    <ID>MaxLineLength:SctpErrorCause.kt:SctpErrorCause$(other is SctpErrorCause &amp;&amp; code == other.code &amp;&amp; length == other.length &amp;&amp; value.contentEquals(other.value))</ID>
+    <ID>MaxLineLength:SctpErrorCause.kt:SctpErrorCause.Companion$/** Wraps a decoded on-wire span: [paddedView] is the padding-inclusive slice, [length] the declared value length. */</ID>
+    <ID>MaxLineLength:SctpGoldenVectorTest.kt:SctpGoldenVectorTest$assertEquals(bufferOfHex(hex).toIntList(), packet.encode().toIntList(), "golden vector must re-encode byte-exact")</ID>
+    <ID>MaxLineLength:SctpGoldenVectorTest.kt:SctpGoldenVectorTest$private fun decode: SctpPacket</ID>
+    <ID>MaxLineLength:SctpMalformedCorpusTest.kt:SctpMalformedCorpusTest$assertIs&lt;SctpRejectReason.MalformedChunkBody>(reject(bufferOfHex("13881388deadbeef00000000" + "07000006" + "00000000")))</ID>
+    <ID>MaxLineLength:SctpMalformedCorpusTest.kt:SctpMalformedCorpusTest$listOf(SctpParameter.forwardTsnSupported(), SctpParameter.supportedExtensions(listOf(SctpChunkType.ForwardTsn)))</ID>
+    <ID>MaxLineLength:SctpPacketRoundTripTest.kt:SctpPacketRoundTripTest$(original[8].toLong() or (original[9].toLong() shl 8) or (original[10].toLong() shl 16) or (original[11].toLong() shl 24))</ID>
+    <ID>MaxLineLength:SctpPacketRoundTripTest.kt:SctpPacketRoundTripTest$SctpParameter.supportedExtensions(listOf(SctpChunkType.ForwardTsn, SctpChunkType.ShutdownComplete))</ID>
+    <ID>MaxLineLength:SctpPacketRoundTripTest.kt:SctpPacketRoundTripTest$assertIs&lt;SctpChunk.Shutdown>(roundTrip(packetOf(SctpChunk.Shutdown(Tsn(42u)))).firstOrNull(SctpChunkType.Shutdown))</ID>
+    <ID>MaxLineLength:SctpPacketRoundTripTest.kt:SctpPacketRoundTripTest$assertIs&lt;SctpChunk.ShutdownAck>(roundTrip(packetOf(SctpChunk.ShutdownAck)).firstOrNull(SctpChunkType.ShutdownAck))</ID>
+    <ID>MaxLineLength:SctpPacketRoundTripTest.kt:SctpPacketRoundTripTest$val error = SctpChunk.Error(listOf(SctpErrorCause.ofValue(ErrorCauseCode.ProtocolViolation, bufferOf(0x41, 0x42))))</ID>
+    <ID>MaxLineLength:SctpParameter.kt:SctpParameter.Companion$/** Wraps a decoded on-wire span: [paddedView] is the padding-inclusive slice, [length] the declared value length. */</ID>
+    <ID>MaxLineLength:SctpParameter.kt:SctpParameter.Companion$public</ID>
+    <ID>MaxLineLength:SctpWire.kt:internal</ID>
+    <ID>ReturnCount:DataChannelMessage.kt:DataChannelMessage.Companion$private fun decodeOpen: DataChannelDecodeResult</ID>
+    <ID>ReturnCount:SctpChunk.kt:SctpChunk.Companion$private fun decodeForwardTsn: ForwardTsn?</ID>
+    <ID>ReturnCount:SctpChunk.kt:SctpChunk.Companion$private fun decodeInit: InitParams?</ID>
+    <ID>ReturnCount:SctpChunk.kt:SctpChunk.Companion$private fun decodeSack: Sack?</ID>
+    <ID>ReturnCount:SctpChunk.kt:SctpChunk.Companion$private inline fun &lt;T> walkTlv: List&lt;T>?</ID>
+    <ID>ReturnCount:SctpPacket.kt:SctpPacket.Companion$public fun decode: SctpDecodeResult</ID>
+    <ID>TooManyFunctions:SctpChunk.kt:SctpChunk$Companion</ID>
+  </CurrentIssues>
+</SmellBaseline>

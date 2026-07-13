@@ -6,6 +6,45 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Added — W5 (codec floor): `webrtc-sctp` (SCTP chunk codec + DCEP messages)
+- **SCTP common header (RFC 4960 §3.1)** as a `buffer-codec` KSP `@ProtocolMessage` schema
+  (`SctpCommonHeaderCodec`) — a straight-line 12-byte network-order decode; the chunk TLV framing
+  (type/flags/length, pad to a 4-byte boundary) and the nested parameter/error-cause sub-TLVs are
+  hand-written, because SCTP's "length counts the 4-byte header + value but not the trailing pad" is
+  outside what the declarative codec expresses (the STUN attribute discipline).
+- **Sealed chunk hierarchy (`SctpChunk`):** DATA, INIT, INIT-ACK, SACK, HEARTBEAT, HEARTBEAT-ACK,
+  ABORT, SHUTDOWN, SHUTDOWN-ACK, ERROR, COOKIE-ECHO, COOKIE-ACK, SHUTDOWN-COMPLETE, FORWARD-TSN
+  (RFC 3758), plus an `Unrecognized` variant that preserves an unknown chunk verbatim (RFC 4960 §3.2
+  forward-compat). A receiver's `when(chunk)` is exhaustive with no `else`. Variable regions (user
+  data, cookies, parameter/cause values) are **zero-copy slice views** over the datagram (RFC §6).
+- **CRC32c (RFC 4960 §6.8 / RFC 3309):** the Castagnoli checksum, self-contained (`Crc32c`) — a
+  256-entry table held in a **managed `ReadBuffer`, not an `IntArray`** (directive #1), word-batched
+  input read matching buffer's `crc32`. Stored little-endian per RFC 4960 Appendix B; verified/placed
+  in-place without mutating the datagram. Validated against the published `0xE3069283` known answer and
+  cross-checked against an independent bitwise reference over thousands of random inputs.
+- **Typed identifiers (value classes):** `Tsn` (with RFC 1982 serial arithmetic), `StreamId`,
+  `StreamSequenceNumber`, `PayloadProtocolId` (WebRTC PPID constants), `VerificationTag`; bitwise
+  fields wrapped behind named accessors (`DataChunkFlags` I/U/B/E, `SctpChunkType.unrecognizedAction`).
+- **DCEP (RFC 8832):** `DataChannelMessage` sealed pair — `Open` (channel type, priority, reliability,
+  UTF-8 label/protocol) and `Ack`. `ChannelType` exposes an exhaustive typed projection (`ordered` +
+  sealed `Reliability`) over the preserved wire byte. Decode is total with typed rejects; invalid UTF-8
+  in a label/protocol is a typed miss, never a throw.
+- **Typed rejects (T0):** `SctpPacket.decode` and `DataChannelMessage.decode` are total — a hostile or
+  truncated datagram yields a sealed `SctpRejectReason` / `DataChannelRejectReason`, never a throw.
+- **Tests:** every chunk type round-trips (typed fields + byte-exact re-encode + checksum), frozen
+  RFC-layout golden wire vectors (INIT, SACK, DCEP-over-DATA), a malformed corpus + a 20k-input
+  totality property + single-byte-mutation totality, wrapper-transparency (non-zero-offset slice), and
+  the CRC32c conformance suite — **green on JVM, JS, wasmJs, Linux/native, and Android host**.
+- **Coverage-guided Jazzer fuzz lane** (`sctpCodecFuzz`, time-boxed at 120s in CI) with a committed
+  seed corpus; a 90s local run was ~26M executions crash-free. One find during bring-up — a
+  `valueSize` computed from the untruncated padded length of a malformed final sub-TLV, which shrank
+  the re-encode buffer under the checksum's read — is fixed with its committed regression fixture.
+- SCTP decode / checksum-verify throughput benchmark tracked in `PERFORMANCE.md`. Committed `.api` +
+  detekt baseline.
+- **Scope:** this is the pure codec + DCEP-message floor only (commonMain, zero I/O). The SCTP
+  association state machine (handshake, TSN/SACK/RTO, congestion control, reassembly) and the
+  `DataChannel` `StreamMux` are the rest of W5 — they sit above this on the DTLS/UDP track.
+
 ### Added — W6 (partial): `webrtc-sdp` (SDP text codec + sans-io JSEP machine)
 - **SDP parser/serializer (RFC 8866):** a hand-written line codec (SDP is text — no `buffer-codec`
   schema). The datagram is decoded to a `CharSequence` exactly once and parsed index-based into a

@@ -3,7 +3,60 @@
 Live state of the current wave. A resumed session reads `RFC_KMP_WEBRTC.md` → `EXECUTION_PLAN.md` →
 this file. Update it whenever you stop mid-wave.
 
-## Where we are: **W6 (partial) `webrtc-sdp` — code complete on `feat/w6-webrtc-sdp`, green on all local lanes**
+## Where we are: **W5 (codec floor) `webrtc-sctp` — code complete on `feat/w5-webrtc-sctp`, green on all local lanes**
+
+Built on the **socket-free / non-UDP track** (the pure codecs that build and unit-test standalone,
+exactly as W1's `webrtc-stun` and W6's `webrtc-sdp` did) — **no** vnet, DTLS, ICE gathering, or
+DatagramChannel dependency. Branched off `feat/w6-webrtc-sdp` (which carries W1+W6), so a PR to `main`
+includes W1+W6 until those merge. `webrtc-sctp` deps are **`buffer` + `buffer-codec`** only (the
+placeholder's `:webrtc-dtls` / `buffer-flow` deps were removed — those belong to the association/mux
+layer on the DTLS track). **All tests green on JVM, JS node+browser, wasmJs node+browser, Linux/native,
+Android host** (`:webrtc-sctp:check` EXIT 0); `publishToMavenLocal` proven.
+
+What landed (`webrtc-sctp/src/commonMain`):
+- **SCTP common header (RFC 4960 §3.1)** as a KSP `@ProtocolMessage` schema (`SctpCommonHeaderCodec`);
+  the chunk TLV framing + INIT/INIT-ACK parameter and ERROR/ABORT cause sub-TLVs are hand-written
+  (SCTP's "length excludes trailing pad" + nested TLVs are outside the declarative codec), decoded as
+  **zero-copy slice views** over the datagram.
+- **Sealed `SctpChunk`** — DATA, INIT, INIT-ACK, SACK, HEARTBEAT(/ACK), ABORT, SHUTDOWN(/ACK),
+  ERROR, COOKIE-ECHO(/ACK), SHUTDOWN-COMPLETE, FORWARD-TSN (RFC 3758), + `Unrecognized` (verbatim
+  forward-compat). `SctpPacket.decode` is **total** → typed `SctpRejectReason`, never a throw.
+- **CRC32c (RFC 4960 §6.8 / RFC 3309)** self-contained in `Crc32c` — a 256-entry table in a **managed
+  `ReadBuffer` (no `IntArray`, directive #1)**, word-batched input read (buffer's `crc32` shape),
+  stored little-endian per App. B, verified/placed in-place. Validated vs the `0xE3069283` KAT + an
+  independent bitwise reference over thousands of random inputs.
+- **Value-class identifiers** — `Tsn` (RFC 1982 serial arithmetic), `StreamId`,
+  `StreamSequenceNumber`, `PayloadProtocolId` (WebRTC PPIDs), `VerificationTag`; bit fields wrapped
+  (`DataChunkFlags`, `SctpChunkType.unrecognizedAction`, DCEP `ChannelType` → sealed `Reliability`).
+- **DCEP (RFC 8832)** in `dcep/` — `DataChannelMessage.{Open,Ack}`, total typed-reject decode,
+  UTF-8 label/protocol (invalid UTF-8 = typed miss, not a throw).
+- **T0 floor** — per-chunk round-trip (typed fields + byte-exact re-encode + checksum), frozen
+  RFC-layout golden vectors (INIT/SACK/DCEP-over-DATA), malformed corpus + 20k totality + single-byte
+  mutation, wrapper-transparency (non-zero-offset slice), CRC32c conformance. **Jazzer lane**
+  (`sctpCodecFuzz`, wired into `review.yaml` at 120s) with a 6-seed committed corpus — a 90s local run
+  was ~26M execs clean. Benchmark in `PERFORMANCE.md`; `.api` committed; committed detekt baseline;
+  ktlint + apiCheck + standing-directive greps green.
+
+### W5-SCTP notes / next steps
+- **One Jazzer find during bring-up, fixed with its fixture** (directive #5): a chunk's `valueSize` was
+  computed from the *untruncated* `paddedLength(length)` of a malformed final sub-TLV whose padding
+  overran its chunk region; the decoder truncates the padded view, so `writeValue` wrote fewer bytes
+  than allocated → `resetForRead` shrank the limit → the checksum's bulk `getLong` read off the buffer.
+  Fix: compute `valueSize` from the **actual** stored padded-view sizes (seed
+  `regression-abort-cause-overrun.bin`).
+- **Not started (rest of W5, gated on W4 DTLS + a transport):** the SCTP association state machine
+  (4-way handshake, TSN/SACK/RTO, congestion control, fragmentation/reassembly over `StreamProcessor`),
+  partial-reliability (RFC 3758 abandon logic), and the `DataChannel` implementing buffer-flow
+  `StreamMux`. Those need DTLS + the DatagramChannel seam, so they stay parked on the deferred UDP track
+  (the placeholder module's `:webrtc-dtls` + `buffer-flow` deps get restored then).
+- **Apple lanes are compile-faithful here** (this Linux box); runtime-validate on the macOS runner and
+  say so in the PR (the `V6_MAC_VALIDATION` convention).
+- **A fast/native CRC32c belongs upstream in `buffer` core** (the `ReadBuffer.crc32` precedent) if a hot
+  bulk-checksum path ever appears — additive, non-blocking; noted in `PERFORMANCE.md`.
+
+---
+
+## Prior wave: **W6 (partial) `webrtc-sdp` — code complete on `feat/w6-webrtc-sdp`, green on all local lanes**
 
 Built on the **socket-free / non-UDP track** (the pure codecs + sans-io cores that build and unit-test
 standalone, exactly as W1's `webrtc-stun` did) — **no** vnet, ICE gathering, DTLS, or DatagramChannel

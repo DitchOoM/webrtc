@@ -61,3 +61,21 @@ walk produces value substrings, so `parse` is dominated by that single decode + 
 `substring`. The typed readers are on-demand `String` scans (no precompute), which is why
 `parseAndReadFields` costs a further pass. Re-run with `./gradlew :webrtc-sdp:jvmBenchmarkBenchmark`
 for the `main` profile, and add the Linux K/N column at release.
+
+### `webrtc-sctp` (W5, codec floor)
+
+`SctpBenchmark` over a 44-byte INIT packet (common header + INIT chunk with Forward-TSN-Supported and
+Supported-Extensions parameters):
+
+| Benchmark | What it covers | JVM (quick) |
+|---|---|---|
+| `decode` | common-header decode + chunk TLV walk + INIT parameter sub-TLV walk (zero-copy views) | ~8.6M ops/s |
+| `decodeAndVerify` | `decode` + CRC32c (Castagnoli) checksum over the whole packet, in place | ~5.7M ops/s |
+
+Indicative only — `quick` profile (1 warmup, 2 iterations) on a dev workstation, not a release
+baseline. The decode path is allocation-light (chunk values are slices over the datagram); the verify
+path adds the table-driven CRC32c fold over the packet (word-batched input read, matching buffer's own
+`crc32`). A native-accelerated CRC32c belongs upstream in buffer core (the `ReadBuffer.crc32`
+precedent) if a hot bulk-checksum path ever appears. Re-run with
+`./gradlew :webrtc-sctp:jvmBenchmarkBenchmark` for the `main` profile, and add the Linux K/N column at
+release.

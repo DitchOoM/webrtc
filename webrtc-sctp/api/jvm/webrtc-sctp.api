@@ -1,9 +1,633 @@
+public final class com/ditchoom/webrtc/sctp/Crc32c {
+	public static final field INIT I
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/Crc32c;
+	public final fun finalize-OGnWXxg (I)I
+	public final fun of-_W1zjd8 (Lcom/ditchoom/buffer/ReadBuffer;II)I
+	public final fun update (ILcom/ditchoom/buffer/ReadBuffer;II)I
+}
+
+public final class com/ditchoom/webrtc/sctp/DataChunkFlags {
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/DataChunkFlags$Companion;
+	public static final synthetic fun box-impl (B)Lcom/ditchoom/webrtc/sctp/DataChunkFlags;
+	public static fun constructor-impl (B)B
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (BLjava/lang/Object;)Z
+	public static final fun equals-impl0 (BB)Z
+	public static final fun getBeginning-impl (B)Z
+	public static final fun getEnding-impl (B)Z
+	public static final fun getImmediate-impl (B)Z
+	public final fun getRaw-w2LRezQ ()B
+	public static final fun getUnfragmented-impl (B)Z
+	public static final fun getUnordered-impl (B)Z
+	public fun hashCode ()I
+	public static fun hashCode-impl (B)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (B)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()B
+}
+
+public final class com/ditchoom/webrtc/sctp/DataChunkFlags$Companion {
+	public final fun of-BfIjuo0 (ZZZZ)B
+	public static synthetic fun of-BfIjuo0$default (Lcom/ditchoom/webrtc/sctp/DataChunkFlags$Companion;ZZZZILjava/lang/Object;)B
+}
+
+public final class com/ditchoom/webrtc/sctp/ErrorCauseCode {
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/ErrorCauseCode$Companion;
+	public static final synthetic fun box-impl (S)Lcom/ditchoom/webrtc/sctp/ErrorCauseCode;
+	public static fun constructor-impl (S)S
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (SLjava/lang/Object;)Z
+	public static final fun equals-impl0 (SS)Z
+	public final fun getValue-Mh2AYeg ()S
+	public fun hashCode ()I
+	public static fun hashCode-impl (S)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (S)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()S
+}
+
+public final class com/ditchoom/webrtc/sctp/ErrorCauseCode$Companion {
+	public final fun getCookieReceivedWhileShuttingDown-jwO-oqI ()S
+	public final fun getInvalidMandatoryParameter-jwO-oqI ()S
+	public final fun getInvalidStreamIdentifier-jwO-oqI ()S
+	public final fun getMissingMandatoryParameter-jwO-oqI ()S
+	public final fun getNoUserData-jwO-oqI ()S
+	public final fun getOutOfResource-jwO-oqI ()S
+	public final fun getProtocolViolation-jwO-oqI ()S
+	public final fun getRestartWithNewAddresses-jwO-oqI ()S
+	public final fun getStaleCookie-jwO-oqI ()S
+	public final fun getUnrecognizedChunkType-jwO-oqI ()S
+	public final fun getUnrecognizedParameters-jwO-oqI ()S
+	public final fun getUnresolvableAddress-jwO-oqI ()S
+	public final fun getUserInitiatedAbort-jwO-oqI ()S
+}
+
+public final class com/ditchoom/webrtc/sctp/ForwardTsnStream {
+	public synthetic fun <init> (ISLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-cFBZvdc ()I
+	public final fun component2-7x5Lec8 ()S
+	public final fun copy-QTpfekU (IS)Lcom/ditchoom/webrtc/sctp/ForwardTsnStream;
+	public static synthetic fun copy-QTpfekU$default (Lcom/ditchoom/webrtc/sctp/ForwardTsnStream;ISILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/ForwardTsnStream;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getStreamId-cFBZvdc ()I
+	public final fun getStreamSequenceNumber-7x5Lec8 ()S
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/GapAckBlock {
+	public synthetic fun <init> (SSLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-Mh2AYeg ()S
+	public final fun component2-Mh2AYeg ()S
+	public final fun copy-HQPci0I (SS)Lcom/ditchoom/webrtc/sctp/GapAckBlock;
+	public static synthetic fun copy-HQPci0I$default (Lcom/ditchoom/webrtc/sctp/GapAckBlock;SSILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/GapAckBlock;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getEnd-Mh2AYeg ()S
+	public final fun getStart-Mh2AYeg ()S
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ParameterType {
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/ParameterType$Companion;
+	public static final synthetic fun box-impl (S)Lcom/ditchoom/webrtc/sctp/ParameterType;
+	public static fun constructor-impl (S)S
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (SLjava/lang/Object;)Z
+	public static final fun equals-impl0 (SS)Z
+	public static final fun getUnrecognizedAction-impl (S)Lcom/ditchoom/webrtc/sctp/UnrecognizedAction;
+	public final fun getValue-Mh2AYeg ()S
+	public fun hashCode ()I
+	public static fun hashCode-impl (S)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (S)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()S
+}
+
+public final class com/ditchoom/webrtc/sctp/ParameterType$Companion {
+	public final fun getCookiePreservative-VORfRic ()S
+	public final fun getForwardTsnSupported-VORfRic ()S
+	public final fun getHeartbeatInfo-VORfRic ()S
+	public final fun getIpv4Address-VORfRic ()S
+	public final fun getIpv6Address-VORfRic ()S
+	public final fun getStateCookie-VORfRic ()S
+	public final fun getSupportedAddressTypes-VORfRic ()S
+	public final fun getSupportedExtensions-VORfRic ()S
+	public final fun getUnrecognizedParameter-VORfRic ()S
+}
+
+public final class com/ditchoom/webrtc/sctp/PayloadProtocolId {
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/PayloadProtocolId$Companion;
+	public static final synthetic fun box-impl (I)Lcom/ditchoom/webrtc/sctp/PayloadProtocolId;
+	public static fun constructor-impl (I)I
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (ILjava/lang/Object;)Z
+	public static final fun equals-impl0 (II)Z
+	public final fun getValue-pVg5ArA ()I
+	public fun hashCode ()I
+	public static fun hashCode-impl (I)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (I)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()I
+}
+
+public final class com/ditchoom/webrtc/sctp/PayloadProtocolId$Companion {
+	public final fun getWebRtcBinary-N_xLETs ()I
+	public final fun getWebRtcBinaryEmpty-N_xLETs ()I
+	public final fun getWebRtcBinaryPartial-N_xLETs ()I
+	public final fun getWebRtcDcep-N_xLETs ()I
+	public final fun getWebRtcString-N_xLETs ()I
+	public final fun getWebRtcStringEmpty-N_xLETs ()I
+	public final fun getWebRtcStringPartial-N_xLETs ()I
+}
+
 public final class com/ditchoom/webrtc/sctp/Sctp {
 	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/Sctp;
 	public static final field MODULE Ljava/lang/String;
 }
 
+public abstract interface class com/ditchoom/webrtc/sctp/SctpChunk {
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/SctpChunk$Companion;
+	public abstract fun getFlagsByte-w2LRezQ ()B
+	public abstract fun getType-xlduujU ()B
+	public abstract fun getValueSize ()I
+	public abstract fun writeValue (Lcom/ditchoom/buffer/WriteBuffer;)V
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpChunk$Abort : com/ditchoom/webrtc/sctp/SctpChunk {
+	public fun <init> (ZLjava/util/List;)V
+	public final fun component1 ()Z
+	public final fun component2 ()Ljava/util/List;
+	public final fun copy (ZLjava/util/List;)Lcom/ditchoom/webrtc/sctp/SctpChunk$Abort;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/SctpChunk$Abort;ZLjava/util/List;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpChunk$Abort;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCauses ()Ljava/util/List;
+	public fun getFlagsByte-w2LRezQ ()B
+	public fun getType-xlduujU ()B
+	public fun getValueSize ()I
+	public final fun getVerificationTagReflected ()Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+	public fun writeValue (Lcom/ditchoom/buffer/WriteBuffer;)V
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpChunk$Companion {
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpChunk$CookieAck : com/ditchoom/webrtc/sctp/SctpChunk {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/SctpChunk$CookieAck;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getFlagsByte-w2LRezQ ()B
+	public fun getType-xlduujU ()B
+	public fun getValueSize ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+	public fun writeValue (Lcom/ditchoom/buffer/WriteBuffer;)V
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpChunk$CookieEcho : com/ditchoom/webrtc/sctp/SctpChunk {
+	public fun <init> (Lcom/ditchoom/buffer/ReadBuffer;)V
+	public final fun component1 ()Lcom/ditchoom/buffer/ReadBuffer;
+	public final fun copy (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/sctp/SctpChunk$CookieEcho;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/SctpChunk$CookieEcho;Lcom/ditchoom/buffer/ReadBuffer;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpChunk$CookieEcho;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCookie ()Lcom/ditchoom/buffer/ReadBuffer;
+	public fun getFlagsByte-w2LRezQ ()B
+	public fun getType-xlduujU ()B
+	public fun getValueSize ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+	public fun writeValue (Lcom/ditchoom/buffer/WriteBuffer;)V
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpChunk$Data : com/ditchoom/webrtc/sctp/SctpChunk {
+	public synthetic fun <init> (BIISILcom/ditchoom/buffer/ReadBuffer;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-4EkkxU0 ()B
+	public final fun component2-LdEUlac ()I
+	public final fun component3-cFBZvdc ()I
+	public final fun component4-7x5Lec8 ()S
+	public final fun component5-N_xLETs ()I
+	public final fun component6 ()Lcom/ditchoom/buffer/ReadBuffer;
+	public final fun copy-QGWgmBM (BIISILcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/sctp/SctpChunk$Data;
+	public static synthetic fun copy-QGWgmBM$default (Lcom/ditchoom/webrtc/sctp/SctpChunk$Data;BIISILcom/ditchoom/buffer/ReadBuffer;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpChunk$Data;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFlags-4EkkxU0 ()B
+	public fun getFlagsByte-w2LRezQ ()B
+	public final fun getPayloadProtocolId-N_xLETs ()I
+	public final fun getStreamId-cFBZvdc ()I
+	public final fun getStreamSequenceNumber-7x5Lec8 ()S
+	public final fun getTsn-LdEUlac ()I
+	public fun getType-xlduujU ()B
+	public final fun getUserData ()Lcom/ditchoom/buffer/ReadBuffer;
+	public fun getValueSize ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+	public fun writeValue (Lcom/ditchoom/buffer/WriteBuffer;)V
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpChunk$Error : com/ditchoom/webrtc/sctp/SctpChunk {
+	public fun <init> (Ljava/util/List;)V
+	public final fun component1 ()Ljava/util/List;
+	public final fun copy (Ljava/util/List;)Lcom/ditchoom/webrtc/sctp/SctpChunk$Error;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/SctpChunk$Error;Ljava/util/List;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpChunk$Error;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCauses ()Ljava/util/List;
+	public fun getFlagsByte-w2LRezQ ()B
+	public fun getType-xlduujU ()B
+	public fun getValueSize ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+	public fun writeValue (Lcom/ditchoom/buffer/WriteBuffer;)V
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpChunk$ForwardTsn : com/ditchoom/webrtc/sctp/SctpChunk {
+	public synthetic fun <init> (ILjava/util/List;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-LdEUlac ()I
+	public final fun component2 ()Ljava/util/List;
+	public final fun copy-pjLGDmc (ILjava/util/List;)Lcom/ditchoom/webrtc/sctp/SctpChunk$ForwardTsn;
+	public static synthetic fun copy-pjLGDmc$default (Lcom/ditchoom/webrtc/sctp/SctpChunk$ForwardTsn;ILjava/util/List;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpChunk$ForwardTsn;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getFlagsByte-w2LRezQ ()B
+	public final fun getNewCumulativeTsn-LdEUlac ()I
+	public final fun getStreams ()Ljava/util/List;
+	public fun getType-xlduujU ()B
+	public fun getValueSize ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+	public fun writeValue (Lcom/ditchoom/buffer/WriteBuffer;)V
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpChunk$Heartbeat : com/ditchoom/webrtc/sctp/SctpChunk {
+	public fun <init> (Lcom/ditchoom/webrtc/sctp/SctpParameter;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public final fun copy (Lcom/ditchoom/webrtc/sctp/SctpParameter;)Lcom/ditchoom/webrtc/sctp/SctpChunk$Heartbeat;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/SctpChunk$Heartbeat;Lcom/ditchoom/webrtc/sctp/SctpParameter;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpChunk$Heartbeat;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getFlagsByte-w2LRezQ ()B
+	public final fun getInfo ()Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public fun getType-xlduujU ()B
+	public fun getValueSize ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+	public fun writeValue (Lcom/ditchoom/buffer/WriteBuffer;)V
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpChunk$HeartbeatAck : com/ditchoom/webrtc/sctp/SctpChunk {
+	public fun <init> (Lcom/ditchoom/webrtc/sctp/SctpParameter;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public final fun copy (Lcom/ditchoom/webrtc/sctp/SctpParameter;)Lcom/ditchoom/webrtc/sctp/SctpChunk$HeartbeatAck;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/SctpChunk$HeartbeatAck;Lcom/ditchoom/webrtc/sctp/SctpParameter;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpChunk$HeartbeatAck;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getFlagsByte-w2LRezQ ()B
+	public final fun getInfo ()Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public fun getType-xlduujU ()B
+	public fun getValueSize ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+	public fun writeValue (Lcom/ditchoom/buffer/WriteBuffer;)V
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpChunk$Init : com/ditchoom/webrtc/sctp/SctpChunk {
+	public synthetic fun <init> (IISSILjava/util/List;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-FZlQ57E ()I
+	public final fun component2-pVg5ArA ()I
+	public final fun component3-Mh2AYeg ()S
+	public final fun component4-Mh2AYeg ()S
+	public final fun component5-LdEUlac ()I
+	public final fun component6 ()Ljava/util/List;
+	public final fun copy-7p2d13g (IISSILjava/util/List;)Lcom/ditchoom/webrtc/sctp/SctpChunk$Init;
+	public static synthetic fun copy-7p2d13g$default (Lcom/ditchoom/webrtc/sctp/SctpChunk$Init;IISSILjava/util/List;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpChunk$Init;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAdvertisedReceiverWindow-pVg5ArA ()I
+	public fun getFlagsByte-w2LRezQ ()B
+	public final fun getInboundStreams-Mh2AYeg ()S
+	public final fun getInitialTsn-LdEUlac ()I
+	public final fun getInitiateTag-FZlQ57E ()I
+	public final fun getOutboundStreams-Mh2AYeg ()S
+	public final fun getParameters ()Ljava/util/List;
+	public fun getType-xlduujU ()B
+	public fun getValueSize ()I
+	public fun hashCode ()I
+	public final fun supportsForwardTsn ()Z
+	public fun toString ()Ljava/lang/String;
+	public fun writeValue (Lcom/ditchoom/buffer/WriteBuffer;)V
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpChunk$InitAck : com/ditchoom/webrtc/sctp/SctpChunk {
+	public synthetic fun <init> (IISSILjava/util/List;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-FZlQ57E ()I
+	public final fun component2-pVg5ArA ()I
+	public final fun component3-Mh2AYeg ()S
+	public final fun component4-Mh2AYeg ()S
+	public final fun component5-LdEUlac ()I
+	public final fun component6 ()Ljava/util/List;
+	public final fun copy-7p2d13g (IISSILjava/util/List;)Lcom/ditchoom/webrtc/sctp/SctpChunk$InitAck;
+	public static synthetic fun copy-7p2d13g$default (Lcom/ditchoom/webrtc/sctp/SctpChunk$InitAck;IISSILjava/util/List;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpChunk$InitAck;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAdvertisedReceiverWindow-pVg5ArA ()I
+	public fun getFlagsByte-w2LRezQ ()B
+	public final fun getInboundStreams-Mh2AYeg ()S
+	public final fun getInitialTsn-LdEUlac ()I
+	public final fun getInitiateTag-FZlQ57E ()I
+	public final fun getOutboundStreams-Mh2AYeg ()S
+	public final fun getParameters ()Ljava/util/List;
+	public fun getType-xlduujU ()B
+	public fun getValueSize ()I
+	public fun hashCode ()I
+	public final fun stateCookie ()Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public fun toString ()Ljava/lang/String;
+	public fun writeValue (Lcom/ditchoom/buffer/WriteBuffer;)V
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpChunk$Sack : com/ditchoom/webrtc/sctp/SctpChunk {
+	public synthetic fun <init> (IILjava/util/List;Ljava/util/List;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-LdEUlac ()I
+	public final fun component2-pVg5ArA ()I
+	public final fun component3 ()Ljava/util/List;
+	public final fun component4 ()Ljava/util/List;
+	public final fun copy-NY6K2hU (IILjava/util/List;Ljava/util/List;)Lcom/ditchoom/webrtc/sctp/SctpChunk$Sack;
+	public static synthetic fun copy-NY6K2hU$default (Lcom/ditchoom/webrtc/sctp/SctpChunk$Sack;IILjava/util/List;Ljava/util/List;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpChunk$Sack;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAdvertisedReceiverWindow-pVg5ArA ()I
+	public final fun getCumulativeTsnAck-LdEUlac ()I
+	public final fun getDuplicateTsns ()Ljava/util/List;
+	public fun getFlagsByte-w2LRezQ ()B
+	public final fun getGapAckBlocks ()Ljava/util/List;
+	public fun getType-xlduujU ()B
+	public fun getValueSize ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+	public fun writeValue (Lcom/ditchoom/buffer/WriteBuffer;)V
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpChunk$Shutdown : com/ditchoom/webrtc/sctp/SctpChunk {
+	public synthetic fun <init> (ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-LdEUlac ()I
+	public final fun copy-EapbSkc (I)Lcom/ditchoom/webrtc/sctp/SctpChunk$Shutdown;
+	public static synthetic fun copy-EapbSkc$default (Lcom/ditchoom/webrtc/sctp/SctpChunk$Shutdown;IILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpChunk$Shutdown;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCumulativeTsnAck-LdEUlac ()I
+	public fun getFlagsByte-w2LRezQ ()B
+	public fun getType-xlduujU ()B
+	public fun getValueSize ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+	public fun writeValue (Lcom/ditchoom/buffer/WriteBuffer;)V
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpChunk$ShutdownAck : com/ditchoom/webrtc/sctp/SctpChunk {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/SctpChunk$ShutdownAck;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getFlagsByte-w2LRezQ ()B
+	public fun getType-xlduujU ()B
+	public fun getValueSize ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+	public fun writeValue (Lcom/ditchoom/buffer/WriteBuffer;)V
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpChunk$ShutdownComplete : com/ditchoom/webrtc/sctp/SctpChunk {
+	public fun <init> (Z)V
+	public final fun component1 ()Z
+	public final fun copy (Z)Lcom/ditchoom/webrtc/sctp/SctpChunk$ShutdownComplete;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/SctpChunk$ShutdownComplete;ZILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpChunk$ShutdownComplete;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getFlagsByte-w2LRezQ ()B
+	public fun getType-xlduujU ()B
+	public fun getValueSize ()I
+	public final fun getVerificationTagReflected ()Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+	public fun writeValue (Lcom/ditchoom/buffer/WriteBuffer;)V
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpChunk$Unrecognized : com/ditchoom/webrtc/sctp/SctpChunk {
+	public synthetic fun <init> (BBLcom/ditchoom/buffer/ReadBuffer;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-xlduujU ()B
+	public final fun component2-w2LRezQ ()B
+	public final fun component3 ()Lcom/ditchoom/buffer/ReadBuffer;
+	public final fun copy-xqeoMTU (BBLcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/sctp/SctpChunk$Unrecognized;
+	public static synthetic fun copy-xqeoMTU$default (Lcom/ditchoom/webrtc/sctp/SctpChunk$Unrecognized;BBLcom/ditchoom/buffer/ReadBuffer;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpChunk$Unrecognized;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFlags-w2LRezQ ()B
+	public fun getFlagsByte-w2LRezQ ()B
+	public fun getType-xlduujU ()B
+	public final fun getValue ()Lcom/ditchoom/buffer/ReadBuffer;
+	public fun getValueSize ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+	public fun writeValue (Lcom/ditchoom/buffer/WriteBuffer;)V
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpChunkType {
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/SctpChunkType$Companion;
+	public static final synthetic fun box-impl (B)Lcom/ditchoom/webrtc/sctp/SctpChunkType;
+	public static fun constructor-impl (B)B
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (BLjava/lang/Object;)Z
+	public static final fun equals-impl0 (BB)Z
+	public static final fun getUnrecognizedAction-impl (B)Lcom/ditchoom/webrtc/sctp/UnrecognizedAction;
+	public final fun getValue-w2LRezQ ()B
+	public fun hashCode ()I
+	public static fun hashCode-impl (B)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (B)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()B
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpChunkType$Companion {
+	public final fun getAbort-xlduujU ()B
+	public final fun getCookieAck-xlduujU ()B
+	public final fun getCookieEcho-xlduujU ()B
+	public final fun getData-xlduujU ()B
+	public final fun getError-xlduujU ()B
+	public final fun getForwardTsn-xlduujU ()B
+	public final fun getHeartbeat-xlduujU ()B
+	public final fun getHeartbeatAck-xlduujU ()B
+	public final fun getInit-xlduujU ()B
+	public final fun getInitAck-xlduujU ()B
+	public final fun getSack-xlduujU ()B
+	public final fun getShutdown-xlduujU ()B
+	public final fun getShutdownAck-xlduujU ()B
+	public final fun getShutdownComplete-xlduujU ()B
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpCommonHeader {
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/SctpCommonHeader$Companion;
+	public static final field SIZE_BYTES I
+	public synthetic fun <init> (SSIILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-Mh2AYeg ()S
+	public final fun component2-Mh2AYeg ()S
+	public final fun component3-FZlQ57E ()I
+	public final fun component4-pVg5ArA ()I
+	public final fun copy-1UL3M9E (SSII)Lcom/ditchoom/webrtc/sctp/SctpCommonHeader;
+	public static synthetic fun copy-1UL3M9E$default (Lcom/ditchoom/webrtc/sctp/SctpCommonHeader;SSIIILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpCommonHeader;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getChecksum-pVg5ArA ()I
+	public final fun getDestinationPort-Mh2AYeg ()S
+	public final fun getSourcePort-Mh2AYeg ()S
+	public final fun getVerificationTag-FZlQ57E ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpCommonHeader$Companion {
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpCommonHeaderCodec : com/ditchoom/buffer/codec/Codec {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/SctpCommonHeaderCodec;
+	public fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Lcom/ditchoom/webrtc/sctp/SctpCommonHeader;
+	public synthetic fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Ljava/lang/Object;
+	public fun encode (Lcom/ditchoom/buffer/WriteBuffer;Lcom/ditchoom/webrtc/sctp/SctpCommonHeader;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public synthetic fun encode (Lcom/ditchoom/buffer/WriteBuffer;Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+	public fun wireSize (Lcom/ditchoom/webrtc/sctp/SctpCommonHeader;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+	public synthetic fun wireSize (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/SctpDecodeResult {
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpDecodeResult$Reject : com/ditchoom/webrtc/sctp/SctpDecodeResult {
+	public fun <init> (Lcom/ditchoom/webrtc/sctp/SctpRejectReason;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sctp/SctpRejectReason;
+	public final fun copy (Lcom/ditchoom/webrtc/sctp/SctpRejectReason;)Lcom/ditchoom/webrtc/sctp/SctpDecodeResult$Reject;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/SctpDecodeResult$Reject;Lcom/ditchoom/webrtc/sctp/SctpRejectReason;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpDecodeResult$Reject;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReason ()Lcom/ditchoom/webrtc/sctp/SctpRejectReason;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpDecodeResult$Success : com/ditchoom/webrtc/sctp/SctpDecodeResult {
+	public fun <init> (Lcom/ditchoom/webrtc/sctp/SctpPacket;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sctp/SctpPacket;
+	public final fun copy (Lcom/ditchoom/webrtc/sctp/SctpPacket;)Lcom/ditchoom/webrtc/sctp/SctpDecodeResult$Success;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/SctpDecodeResult$Success;Lcom/ditchoom/webrtc/sctp/SctpPacket;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpDecodeResult$Success;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getPacket ()Lcom/ditchoom/webrtc/sctp/SctpPacket;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpErrorCause {
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/SctpErrorCause$Companion;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCode-jwO-oqI ()S
+	public final fun getLength ()I
+	public final fun getValue ()Lcom/ditchoom/buffer/ReadBuffer;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpErrorCause$Companion {
+	public final fun empty-I67nsOA (S)Lcom/ditchoom/webrtc/sctp/SctpErrorCause;
+	public final fun ofValue-31A7jtQ (SLcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/sctp/SctpErrorCause;
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpPacket {
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/SctpPacket$Companion;
+	public final fun encode (Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/PlatformBuffer;
+	public static synthetic fun encode$default (Lcom/ditchoom/webrtc/sctp/SctpPacket;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/buffer/PlatformBuffer;
+	public final fun firstOrNull-BaCjjTE (B)Lcom/ditchoom/webrtc/sctp/SctpChunk;
+	public final fun getChunks ()Ljava/util/List;
+	public final fun getDestinationPort-Mh2AYeg ()S
+	public final fun getHeader ()Lcom/ditchoom/webrtc/sctp/SctpCommonHeader;
+	public final fun getSourcePort-Mh2AYeg ()S
+	public final fun getVerificationTag-FZlQ57E ()I
+	public final fun verifyChecksum ()Z
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpPacket$Companion {
+	public final fun decode (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/sctp/SctpDecodeResult;
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpPacketBuilder {
+	public synthetic fun <init> (SSILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun add (Lcom/ditchoom/webrtc/sctp/SctpChunk;)Lcom/ditchoom/webrtc/sctp/SctpPacketBuilder;
+	public final fun build ()Lcom/ditchoom/webrtc/sctp/SctpPacket;
+	public final fun encode (Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/PlatformBuffer;
+	public static synthetic fun encode$default (Lcom/ditchoom/webrtc/sctp/SctpPacketBuilder;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/buffer/PlatformBuffer;
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpParameter {
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/SctpParameter$Companion;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getLength ()I
+	public final fun getType-VORfRic ()S
+	public final fun getValue ()Lcom/ditchoom/buffer/ReadBuffer;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpParameter$Companion {
+	public final fun forwardTsnSupported ()Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public final fun ofValue-FKy87FQ (SLcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public final fun supportedExtensions (Ljava/util/List;)Lcom/ditchoom/webrtc/sctp/SctpParameter;
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpParameterKt {
+	public static final fun asSupportedExtensions (Lcom/ditchoom/webrtc/sctp/SctpParameter;)Ljava/util/List;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/SctpRejectReason {
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpRejectReason$ChunkLengthBeyondPacket : com/ditchoom/webrtc/sctp/SctpRejectReason {
+	public fun <init> (III)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun component3 ()I
+	public final fun copy (III)Lcom/ditchoom/webrtc/sctp/SctpRejectReason$ChunkLengthBeyondPacket;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/SctpRejectReason$ChunkLengthBeyondPacket;IIIILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpRejectReason$ChunkLengthBeyondPacket;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAvailable ()I
+	public final fun getDeclaredLength ()I
+	public final fun getOffset ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpRejectReason$MalformedChunkBody : com/ditchoom/webrtc/sctp/SctpRejectReason {
+	public synthetic fun <init> (IBLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()I
+	public final fun component2-xlduujU ()B
+	public final fun copy-igvTBO0 (IB)Lcom/ditchoom/webrtc/sctp/SctpRejectReason$MalformedChunkBody;
+	public static synthetic fun copy-igvTBO0$default (Lcom/ditchoom/webrtc/sctp/SctpRejectReason$MalformedChunkBody;IBILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpRejectReason$MalformedChunkBody;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getOffset ()I
+	public final fun getType-xlduujU ()B
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpRejectReason$MalformedChunkHeader : com/ditchoom/webrtc/sctp/SctpRejectReason {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/webrtc/sctp/SctpRejectReason$MalformedChunkHeader;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/SctpRejectReason$MalformedChunkHeader;IILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpRejectReason$MalformedChunkHeader;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getOffset ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpRejectReason$NoChunks : com/ditchoom/webrtc/sctp/SctpRejectReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/SctpRejectReason$NoChunks;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpRejectReason$ShorterThanCommonHeader : com/ditchoom/webrtc/sctp/SctpRejectReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/SctpRejectReason$ShorterThanCommonHeader;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/sctp/StreamId {
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/StreamId$Companion;
 	public static final synthetic fun box-impl (I)Lcom/ditchoom/webrtc/sctp/StreamId;
 	public static fun constructor-impl (I)I
 	public fun equals (Ljava/lang/Object;)Z
@@ -17,8 +641,51 @@ public final class com/ditchoom/webrtc/sctp/StreamId {
 	public final synthetic fun unbox-impl ()I
 }
 
+public final class com/ditchoom/webrtc/sctp/StreamId$Companion {
+}
+
+public final class com/ditchoom/webrtc/sctp/StreamSequenceNumber {
+	public static final synthetic fun box-impl (S)Lcom/ditchoom/webrtc/sctp/StreamSequenceNumber;
+	public static fun constructor-impl (S)S
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (SLjava/lang/Object;)Z
+	public static final fun equals-impl0 (SS)Z
+	public final fun getValue-Mh2AYeg ()S
+	public fun hashCode ()I
+	public static fun hashCode-impl (S)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (S)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()S
+}
+
 public final class com/ditchoom/webrtc/sctp/Tsn {
 	public static final synthetic fun box-impl (I)Lcom/ditchoom/webrtc/sctp/Tsn;
+	public static fun constructor-impl (I)I
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (ILjava/lang/Object;)Z
+	public static final fun equals-impl0 (II)Z
+	public final fun getValue-pVg5ArA ()I
+	public fun hashCode ()I
+	public static fun hashCode-impl (I)I
+	public static final fun next-LdEUlac (I)I
+	public static final fun sackPrecedes-EapbSkc (II)Z
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (I)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()I
+}
+
+public final class com/ditchoom/webrtc/sctp/UnrecognizedAction : java/lang/Enum {
+	public static final field SkipAndContinue Lcom/ditchoom/webrtc/sctp/UnrecognizedAction;
+	public static final field SkipAndReport Lcom/ditchoom/webrtc/sctp/UnrecognizedAction;
+	public static final field StopAndDiscard Lcom/ditchoom/webrtc/sctp/UnrecognizedAction;
+	public static final field StopAndReport Lcom/ditchoom/webrtc/sctp/UnrecognizedAction;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/webrtc/sctp/UnrecognizedAction;
+	public static fun values ()[Lcom/ditchoom/webrtc/sctp/UnrecognizedAction;
+}
+
+public final class com/ditchoom/webrtc/sctp/VerificationTag {
+	public static final synthetic fun box-impl (I)Lcom/ditchoom/webrtc/sctp/VerificationTag;
 	public static fun constructor-impl (I)I
 	public fun equals (Ljava/lang/Object;)Z
 	public static fun equals-impl (ILjava/lang/Object;)Z
@@ -29,5 +696,184 @@ public final class com/ditchoom/webrtc/sctp/Tsn {
 	public fun toString ()Ljava/lang/String;
 	public static fun toString-impl (I)Ljava/lang/String;
 	public final synthetic fun unbox-impl ()I
+}
+
+public final class com/ditchoom/webrtc/sctp/VerificationTagCodec : com/ditchoom/buffer/codec/Codec {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/VerificationTagCodec;
+	public synthetic fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Ljava/lang/Object;
+	public fun decode-tLOyLUw (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)I
+	public synthetic fun encode (Lcom/ditchoom/buffer/WriteBuffer;Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun encode-4BptKuQ (Lcom/ditchoom/buffer/WriteBuffer;ILcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+	public synthetic fun wireSize (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+	public fun wireSize-d25ApmA (ILcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+}
+
+public final class com/ditchoom/webrtc/sctp/dcep/ChannelType {
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/dcep/ChannelType$Companion;
+	public static final synthetic fun box-impl (B)Lcom/ditchoom/webrtc/sctp/dcep/ChannelType;
+	public static fun constructor-impl (B)B
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (BLjava/lang/Object;)Z
+	public static final fun equals-impl0 (BB)Z
+	public static final fun getOrdered-impl (B)Z
+	public final fun getRaw-w2LRezQ ()B
+	public static final fun getReliability-impl (B)Lcom/ditchoom/webrtc/sctp/dcep/Reliability;
+	public fun hashCode ()I
+	public static fun hashCode-impl (B)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (B)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()B
+}
+
+public final class com/ditchoom/webrtc/sctp/dcep/ChannelType$Companion {
+	public final fun of-DipVngw (ZLcom/ditchoom/webrtc/sctp/dcep/Reliability;)B
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/dcep/DataChannelDecodeResult {
+}
+
+public final class com/ditchoom/webrtc/sctp/dcep/DataChannelDecodeResult$Reject : com/ditchoom/webrtc/sctp/dcep/DataChannelDecodeResult {
+	public fun <init> (Lcom/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason;
+	public final fun copy (Lcom/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason;)Lcom/ditchoom/webrtc/sctp/dcep/DataChannelDecodeResult$Reject;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/dcep/DataChannelDecodeResult$Reject;Lcom/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/dcep/DataChannelDecodeResult$Reject;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReason ()Lcom/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/dcep/DataChannelDecodeResult$Success : com/ditchoom/webrtc/sctp/dcep/DataChannelDecodeResult {
+	public fun <init> (Lcom/ditchoom/webrtc/sctp/dcep/DataChannelMessage;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sctp/dcep/DataChannelMessage;
+	public final fun copy (Lcom/ditchoom/webrtc/sctp/dcep/DataChannelMessage;)Lcom/ditchoom/webrtc/sctp/dcep/DataChannelDecodeResult$Success;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/dcep/DataChannelDecodeResult$Success;Lcom/ditchoom/webrtc/sctp/dcep/DataChannelMessage;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/dcep/DataChannelDecodeResult$Success;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getMessage ()Lcom/ditchoom/webrtc/sctp/dcep/DataChannelMessage;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/dcep/DataChannelMessage {
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/dcep/DataChannelMessage$Companion;
+	public abstract fun encode (Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/PlatformBuffer;
+	public static synthetic fun encode$default (Lcom/ditchoom/webrtc/sctp/dcep/DataChannelMessage;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/buffer/PlatformBuffer;
+	public abstract fun getMessageType-w2LRezQ ()B
+}
+
+public final class com/ditchoom/webrtc/sctp/dcep/DataChannelMessage$Ack : com/ditchoom/webrtc/sctp/dcep/DataChannelMessage {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/dcep/DataChannelMessage$Ack;
+	public fun encode (Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/PlatformBuffer;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getMessageType-w2LRezQ ()B
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/dcep/DataChannelMessage$Companion {
+	public final fun decode (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/sctp/dcep/DataChannelDecodeResult;
+}
+
+public final class com/ditchoom/webrtc/sctp/dcep/DataChannelMessage$DefaultImpls {
+	public static synthetic fun encode$default (Lcom/ditchoom/webrtc/sctp/dcep/DataChannelMessage;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/buffer/PlatformBuffer;
+}
+
+public final class com/ditchoom/webrtc/sctp/dcep/DataChannelMessage$Open : com/ditchoom/webrtc/sctp/dcep/DataChannelMessage {
+	public synthetic fun <init> (BSILjava/lang/String;Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-Q8H-qEE ()B
+	public final fun component2-Mh2AYeg ()S
+	public final fun component3-pVg5ArA ()I
+	public final fun component4 ()Ljava/lang/String;
+	public final fun component5 ()Ljava/lang/String;
+	public final fun copy-oQ-ovkc (BSILjava/lang/String;Ljava/lang/String;)Lcom/ditchoom/webrtc/sctp/dcep/DataChannelMessage$Open;
+	public static synthetic fun copy-oQ-ovkc$default (Lcom/ditchoom/webrtc/sctp/dcep/DataChannelMessage$Open;BSILjava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/dcep/DataChannelMessage$Open;
+	public fun encode (Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/PlatformBuffer;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getChannelType-Q8H-qEE ()B
+	public final fun getLabel ()Ljava/lang/String;
+	public fun getMessageType-w2LRezQ ()B
+	public final fun getPriority-Mh2AYeg ()S
+	public final fun getProtocol ()Ljava/lang/String;
+	public final fun getReliabilityParameter-pVg5ArA ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason {
+}
+
+public final class com/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason$Empty : com/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason$Empty;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason$InvalidUtf8 : com/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason$InvalidUtf8;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason$LabelProtocolBeyondMessage : com/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason$LabelProtocolBeyondMessage;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason$OpenTooShort : com/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason$OpenTooShort;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason$UnknownMessageType : com/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason {
+	public synthetic fun <init> (BLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-w2LRezQ ()B
+	public final fun copy-7apg3OU (B)Lcom/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason$UnknownMessageType;
+	public static synthetic fun copy-7apg3OU$default (Lcom/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason$UnknownMessageType;BILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/dcep/DataChannelRejectReason$UnknownMessageType;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getMessageType-w2LRezQ ()B
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/dcep/Reliability {
+}
+
+public final class com/ditchoom/webrtc/sctp/dcep/Reliability$PartialReliableRetransmit : com/ditchoom/webrtc/sctp/dcep/Reliability {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/dcep/Reliability$PartialReliableRetransmit;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/dcep/Reliability$PartialReliableTimed : com/ditchoom/webrtc/sctp/dcep/Reliability {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/dcep/Reliability$PartialReliableTimed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/dcep/Reliability$Reliable : com/ditchoom/webrtc/sctp/dcep/Reliability {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/dcep/Reliability$Reliable;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/dcep/Reliability$Unknown : com/ditchoom/webrtc/sctp/dcep/Reliability {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/webrtc/sctp/dcep/Reliability$Unknown;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/dcep/Reliability$Unknown;IILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/dcep/Reliability$Unknown;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getLowBits ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
 }
 

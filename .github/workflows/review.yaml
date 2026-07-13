@@ -40,6 +40,25 @@ jobs:
       - name: Fuzz the STUN decoder (time-boxed)
         run: ./gradlew :webrtc-stun:stunCodecFuzz -PstunFuzzSeconds=120 --no-configuration-cache
 
+  # T0′ (RFC §7): time-boxed coverage-guided Jazzer fuzzing of the pure-Kotlin SDP parser, warm-started
+  # from the committed seed corpus. A crash-free run is the gate; findings are demoted to committed
+  # regression fixtures + corpus seeds.
+  fuzz-sdp:
+    name: "Fuzz (SDP codec, Jazzer)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+      - name: Fuzz the SDP parser (time-boxed)
+        run: ./gradlew :webrtc-sdp:sdpCodecFuzz -PsdpFuzzSeconds=120 --no-configuration-cache
+
   validate:
     needs: [build-linux, build-apple]
     uses: ./.github/workflows/validate-artifacts.yaml

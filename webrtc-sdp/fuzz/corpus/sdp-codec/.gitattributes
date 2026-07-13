@@ -1,0 +1,2 @@
+# SDP fuzz seeds are exact byte fixtures (CRLF is significant) — never normalize line endings.
+* -text

@@ -16,7 +16,8 @@ play in the socket repo.
 | 2026-07-11 | Signaling is an injected seam, never implemented | Correct layering + deterministic offer/answer tests. RFC §2. |
 | 2026-07-11 | Every protocol core sans-io + caller-clocked | The quiche `Instant::now()` lesson, inverted — the whole stack must run under `runTest` virtual time. RFC §5.1. |
 | 2026-07-11 | `webrtc-libwebrtc` bootstrap backend **parked, not planned** | Legitimate only if time-to-first-ship dominates; three behaviors to reconcile and throwaway wrapper code otherwise. Revisit only with an explicit deadline driver. |
-| *open* | RFC §11.1 — simulation-engine home (recommend: standalone `ditchoom-simulation`) | must resolve in W0 (cross-repo) |
+| 2026-07-13 | **Codec track complete; transport track gated on a deterministic UDP `commonMain`** | W1/W6-sdp/W5-sctp (the pure codecs) are merged. W2+ needs an unconnected, deterministic UDP `DatagramChannel` in `commonMain` (per-datagram src on recv, arbitrary dest on send), runnable under `runTest` on every target — W0's open socket promotion. **Being built separately with the socket sibling (`../git/socket`)**; must land upstream + release to Central before webrtc consumes it. |
+| *open* | RFC §11.1 — simulation-engine home (recommend: standalone `ditchoom-simulation`) | must resolve in W0 (cross-repo) — **active: bundled with the socket UDP-seam work above** |
 | *open* | RFC §11.2 — SCTP subset scope (recommend: dcSCTP-style, no multihoming/interleaving) | must resolve before W5 |
 | *open* | RFC §11.3 — DTLS 1.2-first interop vs 1.3 (recommend: both via BoringSSL config, interop-test 1.2) | must resolve before W4 |
 | *open* | RFC §11.4 — mDNS (recommend: resolve-only in W3, responder deferred) | must resolve before W3 |
@@ -61,7 +62,15 @@ How the work actually gets driven, based on what has worked in buffer/socket:
 Legend: **Exit** = merge criteria. All waves also require: ktlint/detekt clean, `.api` files
 checked in, CHANGELOG entry, standing-directive greps green.
 
-### W0 — Foundations (cross-repo) · status: ☐
+> **Status snapshot (2026-07-13):** the pure-codec / socket-free track is **complete** — W1 (`webrtc-stun`),
+> W6-partial (`webrtc-sdp`), and W5-codec-floor (`webrtc-sctp`) are all merged to `main` (all
+> `skip-release`; nothing on Central yet). **Everything remaining needs the transport seam** — an
+> unconnected, deterministic UDP `DatagramChannel` in `commonMain` (W0's open socket promotion), which
+> is being built separately with the socket sibling repo (`../git/socket`). **W2+ is blocked on that
+> landing upstream + released** (no unpublished-snapshot dependency). Resolve §11.1/§11.3/§11.4
+> alongside it. See `HANDOFF.md`.
+
+### W0 — Foundations (cross-repo) · status: ✅ merged
 Two upstream PRs + repo bootstrap. **Resolves RFC §11.1 first.**
 1. **socket PR:** promote an unconnected `DatagramChannel` seam (per-datagram source address on
    receive, arbitrary destination on send — generalizing `UdpChannel`'s server-side `dest`/`PathKey`)
@@ -75,7 +84,7 @@ Two upstream PRs + repo bootstrap. **Resolves RFC §11.1 first.**
 - **Exit:** both upstream artifacts on Central; empty webrtc module tree builds and publishes a
   0.0.x to mavenLocal on every target; CI green on the three-runner matrix.
 
-### W1 — `webrtc-stun` · status: ☐ · *parallel-ok with W2, W4 after W0*
+### W1 — `webrtc-stun` · status: ✅ merged (PR #4) · *parallel-ok with W2, W4 after W0*
 STUN codec (RFC 8489) as buffer-codec KSP schemas; sans-io transaction machine (retransmit
 schedule as `nextDeadline`); MESSAGE-INTEGRITY/FINGERPRINT verified in place over slices; TURN
 message extensions (RFC 8656) codec-only.
@@ -83,7 +92,7 @@ message extensions (RFC 8656) codec-only.
   time-boxed in CI with committed seed corpus; parse throughput benchmark in `PERFORMANCE.md`;
   wrapper-transparency tests pass.
 
-### W2 — vnet · status: ☐ · *parallel-ok with W1, W4*
+### W2 — vnet · status: ☐ **blocked on the deterministic UDP `commonMain` (socket track)** · *parallel-ok with W1, W4*
 In the simulation module: NAT models (full-cone/address-restricted/port-restricted/symmetric,
 mapping lifetimes, hairpinning), virtual TURN server, impairment pipe (loss/reorder/dup/delay,
 seeded), topology-as-data builders. Implements the W0 `DatagramChannel` seam.
@@ -110,7 +119,11 @@ verification (a=fingerprint model, not CA validation).
   (RNG-drift bounds asserted, the Tier-B discipline); retransmission fixture (dropped flight)
   green; wrapper-free invariant in fuzz set; Apple/Android lanes runtime-validated on runners.
 
-### W5 — `webrtc-sctp` + DCEP + DataChannel · status: ☐ · *needs W3+W4; resolves §11.2 first*
+### W5 — `webrtc-sctp` + DCEP + DataChannel · status: ◑ codec floor merged (PR #6); association FSM + DataChannel remain · *needs W3+W4; resolves §11.2 first*
+The **chunk codec + DCEP messages** (pure, sans-io, commonMain) are done and merged. The **SCTP
+association state machine** (4-way handshake, TSN/SACK/RTO, congestion control, fragmentation/
+reassembly over `StreamProcessor`), RFC 3758 partial-reliability, and the `DataChannel` implementing
+buffer-flow `StreamMux` remain — they need DTLS (W4) + the transport seam.
 Pure-Kotlin sans-io SCTP subset over DTLS: chunks as buffer-codec schemas, TSN/SACK, RTO calc,
 congestion control, fragmentation/reassembly over `StreamProcessor`, orderly+abort shutdown. DCEP
 (RFC 8832) open/ack. `DataChannel` implementing buffer-flow `StreamMux` (+ `ByteStreamMux` when it
@@ -120,7 +133,11 @@ lands); partial-reliability (RFC 3758) for maxRetransmits/maxPacketLifeTime.
   platforms; SCTP invariants (no intra-stream reorder, no unacked-drop, DCEP converges) in fuzz
   set; loop-until-dry fuzz campaign run once with all finds fixed or filed.
 
-### W6 — `webrtc` root: JSEP + PeerConnection + browser actuals · status: ☐ · *needs W5*
+### W6 — `webrtc` root: JSEP + PeerConnection + browser actuals · status: ◑ SDP codec + JSEP machine merged (PR #5); PeerConnection + browser actuals remain · *needs W5*
+`webrtc-sdp` (hand-written text codec, T0 + fuzz) and the **sans-io JSEP offer/answer machine** are
+done and merged. The **`PeerConnection` session API**, the browser/wasmJs `peerConnectionSupport()`
+`RTCPeerConnection` delegation, and the `SocketException`-hierarchy error sweep remain — they need the
+ICE/DTLS/SCTP stack (and thus the transport seam) beneath them.
 `webrtc-sdp` parser/writer (hand-written text codec, T0 rigor + fuzz); JSEP offer/answer state
 machine (sans-io); `PeerConnection` session API (SessionTransport `use{}` convention,
 capability-by-type); browser/wasmJs `peerConnectionSupport()` delegating to `RTCPeerConnection`;

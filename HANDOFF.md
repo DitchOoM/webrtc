@@ -3,60 +3,90 @@
 Live state of the current wave. A resumed session reads `RFC_KMP_WEBRTC.md` → `EXECUTION_PLAN.md` →
 this file. Update it whenever you stop mid-wave.
 
-## Where we are: **W5 (codec floor) `webrtc-sctp` — code complete on `feat/w5-webrtc-sctp`, green on all local lanes**
+## Where we are: **the pure-codec / socket-free track is COMPLETE — next work needs the transport, which is blocked on a deterministic UDP `commonMain`**
 
-Built on the **socket-free / non-UDP track** (the pure codecs that build and unit-test standalone,
-exactly as W1's `webrtc-stun` and W6's `webrtc-sdp` did) — **no** vnet, DTLS, ICE gathering, or
-DatagramChannel dependency. Branched off `feat/w6-webrtc-sdp` (which carries W1+W6), so a PR to `main`
-includes W1+W6 until those merge. `webrtc-sctp` deps are **`buffer` + `buffer-codec`** only (the
-placeholder's `:webrtc-dtls` / `buffer-flow` deps were removed — those belong to the association/mux
-layer on the DTLS track). **All tests green on JVM, JS node+browser, wasmJs node+browser, Linux/native,
-Android host** (`:webrtc-sctp:check` EXIT 0); `publishToMavenLocal` proven.
+All three Phase-1 protocol codecs are **merged to `main`** and green on every lane. Nothing is released
+to Central yet (every merge was `skip-release`; a `v0.0.1` tag exists from an earlier release exercise).
 
-What landed (`webrtc-sctp/src/commonMain`):
-- **SCTP common header (RFC 4960 §3.1)** as a KSP `@ProtocolMessage` schema (`SctpCommonHeaderCodec`);
-  the chunk TLV framing + INIT/INIT-ACK parameter and ERROR/ABORT cause sub-TLVs are hand-written
-  (SCTP's "length excludes trailing pad" + nested TLVs are outside the declarative codec), decoded as
-  **zero-copy slice views** over the datagram.
-- **Sealed `SctpChunk`** — DATA, INIT, INIT-ACK, SACK, HEARTBEAT(/ACK), ABORT, SHUTDOWN(/ACK),
-  ERROR, COOKIE-ECHO(/ACK), SHUTDOWN-COMPLETE, FORWARD-TSN (RFC 3758), + `Unrecognized` (verbatim
-  forward-compat). `SctpPacket.decode` is **total** → typed `SctpRejectReason`, never a throw.
-- **CRC32c (RFC 4960 §6.8 / RFC 3309)** self-contained in `Crc32c` — a 256-entry table in a **managed
-  `ReadBuffer` (no `IntArray`, directive #1)**, word-batched input read (buffer's `crc32` shape),
-  stored little-endian per App. B, verified/placed in-place. Validated vs the `0xE3069283` KAT + an
-  independent bitwise reference over thousands of random inputs.
-- **Value-class identifiers** — `Tsn` (RFC 1982 serial arithmetic), `StreamId`,
-  `StreamSequenceNumber`, `PayloadProtocolId` (WebRTC PPIDs), `VerificationTag`; bit fields wrapped
-  (`DataChunkFlags`, `SctpChunkType.unrecognizedAction`, DCEP `ChannelType` → sealed `Reliability`).
-- **DCEP (RFC 8832)** in `dcep/` — `DataChannelMessage.{Open,Ack}`, total typed-reject decode,
-  UTF-8 label/protocol (invalid UTF-8 = typed miss, not a throw).
-- **T0 floor** — per-chunk round-trip (typed fields + byte-exact re-encode + checksum), frozen
-  RFC-layout golden vectors (INIT/SACK/DCEP-over-DATA), malformed corpus + 20k totality + single-byte
-  mutation, wrapper-transparency (non-zero-offset slice), CRC32c conformance. **Jazzer lane**
-  (`sctpCodecFuzz`, wired into `review.yaml` at 120s) with a 6-seed committed corpus — a 90s local run
-  was ~26M execs clean. Benchmark in `PERFORMANCE.md`; `.api` committed; committed detekt baseline;
-  ktlint + apiCheck + standing-directive greps green.
+| Wave | What | Status |
+|---|---|---|
+| **W0** | foundations (repo, convention plugin, CI, publish pipeline) | ✅ merged |
+| **W1** | `webrtc-stun` — STUN/TURN codec + sans-io transactions | ✅ merged (PR #4) |
+| **W6 (partial)** | `webrtc-sdp` — SDP text codec + sans-io JSEP machine | ✅ merged (PR #5) |
+| **W5 (codec floor)** | `webrtc-sctp` — SCTP chunk codec + DCEP messages | ✅ merged (PR #6) |
 
-### W5-SCTP notes / next steps
-- **One Jazzer find during bring-up, fixed with its fixture** (directive #5): a chunk's `valueSize` was
-  computed from the *untruncated* `paddedLength(length)` of a malformed final sub-TLV whose padding
-  overran its chunk region; the decoder truncates the padded view, so `writeValue` wrote fewer bytes
-  than allocated → `resetForRead` shrank the limit → the checksum's bulk `getLong` read off the buffer.
-  Fix: compute `valueSize` from the **actual** stored padded-view sizes (seed
-  `regression-abort-cause-overrun.bin`).
-- **Not started (rest of W5, gated on W4 DTLS + a transport):** the SCTP association state machine
-  (4-way handshake, TSN/SACK/RTO, congestion control, fragmentation/reassembly over `StreamProcessor`),
-  partial-reliability (RFC 3758 abandon logic), and the `DataChannel` implementing buffer-flow
-  `StreamMux`. Those need DTLS + the DatagramChannel seam, so they stay parked on the deferred UDP track
-  (the placeholder module's `:webrtc-dtls` + `buffer-flow` deps get restored then).
-- **Apple lanes are compile-faithful here** (this Linux box); runtime-validate on the macOS runner and
-  say so in the PR (the `V6_MAC_VALIDATION` convention).
-- **A fast/native CRC32c belongs upstream in `buffer` core** (the `ReadBuffer.crc32` precedent) if a hot
-  bulk-checksum path ever appears — additive, non-blocking; noted in `PERFORMANCE.md`.
+`main` history: `14a4f07` W5 (#6) → `72535bb` W6 no-op (#7, empty — see the git note below) →
+`59397c2` W6 (#5) → `17e04d6` W1 (#4). Both modules present once (`webrtc-sdp` 14 files,
+`webrtc-sctp` 13); `webrtc-sctp` deps are `buffer` + `buffer-codec` only.
+
+### The blocker for everything next: a deterministic UDP `commonMain`
+The pure codecs (stun/sdp/sctp) were buildable and testable **without any I/O**. Everything that remains
+— W2 (vnet), W3 (ice), W4 (dtls), the rest of W5 (SCTP association + `DataChannel`), the rest of W6
+(`PeerConnection`), W7 (harness) — needs a **transport seam**: an **unconnected, deterministic UDP
+`DatagramChannel` in `commonMain`** (per-datagram source address on receive, arbitrary dest on send),
+runnable under `runTest` virtual time on every target. That is W0's still-open socket promotion
+(RFC §11.1 simulation-engine home + the `DatagramChannel` seam into socket-core) and is being built
+**separately, with the socket sibling repo / socket agent** (`../git/socket`). **Until that lands
+upstream and is released to Central, W2+ cannot start** — webrtc must not depend on an unpublished
+sibling snapshot (the W0 discipline). Open cross-repo decisions to settle alongside it: §11.1 (sim
+home — recommend standalone `ditchoom-simulation`), §11.3 (DTLS 1.2-vs-1.3, before W4), §11.4 (mDNS,
+before W3).
+
+### Recommended next wave once the UDP seam is available: **W2 (vnet)**
+Pure-Kotlin, sans-io, fully local-testable under `runTest` (no native deps) — NAT models
+(full-cone / address-restricted / port-restricted / symmetric, mapping lifetimes, hairpinning) +
+seeded impairment pipe (loss/reorder/dup/delay) + topology-as-data builders, implementing the W0
+`DatagramChannel` seam. Exit: NAT-model property tests + two-peer echo over each topology under virtual
+time, all platforms. W2 unblocks W3 (ICE), the integration spine. W4 (`webrtc-dtls`, BoringSSL) is
+parallelizable but is the one native dep and needs Apple/Android runtime validation on runners — a
+worse fit for local iteration.
+
+### Small socket-free follow-ups still possible in-repo (optional, low-value)
+- Thread the deferred `BufferFactory` seam through `webrtc-stun` / `webrtc-sctp` decode/verify/builder
+  hot paths (they hardwire `BufferFactory.Default`/`.managed()`; additive/non-breaking). The
+  `TrackingBufferFactory` no-leak half is blocked on the §11.1 sim-engine promotion.
+- A fast/native CRC32c belongs upstream in `buffer` core (the `ReadBuffer.crc32` precedent) if a hot
+  bulk-checksum path ever appears — additive; noted in `PERFORMANCE.md`.
+
+### Standing reminders for the next session
+- **`git fetch` and check remote tips via `gh api …/branches/main` before reasoning about what's
+  merged.** A stale local `origin/main` tracking ref this session caused a redundant, empty W6 re-merge
+  (PR #7, `72535bb`, 0 changes — harmless but avoidable).
+- **Apple lanes are compile-faithful on this Linux box** — runtime-validate on the macOS runner and say
+  so in the PR (`V6_MAC_VALIDATION`). W1/W6/W5 were all Apple-validated on the runner at merge.
+- **Release trap:** merging a code PR auto-publishes to Central unless `skip-release` is applied via the
+  REST API (`gh api repos/DitchOoM/webrtc/issues/<n>/labels -f 'labels[]=skip-release'`) and verified —
+  `gh pr edit --add-label` fails silently here.
 
 ---
 
-## Prior wave: **W6 (partial) `webrtc-sdp` — code complete on `feat/w6-webrtc-sdp`, green on all local lanes**
+## Landed wave detail (history)
+
+### W5 (codec floor) `webrtc-sctp` — merged (PR #6)
+- **SCTP common header (RFC 4960 §3.1)** as a KSP `@ProtocolMessage` schema (`SctpCommonHeaderCodec`);
+  chunk TLV framing + INIT/INIT-ACK parameter and ERROR/ABORT cause sub-TLVs hand-written, decoded as
+  **zero-copy slice views**.
+- **Sealed `SctpChunk`** — DATA, INIT, INIT-ACK, SACK, HEARTBEAT(/ACK), ABORT, SHUTDOWN(/ACK), ERROR,
+  COOKIE-ECHO(/ACK), SHUTDOWN-COMPLETE, FORWARD-TSN (RFC 3758), + `Unrecognized`. `SctpPacket.decode`
+  is **total** → typed `SctpRejectReason`.
+- **CRC32c** self-contained (`Crc32c`) — 256-entry table in a **managed `ReadBuffer` (no `IntArray`)**,
+  word-batched, little-endian field per App. B; validated vs the `0xE3069283` KAT + a bitwise reference.
+- **Value-class ids** (`Tsn` w/ RFC 1982 arithmetic, `StreamId`, `StreamSequenceNumber`,
+  `PayloadProtocolId`, `VerificationTag`); wrapped bit fields (`DataChunkFlags`, `unrecognizedAction`,
+  DCEP `ChannelType` → sealed `Reliability`). **DCEP** `DataChannelMessage.{Open,Ack}`.
+- **T0 floor** — round-trips, frozen golden vectors, malformed corpus + 20k totality + mutation,
+  wrapper-transparency, CRC32c conformance. **Jazzer** `sctpCodecFuzz` (in `review.yaml`, 120s); a CI
+  run was clean.
+- **Two bugs found + fixed with fixtures** (directive #5): (1) a Jazzer find — `valueSize` from the
+  *untruncated* `paddedLength` of a malformed final sub-TLV shrank the re-encode buffer under the
+  checksum read → now from actual padded-view sizes (`regression-abort-cause-overrun.bin`); (2) a
+  wire-correctness review find — `utf8Size` miscounted non-BMP (emoji) DCEP labels → now measures the
+  actual UTF-8 bytes. Reviewer's "chunk length includes final pad" flag was confirmed RFC 4960
+  §3.2-sanctioned (both forms accepted; decoder round-trips both) and documented.
+
+---
+
+## Prior wave: **W6 (partial) `webrtc-sdp` — merged (PR #5)**
 
 Built on the **socket-free / non-UDP track** (the pure codecs + sans-io cores that build and unit-test
 standalone, exactly as W1's `webrtc-stun` did) — **no** vnet, ICE gathering, DTLS, or DatagramChannel
@@ -90,22 +120,19 @@ What landed (`webrtc-sdp/src/commonMain`):
   baseline; ktlint + apiCheck + standing-directive greps green.
 
 ### W6-SDP notes / next steps
-- **Not started (rest of W6, gated on W5):** `PeerConnection` session API, browser/wasmJs
+- **Not started (rest of W6, gated on the transport):** `PeerConnection` session API, browser/wasmJs
   `peerConnectionSupport()` `RTCPeerConnection` delegation, the `SocketException`-hierarchy error
-  sweep. Those need the ICE/DTLS/SCTP stack beneath them, so they stay parked on the deferred UDP track.
-- **Apple lanes are compile-faithful here** (this Linux box); runtime-validate on the macOS runner and
-  say so in the PR (the `V6_MAC_VALIDATION` convention).
-- **Branch/PR base:** `feat/w6-webrtc-sdp` was cut from the (locally unmerged) W1 branch, so a PR to
-  `main` would include W1 until W1 merges. Prefer basing the SDP PR on the W1 branch, or land W1 first.
-- Optional socket-free follow-ups if picking this track up again: `webrtc-sctp` chunk codec + DCEP
-  (RFC 8831/8832) T0 floor, or the deferred W1 `BufferFactory`-seam threading through webrtc-stun.
+  sweep. Those need the ICE/DTLS/SCTP stack beneath them (see the top-of-doc UDP-seam blocker). The
+  browser delegation shell is the one piece nominally doable socket-free (it wraps the browser's own
+  `RTCPeerConnection`), but it needs the `PeerConnection` API surface defined first.
+- W6 was Apple-validated on the macOS runner at merge (`V6_MAC_VALIDATION`).
 
 ---
 
-## Prior wave: **W1 `webrtc-stun` — code complete, unblocked (buffer 6.10.0 released), PR #4 ready for review**
+## Prior wave: **W1 `webrtc-stun` — merged (PR #4)**
 
-W1 is built and **green on all 7 local lanes** (JVM, JS node+browser, wasmJs node+browser, Linux/native,
-Android host — 34 tests each). What landed on `feat/w1-webrtc-stun`:
+W1 is **green on all 7 local lanes** (JVM, JS node+browser, wasmJs node+browser, Linux/native,
+Android host — 34 tests each) and Apple-validated on the macOS runner. What landed:
 
 - **STUN codec (RFC 8489):** header via a KSP `@ProtocolMessage` schema (`StunHeaderCodec`); the TLV
   attribute layer hand-written (STUN's 4-byte padding + MI/FINGERPRINT span-with-rewritten-length are
@@ -135,11 +162,10 @@ dev-pin has been removed from the convention — a clean `:webrtc-stun:allTests`
 all local lanes. The W0 discipline held: cross-repo primitive landed upstream + released *before* webrtc
 consumes it (no unpublished-snapshot dependency on `main`).
 
-**Release decision for merging #4:** the W0 plan intended W1's merge to be the **first real webrtc
-Central release**. Decide `skip-release` (draft/hold the first publish) vs. letting the merge publish
-`0.0.1`/`0.1.0`. Trap (from W0): `gh pr edit --add-label skip-release` fails silently here — use
-`gh api repos/DitchOoM/webrtc/issues/4/labels -f 'labels[]=skip-release'` and verify, or dispatch
-`merged.yaml` directly.
+**Release decision (resolved):** W1, W6, and W5 all merged with `skip-release` — no Central publish yet.
+The first real `com.ditchoom:webrtc` release is still deferred (a `v0.0.1` tag exists from an earlier
+release exercise). Trap (from W0): `gh pr edit --add-label skip-release` fails silently here — apply via
+`gh api repos/DitchOoM/webrtc/issues/<n>/labels -f 'labels[]=skip-release'` and verify before merging.
 
 ### W1 adversarial-review gate (pre-merge)
 A subagent review pass (the EXECUTION_PLAN §1 gate) found **no wire-correctness or crash defects** — it

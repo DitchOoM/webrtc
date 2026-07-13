@@ -19,8 +19,12 @@ target. Browsers are the sole exception: there `peerConnectionSupport()` delegat
 4. `DESIGN_PRINCIPLES.md` — the type-safety + zero-copy manifesto, with code patterns.
 5. `TESTING.md` — unit → integration → interop strategy, the harness, external vectors, per-wave test exit criteria.
 
-Current state: **W0 (foundations)**. The module tree builds and publishes a 0.0.x; the protocol cores
-are placeholders. See `EXECUTION_PLAN.md` for what each wave adds.
+Current state: **the pure-codec / socket-free track is complete** — W1 (`webrtc-stun`), W6-partial
+(`webrtc-sdp`), and W5-codec-floor (`webrtc-sctp` chunk codec + DCEP) are all merged to `main` (all
+`skip-release`; nothing on Central yet). Everything remaining (W2 vnet, W3 ice, W4 dtls, the SCTP
+association layer, `PeerConnection`, W7 harness) needs the **transport seam** — a deterministic UDP
+`DatagramChannel` in `commonMain`, W0's open socket promotion, **being built separately with the socket
+sibling repo**. W2+ is blocked until it lands upstream + releases. See `HANDOFF.md` → `EXECUTION_PLAN.md`.
 
 ## Standing directives (every session, every wave)
 

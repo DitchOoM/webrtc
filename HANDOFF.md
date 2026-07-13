@@ -3,7 +3,53 @@
 Live state of the current wave. A resumed session reads `RFC_KMP_WEBRTC.md` → `EXECUTION_PLAN.md` →
 this file. Update it whenever you stop mid-wave.
 
-## Where we are: **W1 `webrtc-stun` — code complete, unblocked (buffer 6.10.0 released), PR #4 ready for review**
+## Where we are: **W6 (partial) `webrtc-sdp` — code complete on `feat/w6-webrtc-sdp`, green on all local lanes**
+
+Built on the **socket-free / non-UDP track** (the pure codecs + sans-io cores that build and unit-test
+standalone, exactly as W1's `webrtc-stun` did) — **no** vnet, ICE gathering, DTLS, or DatagramChannel
+dependency, so none of the deferred RFC §11.1 (sim-engine home) / §11.3 (DTLS) decisions are on this
+path. Branched off the W1 branch (released `buffer 6.10.0`); `webrtc-sdp` deps are `buffer` core only
+(SDP is text — no `buffer-codec` KSP schema, no crypto). **36 tests green on JVM, JS node+browser,
+wasmJs node+browser, Linux/native, Android host** (`:webrtc-sdp:check` EXIT 0).
+
+What landed (`webrtc-sdp/src/commonMain`):
+- **SDP parser/serializer (RFC 8866)** — a hand-written line codec. The datagram is decoded to a
+  `CharSequence` once (`parseText` accepts any `CharSequence` — no re-copy) and parsed index-based
+  into a **round-trip-faithful** model: `SessionDescription` (session lines + `MediaDescription`s),
+  every line (`SdpLine`) kept verbatim so parse→`encode` reproduces a canonical CRLF document
+  byte-for-byte. `SessionDescription.parse` is **total** — hostile/non-UTF-8 bytes yield a sealed
+  `SdpRejectReason`, never a throw. Structural failures are rejects; a broken single line
+  (`o=`/`m=`/`a=fingerprint`) is a null typed-reader miss (the `RawAttribute` discipline for text).
+- **Typed surface** — value-class `Mid`; `Origin`/`MediaLine`/`Fingerprint`/`SetupRole`/`SdpType`/
+  `SignalingState`; on-demand interpreters (`SdpSection` extensions + `MediaDescription` methods) for
+  the JSEP data-channel attributes, with session↔media fallback (RFC 8829 §5.2.1).
+- **`SessionDescriptionBuilder`** + `dataChannelDescription` (RFC 8841 data-channel shape).
+- **Sans-io JSEP machine** — `JsepSession.handle(event, now)` + `nextDeadline()` (always null: JSEP
+  arms no timers). Enforces the RFC 8829 §3.5.1 signaling transition table + rollback; illegal edges
+  are typed `JsepError.InvalidTransition` outputs that leave state untouched. Entropy injected
+  (`Random` → `o=` session id); driven by a scripted signaling seam (direct `handle` calls in tests),
+  no sockets.
+- **T0 floor** — real Chrome/Firefox/Pion offer/answer vectors (parse + typed fields + byte-exact
+  round-trip), malformed corpus + two 20k-input totality properties + single-line-drop mutation,
+  wrapper-transparency (pooled / non-zero-offset slice), builder round-trips, full JSEP table. **Jazzer
+  lane** (`sdpCodecFuzz`, wired into `review.yaml` at 120s) with a 7-seed committed corpus — a 30s
+  local run was 1M+ execs clean. Benchmark in `PERFORMANCE.md`; `.api` committed; committed detekt
+  baseline; ktlint + apiCheck + standing-directive greps green.
+
+### W6-SDP notes / next steps
+- **Not started (rest of W6, gated on W5):** `PeerConnection` session API, browser/wasmJs
+  `peerConnectionSupport()` `RTCPeerConnection` delegation, the `SocketException`-hierarchy error
+  sweep. Those need the ICE/DTLS/SCTP stack beneath them, so they stay parked on the deferred UDP track.
+- **Apple lanes are compile-faithful here** (this Linux box); runtime-validate on the macOS runner and
+  say so in the PR (the `V6_MAC_VALIDATION` convention).
+- **Branch/PR base:** `feat/w6-webrtc-sdp` was cut from the (locally unmerged) W1 branch, so a PR to
+  `main` would include W1 until W1 merges. Prefer basing the SDP PR on the W1 branch, or land W1 first.
+- Optional socket-free follow-ups if picking this track up again: `webrtc-sctp` chunk codec + DCEP
+  (RFC 8831/8832) T0 floor, or the deferred W1 `BufferFactory`-seam threading through webrtc-stun.
+
+---
+
+## Prior wave: **W1 `webrtc-stun` — code complete, unblocked (buffer 6.10.0 released), PR #4 ready for review**
 
 W1 is built and **green on all 7 local lanes** (JVM, JS node+browser, wasmJs node+browser, Linux/native,
 Android host — 34 tests each). What landed on `feat/w1-webrtc-stun`:

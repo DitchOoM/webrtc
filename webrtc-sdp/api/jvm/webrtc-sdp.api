@@ -1,3 +1,255 @@
+public final class com/ditchoom/webrtc/sdp/Attribute {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/Attribute;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sdp/Attribute;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/Attribute;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getName ()Ljava/lang/String;
+	public final fun getValue ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/DataChannelDescriptionKt {
+	public static final fun dataChannelDescription (Lcom/ditchoom/webrtc/sdp/DataChannelParameters;Ljava/lang/String;J)Lcom/ditchoom/webrtc/sdp/SessionDescription;
+}
+
+public final class com/ditchoom/webrtc/sdp/DataChannelParameters {
+	public static final field Companion Lcom/ditchoom/webrtc/sdp/DataChannelParameters$Companion;
+	public static final field DEFAULT_CONNECTION Ljava/lang/String;
+	public static final field DEFAULT_MAX_MESSAGE_SIZE J
+	public static final field DEFAULT_SCTP_PORT I
+	public static final field DISCARD_PORT Ljava/lang/String;
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/webrtc/sdp/Fingerprint;Lcom/ditchoom/webrtc/sdp/SetupRole;Ljava/lang/String;IJZLjava/lang/String;Ljava/lang/String;ZILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/webrtc/sdp/Fingerprint;Lcom/ditchoom/webrtc/sdp/SetupRole;Ljava/lang/String;IJZLjava/lang/String;Ljava/lang/String;ZLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component10 ()Ljava/lang/String;
+	public final fun component11 ()Z
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Lcom/ditchoom/webrtc/sdp/Fingerprint;
+	public final fun component4 ()Lcom/ditchoom/webrtc/sdp/SetupRole;
+	public final fun component5-QcrJwnM ()Ljava/lang/String;
+	public final fun component6 ()I
+	public final fun component7 ()J
+	public final fun component8 ()Z
+	public final fun component9 ()Ljava/lang/String;
+	public final fun copy-eCkjxrM (Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/webrtc/sdp/Fingerprint;Lcom/ditchoom/webrtc/sdp/SetupRole;Ljava/lang/String;IJZLjava/lang/String;Ljava/lang/String;Z)Lcom/ditchoom/webrtc/sdp/DataChannelParameters;
+	public static synthetic fun copy-eCkjxrM$default (Lcom/ditchoom/webrtc/sdp/DataChannelParameters;Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/webrtc/sdp/Fingerprint;Lcom/ditchoom/webrtc/sdp/SetupRole;Ljava/lang/String;IJZLjava/lang/String;Ljava/lang/String;ZILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/DataChannelParameters;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getBundle ()Z
+	public final fun getConnection ()Ljava/lang/String;
+	public final fun getFingerprint ()Lcom/ditchoom/webrtc/sdp/Fingerprint;
+	public final fun getIcePwd ()Ljava/lang/String;
+	public final fun getIceUfrag ()Ljava/lang/String;
+	public final fun getMaxMessageSize ()J
+	public final fun getMid-QcrJwnM ()Ljava/lang/String;
+	public final fun getPort ()Ljava/lang/String;
+	public final fun getSctpPort ()I
+	public final fun getSetup ()Lcom/ditchoom/webrtc/sdp/SetupRole;
+	public final fun getTrickle ()Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/DataChannelParameters$Companion {
+}
+
+public final class com/ditchoom/webrtc/sdp/DescriptionEndpoint : java/lang/Enum {
+	public static final field Local Lcom/ditchoom/webrtc/sdp/DescriptionEndpoint;
+	public static final field Remote Lcom/ditchoom/webrtc/sdp/DescriptionEndpoint;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/DescriptionEndpoint;
+	public static fun values ()[Lcom/ditchoom/webrtc/sdp/DescriptionEndpoint;
+}
+
+public final class com/ditchoom/webrtc/sdp/Fingerprint {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/Fingerprint;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sdp/Fingerprint;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/Fingerprint;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getHashFunction ()Ljava/lang/String;
+	public final fun getValue ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/sdp/JsepError {
+}
+
+public final class com/ditchoom/webrtc/sdp/JsepError$InvalidTransition : com/ditchoom/webrtc/sdp/JsepError {
+	public fun <init> (Lcom/ditchoom/webrtc/sdp/SignalingState;Lcom/ditchoom/webrtc/sdp/DescriptionEndpoint;Lcom/ditchoom/webrtc/sdp/SdpType;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sdp/SignalingState;
+	public final fun component2 ()Lcom/ditchoom/webrtc/sdp/DescriptionEndpoint;
+	public final fun component3 ()Lcom/ditchoom/webrtc/sdp/SdpType;
+	public final fun copy (Lcom/ditchoom/webrtc/sdp/SignalingState;Lcom/ditchoom/webrtc/sdp/DescriptionEndpoint;Lcom/ditchoom/webrtc/sdp/SdpType;)Lcom/ditchoom/webrtc/sdp/JsepError$InvalidTransition;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sdp/JsepError$InvalidTransition;Lcom/ditchoom/webrtc/sdp/SignalingState;Lcom/ditchoom/webrtc/sdp/DescriptionEndpoint;Lcom/ditchoom/webrtc/sdp/SdpType;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/JsepError$InvalidTransition;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getEndpoint ()Lcom/ditchoom/webrtc/sdp/DescriptionEndpoint;
+	public final fun getFrom ()Lcom/ditchoom/webrtc/sdp/SignalingState;
+	public final fun getType ()Lcom/ditchoom/webrtc/sdp/SdpType;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/JsepError$MissingDescription : com/ditchoom/webrtc/sdp/JsepError {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sdp/JsepError$MissingDescription;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/JsepError$SessionClosed : com/ditchoom/webrtc/sdp/JsepError {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sdp/JsepError$SessionClosed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/sdp/JsepEvent {
+}
+
+public final class com/ditchoom/webrtc/sdp/JsepEvent$Close : com/ditchoom/webrtc/sdp/JsepEvent {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sdp/JsepEvent$Close;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/JsepEvent$SetLocalDescription : com/ditchoom/webrtc/sdp/JsepEvent {
+	public fun <init> (Lcom/ditchoom/webrtc/sdp/SdpType;Lcom/ditchoom/webrtc/sdp/SessionDescription;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sdp/SdpType;
+	public final fun component2 ()Lcom/ditchoom/webrtc/sdp/SessionDescription;
+	public final fun copy (Lcom/ditchoom/webrtc/sdp/SdpType;Lcom/ditchoom/webrtc/sdp/SessionDescription;)Lcom/ditchoom/webrtc/sdp/JsepEvent$SetLocalDescription;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sdp/JsepEvent$SetLocalDescription;Lcom/ditchoom/webrtc/sdp/SdpType;Lcom/ditchoom/webrtc/sdp/SessionDescription;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/JsepEvent$SetLocalDescription;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDescription ()Lcom/ditchoom/webrtc/sdp/SessionDescription;
+	public final fun getType ()Lcom/ditchoom/webrtc/sdp/SdpType;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/JsepEvent$SetRemoteDescription : com/ditchoom/webrtc/sdp/JsepEvent {
+	public fun <init> (Lcom/ditchoom/webrtc/sdp/SdpType;Lcom/ditchoom/webrtc/sdp/SessionDescription;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sdp/SdpType;
+	public final fun component2 ()Lcom/ditchoom/webrtc/sdp/SessionDescription;
+	public final fun copy (Lcom/ditchoom/webrtc/sdp/SdpType;Lcom/ditchoom/webrtc/sdp/SessionDescription;)Lcom/ditchoom/webrtc/sdp/JsepEvent$SetRemoteDescription;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sdp/JsepEvent$SetRemoteDescription;Lcom/ditchoom/webrtc/sdp/SdpType;Lcom/ditchoom/webrtc/sdp/SessionDescription;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/JsepEvent$SetRemoteDescription;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDescription ()Lcom/ditchoom/webrtc/sdp/SessionDescription;
+	public final fun getType ()Lcom/ditchoom/webrtc/sdp/SdpType;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/sdp/JsepOutput {
+}
+
+public final class com/ditchoom/webrtc/sdp/JsepOutput$DescriptionApplied : com/ditchoom/webrtc/sdp/JsepOutput {
+	public fun <init> (Lcom/ditchoom/webrtc/sdp/DescriptionEndpoint;Lcom/ditchoom/webrtc/sdp/SdpType;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sdp/DescriptionEndpoint;
+	public final fun component2 ()Lcom/ditchoom/webrtc/sdp/SdpType;
+	public final fun copy (Lcom/ditchoom/webrtc/sdp/DescriptionEndpoint;Lcom/ditchoom/webrtc/sdp/SdpType;)Lcom/ditchoom/webrtc/sdp/JsepOutput$DescriptionApplied;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sdp/JsepOutput$DescriptionApplied;Lcom/ditchoom/webrtc/sdp/DescriptionEndpoint;Lcom/ditchoom/webrtc/sdp/SdpType;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/JsepOutput$DescriptionApplied;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getEndpoint ()Lcom/ditchoom/webrtc/sdp/DescriptionEndpoint;
+	public final fun getType ()Lcom/ditchoom/webrtc/sdp/SdpType;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/JsepOutput$Rejected : com/ditchoom/webrtc/sdp/JsepOutput {
+	public fun <init> (Lcom/ditchoom/webrtc/sdp/JsepError;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sdp/JsepError;
+	public final fun copy (Lcom/ditchoom/webrtc/sdp/JsepError;)Lcom/ditchoom/webrtc/sdp/JsepOutput$Rejected;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sdp/JsepOutput$Rejected;Lcom/ditchoom/webrtc/sdp/JsepError;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/JsepOutput$Rejected;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getError ()Lcom/ditchoom/webrtc/sdp/JsepError;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/JsepOutput$SignalingStateChanged : com/ditchoom/webrtc/sdp/JsepOutput {
+	public fun <init> (Lcom/ditchoom/webrtc/sdp/SignalingState;Lcom/ditchoom/webrtc/sdp/SignalingState;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sdp/SignalingState;
+	public final fun component2 ()Lcom/ditchoom/webrtc/sdp/SignalingState;
+	public final fun copy (Lcom/ditchoom/webrtc/sdp/SignalingState;Lcom/ditchoom/webrtc/sdp/SignalingState;)Lcom/ditchoom/webrtc/sdp/JsepOutput$SignalingStateChanged;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sdp/JsepOutput$SignalingStateChanged;Lcom/ditchoom/webrtc/sdp/SignalingState;Lcom/ditchoom/webrtc/sdp/SignalingState;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/JsepOutput$SignalingStateChanged;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFrom ()Lcom/ditchoom/webrtc/sdp/SignalingState;
+	public final fun getTo ()Lcom/ditchoom/webrtc/sdp/SignalingState;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/JsepSession {
+	public fun <init> (Lkotlin/random/Random;Lcom/ditchoom/webrtc/sdp/SignalingState;)V
+	public synthetic fun <init> (Lkotlin/random/Random;Lcom/ditchoom/webrtc/sdp/SignalingState;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun createAnswer (Lcom/ditchoom/webrtc/sdp/DataChannelParameters;)Lcom/ditchoom/webrtc/sdp/SessionDescription;
+	public final fun createOffer (Lcom/ditchoom/webrtc/sdp/DataChannelParameters;)Lcom/ditchoom/webrtc/sdp/SessionDescription;
+	public final fun getLocalDescription ()Lcom/ditchoom/webrtc/sdp/SessionDescription;
+	public final fun getRemoteDescription ()Lcom/ditchoom/webrtc/sdp/SessionDescription;
+	public final fun getSessionId ()Ljava/lang/String;
+	public final fun getSignalingState ()Lcom/ditchoom/webrtc/sdp/SignalingState;
+	public final fun handle (Lcom/ditchoom/webrtc/sdp/JsepEvent;Lkotlin/time/Instant;)Ljava/util/List;
+	public final fun nextDeadline ()Lkotlin/time/Instant;
+}
+
+public final class com/ditchoom/webrtc/sdp/MediaDescription : com/ditchoom/webrtc/sdp/SdpSection {
+	public final fun candidates ()Ljava/util/List;
+	public fun getLines ()Ljava/util/List;
+	public final fun getMedia ()Lcom/ditchoom/webrtc/sdp/SdpLine;
+	public final fun hasEndOfCandidates ()Z
+	public final fun isBundleOnly ()Z
+	public final fun maxMessageSize ()Ljava/lang/Long;
+	public final fun mediaLine ()Lcom/ditchoom/webrtc/sdp/MediaLine;
+	public final fun mid-NqQ9KUs ()Ljava/lang/String;
+	public final fun sctpPort ()Ljava/lang/Integer;
+}
+
+public final class com/ditchoom/webrtc/sdp/MediaLine {
+	public static final field APPLICATION_MEDIA Ljava/lang/String;
+	public static final field Companion Lcom/ditchoom/webrtc/sdp/MediaLine$Companion;
+	public static final field LEGACY_DTLS_SCTP Ljava/lang/String;
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Ljava/lang/String;
+	public final fun component4 ()Ljava/util/List;
+	public final fun copy (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;)Lcom/ditchoom/webrtc/sdp/MediaLine;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sdp/MediaLine;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/List;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/MediaLine;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFormats ()Ljava/util/List;
+	public final fun getMedia ()Ljava/lang/String;
+	public final fun getPort ()Ljava/lang/String;
+	public final fun getProto ()Ljava/lang/String;
+	public fun hashCode ()I
+	public final fun isDataChannel ()Z
+	public fun toString ()Ljava/lang/String;
+	public final fun toValue ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/MediaLine$Companion {
+	public final fun parse (Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/MediaLine;
+}
+
+public final class com/ditchoom/webrtc/sdp/MediaSectionBuilder {
+	public final fun attribute (Ljava/lang/String;Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/MediaSectionBuilder;
+	public static synthetic fun attribute$default (Lcom/ditchoom/webrtc/sdp/MediaSectionBuilder;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/MediaSectionBuilder;
+	public final fun connection (Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/MediaSectionBuilder;
+	public static synthetic fun connection$default (Lcom/ditchoom/webrtc/sdp/MediaSectionBuilder;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/MediaSectionBuilder;
+	public final fun fingerprint (Lcom/ditchoom/webrtc/sdp/Fingerprint;)Lcom/ditchoom/webrtc/sdp/MediaSectionBuilder;
+	public final fun icePwd (Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/MediaSectionBuilder;
+	public final fun iceUfrag (Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/MediaSectionBuilder;
+	public final fun line (CLjava/lang/String;)Lcom/ditchoom/webrtc/sdp/MediaSectionBuilder;
+	public final fun maxMessageSize (J)Lcom/ditchoom/webrtc/sdp/MediaSectionBuilder;
+	public final fun mid-mAWPnDw (Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/MediaSectionBuilder;
+	public final fun sctpPort (I)Lcom/ditchoom/webrtc/sdp/MediaSectionBuilder;
+	public final fun setup (Lcom/ditchoom/webrtc/sdp/SetupRole;)Lcom/ditchoom/webrtc/sdp/MediaSectionBuilder;
+}
+
 public final class com/ditchoom/webrtc/sdp/Mid {
 	public static final synthetic fun box-impl (Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/Mid;
 	public static fun constructor-impl (Ljava/lang/String;)Ljava/lang/String;
@@ -12,8 +264,258 @@ public final class com/ditchoom/webrtc/sdp/Mid {
 	public final synthetic fun unbox-impl ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/sdp/Origin {
+	public static final field Companion Lcom/ditchoom/webrtc/sdp/Origin$Companion;
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Ljava/lang/String;
+	public final fun component4 ()Ljava/lang/String;
+	public final fun component5 ()Ljava/lang/String;
+	public final fun component6 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/Origin;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sdp/Origin;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/Origin;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAddrType ()Ljava/lang/String;
+	public final fun getNetType ()Ljava/lang/String;
+	public final fun getSessionId ()Ljava/lang/String;
+	public final fun getSessionVersion ()Ljava/lang/String;
+	public final fun getUnicastAddress ()Ljava/lang/String;
+	public final fun getUsername ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+	public final fun toValue ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/Origin$Companion {
+	public final fun parse (Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/Origin;
+}
+
 public final class com/ditchoom/webrtc/sdp/Sdp {
+	public static final field CRLF Ljava/lang/String;
+	public static final field DATA_CHANNEL_FMT Ljava/lang/String;
+	public static final field GROUP_BUNDLE Ljava/lang/String;
 	public static final field INSTANCE Lcom/ditchoom/webrtc/sdp/Sdp;
 	public static final field MODULE Ljava/lang/String;
+	public static final field PROTO_UDP_DTLS_SCTP Ljava/lang/String;
+	public static final field SUPPORTED_VERSION Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/SdpLine {
+	public static final field ATTRIBUTE_TYPE C
+	public static final field Companion Lcom/ditchoom/webrtc/sdp/SdpLine$Companion;
+	public fun <init> (CLjava/lang/String;)V
+	public final fun attribute ()Lcom/ditchoom/webrtc/sdp/Attribute;
+	public final fun component1 ()C
+	public final fun component2 ()Ljava/lang/String;
+	public final fun copy (CLjava/lang/String;)Lcom/ditchoom/webrtc/sdp/SdpLine;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sdp/SdpLine;CLjava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/SdpLine;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getType ()C
+	public final fun getValue ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/SdpLine$Companion {
+}
+
+public abstract interface class com/ditchoom/webrtc/sdp/SdpParseResult {
+}
+
+public final class com/ditchoom/webrtc/sdp/SdpParseResult$Reject : com/ditchoom/webrtc/sdp/SdpParseResult {
+	public fun <init> (Lcom/ditchoom/webrtc/sdp/SdpRejectReason;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sdp/SdpRejectReason;
+	public final fun copy (Lcom/ditchoom/webrtc/sdp/SdpRejectReason;)Lcom/ditchoom/webrtc/sdp/SdpParseResult$Reject;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sdp/SdpParseResult$Reject;Lcom/ditchoom/webrtc/sdp/SdpRejectReason;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/SdpParseResult$Reject;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReason ()Lcom/ditchoom/webrtc/sdp/SdpRejectReason;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/SdpParseResult$Success : com/ditchoom/webrtc/sdp/SdpParseResult {
+	public fun <init> (Lcom/ditchoom/webrtc/sdp/SessionDescription;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sdp/SessionDescription;
+	public final fun copy (Lcom/ditchoom/webrtc/sdp/SessionDescription;)Lcom/ditchoom/webrtc/sdp/SdpParseResult$Success;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sdp/SdpParseResult$Success;Lcom/ditchoom/webrtc/sdp/SessionDescription;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/SdpParseResult$Success;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDescription ()Lcom/ditchoom/webrtc/sdp/SessionDescription;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/sdp/SdpRejectReason {
+}
+
+public final class com/ditchoom/webrtc/sdp/SdpRejectReason$Empty : com/ditchoom/webrtc/sdp/SdpRejectReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sdp/SdpRejectReason$Empty;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/SdpRejectReason$MalformedLine : com/ditchoom/webrtc/sdp/SdpRejectReason {
+	public fun <init> (ILjava/lang/String;)V
+	public final fun component1 ()I
+	public final fun component2 ()Ljava/lang/String;
+	public final fun copy (ILjava/lang/String;)Lcom/ditchoom/webrtc/sdp/SdpRejectReason$MalformedLine;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sdp/SdpRejectReason$MalformedLine;ILjava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/SdpRejectReason$MalformedLine;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getLine ()Ljava/lang/String;
+	public final fun getLineIndex ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/SdpRejectReason$MissingVersion : com/ditchoom/webrtc/sdp/SdpRejectReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sdp/SdpRejectReason$MissingVersion;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/SdpRejectReason$NotText : com/ditchoom/webrtc/sdp/SdpRejectReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sdp/SdpRejectReason$NotText;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/SdpRejectReason$UnsupportedVersion : com/ditchoom/webrtc/sdp/SdpRejectReason {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/SdpRejectReason$UnsupportedVersion;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sdp/SdpRejectReason$UnsupportedVersion;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/SdpRejectReason$UnsupportedVersion;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getVersion ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/sdp/SdpSection {
+	public abstract fun getLines ()Ljava/util/List;
+}
+
+public final class com/ditchoom/webrtc/sdp/SdpSectionKt {
+	public static final fun attributeValues (Lcom/ditchoom/webrtc/sdp/SdpSection;Ljava/lang/String;)Ljava/util/List;
+	public static final fun fingerprints (Lcom/ditchoom/webrtc/sdp/SdpSection;)Ljava/util/List;
+	public static final fun firstAttributeValue (Lcom/ditchoom/webrtc/sdp/SdpSection;Ljava/lang/String;)Ljava/lang/String;
+	public static final fun hasFlag (Lcom/ditchoom/webrtc/sdp/SdpSection;Ljava/lang/String;)Z
+	public static final fun icePwd (Lcom/ditchoom/webrtc/sdp/SdpSection;)Ljava/lang/String;
+	public static final fun iceUfrag (Lcom/ditchoom/webrtc/sdp/SdpSection;)Ljava/lang/String;
+	public static final fun setup (Lcom/ditchoom/webrtc/sdp/SdpSection;)Lcom/ditchoom/webrtc/sdp/SetupRole;
+}
+
+public final class com/ditchoom/webrtc/sdp/SdpType : java/lang/Enum {
+	public static final field Answer Lcom/ditchoom/webrtc/sdp/SdpType;
+	public static final field Companion Lcom/ditchoom/webrtc/sdp/SdpType$Companion;
+	public static final field Offer Lcom/ditchoom/webrtc/sdp/SdpType;
+	public static final field PrAnswer Lcom/ditchoom/webrtc/sdp/SdpType;
+	public static final field Rollback Lcom/ditchoom/webrtc/sdp/SdpType;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public final fun getToken ()Ljava/lang/String;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/SdpType;
+	public static fun values ()[Lcom/ditchoom/webrtc/sdp/SdpType;
+}
+
+public final class com/ditchoom/webrtc/sdp/SdpType$Companion {
+	public final fun fromToken (Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/SdpType;
+}
+
+public final class com/ditchoom/webrtc/sdp/SessionDescription : com/ditchoom/webrtc/sdp/SdpSection {
+	public static final field Companion Lcom/ditchoom/webrtc/sdp/SessionDescription$Companion;
+	public final fun bundleGroups ()Ljava/util/List;
+	public final fun encode (Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/PlatformBuffer;
+	public static synthetic fun encode$default (Lcom/ditchoom/webrtc/sdp/SessionDescription;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/buffer/PlatformBuffer;
+	public fun getLines ()Ljava/util/List;
+	public final fun getMediaDescriptions ()Ljava/util/List;
+	public final fun getSessionLines ()Ljava/util/List;
+	public final fun mediaFor-mAWPnDw (Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/MediaDescription;
+	public final fun origin ()Lcom/ditchoom/webrtc/sdp/Origin;
+	public final fun sessionName ()Ljava/lang/String;
+	public final fun toText ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/SessionDescription$Companion {
+	public final fun parse (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/sdp/SdpParseResult;
+	public final fun parseText (Ljava/lang/CharSequence;)Lcom/ditchoom/webrtc/sdp/SdpParseResult;
+}
+
+public final class com/ditchoom/webrtc/sdp/SessionDescriptionBuilder {
+	public fun <init> ()V
+	public final fun attribute (Ljava/lang/String;Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/SessionDescriptionBuilder;
+	public static synthetic fun attribute$default (Lcom/ditchoom/webrtc/sdp/SessionDescriptionBuilder;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/SessionDescriptionBuilder;
+	public final fun build ()Lcom/ditchoom/webrtc/sdp/SessionDescription;
+	public final fun bundle (Ljava/util/List;)Lcom/ditchoom/webrtc/sdp/SessionDescriptionBuilder;
+	public final fun line (CLjava/lang/String;)Lcom/ditchoom/webrtc/sdp/SessionDescriptionBuilder;
+	public final fun media (Ljava/lang/String;Lkotlin/jvm/functions/Function1;)Lcom/ditchoom/webrtc/sdp/SessionDescriptionBuilder;
+	public final fun origin (Lcom/ditchoom/webrtc/sdp/Origin;)Lcom/ditchoom/webrtc/sdp/SessionDescriptionBuilder;
+	public final fun sessionName (Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/SessionDescriptionBuilder;
+	public static synthetic fun sessionName$default (Lcom/ditchoom/webrtc/sdp/SessionDescriptionBuilder;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/SessionDescriptionBuilder;
+	public final fun timing (JJ)Lcom/ditchoom/webrtc/sdp/SessionDescriptionBuilder;
+	public static synthetic fun timing$default (Lcom/ditchoom/webrtc/sdp/SessionDescriptionBuilder;JJILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/SessionDescriptionBuilder;
+	public final fun version ()Lcom/ditchoom/webrtc/sdp/SessionDescriptionBuilder;
+}
+
+public final class com/ditchoom/webrtc/sdp/SetupRole : java/lang/Enum {
+	public static final field ActPass Lcom/ditchoom/webrtc/sdp/SetupRole;
+	public static final field Active Lcom/ditchoom/webrtc/sdp/SetupRole;
+	public static final field Companion Lcom/ditchoom/webrtc/sdp/SetupRole$Companion;
+	public static final field HoldConn Lcom/ditchoom/webrtc/sdp/SetupRole;
+	public static final field Passive Lcom/ditchoom/webrtc/sdp/SetupRole;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public final fun getToken ()Ljava/lang/String;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/SetupRole;
+	public static fun values ()[Lcom/ditchoom/webrtc/sdp/SetupRole;
+}
+
+public final class com/ditchoom/webrtc/sdp/SetupRole$Companion {
+	public final fun fromToken (Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/SetupRole;
+}
+
+public abstract interface class com/ditchoom/webrtc/sdp/SignalingState {
+}
+
+public final class com/ditchoom/webrtc/sdp/SignalingState$Closed : com/ditchoom/webrtc/sdp/SignalingState {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sdp/SignalingState$Closed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/SignalingState$HaveLocalOffer : com/ditchoom/webrtc/sdp/SignalingState {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sdp/SignalingState$HaveLocalOffer;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/SignalingState$HaveLocalPrAnswer : com/ditchoom/webrtc/sdp/SignalingState {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sdp/SignalingState$HaveLocalPrAnswer;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/SignalingState$HaveRemoteOffer : com/ditchoom/webrtc/sdp/SignalingState {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sdp/SignalingState$HaveRemoteOffer;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/SignalingState$HaveRemotePrAnswer : com/ditchoom/webrtc/sdp/SignalingState {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sdp/SignalingState$HaveRemotePrAnswer;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/SignalingState$Stable : com/ditchoom/webrtc/sdp/SignalingState {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sdp/SignalingState$Stable;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
 }
 

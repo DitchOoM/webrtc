@@ -1,0 +1,39 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>FunctionOnlyReturningConstant:JsepSession.kt:JsepSession$public fun nextDeadline: Instant?</ID>
+    <ID>MagicNumber:MediaLine.kt:MediaLine.Companion$3</ID>
+    <ID>MagicNumber:Origin.kt:Origin.Companion$3</ID>
+    <ID>MagicNumber:Origin.kt:Origin.Companion$4</ID>
+    <ID>MagicNumber:Origin.kt:Origin.Companion$5</ID>
+    <ID>MagicNumber:SessionDescription.kt:SessionDescription.Companion$0x80</ID>
+    <ID>MagicNumber:SessionDescription.kt:SessionDescription.Companion$0x800</ID>
+    <ID>MagicNumber:SessionDescription.kt:SessionDescription.Companion$0xD800</ID>
+    <ID>MagicNumber:SessionDescription.kt:SessionDescription.Companion$0xDBFF</ID>
+    <ID>MagicNumber:SessionDescription.kt:SessionDescription.Companion$3</ID>
+    <ID>MagicNumber:SessionDescription.kt:SessionDescription.Companion$4</ID>
+    <ID>MatchingDeclarationName:DataChannelDescription.kt:DataChannelParameters</ID>
+    <ID>MatchingDeclarationName:SdpTestSupport.kt:SdpTestVectors</ID>
+    <ID>MaxLineLength:JsepSession.kt:JsepSession$else -> if (endpoint == DescriptionEndpoint.Local) localDescription = description else remoteDescription = description</ID>
+    <ID>MaxLineLength:JsepSession.kt:JsepSession$is JsepEvent.SetLocalDescription -> applyDescription(DescriptionEndpoint.Local, event.type, event.description)</ID>
+    <ID>MaxLineLength:JsepSession.kt:JsepSession$is JsepEvent.SetRemoteDescription -> applyDescription(DescriptionEndpoint.Remote, event.type, event.description)</ID>
+    <ID>MaxLineLength:JsepSession.kt:JsepSession$public</ID>
+    <ID>MaxLineLength:JsepSession.kt:JsepSession.Companion$SignalingState.HaveLocalOffer, SignalingState.HaveRemotePrAnswer -> SignalingState.HaveRemotePrAnswer</ID>
+    <ID>MaxLineLength:JsepSession.kt:JsepSession.Companion$SignalingState.HaveRemoteOffer, SignalingState.HaveLocalPrAnswer -> SignalingState.HaveLocalPrAnswer</ID>
+    <ID>MaxLineLength:JsepSessionTest.kt:JsepSessionTest$assertEquals(answer1.toText(), local.remoteDescription?.toText(), "rollback preserves the stable remote description")</ID>
+    <ID>MaxLineLength:JsepSessionTest.kt:JsepSessionTest$assertEquals(offer1.toText(), local.localDescription?.toText(), "rollback restores the previous stable local description")</ID>
+    <ID>MaxLineLength:JsepSessionTest.kt:JsepSessionTest$remote.handle(JsepEvent.SetLocalDescription(SdpType.Answer, remote.createAnswer(params(SetupRole.Passive))), t0)</ID>
+    <ID>MaxLineLength:JsepSessionTest.kt:JsepSessionTest$remote.handle(JsepEvent.SetLocalDescription(SdpType.PrAnswer, remote.createAnswer(params(SetupRole.Passive))), t0)</ID>
+    <ID>MaxLineLength:JsepSessionTest.kt:JsepSessionTest$val out = s.handle(JsepEvent.SetLocalDescription(SdpType.Answer, offerer().createOffer(params(SetupRole.Active))), t0)</ID>
+    <ID>MaxLineLength:SdpBenchmark.kt:SdpBenchmark$"a=fingerprint:sha-256 4A:AD:B9:B1:3F:82:18:3B:54:02:12:DF:3E:5D:49:6B:19:E5:7C:AB:3B:8B:8A:1B:12:1C:AA:E9:2F:6A:0A:5F"</ID>
+    <ID>MaxLineLength:SdpTestSupport.kt:SdpTestVectors$"a=fingerprint:sha-256 12:1C:AA:E9:2F:6A:0A:5F:4A:AD:B9:B1:3F:82:18:3B:54:02:12:DF:3E:5D:49:6B:19:E5:7C:AB:3B:8B:8A:1B"</ID>
+    <ID>MaxLineLength:SdpTestSupport.kt:SdpTestVectors$"a=fingerprint:sha-256 4A:AD:B9:B1:3F:82:18:3B:54:02:12:DF:3E:5D:49:6B:19:E5:7C:AB:3B:8B:8A:1B:12:1C:AA:E9:2F:6A:0A:5F"</ID>
+    <ID>MaxLineLength:SdpTestSupport.kt:SdpTestVectors$"a=fingerprint:sha-256 6B:8A:1B:12:1C:AA:E9:2F:6A:0A:5F:4A:AD:B9:B1:3F:82:18:3B:54:02:12:DF:3E:5D:49:6B:19:E5:7C:AB:3B"</ID>
+    <ID>MaxLineLength:SessionDescription.kt:SessionDescription.Companion$parseLine(text, start, lineEnd) ?: return Reject(SdpRejectReason.MalformedLine(index, text.substring(start, lineEnd)))</ID>
+    <ID>ReturnCount:JsepSession.kt:JsepSession$private fun applyDescription: List&lt;JsepOutput></ID>
+    <ID>ReturnCount:SessionDescription.kt:SessionDescription.Companion$private fun parseLine: SdpLine?</ID>
+    <ID>ReturnCount:SessionDescription.kt:SessionDescription.Companion$public fun parse: SdpParseResult</ID>
+    <ID>ReturnCount:SessionDescription.kt:SessionDescription.Companion$public fun parseText: SdpParseResult</ID>
+  </CurrentIssues>
+</SmellBaseline>

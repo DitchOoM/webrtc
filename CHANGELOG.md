@@ -6,6 +6,35 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Added — W6 (partial): `webrtc-sdp` (SDP text codec + sans-io JSEP machine)
+- **SDP parser/serializer (RFC 8866):** a hand-written line codec (SDP is text — no `buffer-codec`
+  schema). The datagram is decoded to a `CharSequence` exactly once and parsed index-based into a
+  round-trip-faithful model (`SessionDescription` → session lines + `MediaDescription`s), each line
+  kept verbatim so parse→encode reproduces a canonical CRLF document **byte-for-byte** (the text
+  analogue of STUN's view-based decode).
+- **Typed rejects (T0):** `SessionDescription.parse` is total — a hostile or non-UTF-8 datagram yields
+  a sealed `SdpRejectReason`, never a throw. Semantic breakage of a single line (`o=`/`m=`/
+  `a=fingerprint`) is a null typed-reader miss, not a whole-document reject (the `RawAttribute`
+  discipline for text).
+- **Typed field surface:** value-class `Mid`; `Origin`, `MediaLine`, `Fingerprint`, `SetupRole`,
+  `SdpType`, `SignalingState`; on-demand interpreters for the JSEP data-channel attributes
+  (`ice-ufrag`/`ice-pwd`/`fingerprint`/`setup`, `sctp-port`/`max-message-size`, `candidate`/
+  `end-of-candidates`, `group:BUNDLE`) at session or media level (RFC 8829 §5.2.1 fallback).
+- **`SessionDescriptionBuilder`** + `dataChannelDescription` — programmatic offer/answer assembly
+  (RFC 8841 data-channel shape); a built document round-trips through `parse` unchanged.
+- **Sans-io JSEP offer/answer machine:** `JsepSession.handle(event, now)` + `nextDeadline()` (always
+  null — JSEP arms no timers), enforcing the RFC 8829 §3.5.1 signaling transition table with rollback;
+  illegal edges are typed `JsepError.InvalidTransition` outputs that leave state untouched. Entropy is
+  injected (`Random`) — the `o=` session id is `CryptoRandom` in production, replayable in tests.
+- **Tests:** real-world Chrome/Firefox/Pion data-channel offer/answer vectors (parse + typed fields +
+  byte-exact round-trip), malformed corpus + two 20k-input totality properties + single-line-drop
+  mutation, wrapper-transparency (pooled buffer / non-zero-offset slice), builder round-trips, and the
+  full JSEP transition table incl. rollback/pranswer/close — **36 tests green on JVM, JS, wasmJs,
+  Linux/native, and Android host**.
+- **Coverage-guided Jazzer fuzz lane** (`sdpCodecFuzz`, time-boxed in CI) with a committed seed corpus
+  (7 seeds); a 30s local run turned 1M+ executions crash-free.
+- SDP parse/encode throughput benchmark tracked in `PERFORMANCE.md`.
+
 ### Added — W1: `webrtc-stun` (STUN/TURN codec + sans-io transactions)
 - **STUN message codec (RFC 8489):** the 20-byte header (bit-interleaved message type, magic cookie,
   96-bit transaction id) as a `buffer-codec` KSP `@ProtocolMessage` schema (`StunHeaderCodec`); the

@@ -35,11 +35,10 @@ buffer = "6.11.0"
 # not the public DatagramChannel; no NAT/TURN models) and `socket-testsuite` can't publish without the
 # whole quiche/rust/BoringSSL stack — so webrtc builds its own vnet (RFC §5.2: "the WebRTC-specific
 # addition"). No socket-testsuite entry here by design.
-# TODO(merge-gate): 3.10.2-SNAPSHOT is a LOCAL `publishToMavenLocal` build (socket origin/main c4ae645,
-# PR #239); socket-udp is NOT yet on Maven Central (latest socket 3.10.1 predates it, #239 deploy failed).
-# Flip this pin to the released socket-udp version — and drop `mavenLocal()` from the convention
-# repositories — before merging any webrtc code that depends on socket-udp. Dev-only until then.
-socket = "3.10.2-SNAPSHOT"
+# 3.11.0 (socket PR #239) is the first release with socket-udp on Maven Central — it pins buffer 6.11.0
+# (matches the buffer pin above) and publishes all of jvm/android/js/linux/apple. The earlier
+# merge-gate (dev against a publishToMavenLocal snapshot) is lifted.
+socket = "3.11.0"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"

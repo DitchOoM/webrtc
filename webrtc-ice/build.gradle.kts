@@ -23,9 +23,8 @@ kotlin {
         }
         // The real-socket resolution smoke test (RealUdpSocketSeamTest) binds two `socket-udp` UdpSockets
         // on loopback and echoes over the SAME buffer-flow DatagramChannel the vnet implements — proving
-        // the local `socket-udp:3.10.2-SNAPSHOT` pin resolves and its actual honors the seam. JVM-only:
-        // socket-udp has no wasm/browser target, and real UDP is not virtual-time (real dispatcher).
-        // TODO(merge-gate): this jvmTest dep is on an unpublished snapshot — see the `socket` catalog pin.
+        // socket-udp resolves (from Central) and its actual honors the seam. JVM-only: socket-udp has no
+        // wasm/browser target, and real UDP is not virtual-time (real dispatcher).
         jvmTest.dependencies {
             implementation(libs.socket.udp)
         }

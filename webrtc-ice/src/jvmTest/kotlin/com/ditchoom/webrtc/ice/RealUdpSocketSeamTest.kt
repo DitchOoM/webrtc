@@ -19,16 +19,12 @@ import kotlin.time.Duration.Companion.seconds
  * gathering drivers bind for host/srflx/relay candidates). It binds two loopback [UdpSocket] channels
  * and echoes a datagram between them over the *same* buffer-flow `DatagramChannel` interface the
  * virtual [com.ditchoom.webrtc.ice.vnet.Vnet] implements — so the ICE code that passes over the vnet
- * runs unchanged over a real socket. Its real job is to prove the local
- * `socket-udp:3.10.2-SNAPSHOT` `publishToMavenLocal` pin **resolves** (KMP metadata + JVM actual) and
- * honors the seam contract.
+ * runs unchanged over a real socket. Its real job is to prove `socket-udp` (3.11.0, Maven Central)
+ * **resolves** (KMP metadata + JVM actual) and honors the seam contract.
  *
  * JVM-only and **not** virtual-time: real sockets need a real dispatcher and real time, so this uses
  * `runBlocking` + `withTimeout` (the watchdog, directive #4), not `runTest`. socket-udp has no
  * wasm/browser target (RFC §1.1), so there is nothing to run there.
- *
- * TODO(merge-gate): depends on an unpublished socket snapshot — must not merge until `socket-udp` is on
- * Maven Central (see the `socket` pin in gradle/libs.versions.toml).
  */
 @OptIn(ExperimentalDatagramApi::class)
 class RealUdpSocketSeamTest {

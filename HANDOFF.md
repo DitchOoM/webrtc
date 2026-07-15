@@ -13,11 +13,11 @@ host. What landed (all on the W3 branch, unmerged):
 - **buffer bumped 6.10.0 → 6.11.0** (on Central) — carries the buffer-flow **datagram trichotomy**
   (`DatagramChannel`/`DatagramSource`/`DatagramSink` + `SocketAddress`, `@ExperimentalDatagramApi`),
   which is **the UDP seam webrtc rides**. Merged codecs (stun/sdp/sctp) re-tested green on 6.11.0.
-- **socket wired into the catalog** — `socket = "3.10.2-SNAPSHOT"` + `socket-udp` lib, pinned to a local
-  `:socket-udp:publishToMavenLocal` build (socket origin/main `c4ae645`, PR #239). `mavenLocal()` added
-  to the convention repositories. **Both carry a `TODO(merge-gate)`**: flip the pin to the released
-  `socket-udp` + drop `mavenLocal()` before merging. socket-udp is **not on Central** (latest 3.10.1
-  predates #239; maven-metadata 404).
+- **socket wired into the catalog** — `socket = "3.11.0"` + `socket-udp` lib, resolved from **Maven
+  Central**. socket-udp 3.11.0 (PR #239) landed on Central mid-session (`20260715152514`) with all of
+  jvm/android/js/linux/**apple**, pinning buffer 6.11.0 — so **the merge-gate is lifted**: the pin is a
+  release (not a `publishToMavenLocal` snapshot) and `mavenLocal()` was removed from the convention.
+  Validated with `--refresh-dependencies` + mavenLocal gone: resolves and the real-UDP jvmTest passes.
 - **webrtc's own vnet** (`webrtc-ice/src/commonTest/.../vnet/Vnet.kt`) — an in-memory `DatagramChannel`
   (flat router now; `Router` seam for NAT/impairment later) + `CountingBufferFactory`. Tests:
   `VnetDatagramSeamTest` (virtual-time echo, boundaries, drop-to-void, all platforms) +
@@ -75,17 +75,16 @@ its own — W2 (vnet) is a socket/simulation deliverable, not a webrtc wave:
   socket **#225**; this is the W2 NAT-modeling vnet webrtc's TA/TB tiers run against.
 
 **Publish status (confirmed 2026-07-15):** `socket-udp` is **NOT on Central yet** — the latest published
-socket is **3.10.1**, which predates #239 (`socket-udp` maven-metadata → HTTP 404), and #239's deploy
-run **failed**. Consequences:
-- **Dev is unblocked now:** build webrtc's transport modules against a local socket build —
-  `cd ../git/socket && ./gradlew publishToMavenLocal` on `main`, then pin that socket version in
-  webrtc's `gradle/libs.versions.toml` (add the `socket` / `socket-udp` / `socket-testsuite` entries —
-  webrtc's catalog currently has **no socket entry**).
-- **Merge is still gated:** webrtc transport code must **not merge to `main` against an unpublished
-  socket** (the W0 no-snapshot-dependency discipline). Flip the catalog pin to the released `socket-udp`
-  version once socket lands a green release. Nudge that along if it stalls (the #239 deploy failed).
-- Open cross-repo decisions to settle as W3/W4 start: §11.3 (DTLS 1.2-vs-1.3, before W4), §11.4 (mDNS,
-  before W3). §11.1 (sim home) is effectively answered — the sim lives in socket (#225).
+socket was **3.10.1** at the start of this session (`socket-udp` maven-metadata → HTTP 404, #239's first
+deploy failed). **RESOLVED 2026-07-15:** socket-udp **3.11.0 is now on Central** (all targets incl.
+Apple, pins buffer 6.11.0) — the catalog pins the release and the merge-gate is **lifted** (see the
+top-of-doc W3 update). Historical consequences that no longer bind:
+- ~~Dev unblocked against a local socket `publishToMavenLocal`~~ → now a plain Central dependency.
+- ~~Merge gated on an unpublished socket~~ → lifted; `socket = "3.11.0"`, `mavenLocal()` removed.
+- Open cross-repo decisions to settle as W3/W4 start: §11.3 (DTLS 1.2-vs-1.3, before W4). §11.4 (mDNS)
+  is now **resolved** (resolve-only in W3 — EXECUTION_PLAN decision log). §11.1 (sim home): the
+  virtual-time *pattern* lives in socket, but the UDP vnet + NAT models are **webrtc's own** (RFC §5.2)
+  — see the premise correction above.
 
 ### Recommended next webrtc wave: **W3 (`webrtc-ice`)**
 The first integration point (a single-session chain — do NOT fan out the core). Sans-io agent core

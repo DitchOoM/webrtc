@@ -96,7 +96,11 @@ public class IceAgent(
     public val state: IceConnectionState get() = _state
 
     private var selected: PairEntry? = null
-    private var nominationInFlight = false
+
+    // Derived, not a stored latch: a nominating check is in flight iff some pair currently holds one.
+    // Making it a projection of the checklist means it can never wedge stale (the bug a stored flag hit).
+    private val nominationInFlight: Boolean
+        get() = checklist.any { it.inFlight?.purpose == CheckPurpose.Nomination }
 
     // A role conflict is resolved AT MOST ONCE per ICE generation (RFC 8445 §7.3.1.1): the inbound-check
     // path and the 487-response path must not both flip the role, or a glare oscillates. Reset on restart.
@@ -254,17 +258,14 @@ public class IceAgent(
         val pacingAt = nextPacingAt
         if (remoteCredentials != null && pacingAt != null && now >= pacingAt) {
             val next = checklist.firstOrNull { it.state == CandidatePairState.Waiting }
-            if (next != null) startCheck(next, nominate = false, consent = false, now = now, out = out)
+            if (next != null) startCheck(next, CheckPurpose.Connectivity, now, out)
             nextPacingAt = if (checklist.any { it.state == CandidatePairState.Waiting }) now + config.ta else null
         }
         // 3. Nomination retry (controlling): if a nominating check failed and left no nomination in flight,
         // nominate the best remaining valid pair — otherwise a valid-but-unnominated pair would hang.
         if (_role == IceRole.Controlling && selected == null && !nominationInFlight) {
             val best = checklist.filter { it.state == CandidatePairState.Succeeded }.maxByOrNull { it.pair.priority(_role) }
-            if (best != null) {
-                nominationInFlight = true
-                startCheck(best, nominate = true, consent = false, now = now, out = out)
-            }
+            if (best != null) startCheck(best, CheckPurpose.Nomination, now, out)
         }
         // 4. Consent freshness on the selected pair (RFC 7675).
         driveConsent(now, out)
@@ -294,7 +295,7 @@ public class IceAgent(
         }
         val consentAt = nextConsentAt
         if (consentAt != null && now >= consentAt && chosen.transaction == null) {
-            startCheck(chosen, nominate = false, consent = true, now = now, out = out)
+            startCheck(chosen, CheckPurpose.Consent, now, out)
             nextConsentAt = now + config.consentInterval
         }
     }
@@ -378,7 +379,7 @@ public class IceAgent(
             CandidatePairState.Succeeded -> if (entry.nominatedByPeer) selectPair(entry, now, out)
             CandidatePairState.InProgress -> Unit
             CandidatePairState.Waiting, CandidatePairState.Frozen, CandidatePairState.Failed ->
-                startCheck(entry, nominate = false, consent = false, now = now, out = out)
+                startCheck(entry, CheckPurpose.Connectivity, now, out)
         }
         maybeComplete(out)
     }
@@ -391,17 +392,14 @@ public class IceAgent(
     ) {
         val entry = byTransaction[message.transactionId] ?: return
         val txn = entry.transaction ?: return
+        val purpose = entry.inFlight?.purpose // capture before driveTransaction clears it on Completed
         driveTransaction(entry, txn.handle(StunTransactionEvent.ResponseReceived(message), now), now, out)
-        if (entry.transaction != null) return // response ignored (id mismatch) — nothing completed
+        if (entry.inFlight != null) return // response ignored (id mismatch) — nothing completed
 
-        val wasConsent = entry.consentCheck
-        val wasNominating = entry.nominating
-        entry.consentCheck = false
-        entry.nominating = false
-        // Release the nomination latch on ANY outcome of a nominating check (success re-sets it in
-        // selectPair; failure must free it so onTimer can nominate another valid pair) — otherwise a
-        // response-driven failure would strand `nominationInFlight` and hang the agent.
-        if (wasNominating) nominationInFlight = false
+        // The nomination "latch" is derived from the checklist, and driveTransaction already cleared this
+        // pair's in-flight check — so on any nominating-check outcome nominationInFlight is already false.
+        val wasConsent = purpose == CheckPurpose.Consent
+        val wasNominating = purpose == CheckPurpose.Nomination
 
         if (message.messageType.stunClass == StunClass.ErrorResponse) {
             if (message.firstOrNull(StunAttributeType.ErrorCode)?.asErrorCode()?.code == ROLE_CONFLICT) {
@@ -443,8 +441,7 @@ public class IceAgent(
             return
         }
         if (_role == IceRole.Controlling && selected == null && !nominationInFlight) {
-            nominationInFlight = true
-            startCheck(entry, nominate = true, consent = false, now = now, out = out)
+            startCheck(entry, CheckPurpose.Nomination, now, out)
         }
         maybeComplete(out)
     }
@@ -453,8 +450,7 @@ public class IceAgent(
 
     private fun startCheck(
         entry: PairEntry,
-        nominate: Boolean,
-        consent: Boolean,
+        purpose: CheckPurpose,
         now: Instant,
         out: MutableList<IceOutput>,
     ) {
@@ -473,13 +469,15 @@ public class IceAgent(
                         IceAttributes.controlled(tieBreaker, config.bufferFactory)
                     },
                 )
-        if (nominate && _role == IceRole.Controlling) builder.add(IceAttributes.useCandidate(config.bufferFactory))
+        if (purpose == CheckPurpose.Nomination &&
+            _role == IceRole.Controlling
+        ) {
+            builder.add(IceAttributes.useCandidate(config.bufferFactory))
+        }
         val datagram = builder.addMessageIntegrity(remoteKey()).addFingerprint().encode(config.bufferFactory)
 
         val transaction = StunTransaction(txid, datagram, config.checkPolicy)
-        entry.transaction = transaction
-        entry.nominating = nominate
-        entry.consentCheck = consent
+        entry.inFlight = InFlightCheck(transaction, purpose)
         entry.state = CandidatePairState.InProgress
         byTransaction[txid] = entry
         driveTransaction(entry, transaction.handle(StunTransactionEvent.Start, now), now, out)
@@ -497,24 +495,24 @@ public class IceAgent(
                     out += transmit(entry.pair.local.base, entry.pair.remote.address, output.datagram)
                 is StunTransactionOutput.Completed -> clearTransaction(entry)
                 is StunTransactionOutput.Failed -> {
+                    val wasConsent = entry.inFlight?.purpose == CheckPurpose.Consent
                     clearTransaction(entry)
-                    if (!entry.consentCheck) failCheck(entry, out)
+                    if (!wasConsent) failCheck(entry, out) // a lost consent check doesn't fail the pair (RFC 7675)
                 }
             }
         }
     }
 
     private fun clearTransaction(entry: PairEntry) {
-        val transaction = entry.transaction ?: return
-        byTransaction.remove(transaction.transactionId)
-        entry.transaction = null
+        val inFlight = entry.inFlight ?: return
+        byTransaction.remove(inFlight.transaction.transactionId)
+        entry.inFlight = null
     }
 
     private fun failCheck(
         entry: PairEntry,
         out: MutableList<IceOutput>,
     ) {
-        if (entry.nominating) nominationInFlight = false
         entry.state = CandidatePairState.Failed
         entry.valid = false // a failed pair is no longer valid — don't let a stale latch veto AllPairsFailed
         val allDone =
@@ -536,8 +534,6 @@ public class IceAgent(
     ) {
         if (selected != null) return // first nomination wins; never regress a Connected/Completed component
         selected = entry
-        entry.nominated = true
-        nominationInFlight = false
         establishmentDeadline = null
         lastConsentResponseAt = now
         nextConsentAt = now + config.consentInterval
@@ -598,7 +594,6 @@ public class IceAgent(
         checklist.clear()
         byTransaction.clear()
         selected = null
-        nominationInFlight = false
         roleConflictResolved = false
         nextPacingAt = null
         nextConsentAt = null
@@ -660,20 +655,33 @@ public class IceAgent(
         b: TransportAddress,
     ): Boolean = (a.ip is IpAddress.V4) == (b.ip is IpAddress.V4)
 
+    /** Why the single in-flight check on a pair is being sent (RFC 8445 §7). Mutually exclusive by
+     *  construction, so "nominating AND consent" — an old boolean-soup hazard — is unrepresentable. */
+    private enum class CheckPurpose { Connectivity, Nomination, Consent }
+
+    /** A pair's one in-flight STUN transaction bundled with its [purpose] — a purpose cannot exist
+     *  without a live transaction, so a stale "nominating but nothing in flight" latch can't occur. */
+    private class InFlightCheck(
+        val transaction: StunTransaction,
+        val purpose: CheckPurpose,
+    )
+
     /**
      * Mutable checklist state for a pair (RFC 8445 §6.1.2.6). Kept separate from the immutable
      * [CandidatePair] identity so the identity stays a clean map key and a diffable fixture value.
+     * State is a [CandidatePairState] plus exactly two orthogonal facts ([valid] — has ever succeeded a
+     * check; [nominatedByPeer] — the peer sent USE-CANDIDATE) and the unified [inFlight] check; there is
+     * no derivable/overlapping boolean (nomination-in-flight and selection are read off the checklist).
      */
     private class PairEntry(
         val pair: CandidatePair,
     ) {
         var state: CandidatePairState = CandidatePairState.Waiting
-        var transaction: StunTransaction? = null
-        var nominating: Boolean = false
-        var consentCheck: Boolean = false
+        var inFlight: InFlightCheck? = null
         var nominatedByPeer: Boolean = false
         var valid: Boolean = false
-        var nominated: Boolean = false
+
+        val transaction: StunTransaction? get() = inFlight?.transaction
     }
 
     private companion object {

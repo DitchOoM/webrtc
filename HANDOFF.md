@@ -44,6 +44,48 @@ behind a flag; resolution rides an injected `MdnsResolver` seam (deterministic s
 fixtures + fuzz. Single session-chain, do **not** fan out the core. See the ORIGINAL recommendation
 below (still accurate) for the ICE scope.
 
+### START HERE — the ICE agent core (fresh session)
+
+State: branch **`w3-webrtc-ice`** (2 commits, clean tree, green on all local lanes). socket-udp is a
+plain Central dep now (`3.11.0`); nothing is merge-gated. Build order (each step green-throughout):
+
+1. **Vnet NAT layer** — extend `webrtc-ice/src/commonTest/.../vnet/Vnet.kt`. The `Router` fun-interface
+   seam is already there (`route(from, to): SocketAddress?`, `null` = drop). Add the four NAT profiles
+   (full-cone / address-restricted / port-restricted / symmetric: each a small pure map of
+   internal↔external mappings + a per-direction filter), a virtual TURN server (Allocate/Send/Data via
+   the W1 TURN codec), and seeded impairment (loss/reorder/dup/delay — copy socket's `ImpairedPipe`
+   shape: one `Random(seed)`, a fixed draw count per datagram; delay via `delay()` so `runTest` drives
+   it). Topologies-as-data builders. Keep the flat `DirectRouter` for unit tests.
+2. **ICE type model + sans-io core** — `Ice.kt` already has `Ufrag`/`IcePassword`/`IceFailureReason`.
+   Add `Candidate`(host/srflx/relay/prflx, `TransportAddress`, foundation, component, priority),
+   `CandidatePair` + RFC 8445 priority (§5.7.2) / foundation / pair-priority formulas, the checklist
+   FSM (`handle(event, now): List<Output>` + `nextDeadline(now): Instant?`, NO clock/random/IO inside),
+   triggered checks, nomination (regular), RFC 7675 keepalive/consent, restart. **Seeded `Random` from
+   day one** (directive #2) for tie-breaker / ufrag / pwd / foundations.
+3. **Connectivity checks reuse the W1 STUN client** (`webrtc-stun`, already a dep). Shape:
+   `StunMessageBuilder.of(StunClass.Request, StunMethod.Binding, TransactionId.random(rng)).add(attr)
+   .addMessageIntegrity(keyBuf).addFingerprint().encode(factory)`; decode via `StunMessage.decode(buf)`;
+   retransmit via `StunTransaction(txId, requestBuf, policy).handle(event, now)/nextDeadline()`.
+   **GOTCHA:** the ICE STUN attributes (PRIORITY `0x0024`, USE-CANDIDATE `0x0025`, ICE-CONTROLLED
+   `0x8029`, ICE-CONTROLLING `0x802A`) are **not** in webrtc-stun's typed set, and
+   `RawAttribute.Companion.ofValue(type, ReadBuffer)` is **`internal`**. So either (a) add a public
+   `RawAttribute.Companion.ofRaw(type, ReadBuffer)` escape-hatch to webrtc-stun (additive → `apiDump`),
+   or (b) define the ICE-attr builders inside webrtc-stun like the TURN ones. `StunAttributeType(short)`
+   ctor is public, so `StunAttributeType(0x0024)` is fine. Recommend (a).
+4. **Gathering drivers + trickle (RFC 8838)** over injected `DatagramChannel` (buffer-flow) +
+   `NetworkMonitor` (lives in socket **core** `com.ditchoom:socket`, NOT socket-udp — add that dep at
+   the driver edge, or define a thin `NetworkMonitor`-shaped seam webrtc owns) + `MdnsResolver` seam.
+   Real `UdpSocket.bind()` is the production channel (jvm/native/apple/android only — no wasm).
+5. **Canonical fixtures + fuzz + PR** — dual-symmetric-NAT→relay, candidate-flap mid-check,
+   NetworkId-change→restart, all under `runTest`; ICE invariants in the fuzz set; typed `IceFailureReason`
+   complete; `apiDump`; CHANGELOG; PR with `skip-release` (apply via REST API — `gh pr edit` fails
+   silently here). Do not fan out the core.
+
+Seam facts (verified, don't re-explore): the datagram API is `com.ditchoom.buffer.flow.*` under
+`@ExperimentalDatagramApi` (`DatagramChannel`=Source+Sink, `receive()→DatagramReadResult.Received|Closed`,
+`send(payload, to?, opts)`, `SocketAddress.ofLiteral(ip,port)` / `.resolve`). `runTest` + coroutines-test
+is wired into `webrtc-ice` commonTest. Full detail in the `webrtc-socket-udp-vnet-reality` memory.
+
 ---
 
 ## Prior framing (still accurate for the ICE scope): **pure-codec track COMPLETE; transport track UNBLOCKED for dev**

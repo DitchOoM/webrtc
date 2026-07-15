@@ -9,6 +9,8 @@ import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.webrtc.ice.toSocketAddress
+import com.ditchoom.webrtc.ice.toTransportAddress
 import com.ditchoom.webrtc.stun.RawAttribute
 import com.ditchoom.webrtc.stun.StunAttributeType
 import com.ditchoom.webrtc.stun.StunClass

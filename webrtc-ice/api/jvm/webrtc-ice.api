@@ -322,6 +322,12 @@ public final class com/ditchoom/webrtc/ice/IceFailureReason$NoCandidatePairs : c
 	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/IceFailureReason$NoCandidatePairs;
 }
 
+public final class com/ditchoom/webrtc/ice/IceGatheringKt {
+	public static final fun gatherServerReflexive-zkXUZaI (Lcom/ditchoom/buffer/flow/DatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/random/Random;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun gatherServerReflexive-zkXUZaI$default (Lcom/ditchoom/buffer/flow/DatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/random/Random;JLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final fun getDEFAULT_GATHER_TIMEOUT ()J
+}
+
 public abstract interface class com/ditchoom/webrtc/ice/IceOutput {
 }
 
@@ -393,6 +399,42 @@ public final class com/ditchoom/webrtc/ice/IceTransport : java/lang/Enum {
 	public static fun values ()[Lcom/ditchoom/webrtc/ice/IceTransport;
 }
 
+public final class com/ditchoom/webrtc/ice/LocalInterface {
+	public synthetic fun <init> (Ljava/lang/String;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-qtMgfS4 ()Ljava/lang/String;
+	public final fun component2 ()Lcom/ditchoom/buffer/flow/SocketAddress;
+	public final fun copy-4I0Bn80 (Ljava/lang/String;Lcom/ditchoom/buffer/flow/SocketAddress;)Lcom/ditchoom/webrtc/ice/LocalInterface;
+	public static synthetic fun copy-4I0Bn80$default (Lcom/ditchoom/webrtc/ice/LocalInterface;Ljava/lang/String;Lcom/ditchoom/buffer/flow/SocketAddress;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/LocalInterface;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAddress ()Lcom/ditchoom/buffer/flow/SocketAddress;
+	public final fun getNetworkId-qtMgfS4 ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/MdnsResolver {
+	public abstract fun resolve (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/webrtc/ice/NetworkId {
+	public static final synthetic fun box-impl (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/NetworkId;
+	public static fun constructor-impl (Ljava/lang/String;)Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (Ljava/lang/String;Ljava/lang/Object;)Z
+	public static final fun equals-impl0 (Ljava/lang/String;Ljava/lang/String;)Z
+	public final fun getValue ()Ljava/lang/String;
+	public fun hashCode ()I
+	public static fun hashCode-impl (Ljava/lang/String;)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (Ljava/lang/String;)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/NetworkMonitor {
+	public abstract fun getChanges ()Lkotlinx/coroutines/flow/Flow;
+	public abstract fun interfaces ()Ljava/util/List;
+}
+
 public final class com/ditchoom/webrtc/ice/TieBreaker {
 	public static final field Companion Lcom/ditchoom/webrtc/ice/TieBreaker$Companion;
 	public static final synthetic fun box-impl (J)Lcom/ditchoom/webrtc/ice/TieBreaker;
@@ -411,6 +453,24 @@ public final class com/ditchoom/webrtc/ice/TieBreaker {
 
 public final class com/ditchoom/webrtc/ice/TieBreaker$Companion {
 	public final fun random-mWZnPeY (Lkotlin/random/Random;)J
+}
+
+public final class com/ditchoom/webrtc/ice/TurnAllocation : com/ditchoom/buffer/flow/DatagramChannel {
+	public static final field MAX_UTF8_PER_CHAR I
+	public static final field TURN_OVERHEAD_BYTES I
+	public fun <init> (Lcom/ditchoom/buffer/flow/DatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Ljava/lang/String;Ljava/lang/String;Lkotlin/random/Random;Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/buffer/BufferFactory;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/flow/DatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Ljava/lang/String;Ljava/lang/String;Lkotlin/random/Random;Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/buffer/BufferFactory;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun allocate-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun allocate-VtjQ1oo$default (Lcom/ditchoom/webrtc/ice/TurnAllocation;JLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public fun close ()V
+	public fun getCapabilities ()Lcom/ditchoom/buffer/flow/DatagramCapabilities;
+	public fun getLocalAddress ()Lcom/ditchoom/buffer/flow/SocketAddress;
+	public fun getMaxWritableSize ()I
+	public fun isOpen ()Z
+	public fun receive (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun receiveBatch (ILkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun send (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/flow/SocketAddress;Lcom/ditchoom/buffer/flow/DatagramSendOptions;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun sendBatch (Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
 public final class com/ditchoom/webrtc/ice/Ufrag {

@@ -21,7 +21,14 @@ import com.ditchoom.webrtc.stun.TransportAddress
 internal fun SocketAddress.toTransportAddress(): TransportAddress {
     val octets = host.split(".")
     require(octets.size == IPV4_OCTETS) { "phase-1 ICE gathering is IPv4 (RFC §1.1); got host=$host" }
-    val bits = octets.fold(0u) { acc, octet -> (acc shl Byte.SIZE_BITS) or octet.toUInt() }
+    // Validate each octet is a 0..255 number so a non-v4 literal (e.g. "::ffff:1.2.3.4", which also splits
+    // into four parts) is a clear rejection, not an uncaught NumberFormatException in the send hot path.
+    val bits =
+        octets.fold(0u) { acc, octet ->
+            val value = octet.toUIntOrNull()
+            require(value != null && value <= MAX_OCTET) { "not an IPv4 literal: $host" }
+            (acc shl Byte.SIZE_BITS) or value
+        }
     return TransportAddress(IpAddress.V4(bits), port.toUShort())
 }
 
@@ -33,3 +40,4 @@ internal fun TransportAddress.toSocketAddress(): SocketAddress =
     }
 
 private const val IPV4_OCTETS = 4
+private const val MAX_OCTET = 255u

@@ -325,8 +325,9 @@ public final class com/ditchoom/webrtc/ice/IceFailureReason$NoCandidatePairs : c
 }
 
 public final class com/ditchoom/webrtc/ice/IceGatheringKt {
-	public static final fun gatherServerReflexive-zkXUZaI (Lcom/ditchoom/buffer/flow/DatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/random/Random;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public static synthetic fun gatherServerReflexive-zkXUZaI$default (Lcom/ditchoom/buffer/flow/DatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/random/Random;JLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final fun gatherServerReflexive-MHpS38I (Lcom/ditchoom/buffer/flow/DatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/random/Random;JJLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun gatherServerReflexive-MHpS38I$default (Lcom/ditchoom/buffer/flow/DatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/random/Random;JJLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final fun getDEFAULT_GATHER_RTO ()J
 	public static final fun getDEFAULT_GATHER_TIMEOUT ()J
 }
 

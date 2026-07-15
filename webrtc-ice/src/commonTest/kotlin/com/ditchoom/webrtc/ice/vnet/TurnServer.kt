@@ -208,16 +208,21 @@ internal class TurnServer(
     // A fresh key buffer per use — HMAC reads the buffer, so verify and each response MI need their own.
     private fun keyFor(username: String): ReadBuffer = requireNotNull(keyProvider(username)) { "no key for $username" }
 
-    // Returns the authenticated USERNAME if the request carries a valid MESSAGE-INTEGRITY; otherwise
-    // sends a 401 challenge (REALM + NONCE) and returns null. A valid short-term MI is accepted without a
-    // prior challenge, so a one-shot authed request works as well as the full challenge round-trip.
+    // Returns the authenticated USERNAME if the request carries a valid MESSAGE-INTEGRITY AND echoes the
+    // server's REALM/NONCE (RFC 8656 long-term credential, like coturn); otherwise sends a 401 challenge
+    // (REALM + NONCE) and returns null. Requiring the nonce is what surfaces a real client bug where it
+    // fails to copy the challenge into its authed retry — a lenient server would hide it.
     private suspend fun authenticatedUser(
         request: StunMessage,
         client: SocketAddress,
     ): String? {
         val username = request.firstOrNull(StunAttributeType.Username)?.asText()
         val key = username?.let(keyProvider)
-        if (username != null && key != null && request.verifyMessageIntegrity(key)) return username
+        val presentedRealm = request.firstOrNull(StunAttributeType.Realm)?.asText()
+        val presentedNonce = request.firstOrNull(StunAttributeType.Nonce)?.asText()
+        if (username != null && key != null && presentedRealm == realm && presentedNonce == nonce && request.verifyMessageIntegrity(key)) {
+            return username
+        }
         val challenge =
             StunMessageBuilder
                 .of(StunClass.ErrorResponse, request.messageType.method, request.transactionId)

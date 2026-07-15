@@ -81,8 +81,10 @@ internal class Vnet(
 
     /**
      * Deliver exactly one copy of [payload] to the endpoint at [dest], the receiver observing the
-     * source as [observedSource]. Returns true iff an endpoint was bound at [dest] (else the datagram
-     * fell into the void). Exactly one allocation per delivered datagram — the copy-on-send invariant.
+     * source as [observedSource]. Returns true iff the datagram was actually queued — false if nothing
+     * is bound at [dest] OR the bound channel is closed (a datagram into the void). No buffer is
+     * allocated on the drop path, so a `TrackingBufferFactory` sees exactly one allocation per *delivered*
+     * datagram — the copy-on-send invariant, and no spurious leak when a peer's socket has gone away.
      */
     internal fun deliver(
         dest: SocketAddress,
@@ -90,9 +92,9 @@ internal class Vnet(
         payload: ReadBuffer,
     ): Boolean {
         val inbound = endpoints[dest] ?: return false
+        if (inbound.isClosedForSend) return false
         val copy = copyOf(payload)
-        inbound.trySend(Datagram(payload = copy, peer = observedSource, ecn = Ecn.Unknown))
-        return true
+        return inbound.trySend(Datagram(payload = copy, peer = observedSource, ecn = Ecn.Unknown)).isSuccess
     }
 
     // Copy [payload] into a receiver-owned buffer (a real socket copies into the kernel), reading from a
@@ -161,7 +163,7 @@ private class VnetChannel(
 
     override fun close() {
         closed = true
-        inbound.close()
+        vnet.unbind(localAddress) // remove the endpoint too (not just close the channel), so a flap frees it
     }
 }
 

@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalDatagramApi::class, ExperimentalTime::class)
+@file:OptIn(ExperimentalDatagramApi::class, ExperimentalTime::class, ExperimentalCoroutinesApi::class)
 
 package com.ditchoom.webrtc.ice
 
@@ -10,12 +10,14 @@ import com.ditchoom.webrtc.ice.vnet.Vnet
 import com.ditchoom.webrtc.ice.vnet.vnetAddress
 import com.ditchoom.webrtc.stun.TransportAddress
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.selects.onTimeout
+import kotlinx.coroutines.selects.select
 import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -162,7 +164,14 @@ internal class IceDriver(
     }
 
     suspend fun awaitConnected(): IceConnectionState =
-        state.first { it is IceConnectionState.Connected || it is IceConnectionState.Completed }
+        state.first {
+            when (it) {
+                is IceConnectionState.Connected, is IceConnectionState.Completed -> true
+                // Fail loudly with the reason instead of hanging until the watchdog if ICE actually failed.
+                is IceConnectionState.Failed -> error("expected a connection, but ICE failed: ${it.reason}")
+                else -> false
+            }
+        }
 
     private fun gather(candidate: IceCandidate) {
         localCandidates += candidate
@@ -192,7 +201,14 @@ internal class IceDriver(
                 if (deadline == null) {
                     inbox.receiveCatching().getOrNull() ?: return
                 } else {
-                    withTimeoutOrNull((deadline - clock()).coerceAtLeast(Duration.ZERO)) { inbox.receive() }
+                    // select (not withTimeoutOrNull { receive() }): a plain timeout can cancel receive()
+                    // *after* it was handed an element, silently losing a trickled candidate posted at a
+                    // deadline. select leaves an un-taken element in the channel for the next iteration.
+                    val wait = (deadline - clock()).coerceAtLeast(Duration.ZERO)
+                    select<IceEvent?> {
+                        inbox.onReceiveCatching { it.getOrNull() }
+                        onTimeout(wait) { null }
+                    }
                 }
             val outputs = if (event != null) agent.handle(event, clock()) else agent.handle(IceEvent.TimerFired, clock())
             apply(outputs)

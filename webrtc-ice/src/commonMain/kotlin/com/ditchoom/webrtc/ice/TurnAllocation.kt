@@ -48,6 +48,13 @@ import kotlin.time.ExperimentalTime
  * pending requests) from Data indications (to the inbound queue) in one loop on [scope]. Auth is the
  * short-term-credential MESSAGE-INTEGRITY the vnet server understands (MD5-free); the long-term-key
  * (real-coturn) derivation is a W7-interop concern. Call [allocate] once before use.
+ *
+ * **Known W3 limitations (tracked; not exercised by the vnet, which models no expiry):** no allocation
+ * Refresh (RFC 8656 §8) or permission re-installation (§9), so a session outliving the server LIFETIME
+ * loses its relay — a W7-interop follow-up. [pending]/[permitted] are plain collections safe under the
+ * single-threaded test/driver dispatcher; a genuinely multi-threaded scope would need synchronization.
+ * A response's attribute slices are read by the awaiting request before the demux loop's next receive,
+ * safe against the vnet's copy-on-receive; a receive-buffer-pooling channel would want it copied too.
  */
 public class TurnAllocation(
     private val underlying: DatagramChannel,

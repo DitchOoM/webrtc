@@ -108,6 +108,8 @@ class VnetTurnRelayTest {
             StunMessageBuilder
                 .of(StunClass.Request, StunMethod.Allocate, txid)
                 .add(RawAttribute.ofText(StunAttributeType.Username, Vnets.TURN_USERNAME))
+                .add(RawAttribute.ofText(StunAttributeType.Realm, TurnServer.DEFAULT_REALM))
+                .add(RawAttribute.ofText(StunAttributeType.Nonce, TurnServer.DEFAULT_NONCE))
                 .add(RawAttribute.ofRequestedTransport())
                 .addMessageIntegrity(key())
                 .encode()
@@ -129,6 +131,8 @@ class VnetTurnRelayTest {
             StunMessageBuilder
                 .of(StunClass.Request, StunMethod.CreatePermission, txid)
                 .add(RawAttribute.ofText(StunAttributeType.Username, Vnets.TURN_USERNAME))
+                .add(RawAttribute.ofText(StunAttributeType.Realm, TurnServer.DEFAULT_REALM))
+                .add(RawAttribute.ofText(StunAttributeType.Nonce, TurnServer.DEFAULT_NONCE))
                 .add(RawAttribute.ofXorAddress(StunAttributeType.XorPeerAddress, peer.toTransportAddress(), txid))
                 .addMessageIntegrity(key())
                 .encode()

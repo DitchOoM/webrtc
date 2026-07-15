@@ -20,6 +20,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.jvm.JvmInline
 import kotlin.random.Random
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 
@@ -80,20 +81,22 @@ public suspend fun gatherServerReflexive(
     stunServer: SocketAddress,
     random: Random,
     timeout: Duration = DEFAULT_GATHER_TIMEOUT,
+    retransmitInterval: Duration = DEFAULT_GATHER_RTO,
 ): TransportAddress? {
     val transactionId = TransactionId.random(random)
     val request = StunMessageBuilder.of(StunClass.Request, StunMethod.Binding, transactionId).addFingerprint().encode()
-    socket.send(request, to = stunServer)
+    // Retransmit the Binding every [retransmitInterval] until a matching response arrives or [timeout]
+    // elapses (RFC 8489 §6.2.1 spirit) — a single lost request or response must not cost the whole srflx.
     return withTimeoutOrNull(timeout) {
         while (true) {
-            val datagram =
-                when (val result = socket.receive()) {
-                    is DatagramReadResult.Received -> result.datagram
-                    is DatagramReadResult.Closed -> return@withTimeoutOrNull null
-                }
-            val message = (StunMessage.decode(datagram.payload) as? StunDecodeResult.Success)?.message ?: continue
-            if (message.transactionId == transactionId && message.messageType.stunClass == StunClass.SuccessResponse) {
-                return@withTimeoutOrNull message.firstOrNull(StunAttributeType.XorMappedAddress)?.asXorMappedAddress(transactionId)
+            socket.send(request, to = stunServer)
+            val response = withTimeoutOrNull(retransmitInterval) { receiveMatchingResponse(socket, transactionId) }
+            when {
+                response == null -> Unit // no answer within the interval — retransmit
+                // A success carries our reflexive address; an error response means no srflx here — give up.
+                response.messageType.stunClass == StunClass.SuccessResponse ->
+                    return@withTimeoutOrNull response.firstOrNull(StunAttributeType.XorMappedAddress)?.asXorMappedAddress(transactionId)
+                else -> return@withTimeoutOrNull null
             }
         }
         @Suppress("UNREACHABLE_CODE")
@@ -101,5 +104,28 @@ public suspend fun gatherServerReflexive(
     }
 }
 
+// Read from [socket] until a STUN response bearing [transactionId] arrives (success or error), or the
+// channel closes. The caller bounds this with a timeout to drive retransmission.
+@OptIn(ExperimentalTime::class)
+private suspend fun receiveMatchingResponse(
+    socket: DatagramChannel,
+    transactionId: TransactionId,
+): StunMessage? {
+    while (true) {
+        val datagram =
+            when (val result = socket.receive()) {
+                is DatagramReadResult.Received -> result.datagram
+                is DatagramReadResult.Closed -> return null
+            }
+        val message = (StunMessage.decode(datagram.payload) as? StunDecodeResult.Success)?.message ?: continue
+        val stunClass = message.messageType.stunClass
+        val isResponse = stunClass == StunClass.SuccessResponse || stunClass == StunClass.ErrorResponse
+        if (message.transactionId == transactionId && isResponse) return message
+    }
+}
+
 /** Default gathering round-trip budget — generous under virtual time, tight enough on a real network. */
 public val DEFAULT_GATHER_TIMEOUT: Duration = 3.seconds
+
+/** Default gather retransmit interval (RFC 8489 §6.2.1 initial RTO). */
+public val DEFAULT_GATHER_RTO: Duration = 500.milliseconds

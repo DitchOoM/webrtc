@@ -3,7 +3,62 @@
 Live state of the current wave. A resumed session reads `RFC_KMP_WEBRTC.md` → `EXECUTION_PLAN.md` →
 this file. Update it whenever you stop mid-wave.
 
-## Where we are: **W3 seam gate CLEARED — two-peer datagram echo over webrtc's own vnet green under `runTest` on all local platforms; ICE agent core is next**
+## Where we are: **W3 (`webrtc-ice`) COMPLETE on branch `w3-webrtc-ice` — full ICE agent establishes over NAT/relay under `runTest` on all 5 local lanes; PR open, `skip-release`, NOT merged**
+
+### 2026-07-15 — W3 built end-to-end (steps 1–5), green throughout, unmerged
+
+The ICE agent core is done. Branch `w3-webrtc-ice` now carries (on top of the Step-1 seam gate) five
+commits building the whole wave; everything is green on **JVM, JS-node, wasmJs-node, Linux/native,
+Android host** (Apple lanes compile-faithful — runtime-validate on the macOS runner at merge,
+`V6_MAC_VALIDATION`). Nothing is on Central (`skip-release`).
+
+**What landed (commits after `1d81dfe`):**
+1. **Vnet NAT layer** (`webrtc-ice/commonTest/.../vnet/`): the flat `Router` seam became a richer
+   `Fabric` (0..n deliveries, rewritten observed source, deferral onto virtual time). `Nat`/`NatBox` =
+   the 4 RFC 4787 profiles (mapping × filtering); a virtual `TurnServer` + `StunServer` bound as
+   ordinary endpoints; a seeded `Impairment` pipe; `Vnets` topology builders (`flat`, `behindNats`,
+   `meetup`, `flatImpaired`). NAT-model property tests prove each profile filters per its definition.
+2. **Type model + sans-io core** (`commonMain`): `IceCandidate`/priority/`Foundation`,
+   `CandidatePair`/pair-priority (ULong), `IceRole`/`TieBreaker`/`IceCredentials`, `IceAttributes`,
+   and **`IceAgent`** — `handle(event,now)` + `nextDeadline(now)`, no clock/RNG/IO inside; checklist
+   FSM, triggered checks, nomination, RFC 7675 consent, role conflict, restart. Seeded `Random`.
+3. **Connectivity checks** reuse the W1 STUN client (`StunMessageBuilder` + `StunTransaction`); ICE
+   attrs (PRIORITY/USE-CANDIDATE/ICE-CONTROLL*) built on the additive public
+   `RawAttribute.ofRaw` / `ofXorAddress` I added to `webrtc-stun` (apiDump'd).
+4. **Gathering drivers + trickle** (`commonMain`): `gatherServerReflexive` (srflx), `TurnAllocation`
+   (a full RFC 8656 relay client presented **as a `DatagramChannel`** — Allocate/401/CreatePermission/
+   Send/Data — so relay complexity stays out of the core), `NetworkMonitor`/`MdnsResolver` seams.
+   The `IceDriver` test harness drives one `handle`-loop per agent over the vnet; all intake flows
+   through one inbox so **trickle + restart just work**.
+5. **Fixtures + fuzz** (`commonTest`): host-to-host, role-conflict, full-cone srflx hole-punch,
+   **dual-symmetric-NAT → relay**, candidate-flap, `NetworkId`-restart, consent-expiry, `AllPairsFailed`;
+   RFC priority/foundation conformance; pinned-seed fuzz (loss+jitter liveness, deterministic replay,
+   every-profile-terminates).
+
+**Core bug caught + fixed with its fixture (directive #5):** consent expiry used strict `>` while
+`nextDeadline` armed exactly `lastResponse+consentTimeout` → the driver spun without advancing virtual
+time. Now `>=`; `consent_expiry_fails_...` is the regression.
+
+**Next-session TODO to finish the wave:**
+- **Open/verify the PR is `skip-release`** via the REST API (`gh pr edit --add-label` fails silently
+  here) and confirm the label before any merge; keep it unmerged until a reviewer/gate says go.
+- **Runtime-validate Apple** on the macOS runner (the local box is compile-faithful).
+- **Adversarial review gate** (EXECUTION_PLAN §1) before merge: re-verify the STUN-check MI keying
+  (responder's password both ways), role-conflict tie-break direction, pair-priority ULong overflow,
+  and the consent/expiry timing against RFC 8445/7675/8656.
+
+**Known simplifications to revisit (not blockers, noted in code):** the frozen algorithm is
+"lite" (highest-priority-first pacing rather than per-foundation unfreezing); srflx/relay **gathering
+has no STUN retransmit** yet (fine on the vnet; add before real-network W7); `IceFailureReason.NoCandidatePairs`
+is defined but reserved for the trickle end-of-candidates signal (W6 signaling); IPv6 host-string
+parsing in `IceAddress` is a follow-up (fixtures are v4); TURN auth is short-term-credential MI
+(MD5-free) — real-coturn long-term keys are a W7 concern.
+
+**Module structure (a question raised this session):** no client/server split is needed for the ICE
+agent — it is symmetric peer code (controlling/controlled is a runtime role, not a module). The only
+"server" components (the virtual STUN/TURN servers) are **`commonTest`-only** and never ship; if a real
+TURN-server product ever appears it belongs in `webrtc-testsuite` (W7), depending only on `webrtc-stun`.
+The module graph already keeps peers free of server code.
 
 ### 2026-07-15 update — Step 1 (wire socket + prove the seam) DONE; a premise correction
 

@@ -103,7 +103,7 @@ seeded), topology-as-data builders. Implements the W0 `DatagramChannel` seam.
 - **Exit:** NAT model property tests (each NAT type provably filters per its definition);
   a two-peer echo over each NAT topology runs under `runTest` virtual time on all platforms.
 
-### W3 — `webrtc-ice` · status: ☐ **NEXT — dev-unblocked (consume socket `socket-udp` + vnet); merge gated on `socket-udp` reaching Central** · *needs W1 (done) + W2 (socket, done); resolves §11.4 first*
+### W3 — `webrtc-ice` · status: ◑ **BUILT on branch `w3-webrtc-ice` (PR open, `skip-release`, unmerged); green on 5 local lanes; Apple runtime-validation + adversarial-review gate remain before merge** · *needs W1 (done) + W2 (socket, done); §11.4 resolved (mDNS resolve-only)*
 First wire socket into webrtc's `gradle/libs.versions.toml` (no socket entry yet) — dev against a socket
 `publishToMavenLocal` build, flip the pin to the released version before merge — and prove the seam from
 webrtc `commonTest` (two-peer datagram echo over the vnet under `runTest`) before the ICE core.

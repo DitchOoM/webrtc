@@ -6,6 +6,45 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Added — W3: `webrtc-ice` (ICE agent — RFC 8445 + trickle 8838 + consent 7675)
+- **Sans-io ICE agent core (`IceAgent`)** — a pure `handle(event, now): List<Output>` plus
+  `nextDeadline(now): Instant?`, with **no dispatcher, clock, RNG, or socket inside** (RFC §5.1). It
+  owns the checklist, the connectivity-check state machine (retransmission via the W1 `StunTransaction`),
+  Ta-paced scheduling, triggered checks, peer-reflexive learning, **regular nomination**, RFC 7675
+  **consent freshness**, **role-conflict** resolution (487 + tie-breaker), and **ICE restart**. Entropy
+  is one injected `Random` seam (directive #2) seeding the tie-breaker, credentials, and every STUN
+  transaction id, so a full establishment (and a 90-second field saga) replays bit-for-bit under
+  `runTest` virtual time on every platform.
+- **Type model, illegal states unrepresentable:** `IceCandidate` (host/srflx/prflx/relay) with RFC 8445
+  §5.1.2 priority; `CandidatePair` + §6.1.2.3 pair priority (computed in `ULong` — the `2^32·min` term
+  exceeds a signed `Long`); `CandidatePairState`; `Foundation` (§5.1.1.3); value-class `ComponentId`,
+  `IceRole`, unsigned `TieBreaker`, `NetworkId`; `IceCredentials.random` (ICE-char ufrag/pwd); a sealed
+  `IceConnectionState` and exhaustive `IceFailureReason`.
+- **ICE STUN attributes** (PRIORITY / USE-CANDIDATE / ICE-CONTROLLING / ICE-CONTROLLED) built on the
+  additive public `RawAttribute.ofRaw(type, value)` / `ofXorAddress(type, addr, txid)` escape-hatches
+  added to `webrtc-stun` — the ICE checks reuse the W1 STUN client and MESSAGE-INTEGRITY/FINGERPRINT.
+- **Gathering drivers (production, over injected seams):** `gatherServerReflexive` (STUN Binding →
+  srflx); `TurnAllocation` — a full RFC 8656 relay client presented **as a `DatagramChannel`** (Allocate
+  with 401 challenge, CreatePermission, Send/Data encapsulation, response demux) so the relay's
+  complexity stays out of the core; `NetworkMonitor` / `MdnsResolver` seams (mDNS **resolve-only**, RFC
+  §11.4). Trickle (RFC 8838) falls out of the driver's single-inbox design.
+- **The vnet grew a NAT layer** (`webrtc-ice` commonTest): the four RFC 4787 profiles (full-cone /
+  address-restricted / port-restricted / symmetric as mapping × filtering), a **virtual TURN server**
+  bound as an ordinary endpoint, a **virtual STUN server**, and a **seeded impairment pipe**
+  (loss/reorder/dup/delay on virtual time) — topologies-as-data builders (`Vnets`).
+- **Canonical fixtures + invariants (all under `runTest`, all platforms):** two-agent host-to-host,
+  role-conflict glare, full-cone srflx hole-punch, **dual-symmetric-NAT → relay** (the RFC §5.2
+  load-bearing case), candidate-flap mid-check, `NetworkId`-change → restart, consent expiry, and a
+  typed `AllPairsFailed` terminal; RFC-formula conformance for priority/foundation; a pinned-seed
+  **timeline fuzz smoke** (establishes under 20% loss + jitter, deterministic replay, every NAT profile
+  reaches a terminal state — the liveness/determinism invariants). NAT-model property tests prove each
+  profile filters per its RFC 4787 definition.
+- **One core bug found + fixed with its fixture** (directive #5): consent expiry used a strict `>`
+  while `nextDeadline` armed exactly `lastResponse + consentTimeout`, spinning the driver at that
+  instant without advancing virtual time — now `>=`, with `consent_expiry` as the regression.
+- Green on **JVM, JS-node, wasmJs-node, Linux/native, and Android host**; Apple lanes compile-faithful
+  (to be runtime-validated on the macOS runner). Nothing published to Central (`skip-release`).
+
 ### Added — W5 (codec floor): `webrtc-sctp` (SCTP chunk codec + DCEP messages)
 - **SCTP common header (RFC 4960 §3.1)** as a `buffer-codec` KSP `@ProtocolMessage` schema
   (`SctpCommonHeaderCodec`) — a straight-line 12-byte network-order decode; the chunk TLV framing

@@ -19,7 +19,27 @@ kotlinxCoroutines = "1.11.0"
 # 6.10.0 adds HMAC-SHA1 (buffer-crypto) + ReadBuffer.crc32 (buffer core) — DitchOoM/buffer#288 —
 # consumed by webrtc-stun for STUN MESSAGE-INTEGRITY (HMAC-SHA1/SHA256) + FINGERPRINT (CRC-32). The
 # 6.9.4 raw ByteStreamMux / pool fail-fast / codec-framing surface (RFC §4 reuse audit) still applies.
-buffer = "6.10.0"
+# 6.11.0 adds the buffer-flow **datagram trichotomy** (DatagramSource/Sink/Channel + SocketAddress +
+# DatagramMux) under @ExperimentalDatagramApi — DitchOoM/buffer#291, on Maven Central. This is the
+# UDP seam webrtc's transport track (W3+) rides, and the version socket-udp pins; bump keeps webrtc's
+# direct buffer deps aligned with the transitive socket-udp classpath (Gradle would resolve up anyway).
+buffer = "6.11.0"
+# DitchOoM socket sibling — the UDP `DatagramChannel` **actuals** webrtc's transport track binds to for
+# real-network candidate gathering (host/srflx/relay). The seam itself is buffer-flow's
+# `DatagramChannel` (on Central, above); `socket-udp` is only the platform real-socket implementation
+# (UdpSocket.bind/connect/resolve). It ships jvm/android/js-node/linux/apple — **NOT wasmJs/browser**
+# (RFC §1.1: browsers have no raw UDP), so it is consumed at the platform-edge gathering driver, never
+# in a common/core or wasm source set. The deterministic vnet tests ride an in-memory `DatagramChannel`
+# (buffer-flow interface), so they need neither socket-udp nor socket-testsuite.
+# NOTE: socket's #225 "vnet" is QUIC-specific, unpublished test code (drives the internal quiche seam,
+# not the public DatagramChannel; no NAT/TURN models) and `socket-testsuite` can't publish without the
+# whole quiche/rust/BoringSSL stack — so webrtc builds its own vnet (RFC §5.2: "the WebRTC-specific
+# addition"). No socket-testsuite entry here by design.
+# TODO(merge-gate): 3.10.2-SNAPSHOT is a LOCAL `publishToMavenLocal` build (socket origin/main c4ae645,
+# PR #239); socket-udp is NOT yet on Maven Central (latest socket 3.10.1 predates it, #239 deploy failed).
+# Flip this pin to the released socket-udp version — and drop `mavenLocal()` from the convention
+# repositories — before merging any webrtc code that depends on socket-udp. Dev-only until then.
+socket = "3.10.2-SNAPSHOT"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"
@@ -40,6 +60,7 @@ buffer-flow = { module = "com.ditchoom:buffer-flow", version.ref = "buffer" }
 buffer-codec = { module = "com.ditchoom:buffer-codec", version.ref = "buffer" }
 buffer-codec-processor = { module = "com.ditchoom:buffer-codec-processor", version.ref = "buffer" }
 buffer-crypto = { module = "com.ditchoom:buffer-crypto", version.ref = "buffer" }
+socket-udp = { module = "com.ditchoom:socket-udp", version.ref = "socket" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinxCoroutines" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }

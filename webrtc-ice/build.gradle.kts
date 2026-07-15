@@ -9,9 +9,25 @@ kotlin {
         commonMain.dependencies {
             // Sans-io agent core (RFC §5.1): handle(event, now) + nextDeadline. Gathering drivers ride
             // the DatagramChannel/NetworkMonitor seams; UDP/mDNS actuals arrive in W3.
+            // buffer-flow carries the @ExperimentalDatagramApi DatagramChannel seam (buffer 6.11.0); the
+            // core targets it, NOT socket-udp — socket-udp is real-socket only (no wasm/browser, RFC §1.1)
+            // and is consumed at the platform-edge gathering driver, keeping the core all-platform.
             api(project(":webrtc-stun"))
             api(libs.buffer.flow)
             api(libs.kotlinx.coroutines.core)
+        }
+        commonTest.dependencies {
+            // runTest virtual time — the whole seam gate (VnetDatagramSeamTest) runs on it. kotlin("test")
+            // comes from the convention; coroutines-test is per-module.
+            implementation(libs.kotlinx.coroutines.test)
+        }
+        // The real-socket resolution smoke test (RealUdpSocketSeamTest) binds two `socket-udp` UdpSockets
+        // on loopback and echoes over the SAME buffer-flow DatagramChannel the vnet implements — proving
+        // the local `socket-udp:3.10.2-SNAPSHOT` pin resolves and its actual honors the seam. JVM-only:
+        // socket-udp has no wasm/browser target, and real UDP is not virtual-time (real dispatcher).
+        // TODO(merge-gate): this jvmTest dep is on an unpublished snapshot — see the `socket` catalog pin.
+        jvmTest.dependencies {
+            implementation(libs.socket.udp)
         }
     }
 }

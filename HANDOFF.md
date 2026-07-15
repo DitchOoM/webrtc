@@ -3,7 +3,50 @@
 Live state of the current wave. A resumed session reads `RFC_KMP_WEBRTC.md` → `EXECUTION_PLAN.md` →
 this file. Update it whenever you stop mid-wave.
 
-## Where we are: **pure-codec track COMPLETE; transport track is UNBLOCKED for dev — socket now has the UDP `commonMain` seam + vnet (merged, not yet on Central)**
+## Where we are: **W3 seam gate CLEARED — two-peer datagram echo over webrtc's own vnet green under `runTest` on all local platforms; ICE agent core is next**
+
+### 2026-07-15 update — Step 1 (wire socket + prove the seam) DONE; a premise correction
+
+The seam gate the last session named ("prove a two-peer datagram echo over the vnet under `runTest`,
+all platforms, before writing any ICE") is **green** — JVM, JS-Node, wasmJs-Node, Linux/native, Android
+host. What landed (all on the W3 branch, unmerged):
+- **buffer bumped 6.10.0 → 6.11.0** (on Central) — carries the buffer-flow **datagram trichotomy**
+  (`DatagramChannel`/`DatagramSource`/`DatagramSink` + `SocketAddress`, `@ExperimentalDatagramApi`),
+  which is **the UDP seam webrtc rides**. Merged codecs (stun/sdp/sctp) re-tested green on 6.11.0.
+- **socket wired into the catalog** — `socket = "3.10.2-SNAPSHOT"` + `socket-udp` lib, pinned to a local
+  `:socket-udp:publishToMavenLocal` build (socket origin/main `c4ae645`, PR #239). `mavenLocal()` added
+  to the convention repositories. **Both carry a `TODO(merge-gate)`**: flip the pin to the released
+  `socket-udp` + drop `mavenLocal()` before merging. socket-udp is **not on Central** (latest 3.10.1
+  predates #239; maven-metadata 404).
+- **webrtc's own vnet** (`webrtc-ice/src/commonTest/.../vnet/Vnet.kt`) — an in-memory `DatagramChannel`
+  (flat router now; `Router` seam for NAT/impairment later) + `CountingBufferFactory`. Tests:
+  `VnetDatagramSeamTest` (virtual-time echo, boundaries, drop-to-void, all platforms) +
+  `RealUdpSocketSeamTest` (jvmTest: real loopback `UdpSocket` echo — proves the snapshot pin resolves and
+  the real actual honors the same seam the vnet implements).
+
+**Premise correction (important, verified against socket `origin/main` + buffer `origin/main`):** the
+last session's "socket ships the deterministic vnet/sim harness (#225), so webrtc consumes it" is **not
+usable as stated**. Socket's #225 sim is **QUIC-specific, lives in unpublished test source sets**
+(`socket-quic-quiche/src/{commonTest,jvmTest}`: `TimelineUdpChannel`/`ImpairedPipe`/`SimClock`/
+`runQuicSim`), drives the **internal quiche `UdpChannel`** seam (not the public `DatagramChannel`), and
+models **no NAT/TURN/topology**. `:socket-testsuite` can't be published without the whole
+quiche/rust/BoringSSL stack. **So the vnet is webrtc's own** — which is exactly what RFC §5.2 already
+says ("the vnet — the WebRTC-specific addition"). §11.1's "sim lives in socket" is only half-true: the
+*virtual-time pattern* (`SimClock(testScheduler)` + `runTest`) is socket's reference; the *UDP vnet with
+NAT models* is ours to build. socket-udp remains the **real-socket actual** consumed at the
+platform-edge gathering driver only (it has **no wasm/browser** target — RFC §1.1 — so it never enters a
+common/core/wasm source set; the core targets buffer-flow's interface).
+
+**§11.4 (mDNS) resolved** in the EXECUTION_PLAN decision log: resolve-only in W3, responder deferred
+behind a flag; resolution rides an injected `MdnsResolver` seam (deterministic stub in tests).
+
+**Next (Step 2 = W3 proper):** the sans-io ICE agent core + gathering drivers + trickle + NAT vnet
+fixtures + fuzz. Single session-chain, do **not** fan out the core. See the ORIGINAL recommendation
+below (still accurate) for the ICE scope.
+
+---
+
+## Prior framing (still accurate for the ICE scope): **pure-codec track COMPLETE; transport track UNBLOCKED for dev**
 
 All three Phase-1 protocol codecs are **merged to `main`** and green on every lane. Nothing is released
 to Central yet (every merge was `skip-release`; a `v0.0.1` tag exists from an earlier release exercise).

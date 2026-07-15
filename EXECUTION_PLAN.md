@@ -21,7 +21,7 @@ play in the socket repo.
 | resolved 2026-07-15 | RFC §11.1 — simulation-engine home → **lives in the socket sibling** (the #225 deterministic-simulation harness), not a standalone `ditchoom-simulation` | webrtc consumes socket's vnet; no separate sim module needed |
 | *open* | RFC §11.2 — SCTP subset scope (recommend: dcSCTP-style, no multihoming/interleaving) | must resolve before W5 |
 | *open* | RFC §11.3 — DTLS 1.2-first interop vs 1.3 (recommend: both via BoringSSL config, interop-test 1.2) | must resolve before W4 |
-| *open* | RFC §11.4 — mDNS (recommend: resolve-only in W3, responder deferred) | must resolve before W3 |
+| resolved 2026-07-15 | RFC §11.4 — mDNS → **resolve-only in W3; responder deferred** (behind a capability flag) | The gathering-side responder is multicast platform work (a `224.0.0.251:5353` listener per interface); it is not on the critical path for *reaching* peers. A browser peer that advertises a `.local` srflx-masking candidate must be *resolved* to its host IP for us to send checks, so resolve-only is mandatory in W3; advertising our own `.local` candidates (the responder) buys only privacy and is deferred behind a flag until a harness lane needs it. mDNS resolution rides the injected gathering seam (a `MdnsResolver` interface, deterministic stub in tests), never a hardwired multicast socket in the core. |
 
 ## 1. Orchestration model
 

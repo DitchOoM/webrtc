@@ -98,6 +98,10 @@ val benchmarkRuntime =
 repositories {
     google()
     mavenCentral()
+    // TODO(merge-gate): dev-only — resolves the local `socket-udp:3.10.2-SNAPSHOT` publishToMavenLocal
+    // build (socket PR #239, not yet on Central). Remove this line and flip the `socket` catalog pin to
+    // the released socket-udp version before merging any webrtc transport code that depends on it.
+    mavenLocal()
 }
 
 kotlin {

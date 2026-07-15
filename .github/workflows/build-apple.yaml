@@ -57,6 +57,20 @@ jobs:
       - name: Build + test (host macOS + iOS simulator)
         run: ./gradlew macosArm64Test iosSimulatorArm64Test ${{ inputs.gradle-args }} --no-configuration-cache
 
+      # On failure, capture the Apple K/N test reports (JUnit XML with full stack + captured output;
+      # for seeded tests the failing seed is in the assertion message) — so an Apple-only flake that
+      # can't be reproduced on the Linux dev box is diagnosable from the exact failure, not guessed.
+      - name: Upload test reports (on failure)
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-apple
+          path: |
+            **/build/test-results/**
+            **/build/reports/tests/**
+          retention-days: 14
+          if-no-files-found: ignore
+
       - name: Publish Apple klibs to local Maven repo
         # -PskipPrePublishCheck: the macOS lane has no Chrome/JS-browser toolchain for the full gate;
         # its Apple tests ran above, the cross-platform tests run on the Linux lane.

@@ -64,6 +64,23 @@ jobs:
       - name: Build + test (Linux/JVM/JS/WASM/Android)
         run: ./gradlew build allTests ${{ inputs.gradle-args }} --no-configuration-cache
 
+      # On ANY failure, capture the actual reason instead of leaving only the console tail: the JUnit
+      # XML carries each failing test's full stack + captured stdout/stderr (and, for our seeded
+      # deterministic tests, the failing seed is in the assertion message — so a flake is reproducible,
+      # not guessed at); the HTML mirrors it for humans. Per-target reports land under
+      # <module>/build/{test-results,reports/tests}/<target>Test/. Placed last so it fires whichever
+      # earlier step failed. (A Develocity Build Scan with per-test timing is also published each run.)
+      - name: Upload test reports (on failure)
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-linux
+          path: |
+            **/build/test-results/**
+            **/build/reports/tests/**
+          retention-days: 14
+          if-no-files-found: ignore
+
       - name: Binary-compatibility check (public ABI)
         run: ./gradlew apiCheck ${{ inputs.gradle-args }} --no-configuration-cache
 

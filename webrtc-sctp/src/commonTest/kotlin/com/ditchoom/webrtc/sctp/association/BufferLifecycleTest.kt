@@ -78,7 +78,12 @@ internal class SctpSimWith(
 ) {
     private val epoch = Instant.fromEpochSeconds(0)
     private var now: Instant = epoch
-    private class InFlight(val toB: Boolean, val payload: com.ditchoom.buffer.ReadBuffer, val at: Instant)
+
+    private class InFlight(
+        val toB: Boolean,
+        val payload: com.ditchoom.buffer.ReadBuffer,
+        val at: Instant,
+    )
 
     private val queue = ArrayList<InFlight>()
     val inboxB = ArrayList<SctpOutput.MessageReceived>()
@@ -103,8 +108,14 @@ internal class SctpSimWith(
             val aDl = a.nextDeadline(now)
             val bDl = b.nextDeadline(now)
             var fired = false
-            if (aDl != null && aDl <= now) { apply(true, a.handle(SctpEvent.TimerFired, now)); fired = true }
-            if (bDl != null && bDl <= now) { apply(false, b.handle(SctpEvent.TimerFired, now)); fired = true }
+            if (aDl != null && aDl <= now) {
+                apply(true, a.handle(SctpEvent.TimerFired, now))
+                fired = true
+            }
+            if (bDl != null && bDl <= now) {
+                apply(false, b.handle(SctpEvent.TimerFired, now))
+                fired = true
+            }
             if (fired) continue
             val next = listOfNotNull(queue.minOfOrNull { it.at }, aDl, bDl).minOrNull() ?: break
             if (next <= now) break

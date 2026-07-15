@@ -71,7 +71,12 @@ class SctpInvariantFuzzTest {
                 sim.post(
                     true,
                     SctpEvent.SendMessage(
-                        SctpSendOptions(stream, PayloadProtocolId.WebRtcBinary, unordered = true, reliability = SctpReliability.MaxRetransmits(1)),
+                        SctpSendOptions(
+                            stream,
+                            PayloadProtocolId.WebRtcBinary,
+                            unordered = true,
+                            reliability = SctpReliability.MaxRetransmits(1),
+                        ),
                         payload(24, seed = i),
                     ),
                 )
@@ -104,7 +109,11 @@ class SctpInvariantFuzzTest {
             sim.run()
 
             assertEquals((0 until messages).map { it and 0xFF }, sim.inboxB.map { it.payload.bytes().first() }, "seed $seed A→B in order")
-            assertEquals((0 until messages).map { (100 + it) and 0xFF }, sim.inboxA.map { it.payload.bytes().first() }, "seed $seed B→A in order")
+            assertEquals(
+                (0 until messages).map { (100 + it) and 0xFF },
+                sim.inboxA.map { it.payload.bytes().first() },
+                "seed $seed B→A in order",
+            )
         }
     }
 }

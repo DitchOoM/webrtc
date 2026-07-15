@@ -107,8 +107,12 @@ public class IceAgent(
         }
         if (remoteCredentials != null && checklist.any { it.state == CandidatePairState.Waiting }) consider(nextPacingAt)
         for (entry in checklist) consider(entry.transaction?.nextDeadline())
-        if (selected != null) {
-            consider(nextConsentAt)
+        val chosen = selected
+        if (chosen != null) {
+            // Only arm the next consent refresh when no consent check is already in flight — otherwise
+            // nextConsentAt sits in the past (we can't send a second) and the driver would spin without
+            // advancing virtual time; the in-flight transaction's own deadline carries the schedule.
+            if (chosen.transaction == null) consider(nextConsentAt)
             consider(lastConsentResponseAt?.plus(config.consentTimeout))
         }
         return earliest
@@ -229,7 +233,9 @@ public class IceAgent(
     ) {
         val chosen = selected ?: return
         val lastResponse = lastConsentResponseAt
-        if (lastResponse != null && now - lastResponse > config.consentTimeout) {
+        // `>=`, not `>`: nextDeadline arms exactly `lastResponse + consentTimeout`, so at that instant the
+        // check must fire — a strict `>` would leave the deadline in the past and spin the driver.
+        if (lastResponse != null && now - lastResponse >= config.consentTimeout) {
             selected = null
             transition(IceConnectionState.Failed(IceFailureReason.ConsentExpired), out)
             return

@@ -28,6 +28,17 @@ internal object Vnets {
     fun flat(bufferFactory: BufferFactory = BufferFactory.Default): Vnet = Vnet(bufferFactory = bufferFactory)
 
     /**
+     * A flat network with a seeded [Impairment] pipe (loss/reorder/dup/delay) — the fuzz-lane link that
+     * stresses connectivity-check retransmission under virtual time.
+     */
+    fun flatImpaired(
+        scope: CoroutineScope,
+        impairment: ImpairmentConfig,
+        seed: Long,
+        bufferFactory: BufferFactory = BufferFactory.Default,
+    ): Vnet = Vnet(bufferFactory = bufferFactory, fabric = Impairment(impairment, scope, seed, base = DirectFabric))
+
+    /**
      * A single NAT box for [privatePrefix]↔[publicIp] under [profile]. Compose several with [behindNats].
      */
     fun nat(

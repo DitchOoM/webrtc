@@ -1,7 +1,8 @@
-@file:OptIn(ExperimentalTime::class)
+@file:OptIn(ExperimentalTime::class, ExperimentalDatagramApi::class)
 
 package com.ditchoom.webrtc.ice
 
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.webrtc.ice.vnet.Vnets
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first

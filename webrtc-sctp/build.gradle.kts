@@ -14,11 +14,25 @@ kotlin {
             // exactly as webrtc-stun/webrtc-sdp do. Chunk values are zero-copy slice views over the
             // datagram (RFC §6), never extracted to arrays. The SCTP CRC32c checksum is self-contained
             // (Crc32c.kt) — a managed-ReadBuffer table (no primitive array, directive #1), so no
-            // buffer-crypto dependency. The DTLS transport, the SCTP association state machine, and the
-            // DataChannel StreamMux (the rest of W5) sit above this floor on the deferred UDP/DTLS
-            // track — this deliverable is the wire codec + DCEP messages only.
+            // buffer-crypto dependency.
             api(libs.buffer)
             api(libs.buffer.codec)
+            // The W5 association layer above the codec floor: the sans-io SctpAssociation FSM is pure
+            // (no coroutines/clock/RNG inside), but the DataChannel it drives IS a buffer-flow
+            // StreamMux<ReadBuffer> (DESIGN §7 — the public consumer contract), and the SCTP driver runs
+            // the association over an injected DatagramChannel transport (the DTLS-shaped seam) on an
+            // injected CoroutineScope + clock. So buffer-flow (StreamMux/Connection/DatagramChannel) and
+            // coroutines-core (the seamed driver loop, exactly as webrtc-ice's gathering drivers) enter
+            // commonMain here. The transport seam is DatagramChannel-shaped so real DTLS (W4) slots in as
+            // a swap, not a rewrite.
+            api(libs.buffer.flow)
+            api(libs.kotlinx.coroutines.core)
+        }
+        commonTest.dependencies {
+            // runTest virtual time drives the whole association end-to-end (handshake, retransmit,
+            // shutdown) at zero wall-clock on every platform. kotlin("test") comes from the convention;
+            // coroutines-test is per-module.
+            implementation(libs.kotlinx.coroutines.test)
         }
     }
 }

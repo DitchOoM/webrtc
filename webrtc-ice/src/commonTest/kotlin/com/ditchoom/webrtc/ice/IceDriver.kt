@@ -2,12 +2,16 @@
 
 package com.ditchoom.webrtc.ice
 
+import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.webrtc.ice.vnet.Vnet
 import com.ditchoom.webrtc.ice.vnet.vnetAddress
+import com.ditchoom.webrtc.sctp.datachannel.SctpDatagramTransport
+import com.ditchoom.webrtc.stun.StunDecodeResult
+import com.ditchoom.webrtc.stun.StunMessage
 import com.ditchoom.webrtc.stun.TransportAddress
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -49,6 +53,10 @@ internal class IceDriver(
     private val random = Random(seed * SEED_SPREAD + 1)
     private val inbox = Channel<IceEvent>(Channel.UNLIMITED)
     private val channels = HashMap<TransportAddress, DatagramChannel>()
+
+    // App-data (non-STUN) demux (RFC 7983): datagrams that are not STUN connectivity checks are DTLS/SCTP
+    // and are routed here rather than into the agent, which ignores them. This is the seam SCTP rides.
+    private val appInbound = Channel<ReadBuffer>(Channel.UNLIMITED)
 
     private val _state = MutableStateFlow<IceConnectionState>(IceConnectionState.New)
     val state: StateFlow<IceConnectionState> get() = _state
@@ -187,10 +195,36 @@ internal class IceDriver(
                         is DatagramReadResult.Received -> result.datagram
                         is DatagramReadResult.Closed -> return@launch
                     }
-                inbox.trySend(IceEvent.DatagramReceived(base, datagram.peer.toTransportAddress(), datagram.payload))
+                // RFC 7983 demux: STUN → the ICE agent; anything else is application data (DTLS/SCTP).
+                if (isStun(datagram.payload)) {
+                    inbox.trySend(IceEvent.DatagramReceived(base, datagram.peer.toTransportAddress(), datagram.payload))
+                } else {
+                    appInbound.trySend(datagram.payload)
+                }
             }
         }
     }
+
+    private fun isStun(payload: ReadBuffer): Boolean = StunMessage.decode(payload.slice()) is StunDecodeResult.Success
+
+    /**
+     * The application-data seam over the nominated pair, shaped as an [SctpDatagramTransport] (the W5
+     * composition point — where DTLS will later sit). Sends ride the selected pair's socket; receives
+     * are the demuxed non-STUN datagrams. Start SCTP only after [awaitConnected].
+     */
+    fun sctpTransport(): SctpDatagramTransport =
+        object : SctpDatagramTransport {
+            override suspend fun send(packet: ReadBuffer) {
+                val pair = _selectedPair ?: return
+                channels[pair.local.base]?.send(packet, to = pair.remote.address.toSocketAddress())
+            }
+
+            override suspend fun receive(): ReadBuffer? = appInbound.receiveCatching().getOrNull()
+
+            override fun close() {
+                appInbound.close()
+            }
+        }
 
     private suspend fun driveLoop() {
         while (true) {

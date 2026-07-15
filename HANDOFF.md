@@ -3,9 +3,52 @@
 Live state of the current wave. A resumed session reads `RFC_KMP_WEBRTC.md` → `EXECUTION_PLAN.md` →
 this file. Update it whenever you stop mid-wave.
 
-## Where we are: **W3 (`webrtc-ice`) COMPLETE on branch `w3-webrtc-ice` — full ICE agent establishes over NAT/relay under `runTest` on all 5 local lanes; PR open, `skip-release`, NOT merged**
+## Where we are: **W3 (`webrtc-ice`) MERGED to `main` (squash, PR #11, `skip-release`) — the sans-io ICE agent + gathering + trickle + NAT vnet are landed. Next: W5 (SCTP association + DataChannel). W4 (DTLS) is parked by request.**
 
-### 2026-07-15 — W3 built end-to-end (steps 1–5), green throughout, unmerged
+### 2026-07-15 — W3 merged; W5 is next (W4 held); resume guide
+
+**W3 landed on `main` as `1556c0d` (squash of PR #11):** the full sans-io ICE agent (RFC 8445 + trickle
+8838 + consent 7675) — checklist FSM, connectivity checks over the W1 STUN client, regular nomination,
+role-conflict, consent/keepalive, ICE restart; host/srflx/relay gathering (`TurnAllocation` as a
+`DatagramChannel`); the deterministic NAT vnet (4 RFC 4787 profiles + virtual TURN/STUN + seeded
+impairment); and a strong type model (sealed per-type `IceCandidate`, `ComponentId` enum, sealed
+gathering results, no boolean/nullable soup — see `DESIGN_PRINCIPLES.md` §3–§5). An adversarial review
+gate (5 reviewers) ran and every confirmed defect is fixed with a regression fixture. Full CI matrix
+incl. Apple K/N is green.
+
+**Next wave — W5: SCTP association state machine + `DataChannel` (pure Kotlin, sans-io).** The chunk
+codec + DCEP are already merged (W5 floor). Remaining: the association FSM (4-way handshake, TSN/SACK,
+RTO, congestion control, fragmentation/reassembly over `StreamProcessor`), RFC 3758 partial-reliability,
+and `DataChannel` implementing buffer-flow's `StreamMux`. Resolve §11.2 as it starts.
+
+**Key architectural decision for W5 (why it doesn't need W4 yet):** the sans-io split decouples the SCTP
+core from DTLS exactly as it decoupled ICE from real UDP. The association FSM only needs a **datagram
+transport** underneath, which the W3 ICE stack + the vnet already provide. So build and test W5
+end-to-end over `ICE + vnet` under `runTest` virtual time with a **plaintext/stub transport at the
+driver edge where DTLS will later slot in** — design that seam as a clean `DatagramChannel`-shaped
+boundary so dropping real DTLS in (W4) is a swap, not a rewrite. Target milestone: **two peers exchange
+ordered/unordered/lossy data-channel messages end-to-end under virtual time, all platforms.** The full
+end-to-end TB fixture with *real* DTLS is the exit gate once W4 lands.
+
+**W4 (`webrtc-dtls`, BoringSSL) is intentionally parked** (user request) — it's the one native dep and a
+worse fit for local iteration (Apple/Android runtime-validated on runners). Pick it up in parallel/after
+W5; resolve §11.3 (DTLS 1.2-vs-1.3) before it.
+
+**Documented W3 follow-ups (not blockers, tracked in code):** TURN allocation `Refresh` /
+permission re-install (RFC 8656 §8/§9 — fine within LIFETIME; a W7-interop concern); explicit
+pool-`release`/`use{}` of datagram buffers (entangled with the core's per-retransmit slice ownership) +
+webrtc-stun builder intermediates still on `BufferFactory.Default`; IPv6 host-string parsing in
+`IceAddress` (fixtures are v4). Mapping `IceFailureReason` into the `SocketException` hierarchy is the
+session layer's job (W6).
+
+**Standing traps (unchanged):** `gh pr edit --add-label skip-release` fails silently — apply via
+`gh api repos/DitchOoM/webrtc/issues/<n>/labels -f 'labels[]=skip-release'` and verify. Apple lanes are
+compile-faithful locally; runtime-validate on the macOS runner (`V6_MAC_VALIDATION`). `git fetch` +
+check `origin/main` before reasoning about what's merged.
+
+---
+
+### 2026-07-15 — W3 built end-to-end (steps 1–5), green throughout (landed as #11)
 
 The ICE agent core is done. Branch `w3-webrtc-ice` now carries (on top of the Step-1 seam gate) five
 commits building the whole wave. **PR #11 is open, `skip-release` verified, and the full CI matrix is

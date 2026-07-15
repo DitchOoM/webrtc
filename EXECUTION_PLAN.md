@@ -103,7 +103,7 @@ seeded), topology-as-data builders. Implements the W0 `DatagramChannel` seam.
 - **Exit:** NAT model property tests (each NAT type provably filters per its definition);
   a two-peer echo over each NAT topology runs under `runTest` virtual time on all platforms.
 
-### W3 — `webrtc-ice` · status: ◑ **BUILT on branch `w3-webrtc-ice` (PR open, `skip-release`, unmerged); green on 5 local lanes; Apple runtime-validation + adversarial-review gate remain before merge** · *needs W1 (done) + W2 (socket, done); §11.4 resolved (mDNS resolve-only)*
+### W3 — `webrtc-ice` · status: ✅ **MERGED to `main` (squash, PR #11, `skip-release`) — sans-io ICE agent + host/srflx/relay gathering + trickle + deterministic NAT vnet; adversarial-review gate passed; full CI matrix incl. Apple green** · *§11.4 resolved (mDNS resolve-only)*
 First wire socket into webrtc's `gradle/libs.versions.toml` (no socket entry yet) — dev against a socket
 `publishToMavenLocal` build, flip the pin to the released version before merge — and prove the seam from
 webrtc `commonTest` (two-peer datagram echo over the vnet under `runTest`) before the ICE core.
@@ -116,7 +116,7 @@ signaling seam. Seeded `Random` for tie-breaker/ufrag/pwd/foundations from day o
   smoke lane (pinned seeds) + JVM deep-run lane wired with shrinker; ICE state invariants in the
   fuzz invariant set; typed `IceFailureReason` surface complete.
 
-### W4 — `webrtc-dtls` · status: ☐ · *parallel-ok with W1–W3; resolves §11.3 first*
+### W4 — `webrtc-dtls` · status: ☐ **PARKED (user request) — pick up in parallel with / after W5; the one native dep, runner-validated** · *parallel-ok with W1–W3; resolves §11.3 first*
 BoringSSL backends reusing quiche build infra: cinterop (Apple/Linux), JNI (Android), FFM (JVM,
 multi-release JAR). Memory-BIO driver, caller-clocked (`DTLSv1_get_timeout` →
 `nextDeadline`), native handles via `toNativeData()`, wrapper alloc/free tracked. DTLS-SRTP key
@@ -126,7 +126,7 @@ verification (a=fingerprint model, not CA validation).
   (RNG-drift bounds asserted, the Tier-B discipline); retransmission fixture (dropped flight)
   green; wrapper-free invariant in fuzz set; Apple/Android lanes runtime-validated on runners.
 
-### W5 — `webrtc-sctp` + DCEP + DataChannel · status: ◑ codec floor merged (PR #6); association FSM + DataChannel remain · *needs W3+W4; resolves §11.2 first*
+### W5 — `webrtc-sctp` + DCEP + DataChannel · status: ◑ **NEXT — codec floor merged (PR #6); association FSM + DataChannel remain. Build sans-io over the W3 ICE stack + vnet with a plaintext/stub DTLS seam (decoupled from W4); real-DTLS end-to-end is the exit gate once W4 lands** · *core needs only W3 (done); §11.2 first*
 The **chunk codec + DCEP messages** (pure, sans-io, commonMain) are done and merged. The **SCTP
 association state machine** (4-way handshake, TSN/SACK/RTO, congestion control, fragmentation/
 reassembly over `StreamProcessor`), RFC 3758 partial-reliability, and the `DataChannel` implementing

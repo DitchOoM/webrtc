@@ -3,7 +3,172 @@
 Live state of the current wave. A resumed session reads `RFC_KMP_WEBRTC.md` → `EXECUTION_PLAN.md` →
 this file. Update it whenever you stop mid-wave.
 
-## Where we are: **pure-codec track COMPLETE; transport track is UNBLOCKED for dev — socket now has the UDP `commonMain` seam + vnet (merged, not yet on Central)**
+## Where we are: **W3 (`webrtc-ice`) COMPLETE on branch `w3-webrtc-ice` — full ICE agent establishes over NAT/relay under `runTest` on all 5 local lanes; PR open, `skip-release`, NOT merged**
+
+### 2026-07-15 — W3 built end-to-end (steps 1–5), green throughout, unmerged
+
+The ICE agent core is done. Branch `w3-webrtc-ice` now carries (on top of the Step-1 seam gate) five
+commits building the whole wave. **PR #11 is open, `skip-release` verified, and the full CI matrix is
+green** — `build-linux` (JVM/JS/WASM/Android/Linux K/N), **`build-apple` (Apple K/N — runtime-validated
+on the macOS runner, `V6_MAC_VALIDATION`)**, all three fuzz lanes, standing-directives, and
+validate-artifacts all pass. Nothing is on Central (`skip-release`). **Not merged** (awaiting the
+adversarial-review gate / a go).
+
+**What landed (commits after `1d81dfe`):**
+1. **Vnet NAT layer** (`webrtc-ice/commonTest/.../vnet/`): the flat `Router` seam became a richer
+   `Fabric` (0..n deliveries, rewritten observed source, deferral onto virtual time). `Nat`/`NatBox` =
+   the 4 RFC 4787 profiles (mapping × filtering); a virtual `TurnServer` + `StunServer` bound as
+   ordinary endpoints; a seeded `Impairment` pipe; `Vnets` topology builders (`flat`, `behindNats`,
+   `meetup`, `flatImpaired`). NAT-model property tests prove each profile filters per its definition.
+2. **Type model + sans-io core** (`commonMain`): `IceCandidate`/priority/`Foundation`,
+   `CandidatePair`/pair-priority (ULong), `IceRole`/`TieBreaker`/`IceCredentials`, `IceAttributes`,
+   and **`IceAgent`** — `handle(event,now)` + `nextDeadline(now)`, no clock/RNG/IO inside; checklist
+   FSM, triggered checks, nomination, RFC 7675 consent, role conflict, restart. Seeded `Random`.
+3. **Connectivity checks** reuse the W1 STUN client (`StunMessageBuilder` + `StunTransaction`); ICE
+   attrs (PRIORITY/USE-CANDIDATE/ICE-CONTROLL*) built on the additive public
+   `RawAttribute.ofRaw` / `ofXorAddress` I added to `webrtc-stun` (apiDump'd).
+4. **Gathering drivers + trickle** (`commonMain`): `gatherServerReflexive` (srflx), `TurnAllocation`
+   (a full RFC 8656 relay client presented **as a `DatagramChannel`** — Allocate/401/CreatePermission/
+   Send/Data — so relay complexity stays out of the core), `NetworkMonitor`/`MdnsResolver` seams.
+   The `IceDriver` test harness drives one `handle`-loop per agent over the vnet; all intake flows
+   through one inbox so **trickle + restart just work**.
+5. **Fixtures + fuzz** (`commonTest`): host-to-host, role-conflict, full-cone srflx hole-punch,
+   **dual-symmetric-NAT → relay**, candidate-flap, `NetworkId`-restart, consent-expiry, `AllPairsFailed`;
+   RFC priority/foundation conformance; pinned-seed fuzz (loss+jitter liveness, deterministic replay,
+   every-profile-terminates).
+
+**Core bug caught + fixed with its fixture (directive #5):** consent expiry used strict `>` while
+`nextDeadline` armed exactly `lastResponse+consentTimeout` → the driver spun without advancing virtual
+time. Now `>=`; `consent_expiry_fails_...` is the regression.
+
+**Adversarial review gate — DONE (5 parallel reviewers), all confirmed defects fixed with regression
+fixtures** (commits `48a5330` core-A, `333798e` drivers-B, `c97294b` buffer-C on the branch):
+- **Role-conflict comparison was INVERTED** in the Controlled branch (RFC 8445 §7.3.1.1: larger
+  tie-breaker → controlling in both directions) — controlled-vs-controlled glare thrashed. Fixed +
+  one-shot resolution latch + pacing re-arm on a 487 retry (a pair re-entering Waiting on an idle
+  checklist was never rescheduled — a second bug the glare fixture caught).
+- **Three liveness hangs** closed by a global `establishmentTimeout` failsafe: nomination-check failure
+  on the sole valid pair, controlled peer that never nominates, and zero-compatible-pairs (now emits the
+  previously-dead `NoCandidatePairs`). `nominationInFlight` wedge fixed + on-timer nomination retry.
+- **MI-splice** (RFC 8489 §14.5): checks read only `attributesCoveredByMessageIntegrity()`.
+- `pruneRedundant` state-aware; `selectPair` no Completed-regression; consent expiry clears its tx.
+- Driver/vnet: `select` drive loop (no lost trickled candidate); `close()` unbinds the vnet endpoint
+  (flap frees it; no false delivery/leak); vnet TURN server validates REALM/NONCE like coturn (the relay
+  fixtures now exercise TurnAllocation's full 401 challenge); srflx gather retransmits; `toTransportAddress`
+  typed-rejects non-v4.
+- **Directive #6 (BufferFactory):** injectable end-to-end (agent uses `config.bufferFactory` for all
+  datagrams); `BufferLifecycleTest` proves pool-injectability + steady RSS (no per-tick leak).
+
+Reviewer notes verified CLEAN (no change): priority/pair-priority arithmetic, pacing/consent spin
+guards, MI keying direction, USERNAME handling, unsigned tie-breaker, MI/FINGERPRINT ordering, T0
+throw-safety, the impairment RNG stream, and the NAT profiles' RFC 4787 fidelity.
+
+**Next-session TODO to finish the wave:**
+- PR #11 is open, `skip-release` **verified present**, CI green incl. Apple. Re-push the review-fix
+  commits (done) and let CI re-run; keep unmerged until a maintainer says go.
+- **Remaining directive-#6 follow-ups (documented in code):** explicit pool `release`/`use{}` of the
+  datagram buffers is entangled with the core's per-retransmit slice ownership, and webrtc-stun's
+  builder intermediates still use `BufferFactory.Default` — both are a scoped later refactor.
+- **TURN Refresh / permission re-install** (RFC 8656 §8/§9) not yet implemented (fine within LIFETIME;
+  the vnet models no expiry) — a W7-interop follow-up. TurnAllocation collections are single-dispatcher.
+
+**Known simplifications to revisit (not blockers, noted in code):** the frozen algorithm is
+"lite" (highest-priority-first pacing rather than per-foundation unfreezing); srflx/relay **gathering
+has no STUN retransmit** yet (fine on the vnet; add before real-network W7); `IceFailureReason.NoCandidatePairs`
+is defined but reserved for the trickle end-of-candidates signal (W6 signaling); IPv6 host-string
+parsing in `IceAddress` is a follow-up (fixtures are v4); TURN auth is short-term-credential MI
+(MD5-free) — real-coturn long-term keys are a W7 concern.
+
+**Module structure (a question raised this session):** no client/server split is needed for the ICE
+agent — it is symmetric peer code (controlling/controlled is a runtime role, not a module). The only
+"server" components (the virtual STUN/TURN servers) are **`commonTest`-only** and never ship; if a real
+TURN-server product ever appears it belongs in `webrtc-testsuite` (W7), depending only on `webrtc-stun`.
+The module graph already keeps peers free of server code.
+
+### 2026-07-15 update — Step 1 (wire socket + prove the seam) DONE; a premise correction
+
+The seam gate the last session named ("prove a two-peer datagram echo over the vnet under `runTest`,
+all platforms, before writing any ICE") is **green** — JVM, JS-Node, wasmJs-Node, Linux/native, Android
+host. What landed (all on the W3 branch, unmerged):
+- **buffer bumped 6.10.0 → 6.11.0** (on Central) — carries the buffer-flow **datagram trichotomy**
+  (`DatagramChannel`/`DatagramSource`/`DatagramSink` + `SocketAddress`, `@ExperimentalDatagramApi`),
+  which is **the UDP seam webrtc rides**. Merged codecs (stun/sdp/sctp) re-tested green on 6.11.0.
+- **socket wired into the catalog** — `socket = "3.11.0"` + `socket-udp` lib, resolved from **Maven
+  Central**. socket-udp 3.11.0 (PR #239) landed on Central mid-session (`20260715152514`) with all of
+  jvm/android/js/linux/**apple**, pinning buffer 6.11.0 — so **the merge-gate is lifted**: the pin is a
+  release (not a `publishToMavenLocal` snapshot) and `mavenLocal()` was removed from the convention.
+  Validated with `--refresh-dependencies` + mavenLocal gone: resolves and the real-UDP jvmTest passes.
+- **webrtc's own vnet** (`webrtc-ice/src/commonTest/.../vnet/Vnet.kt`) — an in-memory `DatagramChannel`
+  (flat router now; `Router` seam for NAT/impairment later) + `CountingBufferFactory`. Tests:
+  `VnetDatagramSeamTest` (virtual-time echo, boundaries, drop-to-void, all platforms) +
+  `RealUdpSocketSeamTest` (jvmTest: real loopback `UdpSocket` echo — proves the snapshot pin resolves and
+  the real actual honors the same seam the vnet implements).
+
+**Premise correction (important, verified against socket `origin/main` + buffer `origin/main`):** the
+last session's "socket ships the deterministic vnet/sim harness (#225), so webrtc consumes it" is **not
+usable as stated**. Socket's #225 sim is **QUIC-specific, lives in unpublished test source sets**
+(`socket-quic-quiche/src/{commonTest,jvmTest}`: `TimelineUdpChannel`/`ImpairedPipe`/`SimClock`/
+`runQuicSim`), drives the **internal quiche `UdpChannel`** seam (not the public `DatagramChannel`), and
+models **no NAT/TURN/topology**. `:socket-testsuite` can't be published without the whole
+quiche/rust/BoringSSL stack. **So the vnet is webrtc's own** — which is exactly what RFC §5.2 already
+says ("the vnet — the WebRTC-specific addition"). §11.1's "sim lives in socket" is only half-true: the
+*virtual-time pattern* (`SimClock(testScheduler)` + `runTest`) is socket's reference; the *UDP vnet with
+NAT models* is ours to build. socket-udp remains the **real-socket actual** consumed at the
+platform-edge gathering driver only (it has **no wasm/browser** target — RFC §1.1 — so it never enters a
+common/core/wasm source set; the core targets buffer-flow's interface).
+
+**§11.4 (mDNS) resolved** in the EXECUTION_PLAN decision log: resolve-only in W3, responder deferred
+behind a flag; resolution rides an injected `MdnsResolver` seam (deterministic stub in tests).
+
+**Next (Step 2 = W3 proper):** the sans-io ICE agent core + gathering drivers + trickle + NAT vnet
+fixtures + fuzz. Single session-chain, do **not** fan out the core. See the ORIGINAL recommendation
+below (still accurate) for the ICE scope.
+
+### START HERE — the ICE agent core (fresh session)
+
+State: branch **`w3-webrtc-ice`** (2 commits, clean tree, green on all local lanes). socket-udp is a
+plain Central dep now (`3.11.0`); nothing is merge-gated. Build order (each step green-throughout):
+
+1. **Vnet NAT layer** — extend `webrtc-ice/src/commonTest/.../vnet/Vnet.kt`. The `Router` fun-interface
+   seam is already there (`route(from, to): SocketAddress?`, `null` = drop). Add the four NAT profiles
+   (full-cone / address-restricted / port-restricted / symmetric: each a small pure map of
+   internal↔external mappings + a per-direction filter), a virtual TURN server (Allocate/Send/Data via
+   the W1 TURN codec), and seeded impairment (loss/reorder/dup/delay — copy socket's `ImpairedPipe`
+   shape: one `Random(seed)`, a fixed draw count per datagram; delay via `delay()` so `runTest` drives
+   it). Topologies-as-data builders. Keep the flat `DirectRouter` for unit tests.
+2. **ICE type model + sans-io core** — `Ice.kt` already has `Ufrag`/`IcePassword`/`IceFailureReason`.
+   Add `Candidate`(host/srflx/relay/prflx, `TransportAddress`, foundation, component, priority),
+   `CandidatePair` + RFC 8445 priority (§5.7.2) / foundation / pair-priority formulas, the checklist
+   FSM (`handle(event, now): List<Output>` + `nextDeadline(now): Instant?`, NO clock/random/IO inside),
+   triggered checks, nomination (regular), RFC 7675 keepalive/consent, restart. **Seeded `Random` from
+   day one** (directive #2) for tie-breaker / ufrag / pwd / foundations.
+3. **Connectivity checks reuse the W1 STUN client** (`webrtc-stun`, already a dep). Shape:
+   `StunMessageBuilder.of(StunClass.Request, StunMethod.Binding, TransactionId.random(rng)).add(attr)
+   .addMessageIntegrity(keyBuf).addFingerprint().encode(factory)`; decode via `StunMessage.decode(buf)`;
+   retransmit via `StunTransaction(txId, requestBuf, policy).handle(event, now)/nextDeadline()`.
+   **GOTCHA:** the ICE STUN attributes (PRIORITY `0x0024`, USE-CANDIDATE `0x0025`, ICE-CONTROLLED
+   `0x8029`, ICE-CONTROLLING `0x802A`) are **not** in webrtc-stun's typed set, and
+   `RawAttribute.Companion.ofValue(type, ReadBuffer)` is **`internal`**. So either (a) add a public
+   `RawAttribute.Companion.ofRaw(type, ReadBuffer)` escape-hatch to webrtc-stun (additive → `apiDump`),
+   or (b) define the ICE-attr builders inside webrtc-stun like the TURN ones. `StunAttributeType(short)`
+   ctor is public, so `StunAttributeType(0x0024)` is fine. Recommend (a).
+4. **Gathering drivers + trickle (RFC 8838)** over injected `DatagramChannel` (buffer-flow) +
+   `NetworkMonitor` (lives in socket **core** `com.ditchoom:socket`, NOT socket-udp — add that dep at
+   the driver edge, or define a thin `NetworkMonitor`-shaped seam webrtc owns) + `MdnsResolver` seam.
+   Real `UdpSocket.bind()` is the production channel (jvm/native/apple/android only — no wasm).
+5. **Canonical fixtures + fuzz + PR** — dual-symmetric-NAT→relay, candidate-flap mid-check,
+   NetworkId-change→restart, all under `runTest`; ICE invariants in the fuzz set; typed `IceFailureReason`
+   complete; `apiDump`; CHANGELOG; PR with `skip-release` (apply via REST API — `gh pr edit` fails
+   silently here). Do not fan out the core.
+
+Seam facts (verified, don't re-explore): the datagram API is `com.ditchoom.buffer.flow.*` under
+`@ExperimentalDatagramApi` (`DatagramChannel`=Source+Sink, `receive()→DatagramReadResult.Received|Closed`,
+`send(payload, to?, opts)`, `SocketAddress.ofLiteral(ip,port)` / `.resolve`). `runTest` + coroutines-test
+is wired into `webrtc-ice` commonTest. Full detail in the `webrtc-socket-udp-vnet-reality` memory.
+
+---
+
+## Prior framing (still accurate for the ICE scope): **pure-codec track COMPLETE; transport track UNBLOCKED for dev**
 
 All three Phase-1 protocol codecs are **merged to `main`** and green on every lane. Nothing is released
 to Central yet (every merge was `skip-release`; a `v0.0.1` tag exists from an earlier release exercise).
@@ -32,17 +197,16 @@ its own — W2 (vnet) is a socket/simulation deliverable, not a webrtc wave:
   socket **#225**; this is the W2 NAT-modeling vnet webrtc's TA/TB tiers run against.
 
 **Publish status (confirmed 2026-07-15):** `socket-udp` is **NOT on Central yet** — the latest published
-socket is **3.10.1**, which predates #239 (`socket-udp` maven-metadata → HTTP 404), and #239's deploy
-run **failed**. Consequences:
-- **Dev is unblocked now:** build webrtc's transport modules against a local socket build —
-  `cd ../git/socket && ./gradlew publishToMavenLocal` on `main`, then pin that socket version in
-  webrtc's `gradle/libs.versions.toml` (add the `socket` / `socket-udp` / `socket-testsuite` entries —
-  webrtc's catalog currently has **no socket entry**).
-- **Merge is still gated:** webrtc transport code must **not merge to `main` against an unpublished
-  socket** (the W0 no-snapshot-dependency discipline). Flip the catalog pin to the released `socket-udp`
-  version once socket lands a green release. Nudge that along if it stalls (the #239 deploy failed).
-- Open cross-repo decisions to settle as W3/W4 start: §11.3 (DTLS 1.2-vs-1.3, before W4), §11.4 (mDNS,
-  before W3). §11.1 (sim home) is effectively answered — the sim lives in socket (#225).
+socket was **3.10.1** at the start of this session (`socket-udp` maven-metadata → HTTP 404, #239's first
+deploy failed). **RESOLVED 2026-07-15:** socket-udp **3.11.0 is now on Central** (all targets incl.
+Apple, pins buffer 6.11.0) — the catalog pins the release and the merge-gate is **lifted** (see the
+top-of-doc W3 update). Historical consequences that no longer bind:
+- ~~Dev unblocked against a local socket `publishToMavenLocal`~~ → now a plain Central dependency.
+- ~~Merge gated on an unpublished socket~~ → lifted; `socket = "3.11.0"`, `mavenLocal()` removed.
+- Open cross-repo decisions to settle as W3/W4 start: §11.3 (DTLS 1.2-vs-1.3, before W4). §11.4 (mDNS)
+  is now **resolved** (resolve-only in W3 — EXECUTION_PLAN decision log). §11.1 (sim home): the
+  virtual-time *pattern* lives in socket, but the UDP vnet + NAT models are **webrtc's own** (RFC §5.2)
+  — see the premise correction above.
 
 ### Recommended next webrtc wave: **W3 (`webrtc-ice`)**
 The first integration point (a single-session chain — do NOT fan out the core). Sans-io agent core

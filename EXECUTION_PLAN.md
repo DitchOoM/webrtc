@@ -21,7 +21,7 @@ play in the socket repo.
 | resolved 2026-07-15 | RFC §11.1 — simulation-engine home → **lives in the socket sibling** (the #225 deterministic-simulation harness), not a standalone `ditchoom-simulation` | webrtc consumes socket's vnet; no separate sim module needed |
 | *open* | RFC §11.2 — SCTP subset scope (recommend: dcSCTP-style, no multihoming/interleaving) | must resolve before W5 |
 | *open* | RFC §11.3 — DTLS 1.2-first interop vs 1.3 (recommend: both via BoringSSL config, interop-test 1.2) | must resolve before W4 |
-| *open* | RFC §11.4 — mDNS (recommend: resolve-only in W3, responder deferred) | must resolve before W3 |
+| resolved 2026-07-15 | RFC §11.4 — mDNS → **resolve-only in W3; responder deferred** (behind a capability flag) | The gathering-side responder is multicast platform work (a `224.0.0.251:5353` listener per interface); it is not on the critical path for *reaching* peers. A browser peer that advertises a `.local` srflx-masking candidate must be *resolved* to its host IP for us to send checks, so resolve-only is mandatory in W3; advertising our own `.local` candidates (the responder) buys only privacy and is deferred behind a flag until a harness lane needs it. mDNS resolution rides the injected gathering seam (a `MdnsResolver` interface, deterministic stub in tests), never a hardwired multicast socket in the core. |
 
 ## 1. Orchestration model
 
@@ -103,7 +103,7 @@ seeded), topology-as-data builders. Implements the W0 `DatagramChannel` seam.
 - **Exit:** NAT model property tests (each NAT type provably filters per its definition);
   a two-peer echo over each NAT topology runs under `runTest` virtual time on all platforms.
 
-### W3 — `webrtc-ice` · status: ☐ **NEXT — dev-unblocked (consume socket `socket-udp` + vnet); merge gated on `socket-udp` reaching Central** · *needs W1 (done) + W2 (socket, done); resolves §11.4 first*
+### W3 — `webrtc-ice` · status: ◑ **BUILT on branch `w3-webrtc-ice` (PR open, `skip-release`, unmerged); green on 5 local lanes; Apple runtime-validation + adversarial-review gate remain before merge** · *needs W1 (done) + W2 (socket, done); §11.4 resolved (mDNS resolve-only)*
 First wire socket into webrtc's `gradle/libs.versions.toml` (no socket entry yet) — dev against a socket
 `publishToMavenLocal` build, flip the pin to the released version before merge — and prove the seam from
 webrtc `commonTest` (two-peer datagram echo over the vnet under `runTest`) before the ICE core.

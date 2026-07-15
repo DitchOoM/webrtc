@@ -58,7 +58,17 @@ sealed interface IceFailureReason {
 ```
 
 Prefer a sealed hierarchy to an enum when variants carry data (`AllPairsFailed` above). Use an enum
-only for a genuinely dataless, closed set (`DtlsRole { Client, Server }`, `StunClass`).
+only for a genuinely dataless, closed set (`DtlsRole { Client, Server }`, `StunClass`) — and reach for
+an enum instead of an `Int`-with-a-range-check where the set really is closed: `ComponentId` is an enum
+(`Rtp = 1`, `Rtcp = 2`), so an illegal component id is unrepresentable and there is no `require(...)` to
+forget.
+
+A result's **failure branch is often itself a sealed hierarchy**, so the *cause* is exhaustive rather
+than a single lumped sentinel that quietly means three different things (the same overloading sin as a
+`null`). `gatherServerReflexive` returns `ServerReflexiveResult { Discovered(address) | Unavailable }`,
+where `Unavailable` splits into `NoResponse | Rejected | MalformedResponse`. A caller that only needs
+success-or-not matches `is Unavailable`; one that wants the reason `when`s over the variants — both
+exhaustive, both driven through the codebase by the compiler when a variant is added.
 
 ## 4. No boolean soup, no nullable soup — no impossible states
 
@@ -90,6 +100,49 @@ sealed interface PeerConnectionState {
 The illegal combinations are now unrepresentable — there is no value of `PeerConnectionState` that is
 both connected and failed. This is the single most important rule for the state-machine cores.
 
+**The same rule applies to data models, not just lifecycle states.** An ICE candidate has fields that
+are valid for some kinds and meaningless for others: a *host* candidate has no server-reflexive
+"related address", and a *relay* candidate's base **is** its address rather than a separate local
+socket. Modeling it as one class with nullable/duplicated fields (`relatedAddress: TransportAddress?`,
+a free `base`) makes "a host candidate carrying a relay's related address" representable. A **sealed
+hierarchy per type** makes it unrepresentable — each variant carries exactly its valid fields:
+
+```kotlin
+sealed interface IceCandidate {
+    val address: TransportAddress          // where a peer sends to reach this candidate
+    val base: TransportAddress             // the local socket we send from
+    val priority: Long
+    val type: CandidateType                // the discriminant
+    // …common fields…
+
+    data class Host(/* address, component, … */) : IceCandidate {
+        override val base get() = address                       // a host candidate's base IS its address
+        override val type get() = CandidateType.Host
+    }
+    data class ServerReflexive(
+        override val base: TransportAddress,                    // the local host we reflected from
+        val relatedAddress: TransportAddress,                  // required and present — never null
+        /* address, … */
+    ) : IceCandidate { override val type get() = CandidateType.ServerReflexive }
+    data class Relayed(
+        val relatedAddress: TransportAddress,
+        /* address, … */
+    ) : IceCandidate {
+        override val base get() = address                       // a relay candidate's base is the relayed address
+        override val type get() = CandidateType.Relayed
+    }
+}
+```
+
+`relatedAddress` is now non-null and exists only where it means something; `base` is *derived* for the
+variants where it isn't a free field. Grep `IceCandidate` in `webrtc-ice`.
+
+The discipline runs **inside** a core too. The ICE `PairEntry` bundles a check's transaction with its
+purpose — `InFlightCheck(transaction, CheckPurpose)` — so a purpose (nomination / consent / ordinary)
+cannot exist without a live check, and "a nomination is in flight" is **derived** from the checklist
+rather than stored in a latch that can wedge stale. A stored `nominating`/`consentCheck`/`nominationInFlight`
+soup is exactly what let an earlier version hang; the derived, unified model makes that bug unrepresentable.
+
 ## 5. Nullability is a deliberate signal
 
 A nullable type means exactly one thing: **genuinely absent**. It is never:
@@ -98,7 +151,14 @@ A nullable type means exactly one thing: **genuinely absent**. It is never:
 - a lazy "maybe I'll set it later" → construct the object when you have the data.
 
 `nextDeadline(now): Instant?` returning `null` has one meaning — "no timer is armed" — and that is
-the whole point of the sans-io clock contract.
+the whole point of the sans-io clock contract. (It stays a nullable `Instant`, not a sealed
+`Armed | Idle`, precisely because that single meaning is stable and it is the *uniform* contract across
+every sans-io core — STUN, ICE, SCTP — with zero per-call allocation in the driver loop.)
+
+A corollary: if a field is **present in some variants and absent in others**, it is not a nullable
+field on one class — it is a field on the variants that have it. The sealed `IceCandidate` in §4 is the
+worked example: `relatedAddress` lives on `ServerReflexive` / `PeerReflexive` / `Relayed` as a required
+field, never as a nullable on a single catch-all class. Splitting the type beats overloading `null`.
 
 ## 6. Errors are typed, cores are sans-io
 

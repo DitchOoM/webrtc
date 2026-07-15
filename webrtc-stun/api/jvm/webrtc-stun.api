@@ -53,7 +53,9 @@ public final class com/ditchoom/webrtc/stun/RawAttribute {
 public final class com/ditchoom/webrtc/stun/RawAttribute$Companion {
 	public final fun ofErrorCode (Lcom/ditchoom/webrtc/stun/StunErrorCode;)Lcom/ditchoom/webrtc/stun/RawAttribute;
 	public final fun ofMappedAddress (Lcom/ditchoom/webrtc/stun/TransportAddress;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public final fun ofRaw-1i-FKtQ (SLcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/stun/RawAttribute;
 	public final fun ofText-1i-FKtQ (SLjava/lang/String;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public final fun ofXorAddress-0gP_rzY (SLcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransactionId;)Lcom/ditchoom/webrtc/stun/RawAttribute;
 	public final fun ofXorMappedAddress (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransactionId;)Lcom/ditchoom/webrtc/stun/RawAttribute;
 }
 

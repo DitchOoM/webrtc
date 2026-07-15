@@ -42,8 +42,23 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 - **One core bug found + fixed with its fixture** (directive #5): consent expiry used a strict `>`
   while `nextDeadline` armed exactly `lastResponse + consentTimeout`, spinning the driver at that
   instant without advancing virtual time — now `>=`, with `consent_expiry` as the regression.
-- Green on **JVM, JS-node, wasmJs-node, Linux/native, and Android host**; Apple lanes compile-faithful
-  (to be runtime-validated on the macOS runner). Nothing published to Central (`skip-release`).
+- **Adversarial review gate (EXECUTION_PLAN §1) — 5 parallel reviewers; confirmed defects fixed, each
+  with a regression fixture:** the role-conflict comparison was **inverted** in the Controlled branch
+  (RFC 8445 §7.3.1.1 — the larger tie-breaker ends up controlling in *both* directions), so
+  controlled-vs-controlled glare thrashed; added a one-shot resolution latch + pacing re-arm on a 487
+  retry. A **global establishment failsafe** closes three liveness hangs (nomination-check failure,
+  a peer that never nominates, zero compatible candidates → the now-emitted typed `NoCandidatePairs`).
+  The `nominationInFlight` latch is released on any nominating-check outcome (+ an on-timer retry). The
+  connectivity check reads only the **MESSAGE-INTEGRITY-covered prefix** (RFC 8489 §14.5), defeating a
+  USE-CANDIDATE splice. `pruneRedundant` is state-aware (never evicts an in-flight/valid/selected pair).
+  Driver/vnet hardening: `select`-based drive loop (no lost trickled candidate), `close()` unbinds the
+  vnet endpoint (flap frees it; no false delivery/leak), the vnet TURN server validates REALM/NONCE
+  like coturn, srflx gathering retransmits, `toTransportAddress` typed-rejects non-v4.
+- **BufferFactory injectable end-to-end (directive #6):** the whole datagram build path uses the
+  caller's `IceConfig.bufferFactory` (a consumer can hand in a `buffer` pool); `BufferLifecycleTest`
+  validates pool-injectability and **steady RSS** (allocations grow with messages, not per timer tick).
+- Green on **JVM, JS-node, wasmJs-node, Linux/native, and Android host**; Apple lanes CI-validated on
+  the macOS runner. Nothing published to Central (`skip-release`).
 
 ### Added — W5 (codec floor): `webrtc-sctp` (SCTP chunk codec + DCEP messages)
 - **SCTP common header (RFC 4960 §3.1)** as a `buffer-codec` KSP `@ProtocolMessage` schema

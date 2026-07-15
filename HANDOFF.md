@@ -41,12 +41,36 @@ adversarial-review gate / a go).
 `nextDeadline` armed exactly `lastResponse+consentTimeout` → the driver spun without advancing virtual
 time. Now `>=`; `consent_expiry_fails_...` is the regression.
 
+**Adversarial review gate — DONE (5 parallel reviewers), all confirmed defects fixed with regression
+fixtures** (commits `48a5330` core-A, `333798e` drivers-B, `c97294b` buffer-C on the branch):
+- **Role-conflict comparison was INVERTED** in the Controlled branch (RFC 8445 §7.3.1.1: larger
+  tie-breaker → controlling in both directions) — controlled-vs-controlled glare thrashed. Fixed +
+  one-shot resolution latch + pacing re-arm on a 487 retry (a pair re-entering Waiting on an idle
+  checklist was never rescheduled — a second bug the glare fixture caught).
+- **Three liveness hangs** closed by a global `establishmentTimeout` failsafe: nomination-check failure
+  on the sole valid pair, controlled peer that never nominates, and zero-compatible-pairs (now emits the
+  previously-dead `NoCandidatePairs`). `nominationInFlight` wedge fixed + on-timer nomination retry.
+- **MI-splice** (RFC 8489 §14.5): checks read only `attributesCoveredByMessageIntegrity()`.
+- `pruneRedundant` state-aware; `selectPair` no Completed-regression; consent expiry clears its tx.
+- Driver/vnet: `select` drive loop (no lost trickled candidate); `close()` unbinds the vnet endpoint
+  (flap frees it; no false delivery/leak); vnet TURN server validates REALM/NONCE like coturn (the relay
+  fixtures now exercise TurnAllocation's full 401 challenge); srflx gather retransmits; `toTransportAddress`
+  typed-rejects non-v4.
+- **Directive #6 (BufferFactory):** injectable end-to-end (agent uses `config.bufferFactory` for all
+  datagrams); `BufferLifecycleTest` proves pool-injectability + steady RSS (no per-tick leak).
+
+Reviewer notes verified CLEAN (no change): priority/pair-priority arithmetic, pacing/consent spin
+guards, MI keying direction, USERNAME handling, unsigned tie-breaker, MI/FINGERPRINT ordering, T0
+throw-safety, the impairment RNG stream, and the NAT profiles' RFC 4787 fidelity.
+
 **Next-session TODO to finish the wave:**
-- PR #11 is open with `skip-release` **verified present** (via REST API — `gh pr edit --add-label`
-  fails silently here); CI is fully green incl. Apple. Keep it unmerged until a reviewer/gate says go.
-- **Adversarial review gate** (EXECUTION_PLAN §1) before merge: re-verify the STUN-check MI keying
-  (responder's password both ways), role-conflict tie-break direction, pair-priority ULong overflow,
-  and the consent/expiry timing against RFC 8445/7675/8656.
+- PR #11 is open, `skip-release` **verified present**, CI green incl. Apple. Re-push the review-fix
+  commits (done) and let CI re-run; keep unmerged until a maintainer says go.
+- **Remaining directive-#6 follow-ups (documented in code):** explicit pool `release`/`use{}` of the
+  datagram buffers is entangled with the core's per-retransmit slice ownership, and webrtc-stun's
+  builder intermediates still use `BufferFactory.Default` — both are a scoped later refactor.
+- **TURN Refresh / permission re-install** (RFC 8656 §8/§9) not yet implemented (fine within LIFETIME;
+  the vnet models no expiry) — a W7-interop follow-up. TurnAllocation collections are single-dispatcher.
 
 **Known simplifications to revisit (not blockers, noted in code):** the frozen algorithm is
 "lite" (highest-priority-first pacing rather than per-foundation unfreezing); srflx/relay **gathering

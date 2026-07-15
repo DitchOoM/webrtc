@@ -3,7 +3,7 @@
 Live state of the current wave. A resumed session reads `RFC_KMP_WEBRTC.md` → `EXECUTION_PLAN.md` →
 this file. Update it whenever you stop mid-wave.
 
-## Where we are: **the pure-codec / socket-free track is COMPLETE — next work needs the transport, which is blocked on a deterministic UDP `commonMain`**
+## Where we are: **pure-codec track COMPLETE; transport track is UNBLOCKED for dev — socket now has the UDP `commonMain` seam + vnet (merged, not yet on Central)**
 
 All three Phase-1 protocol codecs are **merged to `main`** and green on every lane. Nothing is released
 to Central yet (every merge was `skip-release`; a `v0.0.1` tag exists from an earlier release exercise).
@@ -19,27 +19,42 @@ to Central yet (every merge was `skip-release`; a `v0.0.1` tag exists from an ea
 `59397c2` W6 (#5) → `17e04d6` W1 (#4). Both modules present once (`webrtc-sdp` 14 files,
 `webrtc-sctp` 13); `webrtc-sctp` deps are `buffer` + `buffer-codec` only.
 
-### The blocker for everything next: a deterministic UDP `commonMain`
-The pure codecs (stun/sdp/sctp) were buildable and testable **without any I/O**. Everything that remains
-— W2 (vnet), W3 (ice), W4 (dtls), the rest of W5 (SCTP association + `DataChannel`), the rest of W6
-(`PeerConnection`), W7 (harness) — needs a **transport seam**: an **unconnected, deterministic UDP
-`DatagramChannel` in `commonMain`** (per-datagram source address on receive, arbitrary dest on send),
-runnable under `runTest` virtual time on every target. That is W0's still-open socket promotion
-(RFC §11.1 simulation-engine home + the `DatagramChannel` seam into socket-core) and is being built
-**separately, with the socket sibling repo / socket agent** (`../git/socket`). **Until that lands
-upstream and is released to Central, W2+ cannot start** — webrtc must not depend on an unpublished
-sibling snapshot (the W0 discipline). Open cross-repo decisions to settle alongside it: §11.1 (sim
-home — recommend standalone `ditchoom-simulation`), §11.3 (DTLS 1.2-vs-1.3, before W4), §11.4 (mDNS,
-before W3).
+### Transport prerequisites: they now EXIST in socket (W2 is NOT a webrtc wave)
+The pure codecs (stun/sdp/sctp) were buildable and testable **without any I/O**. Everything remaining —
+W3 (ice), W4 (dtls), the rest of W5 (SCTP association + `DataChannel`), the rest of W6
+(`PeerConnection`), W7 (harness) — needs the **transport seam**: an unconnected, deterministic UDP
+`DatagramChannel` in `commonMain` runnable under `runTest`. **That seam and the deterministic vnet are
+now merged in the socket sibling** (`../git/socket`), so webrtc **consumes** them rather than building
+its own — W2 (vnet) is a socket/simulation deliverable, not a webrtc wave:
+- **`socket-udp` module** — `UdpSocket` in `commonMain` (the `DatagramChannel` seam). Merged to socket
+  `main` in **PR #239** ("published UDP datagram module + QUIC datapath cutover"), 2026-07-15.
+- **Deterministic network simulation / vnet + trace-replay + consumer harness** — merged earlier in
+  socket **#225**; this is the W2 NAT-modeling vnet webrtc's TA/TB tiers run against.
 
-### Recommended next wave once the UDP seam is available: **W2 (vnet)**
-Pure-Kotlin, sans-io, fully local-testable under `runTest` (no native deps) — NAT models
-(full-cone / address-restricted / port-restricted / symmetric, mapping lifetimes, hairpinning) +
-seeded impairment pipe (loss/reorder/dup/delay) + topology-as-data builders, implementing the W0
-`DatagramChannel` seam. Exit: NAT-model property tests + two-peer echo over each topology under virtual
-time, all platforms. W2 unblocks W3 (ICE), the integration spine. W4 (`webrtc-dtls`, BoringSSL) is
-parallelizable but is the one native dep and needs Apple/Android runtime validation on runners — a
-worse fit for local iteration.
+**Publish status (confirmed 2026-07-15):** `socket-udp` is **NOT on Central yet** — the latest published
+socket is **3.10.1**, which predates #239 (`socket-udp` maven-metadata → HTTP 404), and #239's deploy
+run **failed**. Consequences:
+- **Dev is unblocked now:** build webrtc's transport modules against a local socket build —
+  `cd ../git/socket && ./gradlew publishToMavenLocal` on `main`, then pin that socket version in
+  webrtc's `gradle/libs.versions.toml` (add the `socket` / `socket-udp` / `socket-testsuite` entries —
+  webrtc's catalog currently has **no socket entry**).
+- **Merge is still gated:** webrtc transport code must **not merge to `main` against an unpublished
+  socket** (the W0 no-snapshot-dependency discipline). Flip the catalog pin to the released `socket-udp`
+  version once socket lands a green release. Nudge that along if it stalls (the #239 deploy failed).
+- Open cross-repo decisions to settle as W3/W4 start: §11.3 (DTLS 1.2-vs-1.3, before W4), §11.4 (mDNS,
+  before W3). §11.1 (sim home) is effectively answered — the sim lives in socket (#225).
+
+### Recommended next webrtc wave: **W3 (`webrtc-ice`)**
+The first integration point (a single-session chain — do NOT fan out the core). Sans-io agent core
+(candidate pairing, checklist scheduling, triggered checks, nomination, keepalive/consent RFC 7675,
+restart) + gathering drivers (host + srflx via the W1 STUN client + relay/TURN + mDNS resolve-only)
+over the socket `DatagramChannel`/`NetworkMonitor`; trickle (RFC 8838) via the signaling seam; seeded
+`Random` for tie-breaker/ufrag/pwd/foundations. Exit: canonical vnet fixtures under virtual time
+(dual-symmetric-NAT→relay, candidate-flap, `NetworkId`-change→restart) + typed `IceFailureReason` +
+ICE state invariants in the fuzz set. **First step before the FSM:** wire socket into the catalog and
+prove the seam from webrtc `commonTest` — a two-peer datagram echo over the vnet under `runTest`, all
+platforms. W4 (`webrtc-dtls`, BoringSSL) is parallelizable but is the one native dep (Apple/Android
+runtime-validated on runners) — a worse fit for local iteration.
 
 ### Small socket-free follow-ups still possible in-repo (optional, low-value)
 - Thread the deferred `BufferFactory` seam through `webrtc-stun` / `webrtc-sctp` decode/verify/builder

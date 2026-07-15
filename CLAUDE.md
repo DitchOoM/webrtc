@@ -21,10 +21,12 @@ target. Browsers are the sole exception: there `peerConnectionSupport()` delegat
 
 Current state: **the pure-codec / socket-free track is complete** — W1 (`webrtc-stun`), W6-partial
 (`webrtc-sdp`), and W5-codec-floor (`webrtc-sctp` chunk codec + DCEP) are all merged to `main` (all
-`skip-release`; nothing on Central yet). Everything remaining (W2 vnet, W3 ice, W4 dtls, the SCTP
-association layer, `PeerConnection`, W7 harness) needs the **transport seam** — a deterministic UDP
-`DatagramChannel` in `commonMain`, W0's open socket promotion, **being built separately with the socket
-sibling repo**. W2+ is blocked until it lands upstream + releases. See `HANDOFF.md` → `EXECUTION_PLAN.md`.
+`skip-release`; nothing on Central yet). The transport prerequisites now exist in the **socket sibling**:
+the UDP `DatagramChannel` `commonMain` seam (`socket-udp`, socket PR #239) + the deterministic vnet/sim
+harness (socket #225) — so **W2 (vnet) is a socket deliverable, not a webrtc wave**, and **W3
+(`webrtc-ice`) is next**. Transport dev is unblocked against a socket `publishToMavenLocal` build, but
+`socket-udp` is **not yet on Central** (latest socket 3.10.1 predates #239) — so webrtc transport code
+must not merge until it is. See `HANDOFF.md` → `EXECUTION_PLAN.md`.
 
 ## Standing directives (every session, every wave)
 

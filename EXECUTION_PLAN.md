@@ -16,8 +16,9 @@ play in the socket repo.
 | 2026-07-11 | Signaling is an injected seam, never implemented | Correct layering + deterministic offer/answer tests. RFC §2. |
 | 2026-07-11 | Every protocol core sans-io + caller-clocked | The quiche `Instant::now()` lesson, inverted — the whole stack must run under `runTest` virtual time. RFC §5.1. |
 | 2026-07-11 | `webrtc-libwebrtc` bootstrap backend **parked, not planned** | Legitimate only if time-to-first-ship dominates; three behaviors to reconcile and throwaway wrapper code otherwise. Revisit only with an explicit deadline driver. |
-| 2026-07-13 | **Codec track complete; transport track gated on a deterministic UDP `commonMain`** | W1/W6-sdp/W5-sctp (the pure codecs) are merged. W2+ needs an unconnected, deterministic UDP `DatagramChannel` in `commonMain` (per-datagram src on recv, arbitrary dest on send), runnable under `runTest` on every target — W0's open socket promotion. **Being built separately with the socket sibling (`../git/socket`)**; must land upstream + release to Central before webrtc consumes it. |
-| *open* | RFC §11.1 — simulation-engine home (recommend: standalone `ditchoom-simulation`) | must resolve in W0 (cross-repo) — **active: bundled with the socket UDP-seam work above** |
+| 2026-07-13 | **Codec track complete; transport track gated on a deterministic UDP `commonMain`** | W1/W6-sdp/W5-sctp (the pure codecs) are merged. W2+ needs an unconnected, deterministic UDP `DatagramChannel` in `commonMain`, runnable under `runTest` — W0's open socket promotion, being built in the socket sibling. |
+| 2026-07-15 | **Transport prerequisites landed in socket; W3 is next (dev-unblocked, merge-gated)** | socket merged the `socket-udp` UDP `commonMain` seam (PR #239) + the deterministic vnet/sim harness (#225). So **W2 is a socket deliverable, not a webrtc wave** — webrtc consumes it. Develop W3 (`webrtc-ice`) now against a socket `publishToMavenLocal`; **do not merge webrtc transport code until `socket-udp` is on Central** (it is not — latest socket 3.10.1 predates #239, whose deploy failed). |
+| resolved 2026-07-15 | RFC §11.1 — simulation-engine home → **lives in the socket sibling** (the #225 deterministic-simulation harness), not a standalone `ditchoom-simulation` | webrtc consumes socket's vnet; no separate sim module needed |
 | *open* | RFC §11.2 — SCTP subset scope (recommend: dcSCTP-style, no multihoming/interleaving) | must resolve before W5 |
 | *open* | RFC §11.3 — DTLS 1.2-first interop vs 1.3 (recommend: both via BoringSSL config, interop-test 1.2) | must resolve before W4 |
 | *open* | RFC §11.4 — mDNS (recommend: resolve-only in W3, responder deferred) | must resolve before W3 |
@@ -62,13 +63,16 @@ How the work actually gets driven, based on what has worked in buffer/socket:
 Legend: **Exit** = merge criteria. All waves also require: ktlint/detekt clean, `.api` files
 checked in, CHANGELOG entry, standing-directive greps green.
 
-> **Status snapshot (2026-07-13):** the pure-codec / socket-free track is **complete** — W1 (`webrtc-stun`),
+> **Status snapshot (2026-07-15):** the pure-codec / socket-free track is **complete** — W1 (`webrtc-stun`),
 > W6-partial (`webrtc-sdp`), and W5-codec-floor (`webrtc-sctp`) are all merged to `main` (all
-> `skip-release`; nothing on Central yet). **Everything remaining needs the transport seam** — an
-> unconnected, deterministic UDP `DatagramChannel` in `commonMain` (W0's open socket promotion), which
-> is being built separately with the socket sibling repo (`../git/socket`). **W2+ is blocked on that
-> landing upstream + released** (no unpublished-snapshot dependency). Resolve §11.1/§11.3/§11.4
-> alongside it. See `HANDOFF.md`.
+> `skip-release`; nothing on Central yet). The transport prerequisites now **exist in the socket
+> sibling**: the UDP `DatagramChannel` `commonMain` seam (`socket-udp`, socket PR #239, 2026-07-15) and
+> the deterministic vnet/sim harness (socket #225). **So W2 (vnet) is a socket deliverable, not a webrtc
+> wave** — webrtc consumes it. **Dev on the transport track (W3 next) is unblocked** against a socket
+> `publishToMavenLocal` build; **but `socket-udp` is not yet on Central** (latest published socket is
+> 3.10.1, which predates #239; #239's deploy failed), so webrtc transport code must **not merge to
+> `main`** until socket lands a green `socket-udp` release. §11.1 (sim home) is answered (lives in
+> socket); resolve §11.4 before W3 and §11.3 before W4. See `HANDOFF.md`.
 
 ### W0 — Foundations (cross-repo) · status: ✅ merged
 Two upstream PRs + repo bootstrap. **Resolves RFC §11.1 first.**
@@ -92,14 +96,17 @@ message extensions (RFC 8656) codec-only.
   time-boxed in CI with committed seed corpus; parse throughput benchmark in `PERFORMANCE.md`;
   wrapper-transparency tests pass.
 
-### W2 — vnet · status: ☐ **blocked on the deterministic UDP `commonMain` (socket track)** · *parallel-ok with W1, W4*
+### W2 — vnet · status: ✅ **delivered in the socket sibling (not a webrtc wave)** — `socket-udp` UDP seam (socket PR #239) + deterministic vnet/sim harness (socket #225); webrtc consumes it · *parallel-ok with W1, W4*
 In the simulation module: NAT models (full-cone/address-restricted/port-restricted/symmetric,
 mapping lifetimes, hairpinning), virtual TURN server, impairment pipe (loss/reorder/dup/delay,
 seeded), topology-as-data builders. Implements the W0 `DatagramChannel` seam.
 - **Exit:** NAT model property tests (each NAT type provably filters per its definition);
   a two-peer echo over each NAT topology runs under `runTest` virtual time on all platforms.
 
-### W3 — `webrtc-ice` · status: ☐ · *needs W1+W2; resolves §11.4 first*
+### W3 — `webrtc-ice` · status: ☐ **NEXT — dev-unblocked (consume socket `socket-udp` + vnet); merge gated on `socket-udp` reaching Central** · *needs W1 (done) + W2 (socket, done); resolves §11.4 first*
+First wire socket into webrtc's `gradle/libs.versions.toml` (no socket entry yet) — dev against a socket
+`publishToMavenLocal` build, flip the pin to the released version before merge — and prove the seam from
+webrtc `commonTest` (two-peer datagram echo over the vnet under `runTest`) before the ICE core.
 Sans-io agent core: candidate pairing, checklist scheduling, triggered checks, nomination,
 keepalive/consent (RFC 7675), restart. Gathering drivers: host + srflx (STUN) + relay (TURN
 client) + mDNS resolve-only, over `DatagramChannel`/`NetworkMonitor`. Trickle (RFC 8838) via the

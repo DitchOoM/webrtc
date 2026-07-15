@@ -465,9 +465,15 @@ public class IceAgent(
             StunMessageBuilder
                 .of(StunClass.Request, StunMethod.Binding, txid)
                 .add(RawAttribute.ofText(StunAttributeType.Username, "${remote.ufrag.value}:${_localCredentials.ufrag.value}"))
-                .add(IceAttributes.priority(prflxPriority))
-                .add(if (_role == IceRole.Controlling) IceAttributes.controlling(tieBreaker) else IceAttributes.controlled(tieBreaker))
-        if (nominate && _role == IceRole.Controlling) builder.add(IceAttributes.useCandidate())
+                .add(IceAttributes.priority(prflxPriority, config.bufferFactory))
+                .add(
+                    if (_role == IceRole.Controlling) {
+                        IceAttributes.controlling(tieBreaker, config.bufferFactory)
+                    } else {
+                        IceAttributes.controlled(tieBreaker, config.bufferFactory)
+                    },
+                )
+        if (nominate && _role == IceRole.Controlling) builder.add(IceAttributes.useCandidate(config.bufferFactory))
         val datagram = builder.addMessageIntegrity(remoteKey()).addFingerprint().encode(config.bufferFactory)
 
         val transaction = StunTransaction(txid, datagram, config.checkPolicy)

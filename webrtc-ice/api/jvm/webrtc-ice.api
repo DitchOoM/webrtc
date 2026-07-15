@@ -96,14 +96,18 @@ public final class com/ditchoom/webrtc/ice/IceAttributes {
 	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/IceAttributes;
 	public final fun asPriority (Lcom/ditchoom/webrtc/stun/RawAttribute;)Ljava/lang/Long;
 	public final fun asTieBreaker-Wa5lhy8 (Lcom/ditchoom/webrtc/stun/RawAttribute;)Lcom/ditchoom/webrtc/ice/TieBreaker;
-	public final fun controlled-Uc5CqEo (J)Lcom/ditchoom/webrtc/stun/RawAttribute;
-	public final fun controlling-Uc5CqEo (J)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public final fun controlled-0mMenBg (JLcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static synthetic fun controlled-0mMenBg$default (Lcom/ditchoom/webrtc/ice/IceAttributes;JLcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public final fun controlling-0mMenBg (JLcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static synthetic fun controlling-0mMenBg$default (Lcom/ditchoom/webrtc/ice/IceAttributes;JLcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/RawAttribute;
 	public final fun getICE_CONTROLLED-HYjsODs ()S
 	public final fun getICE_CONTROLLING-HYjsODs ()S
 	public final fun getPRIORITY-HYjsODs ()S
 	public final fun getUSE_CANDIDATE-HYjsODs ()S
-	public final fun priority (J)Lcom/ditchoom/webrtc/stun/RawAttribute;
-	public final fun useCandidate ()Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public final fun priority (JLcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static synthetic fun priority$default (Lcom/ditchoom/webrtc/ice/IceAttributes;JLcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public final fun useCandidate (Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static synthetic fun useCandidate$default (Lcom/ditchoom/webrtc/ice/IceAttributes;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/RawAttribute;
 }
 
 public final class com/ditchoom/webrtc/ice/IceCandidate {

@@ -29,32 +29,42 @@ public object IceAttributes {
     private const val U64_BYTES = 8
 
     /** PRIORITY carrying a candidate [priority] (its low 32 bits; the value is a 32-bit field). */
-    public fun priority(priority: Long): RawAttribute {
-        val value = BufferFactory.Default.allocate(U32_BYTES, ByteOrder.BIG_ENDIAN)
+    public fun priority(
+        priority: Long,
+        factory: BufferFactory = BufferFactory.Default,
+    ): RawAttribute {
+        val value = factory.allocate(U32_BYTES, ByteOrder.BIG_ENDIAN)
         value.writeUInt(priority.toUInt())
         value.resetForRead()
         return RawAttribute.ofRaw(PRIORITY, value)
     }
 
     /** USE-CANDIDATE (empty value). */
-    public fun useCandidate(): RawAttribute {
-        val value = BufferFactory.Default.allocate(1, ByteOrder.BIG_ENDIAN)
+    public fun useCandidate(factory: BufferFactory = BufferFactory.Default): RawAttribute {
+        val value = factory.allocate(1, ByteOrder.BIG_ENDIAN)
         value.resetForRead()
         value.setLimit(0)
         return RawAttribute.ofRaw(USE_CANDIDATE, value)
     }
 
     /** ICE-CONTROLLING with the sender's [tieBreaker]. */
-    public fun controlling(tieBreaker: TieBreaker): RawAttribute = tieBreakerAttr(ICE_CONTROLLING, tieBreaker)
+    public fun controlling(
+        tieBreaker: TieBreaker,
+        factory: BufferFactory = BufferFactory.Default,
+    ): RawAttribute = tieBreakerAttr(ICE_CONTROLLING, tieBreaker, factory)
 
     /** ICE-CONTROLLED with the sender's [tieBreaker]. */
-    public fun controlled(tieBreaker: TieBreaker): RawAttribute = tieBreakerAttr(ICE_CONTROLLED, tieBreaker)
+    public fun controlled(
+        tieBreaker: TieBreaker,
+        factory: BufferFactory = BufferFactory.Default,
+    ): RawAttribute = tieBreakerAttr(ICE_CONTROLLED, tieBreaker, factory)
 
     private fun tieBreakerAttr(
         type: StunAttributeType,
         tieBreaker: TieBreaker,
+        factory: BufferFactory,
     ): RawAttribute {
-        val value = BufferFactory.Default.allocate(U64_BYTES, ByteOrder.BIG_ENDIAN)
+        val value = factory.allocate(U64_BYTES, ByteOrder.BIG_ENDIAN)
         value.writeULong(tieBreaker.value.toULong())
         value.resetForRead()
         return RawAttribute.ofRaw(type, value)

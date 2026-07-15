@@ -75,14 +75,31 @@ class IcePriorityTest {
         val octets = ip.split(".").map { it.toUInt() }
         val bits = octets.fold(0u) { acc, octet -> (acc shl 8) or octet }
         val address = TransportAddress(IpAddress.V4(bits), 5000u)
-        return IceCandidate(
-            type = type,
-            transport = IceTransport.Udp,
-            address = address,
-            base = address,
-            foundation = Foundation.of(type, ip, serverIp = null, transport = IceTransport.Udp),
-            component = ComponentId.Rtp,
-            priority = IceCandidate.computePriority(type, ComponentId.Rtp),
-        )
+        val foundation = Foundation.of(type, ip, serverIp = null, transport = IceTransport.Udp)
+        val priority = IceCandidate.computePriority(type, ComponentId.Rtp)
+        return when (type) {
+            CandidateType.Host -> IceCandidate.Host(address, ComponentId.Rtp, IceTransport.Udp, foundation, priority)
+            CandidateType.ServerReflexive ->
+                IceCandidate.ServerReflexive(
+                    address,
+                    address,
+                    ComponentId.Rtp,
+                    IceTransport.Udp,
+                    foundation,
+                    priority,
+                    address,
+                )
+            CandidateType.PeerReflexive ->
+                IceCandidate.PeerReflexive(
+                    address,
+                    address,
+                    ComponentId.Rtp,
+                    IceTransport.Udp,
+                    foundation,
+                    priority,
+                    address,
+                )
+            CandidateType.Relayed -> IceCandidate.Relayed(address, ComponentId.Rtp, IceTransport.Udp, foundation, priority, address)
+        }
     }
 }

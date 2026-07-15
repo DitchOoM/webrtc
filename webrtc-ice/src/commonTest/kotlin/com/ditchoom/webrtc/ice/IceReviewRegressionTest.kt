@@ -182,13 +182,11 @@ class IceReviewRegressionTest {
                         .V6(0uL, 1uL),
                     5000u,
                 )
-        return IceCandidate(
-            type = CandidateType.Host,
-            transport = IceTransport.Udp,
+        return IceCandidate.Host(
             address = address,
-            base = address,
-            foundation = Foundation.of(CandidateType.Host, "::1", serverIp = null, transport = IceTransport.Udp),
             component = ComponentId.Rtp,
+            transport = IceTransport.Udp,
+            foundation = Foundation.of(CandidateType.Host, "::1", serverIp = null, transport = IceTransport.Udp),
             priority = IceCandidate.computePriority(CandidateType.Host, ComponentId.Rtp),
         )
     }

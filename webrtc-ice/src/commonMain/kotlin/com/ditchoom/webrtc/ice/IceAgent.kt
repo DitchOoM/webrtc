@@ -557,14 +557,14 @@ public class IceAgent(
         out: MutableList<IceOutput>,
     ): IceCandidate {
         val prflx =
-            IceCandidate(
-                type = CandidateType.PeerReflexive,
-                transport = IceTransport.Udp,
+            IceCandidate.PeerReflexive(
                 address = source,
-                base = source,
-                foundation = Foundation.of(CandidateType.PeerReflexive, source.ip(), serverIp = null, transport = IceTransport.Udp),
+                base = source, // a learned remote candidate: the peer's base is unknown, so the source stands in
                 component = component,
+                transport = IceTransport.Udp,
+                foundation = Foundation.of(CandidateType.PeerReflexive, source.ip(), serverIp = null, transport = IceTransport.Udp),
                 priority = priorityHint ?: IceCandidate.computePriority(CandidateType.PeerReflexive, component),
+                relatedAddress = source,
             )
         remoteCandidates += prflx
         formPairs(now, out)

@@ -37,23 +37,13 @@ public final class com/ditchoom/webrtc/ice/CandidateType : java/lang/Enum {
 	public static fun values ()[Lcom/ditchoom/webrtc/ice/CandidateType;
 }
 
-public final class com/ditchoom/webrtc/ice/ComponentId {
-	public static final field Companion Lcom/ditchoom/webrtc/ice/ComponentId$Companion;
-	public static final synthetic fun box-impl (I)Lcom/ditchoom/webrtc/ice/ComponentId;
-	public static fun constructor-impl (I)I
-	public fun equals (Ljava/lang/Object;)Z
-	public static fun equals-impl (ILjava/lang/Object;)Z
-	public static final fun equals-impl0 (II)Z
+public final class com/ditchoom/webrtc/ice/ComponentId : java/lang/Enum {
+	public static final field Rtcp Lcom/ditchoom/webrtc/ice/ComponentId;
+	public static final field Rtp Lcom/ditchoom/webrtc/ice/ComponentId;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
 	public final fun getValue ()I
-	public fun hashCode ()I
-	public static fun hashCode-impl (I)I
-	public fun toString ()Ljava/lang/String;
-	public static fun toString-impl (I)Ljava/lang/String;
-	public final synthetic fun unbox-impl ()I
-}
-
-public final class com/ditchoom/webrtc/ice/ComponentId$Companion {
-	public final fun getRtp-MxzEM54 ()I
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/ComponentId;
+	public static fun values ()[Lcom/ditchoom/webrtc/ice/ComponentId;
 }
 
 public final class com/ditchoom/webrtc/ice/Foundation {
@@ -110,38 +100,114 @@ public final class com/ditchoom/webrtc/ice/IceAttributes {
 	public static synthetic fun useCandidate$default (Lcom/ditchoom/webrtc/ice/IceAttributes;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/RawAttribute;
 }
 
-public final class com/ditchoom/webrtc/ice/IceCandidate {
+public abstract interface class com/ditchoom/webrtc/ice/IceCandidate {
 	public static final field Companion Lcom/ditchoom/webrtc/ice/IceCandidate$Companion;
-	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/CandidateType;Lcom/ditchoom/webrtc/ice/IceTransport;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransportAddress;Ljava/lang/String;IJLcom/ditchoom/webrtc/stun/TransportAddress;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/CandidateType;Lcom/ditchoom/webrtc/ice/IceTransport;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransportAddress;Ljava/lang/String;IJLcom/ditchoom/webrtc/stun/TransportAddress;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public final fun component1 ()Lcom/ditchoom/webrtc/ice/CandidateType;
-	public final fun component2 ()Lcom/ditchoom/webrtc/ice/IceTransport;
-	public final fun component3 ()Lcom/ditchoom/webrtc/stun/TransportAddress;
-	public final fun component4 ()Lcom/ditchoom/webrtc/stun/TransportAddress;
-	public final fun component5-nlo9HBA ()Ljava/lang/String;
-	public final fun component6-MxzEM54 ()I
-	public final fun component7 ()J
-	public final fun component8 ()Lcom/ditchoom/webrtc/stun/TransportAddress;
-	public final fun copy-f3QSXH4 (Lcom/ditchoom/webrtc/ice/CandidateType;Lcom/ditchoom/webrtc/ice/IceTransport;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransportAddress;Ljava/lang/String;IJLcom/ditchoom/webrtc/stun/TransportAddress;)Lcom/ditchoom/webrtc/ice/IceCandidate;
-	public static synthetic fun copy-f3QSXH4$default (Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateType;Lcom/ditchoom/webrtc/ice/IceTransport;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransportAddress;Ljava/lang/String;IJLcom/ditchoom/webrtc/stun/TransportAddress;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceCandidate;
+	public abstract fun getAddress ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public abstract fun getBase ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public abstract fun getComponent ()Lcom/ditchoom/webrtc/ice/ComponentId;
+	public abstract fun getFoundation-nlo9HBA ()Ljava/lang/String;
+	public abstract fun getPriority ()J
+	public abstract fun getTransport ()Lcom/ditchoom/webrtc/ice/IceTransport;
+	public abstract fun getType ()Lcom/ditchoom/webrtc/ice/CandidateType;
+}
+
+public final class com/ditchoom/webrtc/ice/IceCandidate$Companion {
+	public final fun computePriority (Lcom/ditchoom/webrtc/ice/CandidateType;Lcom/ditchoom/webrtc/ice/ComponentId;I)J
+	public static synthetic fun computePriority$default (Lcom/ditchoom/webrtc/ice/IceCandidate$Companion;Lcom/ditchoom/webrtc/ice/CandidateType;Lcom/ditchoom/webrtc/ice/ComponentId;IILjava/lang/Object;)J
+	public final fun host (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/ice/ComponentId;Lcom/ditchoom/webrtc/ice/IceTransport;I)Lcom/ditchoom/webrtc/ice/IceCandidate$Host;
+	public static synthetic fun host$default (Lcom/ditchoom/webrtc/ice/IceCandidate$Companion;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/ice/ComponentId;Lcom/ditchoom/webrtc/ice/IceTransport;IILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceCandidate$Host;
+}
+
+public final class com/ditchoom/webrtc/ice/IceCandidate$Host : com/ditchoom/webrtc/ice/IceCandidate {
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/ice/ComponentId;Lcom/ditchoom/webrtc/ice/IceTransport;Ljava/lang/String;JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public final fun component2 ()Lcom/ditchoom/webrtc/ice/ComponentId;
+	public final fun component3 ()Lcom/ditchoom/webrtc/ice/IceTransport;
+	public final fun component4-nlo9HBA ()Ljava/lang/String;
+	public final fun component5 ()J
+	public final fun copy-hMEMhdA (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/ice/ComponentId;Lcom/ditchoom/webrtc/ice/IceTransport;Ljava/lang/String;J)Lcom/ditchoom/webrtc/ice/IceCandidate$Host;
+	public static synthetic fun copy-hMEMhdA$default (Lcom/ditchoom/webrtc/ice/IceCandidate$Host;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/ice/ComponentId;Lcom/ditchoom/webrtc/ice/IceTransport;Ljava/lang/String;JILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceCandidate$Host;
 	public fun equals (Ljava/lang/Object;)Z
-	public final fun getAddress ()Lcom/ditchoom/webrtc/stun/TransportAddress;
-	public final fun getBase ()Lcom/ditchoom/webrtc/stun/TransportAddress;
-	public final fun getComponent-MxzEM54 ()I
-	public final fun getFoundation-nlo9HBA ()Ljava/lang/String;
-	public final fun getPriority ()J
-	public final fun getRelatedAddress ()Lcom/ditchoom/webrtc/stun/TransportAddress;
-	public final fun getTransport ()Lcom/ditchoom/webrtc/ice/IceTransport;
-	public final fun getType ()Lcom/ditchoom/webrtc/ice/CandidateType;
+	public fun getAddress ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public fun getBase ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public fun getComponent ()Lcom/ditchoom/webrtc/ice/ComponentId;
+	public fun getFoundation-nlo9HBA ()Ljava/lang/String;
+	public fun getPriority ()J
+	public fun getTransport ()Lcom/ditchoom/webrtc/ice/IceTransport;
+	public fun getType ()Lcom/ditchoom/webrtc/ice/CandidateType;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
 
-public final class com/ditchoom/webrtc/ice/IceCandidate$Companion {
-	public final fun computePriority-ATCAlw0 (Lcom/ditchoom/webrtc/ice/CandidateType;II)J
-	public static synthetic fun computePriority-ATCAlw0$default (Lcom/ditchoom/webrtc/ice/IceCandidate$Companion;Lcom/ditchoom/webrtc/ice/CandidateType;IIILjava/lang/Object;)J
-	public final fun host-99iToa4 (Lcom/ditchoom/webrtc/stun/TransportAddress;ILcom/ditchoom/webrtc/ice/IceTransport;I)Lcom/ditchoom/webrtc/ice/IceCandidate;
-	public static synthetic fun host-99iToa4$default (Lcom/ditchoom/webrtc/ice/IceCandidate$Companion;Lcom/ditchoom/webrtc/stun/TransportAddress;ILcom/ditchoom/webrtc/ice/IceTransport;IILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceCandidate;
+public final class com/ditchoom/webrtc/ice/IceCandidate$PeerReflexive : com/ditchoom/webrtc/ice/IceCandidate {
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/ice/ComponentId;Lcom/ditchoom/webrtc/ice/IceTransport;Ljava/lang/String;JLcom/ditchoom/webrtc/stun/TransportAddress;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public final fun component2 ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public final fun component3 ()Lcom/ditchoom/webrtc/ice/ComponentId;
+	public final fun component4 ()Lcom/ditchoom/webrtc/ice/IceTransport;
+	public final fun component5-nlo9HBA ()Ljava/lang/String;
+	public final fun component6 ()J
+	public final fun component7 ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public final fun copy-_JHHmHs (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/ice/ComponentId;Lcom/ditchoom/webrtc/ice/IceTransport;Ljava/lang/String;JLcom/ditchoom/webrtc/stun/TransportAddress;)Lcom/ditchoom/webrtc/ice/IceCandidate$PeerReflexive;
+	public static synthetic fun copy-_JHHmHs$default (Lcom/ditchoom/webrtc/ice/IceCandidate$PeerReflexive;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/ice/ComponentId;Lcom/ditchoom/webrtc/ice/IceTransport;Ljava/lang/String;JLcom/ditchoom/webrtc/stun/TransportAddress;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceCandidate$PeerReflexive;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAddress ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public fun getBase ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public fun getComponent ()Lcom/ditchoom/webrtc/ice/ComponentId;
+	public fun getFoundation-nlo9HBA ()Ljava/lang/String;
+	public fun getPriority ()J
+	public final fun getRelatedAddress ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public fun getTransport ()Lcom/ditchoom/webrtc/ice/IceTransport;
+	public fun getType ()Lcom/ditchoom/webrtc/ice/CandidateType;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/IceCandidate$Relayed : com/ditchoom/webrtc/ice/IceCandidate {
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/ice/ComponentId;Lcom/ditchoom/webrtc/ice/IceTransport;Ljava/lang/String;JLcom/ditchoom/webrtc/stun/TransportAddress;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public final fun component2 ()Lcom/ditchoom/webrtc/ice/ComponentId;
+	public final fun component3 ()Lcom/ditchoom/webrtc/ice/IceTransport;
+	public final fun component4-nlo9HBA ()Ljava/lang/String;
+	public final fun component5 ()J
+	public final fun component6 ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public final fun copy-TcTJ79I (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/ice/ComponentId;Lcom/ditchoom/webrtc/ice/IceTransport;Ljava/lang/String;JLcom/ditchoom/webrtc/stun/TransportAddress;)Lcom/ditchoom/webrtc/ice/IceCandidate$Relayed;
+	public static synthetic fun copy-TcTJ79I$default (Lcom/ditchoom/webrtc/ice/IceCandidate$Relayed;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/ice/ComponentId;Lcom/ditchoom/webrtc/ice/IceTransport;Ljava/lang/String;JLcom/ditchoom/webrtc/stun/TransportAddress;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceCandidate$Relayed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAddress ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public fun getBase ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public fun getComponent ()Lcom/ditchoom/webrtc/ice/ComponentId;
+	public fun getFoundation-nlo9HBA ()Ljava/lang/String;
+	public fun getPriority ()J
+	public final fun getRelatedAddress ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public fun getTransport ()Lcom/ditchoom/webrtc/ice/IceTransport;
+	public fun getType ()Lcom/ditchoom/webrtc/ice/CandidateType;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/IceCandidate$ServerReflexive : com/ditchoom/webrtc/ice/IceCandidate {
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/ice/ComponentId;Lcom/ditchoom/webrtc/ice/IceTransport;Ljava/lang/String;JLcom/ditchoom/webrtc/stun/TransportAddress;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public final fun component2 ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public final fun component3 ()Lcom/ditchoom/webrtc/ice/ComponentId;
+	public final fun component4 ()Lcom/ditchoom/webrtc/ice/IceTransport;
+	public final fun component5-nlo9HBA ()Ljava/lang/String;
+	public final fun component6 ()J
+	public final fun component7 ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public final fun copy-_JHHmHs (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/ice/ComponentId;Lcom/ditchoom/webrtc/ice/IceTransport;Ljava/lang/String;JLcom/ditchoom/webrtc/stun/TransportAddress;)Lcom/ditchoom/webrtc/ice/IceCandidate$ServerReflexive;
+	public static synthetic fun copy-_JHHmHs$default (Lcom/ditchoom/webrtc/ice/IceCandidate$ServerReflexive;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/ice/ComponentId;Lcom/ditchoom/webrtc/ice/IceTransport;Ljava/lang/String;JLcom/ditchoom/webrtc/stun/TransportAddress;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceCandidate$ServerReflexive;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAddress ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public fun getBase ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public fun getComponent ()Lcom/ditchoom/webrtc/ice/ComponentId;
+	public fun getFoundation-nlo9HBA ()Ljava/lang/String;
+	public fun getPriority ()J
+	public final fun getRelatedAddress ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public fun getTransport ()Lcom/ditchoom/webrtc/ice/IceTransport;
+	public fun getType ()Lcom/ditchoom/webrtc/ice/CandidateType;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
 }
 
 public final class com/ditchoom/webrtc/ice/IceConfig {

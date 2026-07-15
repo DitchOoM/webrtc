@@ -4,35 +4,26 @@ import com.ditchoom.webrtc.stun.TransportAddress
 import kotlin.jvm.JvmInline
 
 /**
- * An ICE component (RFC 8445 §2.2). A data channel uses a single component (RTP, id 1); RTCP would be
- * id 2 under media. Wrapped so a component id can never be confused with a priority or a port.
+ * An ICE component (RFC 8445 §2.2). WebRTC uses exactly two — RTP (id 1) and, under media with no
+ * rtcp-mux, RTCP (id 2) — so it is an **enum**, not an `Int` with a range check: an illegal component
+ * id is simply unrepresentable (the wire value rides in [value]).
  */
-@JvmInline
-public value class ComponentId(
+public enum class ComponentId(
     public val value: Int,
 ) {
-    init {
-        require(value in 1..MAX) { "component id is 1..$MAX (RFC 8445 §5.1.1.1), got $value" }
-    }
-
-    public companion object {
-        private const val MAX = 256
-
-        /** The sole component of a data channel (and the RTP component of a media stream). */
-        public val Rtp: ComponentId = ComponentId(1)
-    }
+    Rtp(1),
+    Rtcp(2),
 }
 
 /**
  * The four ICE candidate kinds (RFC 8445 §5.1.1). [preference] is the RFC-recommended type preference
  * (§5.1.2.2) that dominates a candidate's priority: a host candidate is always preferred to reflexive,
- * reflexive to relayed — the relay is the last resort because it costs a round-trip through a server.
+ * reflexive to relayed. The kind is the discriminant of the [IceCandidate] sealed hierarchy.
  */
 public enum class CandidateType(
     public val preference: Int,
     public val token: String,
 ) {
-    // RFC 8445 §5.1.2.2 recommended type preferences (host > prflx > srflx > relay).
     Host(126, "host"),
     PeerReflexive(110, "prflx"),
     ServerReflexive(100, "srflx"),
@@ -48,9 +39,8 @@ public enum class IceTransport(
 
 /**
  * A candidate's **foundation** (RFC 8445 §5.1.1.3): two candidates share a foundation iff they have the
- * same type, same base IP, same STUN/TURN server (if any), and same transport. Foundations drive the
- * *frozen* algorithm — pairs with a foundation already being checked stay frozen so redundant checks
- * across parallel media streams are avoided. Wrapped so it is never a bare `String` at an API boundary.
+ * same type, same base IP, same STUN/TURN server (if any), and same transport. Wrapped so it is never a
+ * bare `String` at an API boundary.
  */
 @JvmInline
 public value class Foundation(
@@ -72,22 +62,83 @@ public value class Foundation(
 }
 
 /**
- * One ICE candidate (RFC 8445 §5.1.1) — a single, array-free value an agent can keep for the life of a
- * session (it holds no datagram slice). [address] is where a peer sends to reach this candidate;
- * [base] is the local socket the agent sends *from* when using it (equal to [address] for a host
- * candidate, the local host for srflx/prflx, the relayed address for a relay candidate).
- * [relatedAddress] is the srflx/relay "raddr" (RFC 8445 §5.1.1.4), diagnostic only.
+ * One ICE candidate (RFC 8445 §5.1.1) — a **sealed hierarchy per type**, so each variant carries only
+ * the fields valid for it and an illegal combination (a host candidate with a relay's related-address)
+ * is unrepresentable, not merely guarded. Common to all: [address] (where a peer sends to reach it),
+ * [base] (the local socket we send *from*), [foundation], [component], [priority], and the [type]
+ * discriminant. Every candidate is array-free and outlives a datagram (it holds no slice).
  */
-public data class IceCandidate(
-    public val type: CandidateType,
-    public val transport: IceTransport,
-    public val address: TransportAddress,
-    public val base: TransportAddress,
-    public val foundation: Foundation,
-    public val component: ComponentId,
-    public val priority: Long,
-    public val relatedAddress: TransportAddress? = null,
-) {
+public sealed interface IceCandidate {
+    public val transport: IceTransport
+    public val address: TransportAddress
+    public val base: TransportAddress
+    public val foundation: Foundation
+    public val component: ComponentId
+    public val priority: Long
+    public val type: CandidateType
+
+    /** A **host** candidate (RFC 8445 §5.1.1.1): a local interface address; its base is itself. */
+    public data class Host(
+        override val address: TransportAddress,
+        override val component: ComponentId,
+        override val transport: IceTransport,
+        override val foundation: Foundation,
+        override val priority: Long,
+    ) : IceCandidate {
+        override val base: TransportAddress get() = address
+        override val type: CandidateType get() = CandidateType.Host
+    }
+
+    /**
+     * A **server-reflexive** candidate (RFC 8445 §5.1.1.2): our external mapping learned from a STUN
+     * server. [address] is the mapped address, [base] the local host we sent from, and [relatedAddress]
+     * (the "raddr", §5.1.1.4) is required — a srflx candidate always has one.
+     */
+    public data class ServerReflexive(
+        override val address: TransportAddress,
+        override val base: TransportAddress,
+        override val component: ComponentId,
+        override val transport: IceTransport,
+        override val foundation: Foundation,
+        override val priority: Long,
+        public val relatedAddress: TransportAddress,
+    ) : IceCandidate {
+        override val type: CandidateType get() = CandidateType.ServerReflexive
+    }
+
+    /**
+     * A **peer-reflexive** candidate (RFC 8445 §5.1.1.2 / §7.3.1.3): a mapping discovered from an
+     * inbound connectivity check rather than a STUN server. Same shape as [ServerReflexive] but a
+     * distinct type, because its provenance and priority preference differ.
+     */
+    public data class PeerReflexive(
+        override val address: TransportAddress,
+        override val base: TransportAddress,
+        override val component: ComponentId,
+        override val transport: IceTransport,
+        override val foundation: Foundation,
+        override val priority: Long,
+        public val relatedAddress: TransportAddress,
+    ) : IceCandidate {
+        override val type: CandidateType get() = CandidateType.PeerReflexive
+    }
+
+    /**
+     * A **relayed** candidate (RFC 8445 §5.1.1.2, RFC 8656): a TURN relayed transport address. Its base
+     * is the relayed address itself; [relatedAddress] is the mapped address the allocation was made from.
+     */
+    public data class Relayed(
+        override val address: TransportAddress,
+        override val component: ComponentId,
+        override val transport: IceTransport,
+        override val foundation: Foundation,
+        override val priority: Long,
+        public val relatedAddress: TransportAddress,
+    ) : IceCandidate {
+        override val base: TransportAddress get() = address
+        override val type: CandidateType get() = CandidateType.Relayed
+    }
+
     public companion object {
         private const val TYPE_PREF_SHIFT = 24
         private const val LOCAL_PREF_SHIFT = 8
@@ -96,9 +147,8 @@ public data class IceCandidate(
 
         /**
          * The RFC 8445 §5.1.2.1 priority: `2^24·typePref + 2^8·localPref + (256 − componentId)`.
-         * [localPreference] (0..65535) breaks ties between candidates of the same type — e.g. preferring
-         * one interface (IPv6 over IPv4, Wi-Fi over cellular). The result is a 32-bit value carried in a
-         * 64-bit [Long] so pair-priority arithmetic (RFC 8445 §6.1.2.3) never overflows.
+         * [localPreference] (0..65535) breaks ties between candidates of the same type. The result is a
+         * 32-bit value carried in a 64-bit [Long] so pair-priority arithmetic (§6.1.2.3) never overflows.
          */
         public fun computePriority(
             type: CandidateType,
@@ -111,23 +161,18 @@ public data class IceCandidate(
                 (COMPONENT_BASE - component.value)
         }
 
-        /**
-         * A host candidate for [address] (its own base), with the RFC priority filled in. The common
-         * path for a gathered local interface address.
-         */
+        /** A [Host] candidate for [address] (its own base), with the RFC priority filled in. */
         public fun host(
             address: TransportAddress,
             component: ComponentId = ComponentId.Rtp,
             transport: IceTransport = IceTransport.Udp,
             localPreference: Int = MAX_LOCAL_PREFERENCE,
-        ): IceCandidate =
-            IceCandidate(
-                type = CandidateType.Host,
-                transport = transport,
+        ): Host =
+            Host(
                 address = address,
-                base = address,
-                foundation = Foundation.of(CandidateType.Host, address.ip(), serverIp = null, transport = transport),
                 component = component,
+                transport = transport,
+                foundation = Foundation.of(CandidateType.Host, address.ip(), serverIp = null, transport = transport),
                 priority = computePriority(CandidateType.Host, component, localPreference),
             )
     }

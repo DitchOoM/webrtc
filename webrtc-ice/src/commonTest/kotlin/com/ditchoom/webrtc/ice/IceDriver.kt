@@ -84,11 +84,11 @@ internal class IceDriver(
             when (val reflexive = gatherServerReflexive(channel, stunServer, random)) {
                 is ServerReflexiveResult.Discovered ->
                     gather(
-                        IceCandidate(
-                            type = CandidateType.ServerReflexive,
-                            transport = IceTransport.Udp,
+                        IceCandidate.ServerReflexive(
                             address = reflexive.address,
                             base = hostAddress,
+                            component = ComponentId.Rtp,
+                            transport = IceTransport.Udp,
                             foundation =
                                 Foundation.of(
                                     CandidateType.ServerReflexive,
@@ -96,7 +96,6 @@ internal class IceDriver(
                                     stunServer.toTransportAddress().ip(),
                                     IceTransport.Udp,
                                 ),
-                            component = ComponentId.Rtp,
                             priority = IceCandidate.computePriority(CandidateType.ServerReflexive, ComponentId.Rtp),
                             relatedAddress = hostAddress,
                         ),
@@ -126,11 +125,10 @@ internal class IceDriver(
         val relayedSocket = allocation.allocate() ?: return null
         val relayedAddress = relayedSocket.toTransportAddress()
         val relay =
-            IceCandidate(
-                type = CandidateType.Relayed,
-                transport = IceTransport.Udp,
+            IceCandidate.Relayed(
                 address = relayedAddress,
-                base = relayedAddress,
+                component = ComponentId.Rtp,
+                transport = IceTransport.Udp,
                 foundation =
                     Foundation.of(
                         CandidateType.Relayed,
@@ -138,7 +136,6 @@ internal class IceDriver(
                         turnServer.toTransportAddress().ip(),
                         IceTransport.Udp,
                     ),
-                component = ComponentId.Rtp,
                 priority = IceCandidate.computePriority(CandidateType.Relayed, ComponentId.Rtp),
                 relatedAddress = socketAddress.toTransportAddress(),
             )

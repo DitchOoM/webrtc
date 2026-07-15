@@ -254,7 +254,10 @@ internal class RetransmissionQueue(
 
     /** The earliest still-unacked TSN, or null if the queue is empty — used to time the T3-rtx timer. */
     fun earliestSentAt(): Instant? =
-        outstanding.values.filter { it.txState == TxState.InFlight }.minByOrNull { it.lastSentAt }?.lastSentAt
+        outstanding.values
+            .filter { it.txState == TxState.InFlight }
+            .minByOrNull { it.lastSentAt }
+            ?.lastSentAt
 
     /** Chunks that must be discarded after a completed FORWARD-TSN (abandoned and now covered). */
     fun purgeAbandonedThrough(tsn: Tsn) {
@@ -288,8 +291,7 @@ internal class RetransmissionQueue(
         if (advancedPeerAckPoint.sackPrecedes(candidate)) advancedPeerAckPoint = candidate
     }
 
-    private fun highestOutstandingTsn(): Tsn =
-        outstanding.values.maxByOrNull { it.tsn.value }?.tsn ?: cumulativeAckPoint
+    private fun highestOutstandingTsn(): Tsn = outstanding.values.maxByOrNull { it.tsn.value }?.tsn ?: cumulativeAckPoint
 
     private fun inRange(
         tsn: UInt,

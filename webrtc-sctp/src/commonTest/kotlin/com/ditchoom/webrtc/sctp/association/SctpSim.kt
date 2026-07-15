@@ -30,7 +30,11 @@ internal class SctpSim(
         private set
 
     // In-flight datagrams: (destination endpoint, snapshot payload, deliver-at time).
-    private class InFlight(val toB: Boolean, val payload: ReadBuffer, val at: Instant)
+    private class InFlight(
+        val toB: Boolean,
+        val payload: ReadBuffer,
+        val at: Instant,
+    )
 
     private val queue = ArrayList<InFlight>()
     private val impairRandom = Random(seedA * 31 + seedB)
@@ -131,7 +135,9 @@ internal class Impairment(
     private val delay: Duration = Duration.ZERO,
     private val jitter: Duration = Duration.ZERO,
 ) {
-    class Decision(val deliveries: List<Duration>)
+    class Decision(
+        val deliveries: List<Duration>,
+    )
 
     fun decide(random: Random): Decision {
         if (lossRate > 0.0 && random.nextDouble() < lossRate) return Decision(emptyList())

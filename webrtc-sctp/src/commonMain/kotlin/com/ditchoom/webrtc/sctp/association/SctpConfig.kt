@@ -23,10 +23,6 @@ public data class SctpConfig(
     public val rtoMin: Duration = 1.seconds,
     /** RTO.Max (RFC 4960 §15) — the ceiling for an RTO after exponential backoff. */
     public val rtoMax: Duration = 60.seconds,
-    /** RTO.Alpha (RFC 4960 §6.3.1) — the SRTT smoothing factor, as its reciprocal 1/2^shift. */
-    public val rtoAlphaShift: Int = 3, // alpha = 1/8
-    /** RTO.Beta (RFC 4960 §6.3.1) — the RTTVAR smoothing factor, as its reciprocal 1/2^shift. */
-    public val rtoBetaShift: Int = 2, // beta = 1/4
     /** Max.Init.Retransmits (RFC 4960 §15) — INIT/COOKIE-ECHO attempts before the association fails. */
     public val maxInitRetransmits: Int = 8,
     /** Association.Max.Retrans (RFC 4960 §15) — total DATA retransmit errors before the association aborts. */

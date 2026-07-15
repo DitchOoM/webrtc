@@ -79,7 +79,14 @@ class IceSctpEndToEndTest {
 
             channel.send(textBuffer("ice+sctp"))
             channel.send(textBuffer("works"))
-            val received = withTimeoutOrNull(timeout) { incoming.receive().take(2).toList().map { it.text() } }
+            val received =
+                withTimeoutOrNull(timeout) {
+                    incoming
+                        .receive()
+                        .take(2)
+                        .toList()
+                        .map { it.text() }
+                }
             assertEquals(listOf("ice+sctp", "works"), received)
 
             // Reply on the same channel — proves the bidirectional path over ICE.
@@ -114,7 +121,15 @@ class IceSctpEndToEndTest {
 
             channel.send(textBuffer("u0"))
             channel.send(textBuffer("u1"))
-            val received = withTimeoutOrNull(timeout) { incoming.receive().take(2).toList().map { it.text() }.toSet() }
+            val received =
+                withTimeoutOrNull(timeout) {
+                    incoming
+                        .receive()
+                        .take(2)
+                        .toList()
+                        .map { it.text() }
+                        .toSet()
+                }
             assertEquals(setOf("u0", "u1"), received)
         }
 }

@@ -7,7 +7,6 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.webrtc.sctp.DataChunkFlags
 import com.ditchoom.webrtc.sctp.ForwardTsnStream
-import com.ditchoom.webrtc.sctp.PayloadProtocolId
 import com.ditchoom.webrtc.sctp.SctpChunk
 import com.ditchoom.webrtc.sctp.SctpDecodeResult
 import com.ditchoom.webrtc.sctp.SctpPacket
@@ -115,7 +114,11 @@ public class SctpAssociation(
                 outboundStreams = config.outboundStreams,
                 inboundStreams = config.inboundStreams,
                 initialTsn = localInitialTsn,
-                parameters = listOf(SctpParameter.forwardTsnSupported(), SctpParameter.supportedExtensions(listOf(com.ditchoom.webrtc.sctp.SctpChunkType.ForwardTsn))),
+                parameters =
+                    listOf(
+                        SctpParameter.forwardTsnSupported(),
+                        SctpParameter.supportedExtensions(listOf(com.ditchoom.webrtc.sctp.SctpChunkType.ForwardTsn)),
+                    ),
             )
         localInit = init
         emitPacket(listOf(init), VerificationTag(0u), out)
@@ -138,7 +141,15 @@ public class SctpAssociation(
         val ourTag = randomTag()
         val ourInitialTsn = randomTsn()
         val forwardTsn = init.supportsForwardTsn()
-        val cookie = encodeCookie(peerTag = init.initiateTag, peerInitialTsn = init.initialTsn, peerRwnd = init.advertisedReceiverWindow, peerForwardTsn = forwardTsn, ourTag = ourTag, ourInitialTsn = ourInitialTsn)
+        val cookie =
+            encodeCookie(
+                peerTag = init.initiateTag,
+                peerInitialTsn = init.initialTsn,
+                peerRwnd = init.advertisedReceiverWindow,
+                peerForwardTsn = forwardTsn,
+                ourTag = ourTag,
+                ourInitialTsn = ourInitialTsn,
+            )
         val initAck =
             SctpChunk.InitAck(
                 initiateTag = ourTag,
@@ -508,8 +519,16 @@ public class SctpAssociation(
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        val rq = retransmissionQueue ?: run { t3Deadline = null; return }
-        val cc = congestion ?: run { t3Deadline = null; return }
+        val rq =
+            retransmissionQueue ?: run {
+                t3Deadline = null
+                return
+            }
+        val cc =
+            congestion ?: run {
+                t3Deadline = null
+                return
+            }
         val hadOutstanding = rq.onT3Timeout()
         if (!hadOutstanding) {
             t3Deadline = null

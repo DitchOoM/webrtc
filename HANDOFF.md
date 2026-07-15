@@ -3,7 +3,58 @@
 Live state of the current wave. A resumed session reads `RFC_KMP_WEBRTC.md` → `EXECUTION_PLAN.md` →
 this file. Update it whenever you stop mid-wave.
 
-## Where we are: **W3 (`webrtc-ice`) MERGED to `main` (squash, PR #11, `skip-release`) — the sans-io ICE agent + gathering + trickle + NAT vnet are landed. Next: W5 (SCTP association + DataChannel). W4 (DTLS) is parked by request.**
+## Where we are: **W5 (`webrtc-sctp` association + DataChannel) BUILT on branch `w5-webrtc-sctp` — sans-io SCTP association FSM + RFC 3758 partial reliability + DCEP + `DataChannel` (buffer-flow `StreamMux`), green on all platforms, running end-to-end over the merged W3 ICE stack. PR open, `skip-release`, NOT merged. W4 (DTLS) still parked.**
+
+### 2026-07-15 — W5 built (association + DataChannel), green all platforms; PR open, unmerged
+
+**Branch `w5-webrtc-sctp`** (off `main` + the W3-merged docs commit). What landed (one commit `92ea6d1` +
+the test/fuzz/api follow-ups):
+- **`SctpAssociation`** (`webrtc-sctp/commonMain/.../association/`) — sans-io `handle(event,now)` +
+  `nextDeadline`, no clock/RNG/IO inside. Four-way handshake (stateless State Cookie — plaintext magic,
+  not HMAC, because DTLS authenticates the transport; documented), TSN/SACK, RTO (RFC 4960 §6.3.1),
+  congestion control (`CongestionControl.kt`: slow-start/cong-avoid/T3+fast-rtx collapse), retransmission
+  queue (`RetransmissionQueue.kt`), fragmentation + ordered/unordered reassembly (`ReassemblyQueue.kt`),
+  **RFC 3758** FORWARD-TSN partial reliability, graceful+abort shutdown. Seeded `Random`, sealed
+  events/outputs/state/reasons.
+- **`SctpDataChannelStack`** (`.../datachannel/`) implements buffer-flow **`StreamMux<ReadBuffer>`** —
+  DCEP (RFC 8832) OPEN/ACK wired to the association, even/odd stream split (§6), empty-message PPIDs
+  (RFC 8831 §6.6). Drives the association over an injected **`SctpDatagramTransport`** (the clean
+  DTLS-shaped seam), scope, and clock. `openBidirectional()` → `Connection<ReadBuffer>`.
+- **Key seam decision (matches HANDOFF plan):** `SctpDatagramTransport` is the one small connected
+  `DatagramChannel`-shaped interface where real **DTLS (W4) drops in as a swap**. Tests use a plaintext
+  in-memory pair and an ICE-backed adapter.
+- **§11.2 resolved:** dcSCTP-style subset (no multihoming, no interleaving) — recorded in the
+  EXECUTION_PLAN decision log.
+- **Tests, all platforms under `runTest`:** sans-io two-endpoint conductor (`SctpSim`); coroutine
+  DataChannel end-to-end over an impaired transport; the **W5 composition** — SCTP DataChannels over the
+  **real W3 `IceAgent` nominated pair** across the vnet (added `IceDriver.sctpTransport()` + RFC 7983
+  demux to `webrtc-ice/commonTest`, with `webrtc-sctp` as a test-only, acyclic dep). A **260-seed
+  loop-until-dry invariant campaign** (no reorder / no unacked-drop / no dup / liveness) and the Jazzer
+  `sctpCodecFuzz` lane extended to fuzz `association.handle` (3 M runs clean). `CountingBufferFactory`
+  no-per-tick-leak (directive #6). **`webrtc-sctp:allTests` + `webrtc-ice:allTests` green; ktlint +
+  apiCheck + standing-directive greps green; apiDump committed.**
+
+**Explicit W5 scope note (why this is complete without W4):** the full ICE+**DTLS**+SCTP TB fixture with
+*real* BoringSSL DTLS is, per TESTING §7 and the W3 handoff, the exit gate **once W4 lands** — it is
+W6's composition job. This wave delivers everything achievable with DTLS parked: the SCTP core, the
+DataChannel mux, and the end-to-end proof over ICE with a plaintext DTLS stand-in at the seam.
+
+**Next-session TODO to finish/merge W5:**
+- PR is open on `w5-webrtc-sctp`; apply `skip-release` via the REST API and verify; let CI run
+  (build-linux + build-apple + fuzz + standing-directives + validate). Keep unmerged until a go.
+- **Follow-ups documented in code / deferred (not blockers):** channel close via SCTP **stream reset**
+  (RFC 6525 RE-CONFIG) is out of the subset — `Connection.close` tears down local halves only; TSN/SSN
+  **serial-number wrap** is not modeled (session never nears 2³², noted in `ReassemblyQueue`); explicit
+  pool `release`/`use{}` of packet/reassembly buffers is the same entangled refactor deferred in W3
+  (managed buffers + `CountingBufferFactory` bounded-alloc used instead of strict `assertNoLeaks`);
+  SACK bundles one chunk per packet (correct, not yet coalesced); no HEARTBEAT probing (WebRTC relies on
+  ICE consent). detekt flags the state-machine complexity (`onSack`/`onDatagram`/`SctpAssociation` size)
+  — non-blocking, inherent to the protocol.
+- **W4 (DTLS) or W6 (PeerConnection) next.** W6 composes ICE+DTLS+SCTP into `PeerConnection` and is where
+  the full TB fixture + the `SocketException`-hierarchy mapping of `SctpFailureReason`/`IceFailureReason`
+  land. Resolve §11.3 (DTLS 1.2-vs-1.3) before W4.
+
+### (prior) W3 state
 
 ### 2026-07-15 — W3 merged; W5 is next (W4 held); resume guide
 

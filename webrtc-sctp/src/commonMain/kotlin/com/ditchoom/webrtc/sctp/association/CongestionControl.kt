@@ -41,8 +41,6 @@ internal class RttEstimator(
         rto = (rto * 2).coerceAtMost(config.rtoMax)
     }
 
-    private val Duration.absoluteValue: Duration get() = if (this < Duration.ZERO) -this else this
-
     private companion object {
         // alpha = 1/8, beta = 1/4 (RFC 4960 §6.3.1); K = 4 (the RTTVAR multiplier in the RTO formula).
         private const val ALPHA_DEN = 8

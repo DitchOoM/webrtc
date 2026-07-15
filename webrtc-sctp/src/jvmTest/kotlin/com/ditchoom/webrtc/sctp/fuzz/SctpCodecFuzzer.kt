@@ -7,8 +7,14 @@ import com.ditchoom.webrtc.sctp.SctpChunk
 import com.ditchoom.webrtc.sctp.SctpDecodeResult
 import com.ditchoom.webrtc.sctp.SctpPacket
 import com.ditchoom.webrtc.sctp.asSupportedExtensions
+import com.ditchoom.webrtc.sctp.association.SctpAssociation
+import com.ditchoom.webrtc.sctp.association.SctpConfig
+import com.ditchoom.webrtc.sctp.association.SctpEvent
 import com.ditchoom.webrtc.sctp.dcep.DataChannelDecodeResult
 import com.ditchoom.webrtc.sctp.dcep.DataChannelMessage
+import kotlin.random.Random
+import kotlin.time.ExperimentalTime
+import kotlin.time.Instant
 
 /**
  * Coverage-guided **Jazzer** fuzz target over the SCTP + DCEP decoders — the module's real adversarial
@@ -26,9 +32,11 @@ import com.ditchoom.webrtc.sctp.dcep.DataChannelMessage
  * Run it via the `sctpCodecFuzz` Gradle task. The target uses the `byte[]` entry-point form, so it has
  * no compile-time dependency on Jazzer. Intentionally not a `@Test`.
  */
+@OptIn(ExperimentalTime::class)
 object SctpCodecFuzzer {
     private const val INPUT_CAP = 4096
     private val factory = BufferFactory.managed()
+    private val fuzzEpoch = Instant.fromEpochSeconds(0)
 
     @JvmStatic
     fun fuzzerTestOneInput(data: ByteArray) {
@@ -53,6 +61,21 @@ object SctpCodecFuzzer {
             is DataChannelDecodeResult.Reject -> Unit
             is DataChannelDecodeResult.Success -> exerciseDcep(dcep.message)
         }
+
+        // T0 totality at the ASSOCIATION layer: feeding hostile bytes to handle(DatagramReceived) must
+        // never throw, in any state. Fed to a fresh (Closed) machine and one mid-handshake (CookieWait).
+        exerciseAssociation(source)
+    }
+
+    private fun exerciseAssociation(source: com.ditchoom.buffer.ReadBuffer) {
+        val closed = SctpAssociation(SctpConfig(), Random(1))
+        source.position(0)
+        closed.handle(SctpEvent.DatagramReceived(source.slice()), fuzzEpoch)
+
+        val handshaking = SctpAssociation(SctpConfig(), Random(2))
+        handshaking.handle(SctpEvent.Associate, fuzzEpoch)
+        source.position(0)
+        handshaking.handle(SctpEvent.DatagramReceived(source.slice()), fuzzEpoch)
     }
 
     private fun exercisePacket(packet: SctpPacket) {

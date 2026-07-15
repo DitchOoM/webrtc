@@ -18,8 +18,8 @@ import com.ditchoom.webrtc.sctp.association.SctpOutput
 import com.ditchoom.webrtc.sctp.association.SctpReliability
 import com.ditchoom.webrtc.sctp.association.SctpSendOptions
 import com.ditchoom.webrtc.sctp.dcep.ChannelType
-import com.ditchoom.webrtc.sctp.dcep.DataChannelMessage
 import com.ditchoom.webrtc.sctp.dcep.DataChannelDecodeResult
+import com.ditchoom.webrtc.sctp.dcep.DataChannelMessage
 import com.ditchoom.webrtc.sctp.dcep.Reliability
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -178,7 +178,13 @@ public class SctpDataChannelStack(
                 label = command.config.label,
                 protocol = command.config.protocol,
             )
-        sendOnStream(streamId, PayloadProtocolId.WebRtcDcep, ordered = true, reliability = SctpReliability.Reliable, payload = open.encode(bufferFactory))
+        sendOnStream(
+            streamId,
+            PayloadProtocolId.WebRtcDcep,
+            ordered = true,
+            reliability = SctpReliability.Reliable,
+            payload = open.encode(bufferFactory),
+        )
         command.deferred.complete(connection)
     }
 
@@ -218,7 +224,13 @@ public class SctpDataChannelStack(
             is DataChannelMessage.Open -> {
                 val config = configOf(decoded)
                 registerChannel(message.streamId, config, incoming = true)
-                sendOnStream(message.streamId, PayloadProtocolId.WebRtcDcep, ordered = true, reliability = SctpReliability.Reliable, payload = DataChannelMessage.Ack.encode(bufferFactory))
+                sendOnStream(
+                    message.streamId,
+                    PayloadProtocolId.WebRtcDcep,
+                    ordered = true,
+                    reliability = SctpReliability.Reliable,
+                    payload = DataChannelMessage.Ack.encode(bufferFactory),
+                )
             }
             DataChannelMessage.Ack -> Unit // our channel is already usable optimistically; ACK just confirms
             null -> Unit
@@ -322,9 +334,13 @@ public class SctpDataChannelStack(
     // ── driver plumbing ──
 
     private sealed interface DriveItem {
-        class Inbound(val packet: ReadBuffer) : DriveItem
+        class Inbound(
+            val packet: ReadBuffer,
+        ) : DriveItem
 
-        class Command(val command: com.ditchoom.webrtc.sctp.datachannel.Command) : DriveItem
+        class Command(
+            val command: com.ditchoom.webrtc.sctp.datachannel.Command,
+        ) : DriveItem
 
         data object Timer : DriveItem
 

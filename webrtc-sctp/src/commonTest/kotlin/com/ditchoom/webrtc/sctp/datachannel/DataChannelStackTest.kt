@@ -56,7 +56,12 @@ class DataChannelStackTest {
 
             channel.send(textBuffer("hello"))
             channel.send(textBuffer("world"))
-            val received = incoming.receive().take(2).toList().map { it.text() }
+            val received =
+                incoming
+                    .receive()
+                    .take(2)
+                    .toList()
+                    .map { it.text() }
             assertEquals(listOf("hello", "world"), received)
 
             client.shutdown()
@@ -96,7 +101,12 @@ class DataChannelStackTest {
 
             val n = 15
             for (i in 0 until n) channel.send(textBuffer("m$i"))
-            val received = incoming.receive().take(n).toList().map { it.text() }
+            val received =
+                incoming
+                    .receive()
+                    .take(n)
+                    .toList()
+                    .map { it.text() }
             assertEquals((0 until n).map { "m$it" }, received, "reliable channel delivers all, in order, through loss")
         }
 

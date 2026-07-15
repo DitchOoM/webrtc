@@ -56,7 +56,14 @@ class SctpAssociationTest {
         sim.run()
 
         assertEquals(1, sim.inboxB.size, "one message delivered to B")
-        assertEquals(payload(200, seed = 7).bytes(), sim.inboxB.first().payload.bytes(), "payload intact")
+        assertEquals(
+            payload(200, seed = 7).bytes(),
+            sim.inboxB
+                .first()
+                .payload
+                .bytes(),
+            "payload intact",
+        )
         assertEquals(PayloadProtocolId.WebRtcBinary, sim.inboxB.first().payloadProtocolId)
         assertTrue(!sim.inboxB.first().unordered)
     }
@@ -72,7 +79,14 @@ class SctpAssociationTest {
         sim.run()
 
         assertEquals(1, sim.inboxB.size)
-        assertEquals(payload(1050, seed = 3).bytes(), sim.inboxB.first().payload.bytes(), "reassembled bytes match")
+        assertEquals(
+            payload(1050, seed = 3).bytes(),
+            sim.inboxB
+                .first()
+                .payload
+                .bytes(),
+            "reassembled bytes match",
+        )
     }
 
     @Test
@@ -85,8 +99,20 @@ class SctpAssociationTest {
         sim.post(toA = false, SctpEvent.SendMessage(SctpSendOptions(STREAM0, PayloadProtocolId.WebRtcString), payload(20, 2)))
         sim.run()
 
-        assertEquals(payload(10, 1).bytes(), sim.inboxB.single().payload.bytes())
-        assertEquals(payload(20, 2).bytes(), sim.inboxA.single().payload.bytes())
+        assertEquals(
+            payload(10, 1).bytes(),
+            sim.inboxB
+                .single()
+                .payload
+                .bytes(),
+        )
+        assertEquals(
+            payload(20, 2).bytes(),
+            sim.inboxA
+                .single()
+                .payload
+                .bytes(),
+        )
     }
 
     @Test
@@ -151,7 +177,12 @@ class SctpAssociationTest {
             sim.post(
                 toA = true,
                 SctpEvent.SendMessage(
-                    SctpSendOptions(STREAM0, PayloadProtocolId.WebRtcBinary, unordered = true, reliability = SctpReliability.MaxRetransmits(0)),
+                    SctpSendOptions(
+                        STREAM0,
+                        PayloadProtocolId.WebRtcBinary,
+                        unordered = true,
+                        reliability = SctpReliability.MaxRetransmits(0),
+                    ),
                     payload(30, seed = i),
                 ),
             )
@@ -164,7 +195,14 @@ class SctpAssociationTest {
         assertEquals(SctpAssociationState.Established, sim.a.state)
         assertEquals(SctpAssociationState.Established, sim.b.state)
         assertTrue(sim.inboxB.size <= count, "no more than sent")
-        assertEquals(sim.inboxB.size, sim.inboxB.map { it.payload.bytes().first() }.toSet().size, "no duplicate delivery")
+        assertEquals(
+            sim.inboxB.size,
+            sim.inboxB
+                .map { it.payload.bytes().first() }
+                .toSet()
+                .size,
+            "no duplicate delivery",
+        )
     }
 
     @Test

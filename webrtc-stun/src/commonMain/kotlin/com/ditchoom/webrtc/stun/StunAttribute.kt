@@ -41,6 +41,31 @@ public class RawAttribute internal constructor(
         private const val ERROR_CLASS_DIVISOR = 100
         private const val UINT_BITS = 32
 
+        /**
+         * Wraps a caller-built [value] as an attribute of [type], padding to the 4-byte boundary — the
+         * public escape hatch for attributes that have no typed builder here. ICE (RFC 8445 §7.1) adds
+         * PRIORITY, USE-CANDIDATE, and ICE-CONTROLLED/ICE-CONTROLLING in the `webrtc-ice` module without
+         * webrtc-stun having to know their shapes; the [StunAttributeType] ctor is already public, so a
+         * caller supplies `StunAttributeType(0x0024u)` and the value bytes. The value is copied, so the
+         * result is caller-owned and outlives any source buffer.
+         */
+        public fun ofRaw(
+            type: StunAttributeType,
+            value: ReadBuffer,
+        ): RawAttribute = ofValue(type, value)
+
+        /**
+         * An attribute of [type] carrying the XOR-MAPPED-ADDRESS wire form (RFC 8489 §14.2) of
+         * [address]. TURN's XOR-PEER-ADDRESS and XOR-RELAYED-ADDRESS (RFC 8656 §14.3/§14.5) reuse that
+         * exact encoding, so this one builder serves all three; decode any of them with
+         * [asXorMappedAddress], which reads the value regardless of the declared type.
+         */
+        public fun ofXorAddress(
+            type: StunAttributeType,
+            address: TransportAddress,
+            transactionId: TransactionId,
+        ): RawAttribute = ofValue(type, encodeAddress(address, xorWith = transactionId))
+
         /** Wraps a caller-built, exactly-[length]-byte value, padding it to a 4-byte boundary with zeros. */
         internal fun ofValue(
             type: StunAttributeType,

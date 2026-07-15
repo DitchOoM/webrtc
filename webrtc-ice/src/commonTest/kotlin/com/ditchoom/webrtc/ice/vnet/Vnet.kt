@@ -25,68 +25,116 @@ import kotlinx.coroutines.channels.Channel
  *
  * This is deliberately **ours**, not consumed from socket: socket's deterministic simulation (#225) is
  * QUIC-specific, unpublished test code that drives the internal quiche `UdpChannel`, not the public
- * `DatagramChannel`; and it models no NAT. RFC §5.2 calls the vnet "the WebRTC-specific addition" — so
- * NAT profiles, a virtual TURN server, and the impairment pipe are layered on this router in later
- * commits. This first cut is the **flat router** that clears the seam gate (a two-peer datagram echo
- * under virtual time); the [Router] seam is where NAT/impairment slot in without touching the channels.
+ * `DatagramChannel`, and models no NAT. RFC §5.2 calls the vnet "the WebRTC-specific addition" — so
+ * NAT profiles ([Nat]), a virtual TURN server ([TurnServer]), and the impairment pipe ([Impairment])
+ * are layered on the [Fabric] seam. The flat [DirectFabric] keeps the seam gate honest.
  *
- * Datagram semantics are honored faithfully (mirroring buffer-flow's own `MemoryDatagramNetwork`
- * conformance double): message boundaries preserved (one [DatagramChannel.send] → exactly one delivered
- * [Datagram]), per-packet source ([Datagram.peer] is the sender's local address), copy-on-send (the
- * payload is copied into a receiver-owned buffer so the caller may pool its own), and unreliable
- * (a datagram to an unbound address is silently dropped, like a packet into the void).
+ * Datagram semantics are honored faithfully (mirroring buffer-flow's own `MemoryDatagramNetwork`):
+ * message boundaries preserved (one [DatagramChannel.send] → the [Fabric] decides zero-or-more
+ * delivered [Datagram]s), per-packet source ([Datagram.peer] is the source **as the receiver observes
+ * it** — the sender's private address on a LAN, or its NAT-mapped external address across a NAT), a
+ * copy per delivery so senders may pool their own buffers, and unreliable (an unroutable datagram is
+ * silently dropped, like a packet into the void).
  */
 internal class Vnet(
     /** Buffer allocator for received copies — inject a [CountingBufferFactory] to assert accounting. */
     private val bufferFactory: BufferFactory = BufferFactory.Default,
-    /** The forwarding policy. [DirectRouter] is flat (no NAT); NAT/impairment subtype this later. */
-    private val router: Router = DirectRouter,
+    /** The forwarding policy. [DirectFabric] is flat (no NAT); [Nat]/[Impairment] wrap it. */
+    private val fabric: Fabric = DirectFabric,
     private val capabilities: DatagramCapabilities = FullVnetCapabilities,
 ) {
     private val endpoints = HashMap<SocketAddress, Channel<Datagram>>()
 
-    /** Bind an **unconnected** endpoint at [local]; datagrams addressed to [local] arrive here. */
+    /** The addresses currently bound in the vnet — the fabric consults this to decide reachability. */
+    val boundAddresses: Set<SocketAddress> get() = endpoints.keys.toSet()
+
+    /** Bind an **unconnected** endpoint at [local]; datagrams delivered toward [local] arrive here. */
     fun bind(local: SocketAddress): DatagramChannel {
         require(local !in endpoints) { "address already bound: $local" }
         val inbound = Channel<Datagram>(Channel.UNLIMITED)
         endpoints[local] = inbound
-        return VnetChannel(local, inbound, this, bufferFactory, capabilities)
+        return VnetChannel(local, inbound, this, capabilities)
     }
 
     /**
-     * Deliver [datagram] toward [to] as decided by [router]. Called by [VnetChannel.send]; the router
-     * may drop, rewrite the destination (NAT), or (later) delay/duplicate. Unbound destination → drop.
+     * Tear down the endpoint at [local] (a link/interface going away). A subsequent delivery toward
+     * [local] finds no endpoint and is dropped — the mechanism behind the candidate-flap fixture.
+     */
+    fun unbind(local: SocketAddress) {
+        endpoints.remove(local)?.close()
+    }
+
+    /** True iff an endpoint is currently bound at [local]. */
+    fun isBound(local: SocketAddress): Boolean = local in endpoints
+
+    /**
+     * Hand a datagram sent [from]→[to] to the [fabric]; [payload] is valid only for the duration of
+     * this call, so a fabric that defers delivery must snapshot it (see [Impairment]).
      */
     internal fun route(
         from: SocketAddress,
         to: SocketAddress,
-        datagram: Datagram,
+        payload: ReadBuffer,
     ) {
-        val dest = router.route(from, to) ?: return
-        endpoints[dest]?.trySend(datagram)
+        fabric.forward(from, to, payload, this)
+    }
+
+    /**
+     * Deliver exactly one copy of [payload] to the endpoint at [dest], the receiver observing the
+     * source as [observedSource]. Returns true iff an endpoint was bound at [dest] (else the datagram
+     * fell into the void). Exactly one allocation per delivered datagram — the copy-on-send invariant.
+     */
+    internal fun deliver(
+        dest: SocketAddress,
+        observedSource: SocketAddress,
+        payload: ReadBuffer,
+    ): Boolean {
+        val inbound = endpoints[dest] ?: return false
+        val copy = copyOf(payload)
+        inbound.trySend(Datagram(payload = copy, peer = observedSource, ecn = Ecn.Unknown))
+        return true
+    }
+
+    // Copy [payload] into a receiver-owned buffer (a real socket copies into the kernel), reading from a
+    // slice so the caller's position is untouched (the DatagramSink "ownership is not transferred" rule).
+    private fun copyOf(payload: ReadBuffer): PlatformBuffer {
+        val slice = payload.slice()
+        val len = slice.remaining()
+        val copy = bufferFactory.allocate(maxOf(1, len))
+        copy.write(slice)
+        copy.resetForRead()
+        copy.setLimit(len)
+        return copy
     }
 }
 
 /**
- * The forwarding policy of a [Vnet]. Pure and synchronous for now (drop or rewrite the destination);
- * the NAT profiles and the seeded impairment pipe (loss/reorder/dup/delay on virtual time) implement
- * this in later commits. Returning `null` drops the datagram.
+ * The forwarding policy of a [Vnet] — the datagram analogue of "the internet between two sockets".
+ * An implementation delivers a datagram zero times (drop / unreachable), once (the common case, with
+ * an optionally rewritten observed source for NAT), or several times (duplication), and may defer
+ * delivery onto virtual time (impairment delay) by snapshotting the payload and scheduling. Kept
+ * deliberately small so [Nat] and [Impairment] compose by wrapping it.
  */
-internal fun interface Router {
-    fun route(
+internal fun interface Fabric {
+    /**
+     * Forward one datagram sent [from]→[to] carrying [payload] (valid only for this call). Deliver it
+     * through [net] — [Vnet.deliver] performs the copy and honors message boundaries.
+     */
+    fun forward(
         from: SocketAddress,
         to: SocketAddress,
-    ): SocketAddress?
+        payload: ReadBuffer,
+        net: Vnet,
+    )
 }
 
-/** The flat, lossless router: every datagram reaches its stated destination. */
-internal val DirectRouter = Router { _, to -> to }
+/** The flat, lossless internetwork: every datagram reaches its stated destination, source unchanged. */
+internal val DirectFabric = Fabric { from, to, payload, net -> net.deliver(to, from, payload) }
 
 private class VnetChannel(
     override val localAddress: SocketAddress,
     private val inbound: Channel<Datagram>,
     private val vnet: Vnet,
-    private val bufferFactory: BufferFactory,
     override val capabilities: DatagramCapabilities,
 ) : DatagramChannel {
     private var closed = false
@@ -108,22 +156,7 @@ private class VnetChannel(
     ) {
         check(!closed) { "channel is closed" }
         val dest = requireNotNull(to) { "the vnet binds unconnected endpoints; `to` is required" }
-
-        // Copy the payload into a receiver-owned buffer (a real socket copies into the kernel), so the
-        // caller keeps ownership of — and may pool — its own buffer. Read from a slice to leave the
-        // caller's position untouched, matching the DatagramSink contract ("ownership is not transferred").
-        val slice = payload.slice()
-        val len = slice.remaining()
-        val copy: PlatformBuffer = bufferFactory.allocate(maxOf(1, len))
-        copy.write(slice)
-        copy.resetForRead()
-        copy.setLimit(len)
-
-        vnet.route(
-            from = localAddress,
-            to = dest,
-            datagram = Datagram(payload = copy, peer = localAddress, ecn = Ecn.Unknown),
-        )
+        vnet.route(from = localAddress, to = dest, payload = payload)
     }
 
     override fun close() {
@@ -154,3 +187,6 @@ internal fun vnetAddress(
     ip: String,
     port: Int,
 ): SocketAddress = SocketAddress.ofLiteral(ip, port)
+
+/** The IP literal of a [SocketAddress] (the vnet works entirely in literals — no resolution). */
+internal val SocketAddress.ip: String get() = host

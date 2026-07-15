@@ -81,26 +81,27 @@ internal class IceDriver(
         gather(host)
 
         if (stunServer != null) {
-            val reflexive = gatherServerReflexive(channel, stunServer, random)
-            if (reflexive != null) {
-                gather(
-                    IceCandidate(
-                        type = CandidateType.ServerReflexive,
-                        transport = IceTransport.Udp,
-                        address = reflexive,
-                        base = hostAddress,
-                        foundation =
-                            Foundation.of(
-                                CandidateType.ServerReflexive,
-                                hostAddress.ip(),
-                                stunServer.toTransportAddress().ip(),
-                                IceTransport.Udp,
-                            ),
-                        component = ComponentId.Rtp,
-                        priority = IceCandidate.computePriority(CandidateType.ServerReflexive, ComponentId.Rtp),
-                        relatedAddress = hostAddress,
-                    ),
-                )
+            when (val reflexive = gatherServerReflexive(channel, stunServer, random)) {
+                is ServerReflexiveResult.Discovered ->
+                    gather(
+                        IceCandidate(
+                            type = CandidateType.ServerReflexive,
+                            transport = IceTransport.Udp,
+                            address = reflexive.address,
+                            base = hostAddress,
+                            foundation =
+                                Foundation.of(
+                                    CandidateType.ServerReflexive,
+                                    hostAddress.ip(),
+                                    stunServer.toTransportAddress().ip(),
+                                    IceTransport.Udp,
+                                ),
+                            component = ComponentId.Rtp,
+                            priority = IceCandidate.computePriority(CandidateType.ServerReflexive, ComponentId.Rtp),
+                            relatedAddress = hostAddress,
+                        ),
+                    )
+                is ServerReflexiveResult.Unavailable -> Unit // no srflx on this socket; host/relay still stand
             }
         }
         forward(host.base, channel)

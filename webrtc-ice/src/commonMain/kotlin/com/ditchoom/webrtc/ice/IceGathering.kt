@@ -61,8 +61,23 @@ public interface NetworkMonitor {
  * in tests, a real multicast resolver in production — never a hardwired `224.0.0.251` socket in a core.
  */
 public fun interface MdnsResolver {
-    /** Resolve an `<uuid>.local` name to an address, or null if it cannot be resolved. */
-    public suspend fun resolve(hostname: String): SocketAddress?
+    /** Resolve an `<uuid>.local` name to a [MdnsResolution]. */
+    public suspend fun resolve(hostname: String): MdnsResolution
+}
+
+/**
+ * The outcome of an mDNS resolution — a sealed result, never a nullable address, so "resolved" always
+ * carries the address it found and a future state (e.g. "resolving") is a new case, not an overloaded
+ * `null`. A caller `when`s over it exhaustively.
+ */
+public sealed interface MdnsResolution {
+    /** The `.local` name resolved to [address]. */
+    public data class Resolved(
+        public val address: SocketAddress,
+    ) : MdnsResolution
+
+    /** The name could not be resolved (no responder, or not a resolvable `.local` name). */
+    public data object Unresolved : MdnsResolution
 }
 
 /**
@@ -82,25 +97,56 @@ public suspend fun gatherServerReflexive(
     random: Random,
     timeout: Duration = DEFAULT_GATHER_TIMEOUT,
     retransmitInterval: Duration = DEFAULT_GATHER_RTO,
-): TransportAddress? {
+): ServerReflexiveResult {
     val transactionId = TransactionId.random(random)
     val request = StunMessageBuilder.of(StunClass.Request, StunMethod.Binding, transactionId).addFingerprint().encode()
     // Retransmit the Binding every [retransmitInterval] until a matching response arrives or [timeout]
     // elapses (RFC 8489 §6.2.1 spirit) — a single lost request or response must not cost the whole srflx.
-    return withTimeoutOrNull(timeout) {
-        while (true) {
-            socket.send(request, to = stunServer)
-            val response = withTimeoutOrNull(retransmitInterval) { receiveMatchingResponse(socket, transactionId) }
-            when {
-                response == null -> Unit // no answer within the interval — retransmit
-                // A success carries our reflexive address; an error response means no srflx here — give up.
-                response.messageType.stunClass == StunClass.SuccessResponse ->
-                    return@withTimeoutOrNull response.firstOrNull(StunAttributeType.XorMappedAddress)?.asXorMappedAddress(transactionId)
-                else -> return@withTimeoutOrNull null
+    val result =
+        withTimeoutOrNull(timeout) {
+            while (true) {
+                socket.send(request, to = stunServer)
+                val response = withTimeoutOrNull(retransmitInterval) { receiveMatchingResponse(socket, transactionId) }
+                when {
+                    response == null -> Unit // no answer within the interval — retransmit
+                    response.messageType.stunClass == StunClass.SuccessResponse -> {
+                        val mapped = response.firstOrNull(StunAttributeType.XorMappedAddress)?.asXorMappedAddress(transactionId)
+                        return@withTimeoutOrNull mapped?.let { ServerReflexiveResult.Discovered(it) }
+                            ?: ServerReflexiveResult.Unavailable.MalformedResponse
+                    }
+                    else -> return@withTimeoutOrNull ServerReflexiveResult.Unavailable.Rejected
+                }
             }
+            @Suppress("UNREACHABLE_CODE")
+            ServerReflexiveResult.Unavailable.NoResponse
         }
-        @Suppress("UNREACHABLE_CODE")
-        null
+    return result ?: ServerReflexiveResult.Unavailable.NoResponse // overall timeout — the server never answered
+}
+
+/**
+ * The outcome of server-reflexive gathering — a sealed result rather than a nullable address, so a
+ * discovered srflx always carries its transport address and the absence of one is an exhaustively
+ * handled cause. [Unavailable] is itself a sealed hierarchy: the reasons a srflx is missing are
+ * protocol-distinct (no answer vs a rejection vs a malformed reply), so they are separate cases, not a
+ * single lumped sentinel. A caller that only needs success/failure matches `is Unavailable`; one that
+ * wants the cause `when`s over its variants — both exhaustive, no overloaded `null`.
+ */
+public sealed interface ServerReflexiveResult {
+    /** The STUN server observed and returned our reflexive [address]. */
+    public data class Discovered(
+        public val address: TransportAddress,
+    ) : ServerReflexiveResult
+
+    /** No srflx candidate was gathered — see the exhaustive cause. */
+    public sealed interface Unavailable : ServerReflexiveResult {
+        /** No response arrived within the budget — the server is unreachable, silent, or the path is lossy. */
+        public data object NoResponse : Unavailable
+
+        /** The server answered the Binding with an error response (it declined to reflect the address). */
+        public data object Rejected : Unavailable
+
+        /** The server answered success, but with no readable XOR-MAPPED-ADDRESS (a malformed reflection). */
+        public data object MalformedResponse : Unavailable
     }
 }
 

@@ -37,9 +37,15 @@ class IceMdnsTest {
             alice.bindHost("10.0.0.1", 4000)
 
             // Bob advertises `bob.local` instead of its address; the resolver maps it back (resolve-only).
-            val resolver = MdnsResolver { name -> if (name == "bob.local") vnetAddress("10.0.0.2", 5000) else null }
-            val resolved = resolver.resolve("bob.local")
-            assertNotNull(resolved, "the injected resolver resolves the .local name")
+            val resolver =
+                MdnsResolver { name ->
+                    if (name == "bob.local") MdnsResolution.Resolved(vnetAddress("10.0.0.2", 5000)) else MdnsResolution.Unresolved
+                }
+            val resolved =
+                when (val resolution = resolver.resolve("bob.local")) {
+                    is MdnsResolution.Resolved -> resolution.address
+                    MdnsResolution.Unresolved -> error("the injected resolver must resolve bob.local")
+                }
 
             alice.post(IceEvent.SetRemoteCredentials(bob.agent.localCredentials))
             alice.post(IceEvent.AddRemoteCandidate(IceCandidate.host(resolved.toTransportAddress())))

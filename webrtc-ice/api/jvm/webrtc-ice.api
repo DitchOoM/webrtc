@@ -419,6 +419,27 @@ public final class com/ditchoom/webrtc/ice/LocalInterface {
 	public fun toString ()Ljava/lang/String;
 }
 
+public abstract interface class com/ditchoom/webrtc/ice/MdnsResolution {
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsResolution$Resolved : com/ditchoom/webrtc/ice/MdnsResolution {
+	public fun <init> (Lcom/ditchoom/buffer/flow/SocketAddress;)V
+	public final fun component1 ()Lcom/ditchoom/buffer/flow/SocketAddress;
+	public final fun copy (Lcom/ditchoom/buffer/flow/SocketAddress;)Lcom/ditchoom/webrtc/ice/MdnsResolution$Resolved;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/MdnsResolution$Resolved;Lcom/ditchoom/buffer/flow/SocketAddress;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/MdnsResolution$Resolved;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAddress ()Lcom/ditchoom/buffer/flow/SocketAddress;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsResolution$Unresolved : com/ditchoom/webrtc/ice/MdnsResolution {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/MdnsResolution$Unresolved;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public abstract interface class com/ditchoom/webrtc/ice/MdnsResolver {
 	public abstract fun resolve (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
@@ -440,6 +461,44 @@ public final class com/ditchoom/webrtc/ice/NetworkId {
 public abstract interface class com/ditchoom/webrtc/ice/NetworkMonitor {
 	public abstract fun getChanges ()Lkotlinx/coroutines/flow/Flow;
 	public abstract fun interfaces ()Ljava/util/List;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/ServerReflexiveResult {
+}
+
+public final class com/ditchoom/webrtc/ice/ServerReflexiveResult$Discovered : com/ditchoom/webrtc/ice/ServerReflexiveResult {
+	public fun <init> (Lcom/ditchoom/webrtc/stun/TransportAddress;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public final fun copy (Lcom/ditchoom/webrtc/stun/TransportAddress;)Lcom/ditchoom/webrtc/ice/ServerReflexiveResult$Discovered;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/ServerReflexiveResult$Discovered;Lcom/ditchoom/webrtc/stun/TransportAddress;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/ServerReflexiveResult$Discovered;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAddress ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/ServerReflexiveResult$Unavailable : com/ditchoom/webrtc/ice/ServerReflexiveResult {
+}
+
+public final class com/ditchoom/webrtc/ice/ServerReflexiveResult$Unavailable$MalformedResponse : com/ditchoom/webrtc/ice/ServerReflexiveResult$Unavailable {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/ServerReflexiveResult$Unavailable$MalformedResponse;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/ServerReflexiveResult$Unavailable$NoResponse : com/ditchoom/webrtc/ice/ServerReflexiveResult$Unavailable {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/ServerReflexiveResult$Unavailable$NoResponse;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/ServerReflexiveResult$Unavailable$Rejected : com/ditchoom/webrtc/ice/ServerReflexiveResult$Unavailable {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/ServerReflexiveResult$Unavailable$Rejected;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
 }
 
 public final class com/ditchoom/webrtc/ice/TieBreaker {

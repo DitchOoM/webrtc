@@ -19,8 +19,9 @@ public enum class IceRole {
 /**
  * The 64-bit ICE **tie-breaker** (RFC 8445 §5.2) an agent picks at start-up and carries in every check
  * as ICE-CONTROLLING / ICE-CONTROLLED. When both agents believe they hold the same role (a role
- * conflict, §7.3.1.1), the larger tie-breaker wins and keeps its role; the loser switches. Wrapped so
- * it is never a bare `Long` (it is compared as **unsigned**, which a bare `Long` would get wrong).
+ * conflict, §7.3.1.1), the agent with the **larger** tie-breaker ends up **controlling** (it keeps the
+ * role if already controlling, or switches to it if controlled); the smaller ends up controlled.
+ * Wrapped so it is never a bare `Long` (it is compared as **unsigned**, which a bare `Long` would get wrong).
  */
 @JvmInline
 public value class TieBreaker(

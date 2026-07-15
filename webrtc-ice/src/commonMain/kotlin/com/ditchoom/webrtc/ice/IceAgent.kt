@@ -46,6 +46,13 @@ public data class IceConfig(
     public val consentInterval: Duration = 5.seconds,
     /** How long without a consent response before the pair is declared dead (RFC 7675 §5.1). */
     public val consentTimeout: Duration = 30.seconds,
+    /**
+     * The global establishment failsafe: once checking has begun, if no pair is nominated within this
+     * budget the agent gives up with a typed failure rather than hanging. This is the liveness backstop
+     * (RFC §5.3 #5) that guarantees a terminal state even when the peer wedges nomination, never
+     * nominates, or offers no compatible candidate.
+     */
+    public val establishmentTimeout: Duration = 30.seconds,
     public val bufferFactory: BufferFactory = BufferFactory.Default,
 )
 
@@ -91,9 +98,14 @@ public class IceAgent(
     private var selected: PairEntry? = null
     private var nominationInFlight = false
 
+    // A role conflict is resolved AT MOST ONCE per ICE generation (RFC 8445 §7.3.1.1): the inbound-check
+    // path and the 487-response path must not both flip the role, or a glare oscillates. Reset on restart.
+    private var roleConflictResolved = false
+
     private var nextPacingAt: Instant? = null
     private var nextConsentAt: Instant? = null
     private var lastConsentResponseAt: Instant? = null
+    private var establishmentDeadline: Instant? = null
 
     /**
      * The earliest instant the driver must call `handle(TimerFired)` — the min of the pacing tick, every
@@ -114,6 +126,10 @@ public class IceAgent(
             // advancing virtual time; the in-flight transaction's own deadline carries the schedule.
             if (chosen.transaction == null) consider(nextConsentAt)
             consider(lastConsentResponseAt?.plus(config.consentTimeout))
+        } else if (_state !is IceConnectionState.Failed) {
+            // The liveness backstop keeps a deadline armed even when nothing else is (a wedged nomination,
+            // a peer that never nominates, or an empty checklist), so the driver always reaches a terminal.
+            consider(establishmentDeadline)
         }
         return earliest
     }
@@ -182,21 +198,40 @@ public class IceAgent(
         pruneRedundant()
         sortChecklist()
         if (checklist.isNotEmpty() && nextPacingAt == null) nextPacingAt = now
+        // Arm the liveness backstop once we have credentials and something to try (even if pairing yields
+        // an empty checklist — the "zero compatible candidates" case must still fail, not hang).
+        if (localCandidates.isNotEmpty() && establishmentDeadline == null) establishmentDeadline = now + config.establishmentTimeout
         if (_state is IceConnectionState.New && checklist.isNotEmpty()) transition(IceConnectionState.Checking, out)
     }
 
     // A redundant pair (RFC 8445 §6.1.2.4): same base and same remote address — keep the highest priority.
+    // Only *unstarted* pairs (Waiting/Frozen) are ever pruned; a pair that is checking, valid, failed, or
+    // selected is kept regardless, so pruning can never delete an in-flight/selected pair or orphan its
+    // transaction (a trickled higher-priority candidate must not evict a pair already doing work).
     private fun pruneRedundant() {
-        val seen = HashSet<Pair<TransportAddress, TransportAddress>>()
-        val ordered = checklist.sortedByDescending { it.pair.priority(_role) }
-        checklist.clear()
-        for (entry in ordered) {
-            val key = entry.pair.local.base to entry.pair.remote.address
-            if (seen.add(key)) checklist += entry
+        val keptKeys = HashSet<Pair<TransportAddress, TransportAddress>>()
+        val kept = mutableListOf<PairEntry>()
+        for (entry in checklist) {
+            val started = entry.state != CandidatePairState.Waiting && entry.state != CandidatePairState.Frozen
+            if (entry === selected || started) {
+                kept += entry
+                keptKeys += entry.pair.local.base to entry.pair.remote.address
+            }
         }
+        for (entry in checklist.filter { it !in kept }.sortedByDescending { it.pair.priority(_role) }) {
+            if (keptKeys.add(entry.pair.local.base to entry.pair.remote.address)) kept += entry
+        }
+        checklist.clear()
+        checklist += kept
     }
 
     private fun sortChecklist() = checklist.sortByDescending { it.pair.priority(_role) }
+
+    // Ensure a pacing tick is scheduled — call whenever a pair (re)enters Waiting outside formPairs
+    // (e.g. a 487 retry), so a checklist that had gone idle picks the pair back up.
+    private fun armPacing(now: Instant) {
+        if (nextPacingAt == null) nextPacingAt = now
+    }
 
     private fun compatible(
         local: IceCandidate,
@@ -222,8 +257,24 @@ public class IceAgent(
             if (next != null) startCheck(next, nominate = false, consent = false, now = now, out = out)
             nextPacingAt = if (checklist.any { it.state == CandidatePairState.Waiting }) now + config.ta else null
         }
-        // 3. Consent freshness on the selected pair (RFC 7675).
+        // 3. Nomination retry (controlling): if a nominating check failed and left no nomination in flight,
+        // nominate the best remaining valid pair — otherwise a valid-but-unnominated pair would hang.
+        if (_role == IceRole.Controlling && selected == null && !nominationInFlight) {
+            val best = checklist.filter { it.state == CandidatePairState.Succeeded }.maxByOrNull { it.pair.priority(_role) }
+            if (best != null) {
+                nominationInFlight = true
+                startCheck(best, nominate = true, consent = false, now = now, out = out)
+            }
+        }
+        // 4. Consent freshness on the selected pair (RFC 7675).
         driveConsent(now, out)
+        // 5. Liveness backstop: never hang — fail with a typed reason if unselected by the deadline.
+        val backstop = establishmentDeadline
+        if (selected == null && backstop != null && now >= backstop && _state !is IceConnectionState.Failed) {
+            establishmentDeadline = null
+            val reason = if (checklist.isEmpty()) IceFailureReason.NoCandidatePairs else IceFailureReason.AllPairsFailed(checklist.size)
+            transition(IceConnectionState.Failed(reason), out)
+        }
         maybeComplete(out)
     }
 
@@ -236,6 +287,7 @@ public class IceAgent(
         // `>=`, not `>`: nextDeadline arms exactly `lastResponse + consentTimeout`, so at that instant the
         // check must fire — a strict `>` would leave the deadline in the past and spin the driver.
         if (lastResponse != null && now - lastResponse >= config.consentTimeout) {
+            clearTransaction(chosen) // stop retransmitting a consent check on the now-dead pair
             selected = null
             transition(IceConnectionState.Failed(IceFailureReason.ConsentExpired), out)
             return
@@ -271,39 +323,53 @@ public class IceAgent(
         out: MutableList<IceOutput>,
     ) {
         // Authenticate with our own password (RFC 8445 §7.3): USERNAME `<ourUfrag>:<theirUfrag>` + MI.
+        // Then read attributes ONLY from the MI-covered prefix (RFC 8489 §14.5): a MITM who does not know
+        // the password can splice attributes (e.g. USE-CANDIDATE) after a valid MI and fix the unkeyed
+        // FINGERPRINT — both checks still pass — so trusting the tail would let it hijack nomination/role.
         if (!request.verifyMessageIntegrity(localKey())) return
-        val username = request.firstOrNull(StunAttributeType.Username)?.asText() ?: return
+        val covered = request.attributesCoveredByMessageIntegrity() ?: return
+        val username = covered.firstOrNull { it.type == StunAttributeType.Username }?.asText() ?: return
         if (username.substringBefore(':') != _localCredentials.ufrag.value) return
         val localCandidate = localCandidates.firstOrNull { it.base == localBase } ?: return
 
-        // Role-conflict resolution (RFC 8445 §7.3.1.1): if the peer claims our role, the larger
-        // tie-breaker keeps it; the loser switches, and the winner rejects this check with 487.
-        val peerControlling = request.firstOrNull(IceAttributes.ICE_CONTROLLING)?.asTieBreaker()
-        val peerControlled = request.firstOrNull(IceAttributes.ICE_CONTROLLED)?.asTieBreaker()
-        if (_role == IceRole.Controlling && peerControlling != null) {
+        // Role-conflict resolution (RFC 8445 §7.3.1.1): the agent with the larger tie-breaker ends up
+        // CONTROLLING in both directions — the controlling agent keeps its role (487s the peer) or switches
+        // to controlled; the controlled agent switches to controlling or 487s the peer.
+        val peerControlling = covered.firstOrNull { it.type == IceAttributes.ICE_CONTROLLING }?.asTieBreaker()
+        val peerControlled = covered.firstOrNull { it.type == IceAttributes.ICE_CONTROLLED }?.asTieBreaker()
+        if (!roleConflictResolved && _role == IceRole.Controlling && peerControlling != null) {
+            roleConflictResolved = true
             if (tieBreaker >= peerControlling) {
                 out += transmit(localBase, source, roleConflictResponse(request.transactionId))
                 return
             }
             switchRole(IceRole.Controlled, out)
-        } else if (_role == IceRole.Controlled && peerControlled != null) {
+        } else if (!roleConflictResolved && _role == IceRole.Controlled && peerControlled != null) {
+            roleConflictResolved = true
             if (tieBreaker >= peerControlled) {
+                switchRole(IceRole.Controlling, out)
+            } else {
                 out += transmit(localBase, source, roleConflictResponse(request.transactionId))
                 return
             }
-            switchRole(IceRole.Controlling, out)
         }
 
         // Learn a peer-reflexive remote candidate for an unknown source (RFC 8445 §7.3.1.3).
         val remoteCandidate =
             remoteCandidates.firstOrNull { it.address == source }
-                ?: learnPeerReflexive(source, request.firstOrNull(IceAttributes.PRIORITY)?.asPriority(), localCandidate.component, now, out)
+                ?: learnPeerReflexive(
+                    source,
+                    covered.firstOrNull { it.type == IceAttributes.PRIORITY }?.asPriority(),
+                    localCandidate.component,
+                    now,
+                    out,
+                )
 
         // Reply with a success response echoing the mapped (source) address (RFC 8445 §7.3.1.2).
         out += transmit(localBase, source, bindingSuccess(request.transactionId, source))
 
         val entry = checklist.firstOrNull { it.pair.local == localCandidate && it.pair.remote == remoteCandidate }
-        val nominatedByPeer = request.firstOrNull(IceAttributes.USE_CANDIDATE) != null
+        val nominatedByPeer = covered.firstOrNull { it.type == IceAttributes.USE_CANDIDATE } != null
         if (entry == null) return
 
         // A triggered check (RFC 8445 §7.3.1.4): (re)schedule this pair, promptly.
@@ -332,11 +398,21 @@ public class IceAgent(
         val wasNominating = entry.nominating
         entry.consentCheck = false
         entry.nominating = false
+        // Release the nomination latch on ANY outcome of a nominating check (success re-sets it in
+        // selectPair; failure must free it so onTimer can nominate another valid pair) — otherwise a
+        // response-driven failure would strand `nominationInFlight` and hang the agent.
+        if (wasNominating) nominationInFlight = false
 
         if (message.messageType.stunClass == StunClass.ErrorResponse) {
             if (message.firstOrNull(StunAttributeType.ErrorCode)?.asErrorCode()?.code == ROLE_CONFLICT) {
-                switchRole(_role.opposite, out)
-                entry.state = CandidatePairState.Waiting // retry under the corrected role
+                // Switch only if this conflict hasn't already been resolved by the inbound-check path
+                // (else we'd flip back and oscillate); either way, retry the pair under the settled role.
+                if (!roleConflictResolved) {
+                    roleConflictResolved = true
+                    switchRole(_role.opposite, out)
+                }
+                entry.state = CandidatePairState.Waiting
+                armPacing(now) // re-arm pacing so the retry is actually scheduled (it may have gone idle)
             } else {
                 failCheck(entry, out)
             }
@@ -434,6 +510,7 @@ public class IceAgent(
     ) {
         if (entry.nominating) nominationInFlight = false
         entry.state = CandidatePairState.Failed
+        entry.valid = false // a failed pair is no longer valid — don't let a stale latch veto AllPairsFailed
         val allDone =
             checklist.none {
                 it.state == CandidatePairState.Waiting ||
@@ -441,6 +518,7 @@ public class IceAgent(
                     it.state == CandidatePairState.Frozen
             }
         if (selected == null && allDone && checklist.isNotEmpty() && checklist.none { it.valid }) {
+            establishmentDeadline = null
             transition(IceConnectionState.Failed(IceFailureReason.AllPairsFailed(checklist.size)), out)
         }
     }
@@ -450,10 +528,11 @@ public class IceAgent(
         now: Instant,
         out: MutableList<IceOutput>,
     ) {
-        if (selected === entry) return
+        if (selected != null) return // first nomination wins; never regress a Connected/Completed component
         selected = entry
         entry.nominated = true
         nominationInFlight = false
+        establishmentDeadline = null
         lastConsentResponseAt = now
         nextConsentAt = now + config.consentInterval
         out += IceOutput.SelectedPairChanged(entry.pair)
@@ -514,9 +593,11 @@ public class IceAgent(
         byTransaction.clear()
         selected = null
         nominationInFlight = false
+        roleConflictResolved = false
         nextPacingAt = null
         nextConsentAt = null
         lastConsentResponseAt = null
+        establishmentDeadline = null
         transition(IceConnectionState.New, out)
     }
 

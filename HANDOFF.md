@@ -8,9 +8,11 @@ this file. Update it whenever you stop mid-wave.
 ### 2026-07-15 — W3 built end-to-end (steps 1–5), green throughout, unmerged
 
 The ICE agent core is done. Branch `w3-webrtc-ice` now carries (on top of the Step-1 seam gate) five
-commits building the whole wave; everything is green on **JVM, JS-node, wasmJs-node, Linux/native,
-Android host** (Apple lanes compile-faithful — runtime-validate on the macOS runner at merge,
-`V6_MAC_VALIDATION`). Nothing is on Central (`skip-release`).
+commits building the whole wave. **PR #11 is open, `skip-release` verified, and the full CI matrix is
+green** — `build-linux` (JVM/JS/WASM/Android/Linux K/N), **`build-apple` (Apple K/N — runtime-validated
+on the macOS runner, `V6_MAC_VALIDATION`)**, all three fuzz lanes, standing-directives, and
+validate-artifacts all pass. Nothing is on Central (`skip-release`). **Not merged** (awaiting the
+adversarial-review gate / a go).
 
 **What landed (commits after `1d81dfe`):**
 1. **Vnet NAT layer** (`webrtc-ice/commonTest/.../vnet/`): the flat `Router` seam became a richer
@@ -40,9 +42,8 @@ Android host** (Apple lanes compile-faithful — runtime-validate on the macOS r
 time. Now `>=`; `consent_expiry_fails_...` is the regression.
 
 **Next-session TODO to finish the wave:**
-- **Open/verify the PR is `skip-release`** via the REST API (`gh pr edit --add-label` fails silently
-  here) and confirm the label before any merge; keep it unmerged until a reviewer/gate says go.
-- **Runtime-validate Apple** on the macOS runner (the local box is compile-faithful).
+- PR #11 is open with `skip-release` **verified present** (via REST API — `gh pr edit --add-label`
+  fails silently here); CI is fully green incl. Apple. Keep it unmerged until a reviewer/gate says go.
 - **Adversarial review gate** (EXECUTION_PLAN §1) before merge: re-verify the STUN-check MI keying
   (responder's password both ways), role-conflict tie-break direction, pair-priority ULong overflow,
   and the consent/expiry timing against RFC 8445/7675/8656.

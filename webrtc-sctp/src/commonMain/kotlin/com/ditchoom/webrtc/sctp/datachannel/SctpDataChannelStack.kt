@@ -476,6 +476,12 @@ internal class PendingInbound(
  * has torn down (transport closed, or the association aborted) — so the call fails fast with the typed
  * [reason] instead of suspending forever. [reason] is the association's [SctpFailureReason] when the
  * teardown was an abort, or null for a plain transport close.
+ *
+ * The typed [reason] is the discriminant, never the string. Re-parenting this onto socket's abstract
+ * `SocketClosedException` (the QUIC-module extension point) — so a data-channel consumer catches it
+ * uniformly with every other transport failure (RFC §3.1 "one thrown vocabulary") — is deferred with the
+ * rest of the `SocketException` bridge: depending on `com.ditchoom:socket` collides socket's vendored
+ * BoringSSL against buffer-crypto's on native (documented on the webrtc root's PeerConnectionFailureReason).
  */
 public class SctpClosedException(
     public val reason: SctpFailureReason?,

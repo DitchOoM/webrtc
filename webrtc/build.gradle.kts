@@ -13,6 +13,12 @@ kotlin {
             api(project(":webrtc-sctp"))
             api(project(":webrtc-sdp"))
             api(libs.buffer.flow)
+            api(libs.kotlinx.coroutines.core)
+        }
+        commonTest.dependencies {
+            // runTest virtual time drives the whole session round-trip (offer/answer → ICE → SCTP → data)
+            // at zero wall-clock on every platform. kotlin("test") comes from the convention.
+            implementation(libs.kotlinx.coroutines.test)
         }
     }
 }

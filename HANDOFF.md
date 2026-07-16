@@ -3,11 +3,52 @@
 Live state of the current wave. A resumed session reads `RFC_KMP_WEBRTC.md` → `EXECUTION_PLAN.md` →
 this file. Update it whenever you stop mid-wave.
 
-## Where we are: **W5 (`webrtc-sctp` association + DataChannel) MERGED to `main` (squash, PR #13, `skip-release`) — the sans-io SCTP association + RFC 3758 partial reliability + DCEP + `DataChannel` (buffer-flow `StreamMux`) are landed, ran the 5-reviewer adversarial gate, and are green on all platforms incl. Apple. Next: W6 (`PeerConnection` + browser actuals + error sweep). W4 (DTLS) still parked.**
+## Where we are: **W6 (`webrtc` root: `PeerConnection` + browser delegation + typed error sweep) BUILT on branch `w6-webrtc-peerconnection` (off `main` @ `02c6a4e`, W5 merged). Green on all local lanes — jvm / linuxX64 / jsNode / jsBrowser (Karma, headless Chrome) / wasmJsNode / wasmJsBrowser / androidHost. Adversarial-review gate ran (3 parallel reviewers) and every confirmed defect is fixed with a regression fixture. PR pending (`skip-release`). Apple = compile-faithful locally, runtime-validate on the runner. W4 (DTLS) still parked; the real-DTLS end-to-end TB fixture is its exit gate.**
 
 ---
 
-### START HERE — W6 (`webrtc` root: PeerConnection + JSEP + browser actuals) · fresh session
+### START HERE — after W6 (fresh session)
+
+**W6 built, unmerged** on `w6-webrtc-peerconnection` (4 commits on top of `02c6a4e`):
+1. `IceAgentDriver` (webrtc-ice `commonMain`) — the W5 ICE→SCTP composition promoted to production
+   (`DatagramBinder` net seam + `IceDataTransport` app-data seam + RFC 7983 demux) + `IceCandidateLine`
+   (RFC 8839 candidate↔typed codec).
+2. `NativePeerConnection` / `RtcPeerConnection` (webrtc root) composing JsepSession + IceAgentDriver +
+   plaintext-DTLS seam + SctpDataChannelStack; sealed `PeerConnectionState`; DTLS/SCTP role **negotiated
+   from `a=setup`** (RFC 8842). Typed error hierarchy (`PeerConnectionFailureReason` + `WebRtcException`
+   + `JsepStateException`/`SdpFormatException`).
+3. `peerConnectionSupport()` browser delegation — **js** actual maps our API onto the browser
+   `RTCPeerConnection`, Karma-tested against a real in-browser loopback.
+4. Adversarial-gate fixes (role-negotiation deadlock, 5 lifecycle/liveness defects, 6 API-surface, 4
+   browser defects), each with a regression fixture.
+
+**Deferred / open (documented in code + CHANGELOG):**
+- **`SocketException` bridge (RFC §3.1) is BLOCKED, not done.** Depending on `com.ditchoom:socket` links
+  socket's `LinuxSockets` cinterop, whose **vendored BoringSSL duplicate-symbols against buffer-crypto's
+  BoringSSL** on every native target (`ld.lld: duplicate symbol AES_set_decrypt_key`, …) — and drags
+  node `fs`/`tls` into the browser bundle. So webrtc keeps a **self-contained** typed error vocabulary;
+  re-parenting `WebRtcException`/`SctpClosedException` onto `SocketClosedException` waits on an upstream
+  socket↔buffer-crypto BoringSSL dedup. Same posture as DTLS-on-W4. **Do not re-add `libs.socket` until
+  that upstream fix lands** (it will fail the native link).
+- **wasmJs browser delegation** — the wasmJs actual reports `BrowserDelegated` but `createDelegated`
+  throws `NotImplementedError`; the external-interface (`JsAny`) mapping of the js `dynamic` delegation is
+  the one remaining W6 browser follow-up.
+- **W4 (DTLS) parked** — the plaintext seam stands in; the real ICE+**DTLS**+SCTP end-to-end TB fixture is
+  W4's exit gate. `PlaintextDtls` has **no default** (must be passed explicitly — greppable insecurity).
+- **wpt webrtc/ smoke** — the Karma loopback delegation test is the browser smoke; a fuller wpt import is
+  a W7 concern.
+- Speculative review notes left as follow-ups (not defects): `gatheringRandom` is single-stream (safe for
+  the default one-shot gather policy; a custom policy launching concurrent gathers on a multi-thread
+  dispatcher would need synchronization); `IceAgentDriver._selectedPair` is a non-volatile cross-coroutine
+  read (fine under single-thread `runTest`).
+
+**Next:** merge W6 (below), then **W4 (`webrtc-dtls`, BoringSSL)** — resolve §11.3 (DTLS 1.2-vs-1.3) first;
+it un-gates both the real end-to-end TB fixture and (with the upstream BoringSSL dedup) the SocketException
+bridge. Then W7 (harness/interop: Pion + Chrome).
+
+---
+
+### (prior) START HERE — W6 (`webrtc` root: PeerConnection + JSEP + browser actuals) · original plan
 
 **Read first, in order:** `RFC_KMP_WEBRTC.md` (§3.1 consumer API, §5 determinism) → `EXECUTION_PLAN.md`
 (W6 row + exit criteria) → this file → `DESIGN_PRINCIPLES.md` (§4 no illegal states — W6 is the public API,

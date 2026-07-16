@@ -14,6 +14,7 @@ import com.ditchoom.webrtc.ice.IceRole
 import com.ditchoom.webrtc.ice.Ufrag
 import com.ditchoom.webrtc.sctp.association.SctpAssociationState
 import com.ditchoom.webrtc.sctp.association.SctpConfig
+import com.ditchoom.webrtc.sctp.association.SctpFailureReason
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sctp.datachannel.SctpClosedException
 import com.ditchoom.webrtc.sctp.datachannel.SctpDataChannelStack
@@ -346,9 +347,19 @@ public class NativePeerConnection(
                 for (pending in pendingChannels) scope.launch { pending.bind(liveStack) }
                 pendingChannels.clear()
             }
-            if (_connectionState.value is PeerConnectionState.Connecting) {
-                _connectionState.value = PeerConnectionState.Connected(d.selectedPair)
+
+            // Declare Connected only once SCTP has actually established (the data-channel transport is
+            // usable) — not merely because ICE nominated a pair. The stack's *initial* state is Closed, so
+            // first wait for the handshake to get underway (leave Closed), then for it to resolve to
+            // Established or tear back down; a pre-Established teardown is a typed failure, never a hang.
+            liveStack.state.first { it != SctpAssociationState.Closed }
+            liveStack.state.first { it == SctpAssociationState.Established || it == SctpAssociationState.Closed }
+            if (closed) return
+            if (liveStack.state.value != SctpAssociationState.Established) {
+                fail(PeerConnectionFailureReason.Sctp(SctpFailureReason.HandshakeTimeout))
+                return
             }
+            _connectionState.value = PeerConnectionState.Connected(d.selectedPair)
 
             // Structured children of this coroutine (cancelled by close() → establishJob.cancel), so no
             // monitor leaks: forward incoming channels, and surface a post-Connected loss as a terminal
@@ -367,7 +378,6 @@ public class NativePeerConnection(
                     if (!closed) fail(PeerConnectionFailureReason.Ice(lost.reason))
                 }
                 launch {
-                    liveStack.state.first { it == SctpAssociationState.Established }
                     liveStack.state.first { it == SctpAssociationState.Closed }
                     if (!closed && _connectionState.value is PeerConnectionState.Connected) {
                         _connectionState.value = PeerConnectionState.Closed

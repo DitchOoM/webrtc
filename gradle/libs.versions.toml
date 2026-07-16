@@ -23,7 +23,7 @@ kotlinxCoroutines = "1.11.0"
 # DatagramMux) under @ExperimentalDatagramApi — DitchOoM/buffer#291, on Maven Central. This is the
 # UDP seam webrtc's transport track (W3+) rides, and the version socket-udp pins; bump keeps webrtc's
 # direct buffer deps aligned with the transitive socket-udp classpath (Gradle would resolve up anyway).
-buffer = "6.11.0"
+buffer = "6.13.1"
 # DitchOoM socket sibling — the UDP `DatagramChannel` **actuals** webrtc's transport track binds to for
 # real-network candidate gathering (host/srflx/relay). The seam itself is buffer-flow's
 # `DatagramChannel` (on Central, above); `socket-udp` is only the platform real-socket implementation
@@ -38,7 +38,7 @@ buffer = "6.11.0"
 # 3.11.0 (socket PR #239) is the first release with socket-udp on Maven Central — it pins buffer 6.11.0
 # (matches the buffer pin above) and publishes all of jvm/android/js/linux/apple. The earlier
 # merge-gate (dev against a publishToMavenLocal snapshot) is lifted.
-socket = "3.11.0"
+socket = "3.11.1"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"

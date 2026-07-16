@@ -39,9 +39,30 @@ the test/fuzz/api follow-ups):
 W6's composition job. This wave delivers everything achievable with DTLS parked: the SCTP core, the
 DataChannel mux, and the end-to-end proof over ICE with a plaintext DTLS stand-in at the seam.
 
+**Adversarial-review gate — DONE (5 parallel reviewers; confirmed defects fixed with regression
+fixtures).** Directives #1–#3 clean; #6 injection clean (pooling/release deferred, matches W3); the
+DataChannel driver's `association.handle` re-entrancy was investigated and **refuted** (outputs are
+materialized before `apply` runs). Confirmed defects fixed (directive #5 fixtures in
+`ReassemblyQueueTest`/`SctpRegressionTest`/`DataChannelStackTest`): lone FORWARD-TSN→SACK (RFC 3758 §3.6);
+T3 retransmit **paced by cwnd** (§6.3.3 E3, was a full-flight burst); `missingReports` reset on re-send
+(was infinite fast-retransmit); PR abandonment on the SACK path (timed msg no longer retransmitted
+forever); **reflected T-bit ABORT** accepted (§8.5.1); gap-block u16 overflow omitted (was malformed
+`end<start`); **SSN wrap** (was ordered stall after 65535 msgs); I-bit + gap-fill immediate SACK;
+cross-stream/SSN fragment splice guard; driver **teardown completes pending deferreds** (was: open/send
+hang forever) + breaks on ABORT + OPEN-parity validation + early-data buffering + `SctpClosedException`.
+Jazzer re-stamps a valid CRC so the association handlers are actually fuzzed (cov 1052→1472); the
+invariant campaign is split into an all-platform smoke + a JVM deep-run (+ fragmentation-under-loss); the
+sim conductor throws on non-convergence. All lanes green; committed as `5970af7`.
+
+**Also landed: CI flake-diagnosis capture** (`ci: capture test reports + Jazzer crash repros on failure`)
+— build-linux/build-apple upload `**/build/test-results/**` (JUnit XML: full stack + captured stdout;
+seeded tests print the failing seed → reproducible) + `**/build/reports/tests/**` on failure; the fuzz
+jobs upload `**/build/fuzz/**` (the exact crash/timeout repro input). This is what turns a flake like the
+earlier `node:internal/timers` JS-node timeout into a diagnosable artifact instead of a guess.
+
 **Next-session TODO to finish/merge W5:**
-- PR is open on `w5-webrtc-sctp`; apply `skip-release` via the REST API and verify; let CI run
-  (build-linux + build-apple + fuzz + standing-directives + validate). Keep unmerged until a go.
+- PR is open on `w5-webrtc-sctp` (`skip-release` verified). Let CI run (build-linux + build-apple + fuzz
+  + standing-directives + validate). Keep unmerged until a go.
 - **Follow-ups documented in code / deferred (not blockers):** channel close via SCTP **stream reset**
   (RFC 6525 RE-CONFIG) is out of the subset — `Connection.close` tears down local halves only; TSN/SSN
   **serial-number wrap** is not modeled (session never nears 2³², noted in `ReassemblyQueue`); explicit

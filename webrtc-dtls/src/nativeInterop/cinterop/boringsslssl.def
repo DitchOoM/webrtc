@@ -31,8 +31,15 @@ compilerOpts.linux = -D_GNU_SOURCE
 #include <string.h>
 #include <stdlib.h>
 
-/* Return codes shared with Kotlin. */
+/* Return codes shared with Kotlin.
+ *
+ * CAREFUL: functions that return a BYTE COUNT (bd_read_app, bd_take, bd_feed) must never use a
+ * positive status sentinel — a 1-byte read and "want read" would be indistinguishable, and a caller
+ * checking `n > 0` first would treat "no data" as data and spin forever. So those report "no data"
+ * as BD_NO_DATA (0) and every real error as a NEGATIVE value. Only the pure-status wrappers
+ * (bd_do_handshake) use BD_WANT_READ. */
 #define BD_OK 0
+#define BD_NO_DATA 0
 #define BD_WANT_READ 1
 #define BD_FATAL (-1)
 #define BD_CLOSED (-2)
@@ -188,14 +195,16 @@ static inline int bd_write_app(bd_engine *e, const uint8_t *data, int len, long 
     return BD_FATAL;
 }
 
-/* Decrypt application data into out. Returns bytes (>0), BD_WANT_READ (0 available), or BD_CLOSED. */
+/* Decrypt application data into out. Returns the byte count (>0), BD_NO_DATA (0) when nothing is
+ * buffered, BD_CLOSED on peer close_notify, or BD_FATAL. Note BD_NO_DATA is 0, never a positive
+ * sentinel — see the return-code comment above. */
 static inline int bd_read_app(bd_engine *e, uint8_t *out, int cap, long long now_us) {
     bd_set_now(now_us);
     int r = SSL_read(e->ssl, out, cap);
     if (r > 0) return r;
     int err = SSL_get_error(e->ssl, r);
     e->last_err = err;
-    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) return BD_WANT_READ;
+    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) return BD_NO_DATA;
     if (err == SSL_ERROR_ZERO_RETURN) return BD_CLOSED;
     return BD_FATAL;
 }

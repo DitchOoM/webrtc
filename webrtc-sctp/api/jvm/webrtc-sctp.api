@@ -1047,7 +1047,7 @@ public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelConnection : 
 	public synthetic fun send (Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
-public final class com/ditchoom/webrtc/sctp/datachannel/SctpClosedException : com/ditchoom/socket/SocketClosedException {
+public final class com/ditchoom/webrtc/sctp/datachannel/SctpClosedException : java/lang/Exception {
 	public fun <init> (Lcom/ditchoom/webrtc/sctp/association/SctpFailureReason;)V
 	public final fun getReason ()Lcom/ditchoom/webrtc/sctp/association/SctpFailureReason;
 }

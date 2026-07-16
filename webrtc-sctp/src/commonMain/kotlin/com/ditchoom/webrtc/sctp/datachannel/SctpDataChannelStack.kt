@@ -8,7 +8,6 @@ import com.ditchoom.buffer.flow.Connection
 import com.ditchoom.buffer.flow.Receiver
 import com.ditchoom.buffer.flow.Sender
 import com.ditchoom.buffer.flow.StreamMux
-import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.webrtc.sctp.PayloadProtocolId
 import com.ditchoom.webrtc.sctp.StreamId
 import com.ditchoom.webrtc.sctp.association.SctpAssociation
@@ -478,14 +477,15 @@ internal class PendingInbound(
  * [reason] instead of suspending forever. [reason] is the association's [SctpFailureReason] when the
  * teardown was an abort, or null for a plain transport close.
  *
- * It extends socket's abstract [SocketClosedException] (the same extension point the QUIC module's
- * `QuicCloseException` uses) so a data-channel consumer catches it uniformly with every other transport
- * failure via `catch (e: SocketClosedException)` / `catch (e: SocketException)` / `catch (e: IOException)`
- * on JVM (RFC §3.1 "one thrown vocabulary"). The typed [reason] stays the discriminant, never the string.
+ * The typed [reason] is the discriminant, never the string. Re-parenting this onto socket's abstract
+ * `SocketClosedException` (the QUIC-module extension point) — so a data-channel consumer catches it
+ * uniformly with every other transport failure (RFC §3.1 "one thrown vocabulary") — is deferred with the
+ * rest of the `SocketException` bridge: depending on `com.ditchoom:socket` collides socket's vendored
+ * BoringSSL against buffer-crypto's on native (documented on the webrtc root's PeerConnectionFailureReason).
  */
 public class SctpClosedException(
     public val reason: SctpFailureReason?,
-) : SocketClosedException("SCTP data-channel stack closed${reason?.let { ": $it" } ?: ""}")
+) : Exception("SCTP data-channel stack closed${reason?.let { ": $it" } ?: ""}")
 
 /**
  * One open data channel as a buffer-flow [Connection]<[ReadBuffer]> (RFC 8831). [send] posts one

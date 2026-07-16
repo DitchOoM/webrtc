@@ -27,13 +27,6 @@ kotlin {
             // a swap, not a rewrite.
             api(libs.buffer.flow)
             api(libs.kotlinx.coroutines.core)
-            // socket core (com.ditchoom:socket): SctpClosedException — thrown to a data-channel consumer
-            // when the association tears down — extends the SocketException hierarchy (its abstract
-            // SocketClosedException, the QUIC-module precedent) so a data-channel send failure is caught
-            // uniformly as SocketException / IOException (RFC §3.1 "one thrown vocabulary"; the W5→W6
-            // handoff explicitly left this SocketException mapping to the session wave). Socket core
-            // publishes every target incl. wasmJs, so it stays commonMain-safe.
-            api(libs.socket)
         }
         commonTest.dependencies {
             // runTest virtual time drives the whole association end-to-end (handshake, retransmit,

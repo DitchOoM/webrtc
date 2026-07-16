@@ -96,7 +96,6 @@ public final class com/ditchoom/webrtc/ice/IceAgentDriver {
 	public final fun gatherHost (Ljava/lang/String;ILcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static synthetic fun gatherHost$default (Lcom/ditchoom/webrtc/ice/IceAgentDriver;Ljava/lang/String;ILcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public final fun gatherRelay (Lcom/ditchoom/buffer/flow/SocketAddress;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public final fun getAgent ()Lcom/ditchoom/webrtc/ice/IceAgent;
 	public final fun getLocalCandidateGathered ()Lkotlinx/coroutines/flow/Flow;
 	public final fun getLocalCandidates ()Ljava/util/List;
 	public final fun getLocalCredentials ()Lcom/ditchoom/webrtc/ice/IceCredentials;

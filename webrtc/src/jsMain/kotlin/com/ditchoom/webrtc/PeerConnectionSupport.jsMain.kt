@@ -7,6 +7,7 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.Connection
+import com.ditchoom.webrtc.sctp.association.SctpReliability
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sdp.SdpType
 import com.ditchoom.webrtc.sdp.SignalingState
@@ -70,20 +71,44 @@ private fun sessionDescription(
 private fun iceCandidateInit(candidate: String): dynamic {
     val c: dynamic = js("({})")
     c.candidate = candidate
-    c.sdpMid = "0"
+    // Match by m-line index only (a single m=application section): hardcoding sdpMid="0" would make the
+    // browser reject a candidate when the remote description used a different mid.
     c.sdpMLineIndex = 0
     return c
+}
+
+// Forward the DataChannelConfig into an RTCDataChannelInit so ordered/reliability/protocol are honored,
+// not silently dropped to the browser defaults (ordered + reliable).
+private fun dataChannelInit(config: DataChannelConfig): dynamic {
+    val init: dynamic = js("({})")
+    init.ordered = config.ordered
+    when (val r = config.reliability) {
+        SctpReliability.Reliable -> Unit
+        is SctpReliability.MaxRetransmits -> init.maxRetransmits = r.maxRetransmits
+        is SctpReliability.MaxLifetime -> init.maxPacketLifeTime = r.maxLifetime.inWholeMilliseconds.toInt()
+    }
+    if (config.protocol.isNotEmpty()) init.protocol = config.protocol
+    return init
 }
 
 private fun mapConnectionState(state: String): PeerConnectionState =
     when (state) {
         "new" -> PeerConnectionState.New
-        "connecting" -> PeerConnectionState.Connecting
-        "connected" -> PeerConnectionState.Connected(0L)
-        "failed" -> PeerConnectionState.Failed(PeerConnectionFailureReason.Ice(com.ditchoom.webrtc.ice.IceFailureReason.NoCandidatePairs))
-        "closed", "disconnected" -> PeerConnectionState.Closed
+        // "disconnected" is a *transient* W3C ICE state that routinely recovers to "connected" — report a
+        // non-terminal Connecting, never Closed, so a collector doesn't tear down a recoverable session.
+        "connecting", "disconnected" -> PeerConnectionState.Connecting
+        // The browser exposes no pair object here, and no portable failure discriminant — hence null / Unknown.
+        "connected" -> PeerConnectionState.Connected(null)
+        "failed" -> PeerConnectionState.Failed(PeerConnectionFailureReason.Unknown("RTCPeerConnection connectionState=failed"))
+        "closed" -> PeerConnectionState.Closed
         else -> PeerConnectionState.Connecting
     }
+
+// The typeof of a JS value (Kotlin/JS js() inlines and can reference the parameter by name).
+private fun jsTypeof(o: dynamic): String = js("typeof o")
+
+// UTF-8 encode a JS string via TextEncoder → Uint8Array (no Kotlin ByteArray at the browser edge).
+private fun encodeUtf8(s: String): Uint8Array = js("new TextEncoder().encode(s)")
 
 private fun mapSignalingState(state: String): SignalingState? =
     when (state) {
@@ -125,7 +150,7 @@ private class BrowserPeerConnection(
     }
 
     override suspend fun createDataChannel(config: DataChannelConfig): Connection<ReadBuffer> =
-        BrowserDataChannel(pc.createDataChannel(config.label))
+        BrowserDataChannel(pc.createDataChannel(config.label, dataChannelInit(config)))
 
     override suspend fun createOffer(): String =
         pc
@@ -181,7 +206,18 @@ private class BrowserDataChannel(
         dc.binaryType = "arraybuffer"
         if (dc.readyState.unsafeCast<String>() == "open") opened.complete(Unit)
         dc.onopen = { _: dynamic -> opened.complete(Unit) }
-        dc.onmessage = { event: dynamic -> inbound.trySend(arrayBufferToReadBuffer(event.data.unsafeCast<ArrayBuffer>())) }
+        dc.onmessage = { event: dynamic ->
+            val data = event.data
+            // A peer may send a text-mode message even with binaryType=arraybuffer — decode it rather than
+            // reinterpret a JS string as an ArrayBuffer (which would corrupt the ReadBuffer).
+            val buffer =
+                if (jsTypeof(data) == "string") {
+                    arrayBufferToReadBuffer(encodeUtf8(data.unsafeCast<String>()).buffer)
+                } else {
+                    arrayBufferToReadBuffer(data.unsafeCast<ArrayBuffer>())
+                }
+            inbound.trySend(buffer)
+        }
         dc.onclose = { _: dynamic -> inbound.close() }
     }
 

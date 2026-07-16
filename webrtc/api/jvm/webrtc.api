@@ -1,17 +1,3 @@
-public final class com/ditchoom/webrtc/DataChannelId {
-	public static final synthetic fun box-impl (I)Lcom/ditchoom/webrtc/DataChannelId;
-	public static fun constructor-impl (I)I
-	public fun equals (Ljava/lang/Object;)Z
-	public static fun equals-impl (ILjava/lang/Object;)Z
-	public static final fun equals-impl0 (II)Z
-	public final fun getValue ()I
-	public fun hashCode ()I
-	public static fun hashCode-impl (I)I
-	public fun toString ()Ljava/lang/String;
-	public static fun toString-impl (I)Ljava/lang/String;
-	public final synthetic fun unbox-impl ()I
-}
-
 public abstract interface class com/ditchoom/webrtc/DtlsFailureReason {
 	public abstract fun getDescription ()Ljava/lang/String;
 }
@@ -56,9 +42,14 @@ public abstract interface class com/ditchoom/webrtc/IceGatheringPolicy {
 	public abstract fun gather (Lcom/ditchoom/webrtc/ice/IceAgentDriver;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
+public final class com/ditchoom/webrtc/JsepStateException : java/lang/IllegalStateException {
+	public fun <init> (Lcom/ditchoom/webrtc/sdp/JsepError;)V
+	public final fun getError ()Lcom/ditchoom/webrtc/sdp/JsepError;
+}
+
 public final class com/ditchoom/webrtc/NativePeerConnection : com/ditchoom/webrtc/RtcPeerConnection {
-	public fun <init> (Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lkotlin/random/Random;Lcom/ditchoom/webrtc/ice/DatagramBinder;Lcom/ditchoom/webrtc/IceGatheringPolicy;Lcom/ditchoom/webrtc/PeerConnectionConfig;Lcom/ditchoom/webrtc/DtlsTransportFactory;)V
-	public synthetic fun <init> (Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lkotlin/random/Random;Lcom/ditchoom/webrtc/ice/DatagramBinder;Lcom/ditchoom/webrtc/IceGatheringPolicy;Lcom/ditchoom/webrtc/PeerConnectionConfig;Lcom/ditchoom/webrtc/DtlsTransportFactory;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lkotlin/random/Random;Lcom/ditchoom/webrtc/ice/DatagramBinder;Lcom/ditchoom/webrtc/IceGatheringPolicy;Lcom/ditchoom/webrtc/DtlsTransportFactory;Lcom/ditchoom/webrtc/PeerConnectionConfig;)V
+	public synthetic fun <init> (Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lkotlin/random/Random;Lcom/ditchoom/webrtc/ice/DatagramBinder;Lcom/ditchoom/webrtc/IceGatheringPolicy;Lcom/ditchoom/webrtc/DtlsTransportFactory;Lcom/ditchoom/webrtc/PeerConnectionConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun addIceCandidate (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun createAnswer (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
@@ -135,6 +126,18 @@ public final class com/ditchoom/webrtc/PeerConnectionFailureReason$Sctp : com/di
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/PeerConnectionFailureReason$Unknown : com/ditchoom/webrtc/PeerConnectionFailureReason {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/webrtc/PeerConnectionFailureReason$Unknown;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/PeerConnectionFailureReason$Unknown;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionFailureReason$Unknown;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getDetail ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/PeerConnectionKind : java/lang/Enum {
 	public static final field BrowserDelegated Lcom/ditchoom/webrtc/PeerConnectionKind;
 	public static final field Native Lcom/ditchoom/webrtc/PeerConnectionKind;
@@ -154,12 +157,12 @@ public final class com/ditchoom/webrtc/PeerConnectionState$Closed : com/ditchoom
 }
 
 public final class com/ditchoom/webrtc/PeerConnectionState$Connected : com/ditchoom/webrtc/PeerConnectionState {
-	public fun <init> (J)V
-	public final fun component1 ()J
-	public final fun copy (J)Lcom/ditchoom/webrtc/PeerConnectionState$Connected;
-	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/PeerConnectionState$Connected;JILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionState$Connected;
+	public fun <init> (Lcom/ditchoom/webrtc/ice/CandidatePair;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/CandidatePair;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/CandidatePair;)Lcom/ditchoom/webrtc/PeerConnectionState$Connected;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/PeerConnectionState$Connected;Lcom/ditchoom/webrtc/ice/CandidatePair;ILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionState$Connected;
 	public fun equals (Ljava/lang/Object;)Z
-	public final fun getSelectedPairId ()J
+	public final fun getSelectedPair ()Lcom/ditchoom/webrtc/ice/CandidatePair;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -225,6 +228,11 @@ public abstract interface class com/ditchoom/webrtc/RtcPeerConnection {
 
 public final class com/ditchoom/webrtc/RtcPeerConnection$DefaultImpls {
 	public static synthetic fun createDataChannel$default (Lcom/ditchoom/webrtc/RtcPeerConnection;Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/webrtc/SdpFormatException : java/lang/IllegalArgumentException {
+	public fun <init> (Lcom/ditchoom/webrtc/sdp/SdpRejectReason;)V
+	public final fun getReason ()Lcom/ditchoom/webrtc/sdp/SdpRejectReason;
 }
 
 public final class com/ditchoom/webrtc/WebRtc {

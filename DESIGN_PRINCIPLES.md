@@ -38,8 +38,8 @@ fun authenticate(ufrag: Ufrag, password: IcePassword)   // callers cannot swap t
 ```
 
 Real examples in the tree: `TransactionId` (webrtc-stun), `Ufrag`/`IcePassword` (webrtc-ice),
-`StreamId`/`Tsn` (webrtc-sctp), `DataChannelId` (webrtc), `Mid` (webrtc-sdp),
-`CertificateFingerprint` (webrtc-dtls). Where an id has an invariant (a STUN transaction id is 96
+`StreamId`/`Tsn` (webrtc-sctp), `Mid` (webrtc-sdp), `CertificateFingerprint` (webrtc-dtls). Where an id
+has an invariant (a STUN transaction id is 96
 bits; an SCTP stream id is a u16), the `init { require(...) }` enforces it at construction, so an
 invalid id cannot exist.
 

@@ -85,8 +85,10 @@ public class IceAgentDriver(
     @Suppress("UnseamedEntropy") // derived from the injected [random]; not an ambient default
     private val gatheringRandom = Random(random.nextLong())
 
-    /** The sans-io agent this driver clocks. */
-    public val agent: IceAgent = IceAgent(role, agentRandom, config)
+    // The sans-io agent this driver clocks — internal, never public: every `handle` call must go through
+    // the single [driveLoop], so exposing the raw core would let a caller race it and corrupt checklist
+    // state. Consumers use the re-exposed [state]/[selectedPair]/[localCandidates]/[localCredentials].
+    internal val agent: IceAgent = IceAgent(role, agentRandom, config)
 
     /** This agent's local ICE credentials (ufrag/pwd) — signal them to the peer. */
     public val localCredentials: IceCredentials get() = agent.localCredentials

@@ -12,6 +12,7 @@ import com.ditchoom.webrtc.ice.IceCredentials
 import com.ditchoom.webrtc.ice.IcePassword
 import com.ditchoom.webrtc.ice.IceRole
 import com.ditchoom.webrtc.ice.Ufrag
+import com.ditchoom.webrtc.sctp.association.SctpAssociationState
 import com.ditchoom.webrtc.sctp.association.SctpConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sctp.datachannel.SctpClosedException
@@ -30,10 +31,13 @@ import com.ditchoom.webrtc.sdp.SetupRole
 import com.ditchoom.webrtc.sdp.SignalingState
 import com.ditchoom.webrtc.sdp.icePwd
 import com.ditchoom.webrtc.sdp.iceUfrag
+import com.ditchoom.webrtc.sdp.setup
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -147,10 +151,14 @@ public interface RtcPeerConnection {
  * (RFC §5.1). Its own mutable negotiation state is confined behind [negotiationLock]; the cores beneath
  * are each internally single-threaded.
  *
- * Role convention (RFC 8445 §6.1.1, RFC 8842): the **offerer** is ICE-controlling and the DTLS/SCTP
- * server (passive, odd DCEP stream ids); the **answerer** is ICE-controlled and the DTLS/SCTP client
- * (active, even ids). The real ICE+**DTLS**+SCTP end-to-end is the exit gate once W4 lands; here the
- * plaintext DTLS stand-in makes the full session compose and the round-trip fixture run today.
+ * Roles: the **offerer** is ICE-controlling, the **answerer** ICE-controlled (RFC 8445 §6.1.1). The
+ * DTLS role — and thus the SCTP role and DCEP stream-id parity — is **negotiated from `a=setup`** (RFC
+ * 8842), not assumed from who offered: the answerer picks the complement of the offer's setup, and the
+ * offerer adopts the complement of the answer's, so we don't deadlock against a peer that answers passive
+ * or offers active. The real ICE+**DTLS**+SCTP end-to-end is the exit gate once W4 lands; the injected
+ * [dtls] factory is the seam DTLS slots in at — pass [PlaintextDtls] explicitly for the W5-proven
+ * plaintext stand-in (it is **not** wire-secure; there is deliberately no default, so the insecure choice
+ * is greppable at every call site).
  */
 public class NativePeerConnection(
     private val scope: CoroutineScope,
@@ -158,8 +166,8 @@ public class NativePeerConnection(
     random: Random,
     private val binder: com.ditchoom.webrtc.ice.DatagramBinder,
     private val gathering: IceGatheringPolicy,
+    private val dtls: DtlsTransportFactory,
     private val config: PeerConnectionConfig = PeerConnectionConfig(),
-    private val dtls: DtlsTransportFactory = PlaintextDtls,
 ) : RtcPeerConnection {
     private val random = random
     private val jsep = JsepSession(random)
@@ -179,11 +187,20 @@ public class NativePeerConnection(
 
     // Negotiation state — touched only under [negotiationLock].
     private var driver: IceAgentDriver? = null
-    private var offerer: Boolean? = null
     private var stack: SctpDataChannelStack? = null
+    private var establishJob: Job? = null
     private val pendingChannels = mutableListOf<PendingChannel>()
     private val pendingRemoteCandidates = mutableListOf<String>()
     private var closed = false
+
+    // The remote endpoint's negotiated a=setup (RFC 8842), captured from the peer's description; the DTLS
+    // (and hence SCTP) role is derived from it — NOT hardcoded from who offered — so we adopt the role the
+    // peer's setup implies (offerer-passive vs offerer-active, answerer-active vs answerer-passive) instead
+    // of assuming the browser default and deadlocking against a peer that answers passive / offers active.
+    private var remoteSetup: SetupRole? = null
+
+    // Resolved once both descriptions are applied; runEstablishment awaits it before the DTLS handshake.
+    private val roleResolved = CompletableDeferred<DtlsRole>()
 
     // ── RtcPeerConnection ──
 
@@ -196,8 +213,16 @@ public class NativePeerConnection(
     override suspend fun createAnswer(): String =
         negotiationLock.withLock {
             val d = driver ?: startIce(asOfferer = false)
-            // The answerer resolves the offerer's actpass to active — it is the DTLS/SCTP client.
-            jsep.createAnswer(localParams(d, SetupRole.Active)).toText()
+            // The answerer chooses the a=setup that complements the offer's (RFC 8842 §5.1.2): an
+            // actpass/passive offer → we are active (DTLS/SCTP client); an active offer → we are passive
+            // (server). The chosen setup goes into the answer AND fixes our role.
+            val ourSetup =
+                when (remoteSetup) {
+                    SetupRole.Active -> SetupRole.Passive
+                    else -> SetupRole.Active
+                }
+            resolveRole(ourSetup == SetupRole.Active)
+            jsep.createAnswer(localParams(d, ourSetup)).toText()
         }
 
     override suspend fun setLocalDescription(
@@ -217,6 +242,14 @@ public class NativePeerConnection(
         if (type == SdpType.Offer && driver == null) startIce(asOfferer = false)
         applyJsep(JsepEvent.SetRemoteDescription(type, description))
         if (description != null) ingestRemote(description)
+        // A remote ANSWER fixes the offerer's role: the answer's setup names the peer's role, so we take
+        // its complement (answer active → peer is client → we are server; answer passive → we are client).
+        if (type == SdpType.Answer) resolveRole(asClient = remoteSetup != SetupRole.Active)
+    }
+
+    // Resolve our DTLS/SCTP role exactly once (idempotent); runEstablishment awaits it.
+    private fun resolveRole(asClient: Boolean) {
+        roleResolved.complete(if (asClient) DtlsRole.Client else DtlsRole.Server)
     }
 
     override suspend fun addIceCandidate(candidate: String): Unit =
@@ -246,6 +279,10 @@ public class NativePeerConnection(
             if (closed) return@withLock
             closed = true
             jsep.handle(JsepEvent.Close, clock())
+            // Cancel the establishment coroutine so a session closed before ICE nomination doesn't leak it
+            // suspended on d.state forever (IceAgentDriver.close emits no terminal state).
+            establishJob?.cancel()
+            roleResolved.cancel() // unblock any runEstablishment awaiting the role
             stack?.shutdown()
             driver?.close()
             localCandidateChannel.close()
@@ -261,7 +298,6 @@ public class NativePeerConnection(
     // progression, and flush any candidates that arrived early. Idempotent (returns the existing driver).
     private fun startIce(asOfferer: Boolean): IceAgentDriver {
         driver?.let { return it }
-        offerer = asOfferer
         val iceRole = if (asOfferer) IceRole.Controlling else IceRole.Controlled
         val sctpRandom = Random(random.nextLong())
         val d = IceAgentDriver(iceRole, random, binder, scope, clock, config.iceConfig)
@@ -272,56 +308,88 @@ public class NativePeerConnection(
         scope.launch {
             d.localCandidateGathered.collect { localCandidateChannel.trySend(IceCandidateLine.format(it)) }
         }
-        scope.launch { runEstablishment(d, asOfferer, sctpRandom) }
+        establishJob = scope.launch { runEstablishment(d, sctpRandom) }
         for (line in pendingRemoteCandidates) IceCandidateLine.parse(line)?.let(d::addRemoteCandidate)
         pendingRemoteCandidates.clear()
         return d
     }
 
     // Await ICE nomination, secure the app-data seam with DTLS (plaintext for now), bring up the SCTP
-    // data-channel stack, and open every queued data channel. An ICE failure becomes a typed terminal
-    // Failed(Ice) state (the liveness invariant: reach Connected or a typed failure, never hang).
+    // data-channel stack, open every queued data channel, then watch for a post-Connected loss. The
+    // liveness invariant (RFC §5.3 #5): the session reaches Connected or a typed terminal failure, never
+    // hangs — so the whole body is guarded and a DTLS/SCTP-establishment throw becomes a typed Failed.
     private suspend fun runEstablishment(
         d: IceAgentDriver,
-        asOfferer: Boolean,
         sctpRandom: Random,
     ) {
-        val terminal =
-            d.state.first {
-                it is IceConnectionState.Connected || it is IceConnectionState.Completed || it is IceConnectionState.Failed
-            }
-        if (terminal is IceConnectionState.Failed) {
-            _connectionState.value = PeerConnectionState.Failed(PeerConnectionFailureReason.Ice(terminal.reason))
-            return
-        }
-        val dtlsRole = if (asOfferer) DtlsRole.Server else DtlsRole.Client
-        val transport = dtls.secure(d.appDataTransport(), dtlsRole)
-        val sctpRole = if (asOfferer) SctpRole.Server else SctpRole.Client
-        val liveStack =
-            SctpDataChannelStack(transport, scope, clock, sctpRole, config.sctpConfig, sctpRandom).also { it.start() }
-
-        negotiationLock.withLock {
-            if (closed) {
-                liveStack.shutdown()
+        try {
+            val terminal =
+                d.state.first {
+                    it is IceConnectionState.Connected || it is IceConnectionState.Completed || it is IceConnectionState.Failed
+                }
+            if (terminal is IceConnectionState.Failed) {
+                fail(PeerConnectionFailureReason.Ice(terminal.reason))
                 return
             }
-            stack = liveStack
-            for (pending in pendingChannels) scope.launch { pending.bind(liveStack, pending.config) }
-            pendingChannels.clear()
+            val dtlsRole = roleResolved.await()
+            val transport = dtls.secure(d.appDataTransport(), dtlsRole)
+            val sctpRole = if (dtlsRole == DtlsRole.Client) SctpRole.Client else SctpRole.Server
+            val liveStack =
+                SctpDataChannelStack(transport, scope, clock, sctpRole, config.sctpConfig, sctpRandom).also { it.start() }
+
+            negotiationLock.withLock {
+                if (closed) {
+                    liveStack.shutdown()
+                    return
+                }
+                stack = liveStack
+                for (pending in pendingChannels) scope.launch { pending.bind(liveStack) }
+                pendingChannels.clear()
+            }
+            if (_connectionState.value is PeerConnectionState.Connecting) {
+                _connectionState.value = PeerConnectionState.Connected(d.selectedPair)
+            }
+
+            // Structured children of this coroutine (cancelled by close() → establishJob.cancel), so no
+            // monitor leaks: forward incoming channels, and surface a post-Connected loss as a terminal
+            // state (RFC 7675 consent expiry → Failed(Ice); SCTP teardown → Closed, its typed reason
+            // already delivered to the data-channel caller as SctpClosedException).
+            coroutineScope {
+                launch {
+                    try {
+                        while (true) incomingChannels.trySend(liveStack.acceptBidirectional())
+                    } catch (_: kotlinx.coroutines.channels.ClosedReceiveChannelException) {
+                        // stack closed — no more incoming channels
+                    }
+                }
+                launch {
+                    val lost = d.state.first { it is IceConnectionState.Failed } as IceConnectionState.Failed
+                    if (!closed) fail(PeerConnectionFailureReason.Ice(lost.reason))
+                }
+                launch {
+                    liveStack.state.first { it == SctpAssociationState.Established }
+                    liveStack.state.first { it == SctpAssociationState.Closed }
+                    if (!closed && _connectionState.value is PeerConnectionState.Connected) {
+                        _connectionState.value = PeerConnectionState.Closed
+                    }
+                }
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e // close() cancelled us — structured cancellation, not a failure
+        } catch (e: WebRtcException) {
+            fail(e.failure) // a real DTLS/SCTP-establishment failure (W4) — typed, never a hang
+        } catch (e: Exception) {
+            fail(PeerConnectionFailureReason.Unknown(e.message ?: e::class.simpleName ?: "establishment error"))
         }
-        scope.launch {
-            while (true) incomingChannels.trySend(liveStack.acceptBidirectional())
+    }
+
+    // Set a terminal Failed state once, only if not already terminal (the first cause wins; a later monitor
+    // must not overwrite it).
+    private fun fail(reason: PeerConnectionFailureReason) {
+        val current = _connectionState.value
+        if (current !is PeerConnectionState.Failed && current !is PeerConnectionState.Closed) {
+            _connectionState.value = PeerConnectionState.Failed(reason)
         }
-        val selectedPairId =
-            d.selectedPair?.let {
-                (
-                    it.local.base.port
-                        .toLong() shl 16
-                ) or
-                    it.remote.address.port
-                        .toLong()
-            } ?: 0L
-        _connectionState.value = PeerConnectionState.Connected(selectedPairId)
     }
 
     // Apply a JSEP event; a rejected transition is a signaling-API misuse (W3C throws InvalidStateError),
@@ -330,7 +398,7 @@ public class NativePeerConnection(
     private fun applyJsep(event: JsepEvent) {
         for (output in jsep.handle(event, clock())) {
             when (output) {
-                is JsepOutput.Rejected -> throw IllegalStateException("JSEP rejected the description: ${output.error}")
+                is JsepOutput.Rejected -> throw JsepStateException(output.error)
                 is JsepOutput.SignalingStateChanged -> _signalingState.value = output.to
                 is JsepOutput.DescriptionApplied -> Unit
             }
@@ -345,6 +413,8 @@ public class NativePeerConnection(
         if (ufrag != null && pwd != null) {
             driver?.setRemoteCredentials(IceCredentials(Ufrag(ufrag), IcePassword(pwd)))
         }
+        // The peer's negotiated DTLS role (RFC 8842) — used to derive our own role (see resolveRole).
+        remoteSetup = media?.setup() ?: description.setup()
         media?.candidates()?.forEach { line -> IceCandidateLine.parse(line)?.let { driver?.addRemoteCandidate(it) } }
     }
 
@@ -363,7 +433,7 @@ public class NativePeerConnection(
     private fun parseOrThrow(sdp: String): SessionDescription =
         when (val result = SessionDescription.parseText(sdp)) {
             is SdpParseResult.Success -> result.description
-            is SdpParseResult.Reject -> throw IllegalArgumentException("malformed SDP: ${result.reason}")
+            is SdpParseResult.Reject -> throw SdpFormatException(result.reason)
         }
 
     // A data channel handed back before SCTP is up: proxies to the real channel once [bind] completes.
@@ -379,14 +449,27 @@ public class NativePeerConnection(
         override fun receive(): Flow<ReadBuffer> = flow { emitAll(real.await().receive()) }
 
         override suspend fun close() {
-            if (real.isCompleted && !real.isCancelled) real.getCompleted().close() else real.cancel()
+            if (real.isCompleted && !real.isCancelled) {
+                real.getCompleted().close()
+            } else {
+                // Not bound yet — fail the deferred so an awaiting send/receive unblocks, and so a bind
+                // that races in afterward sees `real` already completed and closes the channel it opened
+                // (rather than leaking a live DCEP-OPENed channel with no local owner).
+                real.completeExceptionally(SctpClosedException(null))
+            }
         }
 
-        suspend fun bind(
-            liveStack: SctpDataChannelStack,
-            config: DataChannelConfig,
-        ) {
-            real.complete(liveStack.open(config))
+        suspend fun bind(liveStack: SctpDataChannelStack) {
+            try {
+                val connection = liveStack.open(config)
+                // If the proxy was closed before we bound, `complete` returns false — close the channel we
+                // just opened so it isn't leaked on the association.
+                if (!real.complete(connection)) connection.close()
+            } catch (e: Exception) {
+                // open() failed (e.g. the stack tore down in the race window) — unblock awaiters typed,
+                // never hang them on a deferred that will never complete.
+                real.completeExceptionally(e)
+            }
         }
 
         fun fail(cause: Throwable) {

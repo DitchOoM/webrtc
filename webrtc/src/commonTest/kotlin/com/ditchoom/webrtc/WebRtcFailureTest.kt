@@ -34,6 +34,7 @@ class WebRtcFailureTest {
                 PeerConnectionFailureReason.Dtls(DtlsFailureReason.HandshakeFailed),
                 PeerConnectionFailureReason.Sctp(SctpFailureReason.HandshakeTimeout),
                 PeerConnectionFailureReason.Sctp(SctpFailureReason.AbortReceived),
+                PeerConnectionFailureReason.Unknown("browser reported failed"),
             )
         for (r in reasons) {
             // Exhaustive `when` with no else — adding a variant is a compile error until handled.
@@ -42,6 +43,7 @@ class WebRtcFailureTest {
                     is PeerConnectionFailureReason.Ice -> "ice"
                     is PeerConnectionFailureReason.Dtls -> "dtls"
                     is PeerConnectionFailureReason.Sctp -> "sctp"
+                    is PeerConnectionFailureReason.Unknown -> "unknown"
                 }
             assertTrue(label.isNotEmpty())
             assertTrue(r.description.isNotEmpty())

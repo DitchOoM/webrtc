@@ -52,6 +52,7 @@ class PeerConnectionRoundTripTest {
                     random = Random(1),
                     binder = binder,
                     gathering = { it.gatherHost("10.0.0.1", 4000) },
+                    dtls = PlaintextDtls,
                 )
             val bob =
                 NativePeerConnection(
@@ -60,6 +61,7 @@ class PeerConnectionRoundTripTest {
                     random = Random(2),
                     binder = binder,
                     gathering = { it.gatherHost("10.0.0.2", 5000) },
+                    dtls = PlaintextDtls,
                 )
 
             // Trickle: pipe each peer's local candidates into the other (the app's signaling channel).

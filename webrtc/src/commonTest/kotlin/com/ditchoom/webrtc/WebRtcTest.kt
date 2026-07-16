@@ -11,7 +11,7 @@ class WebRtcTest {
 
     @Test
     fun stateTransitionsAreTyped() {
-        val state: PeerConnectionState = PeerConnectionState.Connected(selectedPairId = 1L)
+        val state: PeerConnectionState = PeerConnectionState.Connected(selectedPair = null)
         val label =
             when (state) {
                 is PeerConnectionState.New -> "new"

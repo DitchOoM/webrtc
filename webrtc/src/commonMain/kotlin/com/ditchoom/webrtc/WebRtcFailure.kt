@@ -68,15 +68,46 @@ public sealed interface PeerConnectionFailureReason {
     ) : PeerConnectionFailureReason {
         override val description: String get() = "SCTP failed: $reason"
     }
+
+    /**
+     * A failure whose sub-layer cause this backend does not expose — chiefly the browser delegate, whose
+     * `RTCPeerConnection` reports `connectionState = "failed"` without a portable discriminant. [detail]
+     * is diagnostic only, never a discriminant (directive #3).
+     */
+    public data class Unknown(
+        public val detail: String,
+    ) : PeerConnectionFailureReason {
+        override val description: String get() = "WebRTC failed: $detail"
+    }
 }
+
+/**
+ * A JSEP offer/answer transition was rejected (W3C `InvalidStateError`) — a **signaling-API misuse**, not
+ * a transport failure, so it extends [IllegalStateException] rather than [WebRtcException]. The typed
+ * [error] is the discriminant (directive #3): a caller branches on it, never on the message string.
+ */
+public class JsepStateException(
+    public val error: com.ditchoom.webrtc.sdp.JsepError,
+) : IllegalStateException("JSEP rejected the description: $error")
+
+/**
+ * A description handed to `setLocalDescription`/`setRemoteDescription` was not well-formed SDP (W3C
+ * `TypeError`) — malformed input, so it extends [IllegalArgumentException]. The typed [reason] is the
+ * discriminant (directive #3).
+ */
+public class SdpFormatException(
+    public val reason: com.ditchoom.webrtc.sdp.SdpRejectReason,
+) : IllegalArgumentException("malformed SDP: $reason")
 
 /**
  * The single thrown vocabulary for a WebRTC session failure. It carries the typed [failure] as the
  * discriminant (directive #3), never a string. When the upstream BoringSSL constraint above is resolved,
- * this becomes a `SocketClosedException` subtype (as W5's [com.ditchoom.webrtc.sctp.datachannel.SctpClosedException]
- * will) so a WebRTC failure is caught uniformly with every other transport failure (RFC §3.1); the public
- * shape here — a typed [failure] on one exception type — is chosen to make that later re-parenting
- * source-compatible for callers that branch on [failure].
+ * this is intended to become a `SocketClosedException` subtype (as W5's
+ * [com.ditchoom.webrtc.sctp.datachannel.SctpClosedException] will) so a WebRTC failure is caught uniformly
+ * with every other transport failure (RFC §3.1). Note that re-parenting is **binary-breaking** (a
+ * superclass change alters the ABI and which `catch` clauses match); keeping the cause on the typed
+ * [failure] field keeps a `when (e.failure)` branch source-stable across that change, but the supertype
+ * migration itself is a breaking bump, tracked for when the dependency is unblocked.
  */
 public class WebRtcException(
     public val failure: PeerConnectionFailureReason,

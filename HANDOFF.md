@@ -3,7 +3,57 @@
 Live state of the current wave. A resumed session reads `RFC_KMP_WEBRTC.md` → `EXECUTION_PLAN.md` →
 this file. Update it whenever you stop mid-wave.
 
-## Where we are: **W5 (`webrtc-sctp` association + DataChannel) BUILT on branch `w5-webrtc-sctp` — sans-io SCTP association FSM + RFC 3758 partial reliability + DCEP + `DataChannel` (buffer-flow `StreamMux`), green on all platforms, running end-to-end over the merged W3 ICE stack. PR open, `skip-release`, NOT merged. W4 (DTLS) still parked.**
+## Where we are: **W5 (`webrtc-sctp` association + DataChannel) MERGED to `main` (squash, PR #13, `skip-release`) — the sans-io SCTP association + RFC 3758 partial reliability + DCEP + `DataChannel` (buffer-flow `StreamMux`) are landed, ran the 5-reviewer adversarial gate, and are green on all platforms incl. Apple. Next: W6 (`PeerConnection` + browser actuals + error sweep). W4 (DTLS) still parked.**
+
+---
+
+### START HERE — W6 (`webrtc` root: PeerConnection + JSEP + browser actuals) · fresh session
+
+**Read first, in order:** `RFC_KMP_WEBRTC.md` (§3.1 consumer API, §5 determinism) → `EXECUTION_PLAN.md`
+(W6 row + exit criteria) → this file → `DESIGN_PRINCIPLES.md` (§4 no illegal states — W6 is the public API,
+so this matters most here) → `TESTING.md` (§2 L3 interop, §7 W6 deliverables). Skim RFC 8829 (JSEP) and
+the browser `RTCPeerConnection` API.
+
+**What's already merged (W6-partial, PR #5):** `webrtc-sdp` — the hand-written SDP text codec (T0 + Jazzer)
+— and the **sans-io `JsepSession` machine** (`handle(event,now)` + `nextDeadline`, RFC 8829 §3.5.1 signaling
+transition table + rollback, entropy-seeded `o=` id). Both `commonMain`, green everywhere. Do **not** rebuild
+these; W6 consumes them.
+
+**What W6 must build (the remaining consumer API):**
+1. **`PeerConnection` session API** in the `webrtc` root module — the state machine that composes the layers:
+   drives `JsepSession` (offer/answer over the injected signaling seam), gathers via the W3 **`IceAgent`**,
+   and once a pair is nominated runs DTLS + the W5 **`SctpDataChannelStack`** over it. `createDataChannel()`
+   returns the buffer-flow `StreamMux`/`Connection` W5 already implements. Sealed `PeerConnectionState`
+   (DESIGN §4 — no boolean/nullable soup), caller-clocked, seams injected. `use {}`/`SessionTransport`
+   lifecycle convention.
+2. **The ICE→SCTP composition, promoted to production.** W5 proved this in `webrtc-ice/commonTest`
+   (`IceDriver.sctpTransport()` — an `SctpDatagramTransport` over the nominated pair + the **RFC 7983
+   STUN/app demux**). W6 needs the **production** version: either `webrtc-ice` exposes a public
+   "connected `DatagramChannel` / transport over the selected pair" (recommended — W6 and a future media
+   layer both need it), or `webrtc` root owns the demux+adapter. The seam stays `SctpDatagramTransport`-shaped
+   so **DTLS (W4) slots in at exactly that boundary** — the plaintext stub used through W5 is the placeholder.
+3. **Browser / wasmJs `peerConnectionSupport()`** delegating to the native `RTCPeerConnection` (RFC §1.1: browsers
+   are the sole target where we wrap, not reimplement). The `webrtc` module's browser actual maps our
+   `PeerConnection` API onto the JS object; Karma unit-tests the delegation.
+4. **The `SocketException` error sweep** — map every typed reason into socket's `SocketException` hierarchy with
+   exhaustive sealed reasons: `IceFailureReason` (W3), `SctpFailureReason`/`SctpClosedException` (W5), and the
+   coming DTLS reasons. This is the "typed errors, never stringly" directive realized at the session boundary
+   (the ICE/SCTP handoffs explicitly left this mapping to W6).
+
+**Prerequisites / gating (unchanged posture from W5):**
+- **W4 (DTLS) is parked**, so the *real* full-stack **ICE+DTLS+SCTP → PeerConnection** end-to-end TB fixture
+  (TESTING §7 W6/W5 exit) is gated on W4. Build the API + JSEP wiring + browser delegation + error sweep **now**
+  against the **plaintext DTLS-shaped seam** (`SctpDatagramTransport`), exactly as W5 did — the real-DTLS
+  end-to-end is the exit gate once W4 lands. Resolve §11.3 (DTLS 1.2-vs-1.3) before W4.
+- **`.api` is THE public commitment** (EXECUTION_PLAN W6 exit: *"the wave where API mistakes become expensive —
+  extra review pass"*). Treat `apiDump` output as the deliverable; run an adversarial API review before merge.
+- **Browser target must compile + delegation Karma-tested**; a `wpt webrtc/` smoke on the browser target is the
+  W6 testing deliverable (TESTING §7).
+
+**Branch W6 off `main`** (W5 is now merged in). Standing traps unchanged (see below): `skip-release` via the REST
+API + verify; Apple runtime-validate on the macOS runner; `git fetch` before reasoning about `main`.
+
+---
 
 ### 2026-07-15 — W5 built (association + DataChannel), green all platforms; PR open, unmerged
 
@@ -60,9 +110,10 @@ seeded tests print the failing seed → reproducible) + `**/build/reports/tests/
 jobs upload `**/build/fuzz/**` (the exact crash/timeout repro input). This is what turns a flake like the
 earlier `node:internal/timers` JS-node timeout into a diagnosable artifact instead of a guess.
 
-**Next-session TODO to finish/merge W5:**
-- PR is open on `w5-webrtc-sctp` (`skip-release` verified). Let CI run (build-linux + build-apple + fuzz
-  + standing-directives + validate). Keep unmerged until a go.
+**W5 status: MERGED to `main` (squash, PR #13, `skip-release`).** Full CI matrix green (build-linux +
+build-apple/Apple K/N + all three fuzz lanes + standing-directives + validate); the adversarial-review
+gate ran and every confirmed defect is fixed with a regression fixture. Nothing published to Central
+(`skip-release`). W6 is next — see the **START HERE** section at the top.
 - **Follow-ups documented in code / deferred (not blockers):** channel close via SCTP **stream reset**
   (RFC 6525 RE-CONFIG) is out of the subset — `Connection.close` tears down local halves only; TSN/SSN
   **serial-number wrap** is not modeled (session never nears 2³², noted in `ReassemblyQueue`); explicit

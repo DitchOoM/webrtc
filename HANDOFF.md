@@ -3,11 +3,105 @@
 Live state of the current wave. A resumed session reads `RFC_KMP_WEBRTC.md` → `EXECUTION_PLAN.md` →
 this file. Update it whenever you stop mid-wave.
 
-## Where we are: **W6 (`webrtc` root: `PeerConnection` + browser delegation + typed error sweep) BUILT on branch `w6-webrtc-peerconnection` (off `main` @ `02c6a4e`, W5 merged). Green on all local lanes — jvm / linuxX64 / jsNode / jsBrowser (Karma, headless Chrome) / wasmJsNode / wasmJsBrowser / androidHost. Adversarial-review gate ran (3 parallel reviewers) and every confirmed defect is fixed with a regression fixture. PR pending (`skip-release`). Apple = compile-faithful locally, runtime-validate on the runner. W4 (DTLS) still parked; the real-DTLS end-to-end TB fixture is its exit gate.**
+## Where we are: **W6 MERGED (PR #14, `0e1a702`). W4 (`webrtc-dtls`, BoringSSL) IN PROGRESS on branch `w4-webrtc-dtls` — the hard part is DONE and proven: a real caller-clocked BoringSSL DTLS engine handshakes two of our own stacks under virtual time on linuxX64 (6/6 green, 1 ms). Remaining: wire it into `webrtc` root (replace `PlaintextDtls`) + the real ICE+DTLS+SCTP TB fixture + PR.**
 
 ---
 
-### START HERE — after W6 (fresh session)
+### START HERE — W4 (fresh session), branch `w4-webrtc-dtls` (3 commits off `main` @ `0e1a702`)
+
+**Two decisions were resolved and recorded in the `EXECUTION_PLAN.md` decision log — read those two rows first:**
+1. **§11.3 (DTLS version)** → both 1.2 + 1.3 via BoringSSL config; **min pinned 1.2** (the field floor
+   Chrome/Pion speak). `DtlsConfig.enableDtls13` opts into 1.3 (default off, so the portable floor
+   matches the future boringssl-kmp, which is 1.2-only at its API-21 pin).
+2. **W4 sequencing** → **native-Linux DTLS now, self-contained; JVM/Android/Apple deferred to
+   `boringssl-kmp`.** This *inverted a plan premise* — see "the boringssl-kmp reality" below.
+
+**The linkage (the crux — proven empirically, do not re-litigate):** `webrtc-dtls` links **only**
+`libssl.a`, built from **buffer-crypto's exact pinned commit `63893acb`**, and lets libssl's undefined
+`AES_*`/`SHA256_*` resolve against **buffer-crypto's single already-linked `libcrypto.a`** (embedded
+once in its published cinterop klib, contributed transitively). **Never add `-staticLibrary
+libcrypto.a`** to our cinterop — that is the duplicate-symbol trap that breaks the native link (the
+socket/quiche hazard, same class as the W6 `libs.socket` blocker). `DtlsBackendLinkNativeTest` is the
+tripwire: it links libssl + libcrypto in one K/N binary and would fail if a second libcrypto appeared.
+
+**What landed (3 commits, all lanes compile, linuxX64 runtime-validated):**
+- `webrtc-dtls/build.gradle.kts` — `buildBoringsslSsl{X64,Arm64}` provisioning (clone @ pinned commit →
+  cmake → `make ssl` → harvest `libssl.a` + headers into gitignored `libs/boringssl-ssl/linux-$arch`,
+  marker-file skip so a dev box can drop in a prebuilt). **Both x64 and arm64 verified end-to-end**
+  (arm64 cross-built locally via `aarch64-linux-gnu-gcc`). cinterop wired on the Linux targets only.
+- `src/nativeInterop/cinterop/boringsslssl.def` — the whole `bd_*` inline-C wrapper surface (cinterop
+  returns EMPTY bindings for raw BoringSSL symbols, hence wrappers): SSL_CTX/SSL + memory-BIO pair,
+  self-signed P-256 cert + `X509_digest` fingerprints, `DTLSv1_get/handle_timeout`,
+  `SSL_export_keying_material` (DTLS-SRTP), `use_srtp` extension, negotiated-version readout.
+- **The determinism seam:** BoringSSL's DTLS timers read `SSL_CTX_set_current_time_cb`. **Its `ssl` arg
+  is always NULL** (documented) — so the injected virtual time rides a **thread-local** (`bd_now_us`)
+  that every driving wrapper sets from the caller's `now` before entering libssl. That is what makes
+  handshake retransmission replay deterministically; do not "simplify" it to `SSL_get_app_data(ssl)`.
+- `commonMain` — sans-io caller-clocked `expect class DtlsEngine` (`start`/`onDatagram`/`onTimeout`/
+  `send`/`beginClose` + `nextTimeoutMicros`, epoch-micros), sealed `DtlsState`
+  (Handshaking/Established/Closed/Failed) + sealed `DtlsFailureReason`, `DtlsConfig` seams,
+  `CertificateFingerprint` (+ RFC 8122 `sdp` rendering). `.api` dumped.
+- `linuxMain` — the BoringSSL actual. **FFI buffer edge is a fast/slow split:** a native-backed buffer
+  hands BoringSSL its own address (zero staging copy — pass a *pooled native* factory in production);
+  a GC-heap buffer (`managed()`/`Default`, which on Linux are `ByteArrayBuffer` with **no** native
+  address) stages through one reusable per-engine 64 KiB native `scratch`. No `ByteArray` anywhere.
+- `jvm/android/js/wasmJs` — typed `DtlsUnavailable` actuals (`BackendUnavailable`), fail-fast.
+- `linuxTest` — **the W4 exit fixture**: `two_stacks_complete_a_dtls_handshake_under_virtual_time`
+  (both sides Established, each verifying the *other's* real cert fingerprint) +
+  `application_data_flows_after_the_handshake` + the linkage tripwire. Whole suite: **1 ms**.
+
+**A trap that cost real time — do not reintroduce:** a wrapper returning a **positive status sentinel**
+from a **byte-count** function is catastrophic. `bd_read_app` returned `BD_WANT_READ = 1` for "no data",
+which collides with a 1-byte read; the Kotlin drain loop checked `n > 0` first, so it allocated forever
+— **`dmesg` shows `test.kexe` OOM-killed at 42 GB RSS**, which killed the whole Claude/node process.
+Byte-count wrappers now report `BD_NO_DATA = 0` with **negative-only** errors, plus a
+`MAX_RECORDS_PER_PUMP` bound. When running native tests locally, cap them:
+`(ulimit -v 2000000; timeout 90 ./webrtc-dtls/build/bin/linuxX64/debugTest/test.kexe)` — do **not**
+`ulimit` the Gradle daemon itself (it needs > 4 GB and will fail to start).
+
+**Next steps, in order:**
+1. **Wire `webrtc` root (replace `PlaintextDtls`)** — the one remaining headline deliverable. Add
+   `api(project(":webrtc-dtls"))` to `webrtc/build.gradle.kts`, then implement `BoringSslDtls :
+   DtlsTransportFactory` in `webrtc` root `commonMain`: a **coroutine driver** that constructs
+   `DtlsEngine` (the expect class, so root `commonMain` can reference it), pumps it over
+   `IceDataTransport` (inbound records → `onDatagram`; outbound `DtlsStep.records` → `iceData.send`),
+   arms timers from `nextTimeoutMicros` against the **injected clock**, and exposes the established
+   engine as an `SctpDatagramTransport` (`send` → `engine.send`, `receive` → a channel fed by the pump).
+   Map `DtlsFailureReason` → `PeerConnectionFailureReason.Dtls`. **Verify the peer fingerprint** from
+   `DtlsState.Established.peerFingerprint` against the SDP `a=fingerprint` — the engine is deliberately
+   signaling-agnostic and does NOT do this. Role comes from `a=setup` (W6 already negotiates it).
+2. **The real ICE+DTLS+SCTP end-to-end TB fixture** (the W5/W6 exit gate this un-gates) — gate it to
+   native (`linuxTest`), since JVM/JS have no backend. The existing `PlaintextDtls` tests stay on all
+   platforms.
+3. **Remaining W4 exit criteria:** the dropped-flight **retransmission fixture** (drop a flight, assert
+   `nextTimeoutMicros` fires and the flight is retransmitted — the caller-clocked timer path is built
+   but not yet covered by a test), and the **wrapper-free/no-leak invariant** (`bd_free` + `scratch.close`
+   on every path; a `CountingBufferFactory` no-leak test).
+4. **Then:** adversarial-review gate, CHANGELOG, PR with `skip-release` **via the REST API** (`gh pr
+   edit` no-ops), state the V6_MAC_VALIDATION lane reality (Apple has **no** DTLS backend this wave).
+
+**The boringssl-kmp reality (why W4 is native-only — investigated this session, 2 agents):**
+`com.ditchoom.boringssl:boringssl-kmp` (sibling at `../git/boringssl-kmp`) is a **binary factory**
+(native provision plugin + JVM FFM MRJAR + Android prefab AAR) that names `webrtc-dtls` as a consumer —
+it is the **right long-term home** for JVM/Android/Apple DTLS. It cannot serve W4 today because:
+(a) **unpublished** (`0.0.1-dev`; W0 discipline forbids depending on an unpublished sibling);
+(b) its pin is **quiche-anchored `44b3df6f` (API 21) ≠ buffer-crypto's `63893acb` (API 42)**, so mixing
+them in one K/N binary = **two unprefixed libcryptos → SIGSEGV** (webrtc already links buffer-crypto via
+STUN's HMAC); (c) its **JVM FFM shim is crypto-only — no DTLS/SSL exported yet**; (d) its **Apple lane is
+unbuilt**; (e) no js/wasm ever (browsers delegate — fine). Its own RFC sequences `webrtc-dtls` as
+migration **step 9, last**, after buffer-crypto/socket/quiche migrate onto the one canonical copy.
+**So:** JVM/Android/Apple DTLS unblocks when boringssl-kmp publishes *and* grows a DTLS surface (JVM/
+Android need no native-link dedup — buffer-crypto is pure JCA there, so those are clash-free whenever it
+lands; **Apple/native additionally require the buffer-crypto migration** or they re-create the clash).
+Note buffer-crypto's API-42 gives us **DTLS 1.2 + 1.3** on native today; boringssl-kmp's API-21 is 1.2-only.
+
+**Also deferred (documented in code):** real-network **MTU/datagram-boundary** preservation — the memory
+BIO is a byte stream, so a flight is drained and sent as ONE datagram (valid: DTLS records self-delimit,
+and correct on the vnet; a real-MTU path may need a datagram-preserving BIO — a W7 concern).
+
+---
+
+### (prior) START HERE — after W6 (fresh session)
 
 **W6 built, unmerged** on `w6-webrtc-peerconnection` (4 commits on top of `02c6a4e`):
 1. `IceAgentDriver` (webrtc-ice `commonMain`) — the W5 ICE→SCTP composition promoted to production

@@ -1,0 +1,4 @@
+# BoringSSL libssl.a static lib + vendored headers, provisioned by the buildBoringsslSsl<Arch>
+# Gradle task (or copied from a sibling prebuilt tree on a dev box). Never commit the .a binary or
+# vendored headers — same policy as buffer-crypto/.gitignore. Rebuilt in CI from the pinned commit.
+/libs/boringssl-ssl/

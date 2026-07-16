@@ -20,6 +20,11 @@ kotlin {
             // runTest virtual time — the whole seam gate (VnetDatagramSeamTest) runs on it. kotlin("test")
             // comes from the convention; coroutines-test is per-module.
             implementation(libs.kotlinx.coroutines.test)
+            // W5 composition proof (test-only, acyclic — webrtc-sctp does NOT depend on webrtc-ice): the
+            // real sans-io SctpAssociation + DataChannel run over the actual W3 ICE selected pair via the
+            // vnet here, where the tested vnet + IceDriver already live. The full ICE+DTLS+SCTP stack is
+            // W6's job; this is the ICE⇄SCTP seam check (HANDOFF W5). Drop when W6 owns the composition.
+            implementation(project(":webrtc-sctp"))
         }
         // The real-socket resolution smoke test (RealUdpSocketSeamTest) binds two `socket-udp` UdpSockets
         // on loopback and echoes over the SAME buffer-flow DatagramChannel the vnet implements — proving

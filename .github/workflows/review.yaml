@@ -39,6 +39,17 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
       - name: Fuzz the STUN decoder (time-boxed)
         run: ./gradlew :webrtc-stun:stunCodecFuzz -PstunFuzzSeconds=120 --no-configuration-cache
+      # A Jazzer find writes the EXACT crashing input to build/fuzz/**/{crash,timeout,oom,slow-unit}-*.
+      # Upload it so a fuzz failure is reproduced from the real bytes (feed the file back to the target),
+      # not re-discovered — the input then becomes a committed regression fixture (directive #5).
+      - name: Upload Jazzer crash repros (on failure)
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-repros-stun
+          path: '**/build/fuzz/**'
+          retention-days: 30
+          if-no-files-found: ignore
 
   # T0′ (RFC §7): time-boxed coverage-guided Jazzer fuzzing of the pure-Kotlin SDP parser, warm-started
   # from the committed seed corpus. A crash-free run is the gate; findings are demoted to committed
@@ -58,6 +69,14 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
       - name: Fuzz the SDP parser (time-boxed)
         run: ./gradlew :webrtc-sdp:sdpCodecFuzz -PsdpFuzzSeconds=120 --no-configuration-cache
+      - name: Upload Jazzer crash repros (on failure)
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-repros-sdp
+          path: '**/build/fuzz/**'
+          retention-days: 30
+          if-no-files-found: ignore
 
   # T0′ (RFC §7): time-boxed coverage-guided Jazzer fuzzing of the pure-Kotlin SCTP + DCEP decoders,
   # warm-started from the committed seed corpus. A crash-free run is the gate; findings are demoted to
@@ -77,6 +96,14 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
       - name: Fuzz the SCTP + DCEP decoders (time-boxed)
         run: ./gradlew :webrtc-sctp:sctpCodecFuzz -PsctpFuzzSeconds=120 --no-configuration-cache
+      - name: Upload Jazzer crash repros (on failure)
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-repros-sctp
+          path: '**/build/fuzz/**'
+          retention-days: 30
+          if-no-files-found: ignore
 
   validate:
     needs: [build-linux, build-apple]

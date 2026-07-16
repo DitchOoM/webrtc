@@ -6,6 +6,56 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Added — W5: `webrtc-sctp` association + DataChannel (SCTP RFC 4960 subset + RFC 3758 + DCEP 8832 + RFC 8831)
+- **Sans-io SCTP association (`SctpAssociation`)** — a pure `handle(event, now): List<Output>` plus
+  `nextDeadline(now): Instant?`, **no dispatcher, clock, RNG, or I/O inside** (RFC §5.1). It owns the
+  **four-way handshake** (INIT / INIT-ACK / COOKIE-ECHO / COOKIE-ACK with a stateless State Cookie),
+  TSN assignment and **SACK**-driven reliability, **RTO** estimation (RFC 4960 §6.3.1), **congestion
+  control** (slow start / congestion avoidance / T3 + fast-retransmit collapse, §7.2), message
+  **fragmentation** and ordered/unordered **reassembly**, **RFC 3758 partial reliability** (FORWARD-TSN,
+  `maxRetransmits` / `maxPacketLifeTime` abandonment), and graceful + abort **shutdown** (§9). Entropy is
+  one injected `Random` seam (directive #2) seeding the Verification Tag + initial TSN, so a full
+  session replays bit-for-bit under `runTest` virtual time on every platform. §11.2 resolved: the
+  dcSCTP-style subset (no multihoming, no stream interleaving).
+- **Type model, illegal states unrepresentable:** sealed `SctpAssociationState` (Closed → CookieWait →
+  CookieEchoed → Established → the four shutdown phases), sealed `SctpEvent` / `SctpOutput`, sealed
+  `SctpReliability` (Reliable | MaxRetransmits | MaxLifetime — never a nullable pair), and exhaustive
+  `SctpFailureReason` (`AbortReceived`, `RetransmissionLimitReached`, `HandshakeTimeout`,
+  `ProtocolViolation(ProtocolViolationKind)`) — typed reasons, never strings (directive #3).
+- **DCEP (RFC 8832) + `DataChannel` as a buffer-flow `StreamMux`** — `SctpDataChannelStack` implements
+  `StreamMux<ReadBuffer>`: `openBidirectional()` gives a `Connection<ReadBuffer>` whose `send` is one
+  data-channel message and whose `receive` is the inbound message flow (DESIGN §7 — the consumer
+  contract is the mux). It drives the association over an injected **`SctpDatagramTransport`** (the
+  clean DTLS-shaped seam where W4 slots in), an injected `CoroutineScope`, and an injected clock;
+  DATA_CHANNEL_OPEN/ACK are wired to the association, even/odd stream ids follow RFC 8832 §6, and empty
+  messages ride the RFC 8831 §6.6 empty-marker PPIDs.
+- **Tests (all platforms, `runTest` virtual time):** a deterministic sans-io two-endpoint conductor
+  (handshake, ordered-reliable **no-reorder / no-drop under 30 % loss**, unordered, fragment/reassemble,
+  partial-reliability convergence, shutdown); a coroutine DataChannel end-to-end over an impaired
+  in-memory transport (bidirectional, lossy-reliable, empty-message); and the **W5 composition** — the
+  real `SctpDataChannelStack` running over the actual **W3 `IceAgent` nominated pair** across the vnet
+  (`IceDriver.sctpTransport` + RFC 7983 STUN/app demux). A **loop-until-dry invariant campaign**
+  (260 seeds of randomized loss/dup/delay/jitter) upholds the SCTP invariants — no crash, liveness, no
+  intra-stream reorder, no unacked drop, no duplicate delivery. The **Jazzer `sctpCodecFuzz` lane** now
+  also feeds hostile bytes into `association.handle` (T0 totality at the association layer); a 3 M-run
+  campaign was clean. `CountingBufferFactory` proves the `BufferFactory` is threaded through the hot
+  paths and an idle association allocates nothing per tick (directive #6).
+- **Adversarial-review gate (5 parallel reviewers) — confirmed defects fixed, each with a regression
+  fixture** (directive #5): a lone FORWARD-TSN now elicits a SACK (RFC 3758 §3.6); T3 retransmits are
+  **paced by cwnd** (§6.3.3 E3) instead of dumping the whole flight; a fast-retransmitted chunk resets
+  its missing-report count (no infinite re-fast-retransmit); partial-reliability abandonment runs on the
+  SACK path too (a timed message is no longer retransmitted forever when T3 never fires); a **reflected
+  T-bit ABORT** from a peer that lost its TCB is accepted (§8.5.1) so a dead-peer restart tears us down;
+  a gap-ack-block offset beyond a `u16` is **omitted** rather than wrapped into a malformed `end < start`
+  block; ordered delivery **wraps the SSN** (no stall after 65535 ordered messages); the RFC 7053 I-bit
+  and gap-fill now force a prompt SACK; a cross-stream/SSN fragment splice is rejected; the DataChannel
+  driver **completes pending `open`/`send` deferreds exceptionally on teardown** (was: caller hangs
+  forever), stops the loop on a received ABORT, validates incoming-OPEN stream-id parity, and buffers
+  data that races ahead of its DCEP OPEN. The Jazzer lane was strengthened to re-stamp a valid CRC so
+  the association handlers are actually exercised (edge coverage 1052 → 1472); the invariant campaign was
+  split into an all-platform smoke set + a JVM deep-run (hundreds of seeds + fragmentation-under-loss),
+  and the sim conductor now throws on non-convergence so a livelock can never pass silently.
+
 ### Added — W3: `webrtc-ice` (ICE agent — RFC 8445 + trickle 8838 + consent 7675)
 - **Sans-io ICE agent core (`IceAgent`)** — a pure `handle(event, now): List<Output>` plus
   `nextDeadline(now): Instant?`, with **no dispatcher, clock, RNG, or socket inside** (RFC §5.1). It

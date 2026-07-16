@@ -19,7 +19,7 @@ play in the socket repo.
 | 2026-07-13 | **Codec track complete; transport track gated on a deterministic UDP `commonMain`** | W1/W6-sdp/W5-sctp (the pure codecs) are merged. W2+ needs an unconnected, deterministic UDP `DatagramChannel` in `commonMain`, runnable under `runTest` — W0's open socket promotion, being built in the socket sibling. |
 | 2026-07-15 | **Transport prerequisites landed in socket; W3 is next (dev-unblocked, merge-gated)** | socket merged the `socket-udp` UDP `commonMain` seam (PR #239) + the deterministic vnet/sim harness (#225). So **W2 is a socket deliverable, not a webrtc wave** — webrtc consumes it. Develop W3 (`webrtc-ice`) now against a socket `publishToMavenLocal`; **do not merge webrtc transport code until `socket-udp` is on Central** (it is not — latest socket 3.10.1 predates #239, whose deploy failed). |
 | resolved 2026-07-15 | RFC §11.1 — simulation-engine home → **lives in the socket sibling** (the #225 deterministic-simulation harness), not a standalone `ditchoom-simulation` | webrtc consumes socket's vnet; no separate sim module needed |
-| *open* | RFC §11.2 — SCTP subset scope (recommend: dcSCTP-style, no multihoming/interleaving) | must resolve before W5 |
+| resolved 2026-07-15 | RFC §11.2 — SCTP subset scope → **dcSCTP-style data-channel subset: no multihoming, no stream interleaving** (single path, one cwnd) | full RFC 9260 is not needed for RTCDataChannel semantics; resolved as W5 started |
 | *open* | RFC §11.3 — DTLS 1.2-first interop vs 1.3 (recommend: both via BoringSSL config, interop-test 1.2) | must resolve before W4 |
 | resolved 2026-07-15 | RFC §11.4 — mDNS → **resolve-only in W3; responder deferred** (behind a capability flag) | The gathering-side responder is multicast platform work (a `224.0.0.251:5353` listener per interface); it is not on the critical path for *reaching* peers. A browser peer that advertises a `.local` srflx-masking candidate must be *resolved* to its host IP for us to send checks, so resolve-only is mandatory in W3; advertising our own `.local` candidates (the responder) buys only privacy and is deferred behind a flag until a harness lane needs it. mDNS resolution rides the injected gathering seam (a `MdnsResolver` interface, deterministic stub in tests), never a hardwired multicast socket in the core. |
 
@@ -103,7 +103,7 @@ seeded), topology-as-data builders. Implements the W0 `DatagramChannel` seam.
 - **Exit:** NAT model property tests (each NAT type provably filters per its definition);
   a two-peer echo over each NAT topology runs under `runTest` virtual time on all platforms.
 
-### W3 — `webrtc-ice` · status: ◑ **BUILT on branch `w3-webrtc-ice` (PR open, `skip-release`, unmerged); green on 5 local lanes; Apple runtime-validation + adversarial-review gate remain before merge** · *needs W1 (done) + W2 (socket, done); §11.4 resolved (mDNS resolve-only)*
+### W3 — `webrtc-ice` · status: ✅ **MERGED to `main` (squash, PR #11, `skip-release`) — sans-io ICE agent + host/srflx/relay gathering + trickle + deterministic NAT vnet; adversarial-review gate passed; full CI matrix incl. Apple green** · *§11.4 resolved (mDNS resolve-only)*
 First wire socket into webrtc's `gradle/libs.versions.toml` (no socket entry yet) — dev against a socket
 `publishToMavenLocal` build, flip the pin to the released version before merge — and prove the seam from
 webrtc `commonTest` (two-peer datagram echo over the vnet under `runTest`) before the ICE core.
@@ -116,7 +116,7 @@ signaling seam. Seeded `Random` for tie-breaker/ufrag/pwd/foundations from day o
   smoke lane (pinned seeds) + JVM deep-run lane wired with shrinker; ICE state invariants in the
   fuzz invariant set; typed `IceFailureReason` surface complete.
 
-### W4 — `webrtc-dtls` · status: ☐ · *parallel-ok with W1–W3; resolves §11.3 first*
+### W4 — `webrtc-dtls` · status: ☐ **PARKED (user request) — pick up in parallel with / after W5; the one native dep, runner-validated** · *parallel-ok with W1–W3; resolves §11.3 first*
 BoringSSL backends reusing quiche build infra: cinterop (Apple/Linux), JNI (Android), FFM (JVM,
 multi-release JAR). Memory-BIO driver, caller-clocked (`DTLSv1_get_timeout` →
 `nextDeadline`), native handles via `toNativeData()`, wrapper alloc/free tracked. DTLS-SRTP key
@@ -126,7 +126,7 @@ verification (a=fingerprint model, not CA validation).
   (RNG-drift bounds asserted, the Tier-B discipline); retransmission fixture (dropped flight)
   green; wrapper-free invariant in fuzz set; Apple/Android lanes runtime-validated on runners.
 
-### W5 — `webrtc-sctp` + DCEP + DataChannel · status: ◑ codec floor merged (PR #6); association FSM + DataChannel remain · *needs W3+W4; resolves §11.2 first*
+### W5 — `webrtc-sctp` + DCEP + DataChannel · status: ◑ **association FSM + RFC 3758 + DCEP + `DataChannel` (buffer-flow `StreamMux`) BUILT on `w5-webrtc-sctp` (green all platforms, end-to-end over the merged W3 ICE stack via a plaintext DTLS-shaped seam); PR open, `skip-release`, unmerged. Real-DTLS end-to-end remains the exit gate once W4 lands (W6's job).** · *§11.2 resolved (dcSCTP subset)*
 The **chunk codec + DCEP messages** (pure, sans-io, commonMain) are done and merged. The **SCTP
 association state machine** (4-way handshake, TSN/SACK/RTO, congestion control, fragmentation/
 reassembly over `StreamProcessor`), RFC 3758 partial-reliability, and the `DataChannel` implementing

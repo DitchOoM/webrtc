@@ -3,9 +3,175 @@
 Live state of the current wave. A resumed session reads `RFC_KMP_WEBRTC.md` → `EXECUTION_PLAN.md` →
 this file. Update it whenever you stop mid-wave.
 
-## Where we are: **W3 (`webrtc-ice`) COMPLETE on branch `w3-webrtc-ice` — full ICE agent establishes over NAT/relay under `runTest` on all 5 local lanes; PR open, `skip-release`, NOT merged**
+## Where we are: **W5 (`webrtc-sctp` association + DataChannel) MERGED to `main` (squash, PR #13, `skip-release`) — the sans-io SCTP association + RFC 3758 partial reliability + DCEP + `DataChannel` (buffer-flow `StreamMux`) are landed, ran the 5-reviewer adversarial gate, and are green on all platforms incl. Apple. Next: W6 (`PeerConnection` + browser actuals + error sweep). W4 (DTLS) still parked.**
 
-### 2026-07-15 — W3 built end-to-end (steps 1–5), green throughout, unmerged
+---
+
+### START HERE — W6 (`webrtc` root: PeerConnection + JSEP + browser actuals) · fresh session
+
+**Read first, in order:** `RFC_KMP_WEBRTC.md` (§3.1 consumer API, §5 determinism) → `EXECUTION_PLAN.md`
+(W6 row + exit criteria) → this file → `DESIGN_PRINCIPLES.md` (§4 no illegal states — W6 is the public API,
+so this matters most here) → `TESTING.md` (§2 L3 interop, §7 W6 deliverables). Skim RFC 8829 (JSEP) and
+the browser `RTCPeerConnection` API.
+
+**What's already merged (W6-partial, PR #5):** `webrtc-sdp` — the hand-written SDP text codec (T0 + Jazzer)
+— and the **sans-io `JsepSession` machine** (`handle(event,now)` + `nextDeadline`, RFC 8829 §3.5.1 signaling
+transition table + rollback, entropy-seeded `o=` id). Both `commonMain`, green everywhere. Do **not** rebuild
+these; W6 consumes them.
+
+**What W6 must build (the remaining consumer API):**
+1. **`PeerConnection` session API** in the `webrtc` root module — the state machine that composes the layers:
+   drives `JsepSession` (offer/answer over the injected signaling seam), gathers via the W3 **`IceAgent`**,
+   and once a pair is nominated runs DTLS + the W5 **`SctpDataChannelStack`** over it. `createDataChannel()`
+   returns the buffer-flow `StreamMux`/`Connection` W5 already implements. Sealed `PeerConnectionState`
+   (DESIGN §4 — no boolean/nullable soup), caller-clocked, seams injected. `use {}`/`SessionTransport`
+   lifecycle convention.
+2. **The ICE→SCTP composition, promoted to production.** W5 proved this in `webrtc-ice/commonTest`
+   (`IceDriver.sctpTransport()` — an `SctpDatagramTransport` over the nominated pair + the **RFC 7983
+   STUN/app demux**). W6 needs the **production** version: either `webrtc-ice` exposes a public
+   "connected `DatagramChannel` / transport over the selected pair" (recommended — W6 and a future media
+   layer both need it), or `webrtc` root owns the demux+adapter. The seam stays `SctpDatagramTransport`-shaped
+   so **DTLS (W4) slots in at exactly that boundary** — the plaintext stub used through W5 is the placeholder.
+3. **Browser / wasmJs `peerConnectionSupport()`** delegating to the native `RTCPeerConnection` (RFC §1.1: browsers
+   are the sole target where we wrap, not reimplement). The `webrtc` module's browser actual maps our
+   `PeerConnection` API onto the JS object; Karma unit-tests the delegation.
+4. **The `SocketException` error sweep** — map every typed reason into socket's `SocketException` hierarchy with
+   exhaustive sealed reasons: `IceFailureReason` (W3), `SctpFailureReason`/`SctpClosedException` (W5), and the
+   coming DTLS reasons. This is the "typed errors, never stringly" directive realized at the session boundary
+   (the ICE/SCTP handoffs explicitly left this mapping to W6).
+
+**Prerequisites / gating (unchanged posture from W5):**
+- **W4 (DTLS) is parked**, so the *real* full-stack **ICE+DTLS+SCTP → PeerConnection** end-to-end TB fixture
+  (TESTING §7 W6/W5 exit) is gated on W4. Build the API + JSEP wiring + browser delegation + error sweep **now**
+  against the **plaintext DTLS-shaped seam** (`SctpDatagramTransport`), exactly as W5 did — the real-DTLS
+  end-to-end is the exit gate once W4 lands. Resolve §11.3 (DTLS 1.2-vs-1.3) before W4.
+- **`.api` is THE public commitment** (EXECUTION_PLAN W6 exit: *"the wave where API mistakes become expensive —
+  extra review pass"*). Treat `apiDump` output as the deliverable; run an adversarial API review before merge.
+- **Browser target must compile + delegation Karma-tested**; a `wpt webrtc/` smoke on the browser target is the
+  W6 testing deliverable (TESTING §7).
+
+**Branch W6 off `main`** (W5 is now merged in). Standing traps unchanged (see below): `skip-release` via the REST
+API + verify; Apple runtime-validate on the macOS runner; `git fetch` before reasoning about `main`.
+
+---
+
+### 2026-07-15 — W5 built (association + DataChannel), green all platforms; PR open, unmerged
+
+**Branch `w5-webrtc-sctp`** (off `main` + the W3-merged docs commit). What landed (one commit `92ea6d1` +
+the test/fuzz/api follow-ups):
+- **`SctpAssociation`** (`webrtc-sctp/commonMain/.../association/`) — sans-io `handle(event,now)` +
+  `nextDeadline`, no clock/RNG/IO inside. Four-way handshake (stateless State Cookie — plaintext magic,
+  not HMAC, because DTLS authenticates the transport; documented), TSN/SACK, RTO (RFC 4960 §6.3.1),
+  congestion control (`CongestionControl.kt`: slow-start/cong-avoid/T3+fast-rtx collapse), retransmission
+  queue (`RetransmissionQueue.kt`), fragmentation + ordered/unordered reassembly (`ReassemblyQueue.kt`),
+  **RFC 3758** FORWARD-TSN partial reliability, graceful+abort shutdown. Seeded `Random`, sealed
+  events/outputs/state/reasons.
+- **`SctpDataChannelStack`** (`.../datachannel/`) implements buffer-flow **`StreamMux<ReadBuffer>`** —
+  DCEP (RFC 8832) OPEN/ACK wired to the association, even/odd stream split (§6), empty-message PPIDs
+  (RFC 8831 §6.6). Drives the association over an injected **`SctpDatagramTransport`** (the clean
+  DTLS-shaped seam), scope, and clock. `openBidirectional()` → `Connection<ReadBuffer>`.
+- **Key seam decision (matches HANDOFF plan):** `SctpDatagramTransport` is the one small connected
+  `DatagramChannel`-shaped interface where real **DTLS (W4) drops in as a swap**. Tests use a plaintext
+  in-memory pair and an ICE-backed adapter.
+- **§11.2 resolved:** dcSCTP-style subset (no multihoming, no interleaving) — recorded in the
+  EXECUTION_PLAN decision log.
+- **Tests, all platforms under `runTest`:** sans-io two-endpoint conductor (`SctpSim`); coroutine
+  DataChannel end-to-end over an impaired transport; the **W5 composition** — SCTP DataChannels over the
+  **real W3 `IceAgent` nominated pair** across the vnet (added `IceDriver.sctpTransport()` + RFC 7983
+  demux to `webrtc-ice/commonTest`, with `webrtc-sctp` as a test-only, acyclic dep). A **260-seed
+  loop-until-dry invariant campaign** (no reorder / no unacked-drop / no dup / liveness) and the Jazzer
+  `sctpCodecFuzz` lane extended to fuzz `association.handle` (3 M runs clean). `CountingBufferFactory`
+  no-per-tick-leak (directive #6). **`webrtc-sctp:allTests` + `webrtc-ice:allTests` green; ktlint +
+  apiCheck + standing-directive greps green; apiDump committed.**
+
+**Explicit W5 scope note (why this is complete without W4):** the full ICE+**DTLS**+SCTP TB fixture with
+*real* BoringSSL DTLS is, per TESTING §7 and the W3 handoff, the exit gate **once W4 lands** — it is
+W6's composition job. This wave delivers everything achievable with DTLS parked: the SCTP core, the
+DataChannel mux, and the end-to-end proof over ICE with a plaintext DTLS stand-in at the seam.
+
+**Adversarial-review gate — DONE (5 parallel reviewers; confirmed defects fixed with regression
+fixtures).** Directives #1–#3 clean; #6 injection clean (pooling/release deferred, matches W3); the
+DataChannel driver's `association.handle` re-entrancy was investigated and **refuted** (outputs are
+materialized before `apply` runs). Confirmed defects fixed (directive #5 fixtures in
+`ReassemblyQueueTest`/`SctpRegressionTest`/`DataChannelStackTest`): lone FORWARD-TSN→SACK (RFC 3758 §3.6);
+T3 retransmit **paced by cwnd** (§6.3.3 E3, was a full-flight burst); `missingReports` reset on re-send
+(was infinite fast-retransmit); PR abandonment on the SACK path (timed msg no longer retransmitted
+forever); **reflected T-bit ABORT** accepted (§8.5.1); gap-block u16 overflow omitted (was malformed
+`end<start`); **SSN wrap** (was ordered stall after 65535 msgs); I-bit + gap-fill immediate SACK;
+cross-stream/SSN fragment splice guard; driver **teardown completes pending deferreds** (was: open/send
+hang forever) + breaks on ABORT + OPEN-parity validation + early-data buffering + `SctpClosedException`.
+Jazzer re-stamps a valid CRC so the association handlers are actually fuzzed (cov 1052→1472); the
+invariant campaign is split into an all-platform smoke + a JVM deep-run (+ fragmentation-under-loss); the
+sim conductor throws on non-convergence. All lanes green; committed as `5970af7`.
+
+**Also landed: CI flake-diagnosis capture** (`ci: capture test reports + Jazzer crash repros on failure`)
+— build-linux/build-apple upload `**/build/test-results/**` (JUnit XML: full stack + captured stdout;
+seeded tests print the failing seed → reproducible) + `**/build/reports/tests/**` on failure; the fuzz
+jobs upload `**/build/fuzz/**` (the exact crash/timeout repro input). This is what turns a flake like the
+earlier `node:internal/timers` JS-node timeout into a diagnosable artifact instead of a guess.
+
+**W5 status: MERGED to `main` (squash, PR #13, `skip-release`).** Full CI matrix green (build-linux +
+build-apple/Apple K/N + all three fuzz lanes + standing-directives + validate); the adversarial-review
+gate ran and every confirmed defect is fixed with a regression fixture. Nothing published to Central
+(`skip-release`). W6 is next — see the **START HERE** section at the top.
+- **Follow-ups documented in code / deferred (not blockers):** channel close via SCTP **stream reset**
+  (RFC 6525 RE-CONFIG) is out of the subset — `Connection.close` tears down local halves only; TSN/SSN
+  **serial-number wrap** is not modeled (session never nears 2³², noted in `ReassemblyQueue`); explicit
+  pool `release`/`use{}` of packet/reassembly buffers is the same entangled refactor deferred in W3
+  (managed buffers + `CountingBufferFactory` bounded-alloc used instead of strict `assertNoLeaks`);
+  SACK bundles one chunk per packet (correct, not yet coalesced); no HEARTBEAT probing (WebRTC relies on
+  ICE consent). detekt flags the state-machine complexity (`onSack`/`onDatagram`/`SctpAssociation` size)
+  — non-blocking, inherent to the protocol.
+- **W4 (DTLS) or W6 (PeerConnection) next.** W6 composes ICE+DTLS+SCTP into `PeerConnection` and is where
+  the full TB fixture + the `SocketException`-hierarchy mapping of `SctpFailureReason`/`IceFailureReason`
+  land. Resolve §11.3 (DTLS 1.2-vs-1.3) before W4.
+
+### (prior) W3 state
+
+### 2026-07-15 — W3 merged; W5 is next (W4 held); resume guide
+
+**W3 landed on `main` as `1556c0d` (squash of PR #11):** the full sans-io ICE agent (RFC 8445 + trickle
+8838 + consent 7675) — checklist FSM, connectivity checks over the W1 STUN client, regular nomination,
+role-conflict, consent/keepalive, ICE restart; host/srflx/relay gathering (`TurnAllocation` as a
+`DatagramChannel`); the deterministic NAT vnet (4 RFC 4787 profiles + virtual TURN/STUN + seeded
+impairment); and a strong type model (sealed per-type `IceCandidate`, `ComponentId` enum, sealed
+gathering results, no boolean/nullable soup — see `DESIGN_PRINCIPLES.md` §3–§5). An adversarial review
+gate (5 reviewers) ran and every confirmed defect is fixed with a regression fixture. Full CI matrix
+incl. Apple K/N is green.
+
+**Next wave — W5: SCTP association state machine + `DataChannel` (pure Kotlin, sans-io).** The chunk
+codec + DCEP are already merged (W5 floor). Remaining: the association FSM (4-way handshake, TSN/SACK,
+RTO, congestion control, fragmentation/reassembly over `StreamProcessor`), RFC 3758 partial-reliability,
+and `DataChannel` implementing buffer-flow's `StreamMux`. Resolve §11.2 as it starts.
+
+**Key architectural decision for W5 (why it doesn't need W4 yet):** the sans-io split decouples the SCTP
+core from DTLS exactly as it decoupled ICE from real UDP. The association FSM only needs a **datagram
+transport** underneath, which the W3 ICE stack + the vnet already provide. So build and test W5
+end-to-end over `ICE + vnet` under `runTest` virtual time with a **plaintext/stub transport at the
+driver edge where DTLS will later slot in** — design that seam as a clean `DatagramChannel`-shaped
+boundary so dropping real DTLS in (W4) is a swap, not a rewrite. Target milestone: **two peers exchange
+ordered/unordered/lossy data-channel messages end-to-end under virtual time, all platforms.** The full
+end-to-end TB fixture with *real* DTLS is the exit gate once W4 lands.
+
+**W4 (`webrtc-dtls`, BoringSSL) is intentionally parked** (user request) — it's the one native dep and a
+worse fit for local iteration (Apple/Android runtime-validated on runners). Pick it up in parallel/after
+W5; resolve §11.3 (DTLS 1.2-vs-1.3) before it.
+
+**Documented W3 follow-ups (not blockers, tracked in code):** TURN allocation `Refresh` /
+permission re-install (RFC 8656 §8/§9 — fine within LIFETIME; a W7-interop concern); explicit
+pool-`release`/`use{}` of datagram buffers (entangled with the core's per-retransmit slice ownership) +
+webrtc-stun builder intermediates still on `BufferFactory.Default`; IPv6 host-string parsing in
+`IceAddress` (fixtures are v4). Mapping `IceFailureReason` into the `SocketException` hierarchy is the
+session layer's job (W6).
+
+**Standing traps (unchanged):** `gh pr edit --add-label skip-release` fails silently — apply via
+`gh api repos/DitchOoM/webrtc/issues/<n>/labels -f 'labels[]=skip-release'` and verify. Apple lanes are
+compile-faithful locally; runtime-validate on the macOS runner (`V6_MAC_VALIDATION`). `git fetch` +
+check `origin/main` before reasoning about what's merged.
+
+---
+
+### 2026-07-15 — W3 built end-to-end (steps 1–5), green throughout (landed as #11)
 
 The ICE agent core is done. Branch `w3-webrtc-ice` now carries (on top of the Step-1 seam gate) five
 commits building the whole wave. **PR #11 is open, `skip-release` verified, and the full CI matrix is

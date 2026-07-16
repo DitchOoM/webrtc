@@ -6,6 +6,41 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Added — W6: `webrtc` root — `PeerConnection` + browser delegation + typed error sweep
+- **`RtcPeerConnection` + `NativePeerConnection`** (the consumer session API, RFC §3.1) — a caller-clocked,
+  seam-injected driver composing the sans-io cores: the `JsepSession` offer/answer machine (webrtc-sdp),
+  the `IceAgentDriver` (webrtc-ice) over an injected `IceGatheringPolicy`, the injected
+  `DtlsTransportFactory` (`PlaintextDtls` while W4 is parked — the same seam W5 proved SCTP over), and the
+  `SctpDataChannelStack` (webrtc-sctp) over the nominated pair. Descriptions and candidates cross as **SDP
+  text / `candidate:` lines** (the exact currency `RTCPeerConnection` and the wire speak, so one interface
+  backs both native and browser); a data channel **is** a buffer-flow `Connection<ReadBuffer>`
+  (`createDataChannel` / `incomingDataChannels`, DESIGN §7). Sealed `PeerConnectionState` carries the typed
+  failure reason (no boolean/nullable soup, DESIGN §4). The DTLS/SCTP role is **negotiated from `a=setup`**
+  (RFC 8842), not assumed from who offered.
+- **ICE→SCTP composition promoted to production** — `IceAgentDriver` (+ the `DatagramBinder` network seam
+  and the `IceDataTransport` app-data seam over the selected pair, RFC 7983 STUN/app demux) in
+  `webrtc-ice/commonMain`, so the session and a future media layer compose the same transport the W5
+  `IceSctpEndToEndTest` proved. `IceCandidateLine` — the RFC 8839 §5.1 `candidate` ↔ typed `IceCandidate`
+  codec (typed-reject on malformed, phase-1 UDP/IPv4).
+- **Browser delegation (js, Karma-tested)** — `peerConnectionSupport()` (`expect`/`actual`); on a browser
+  the js actual maps our API onto the native `RTCPeerConnection` (RFC §1.1: the one target we wrap), with
+  a real in-browser loopback Karma test in headless Chrome. Non-browser targets report `Native` and build
+  `NativePeerConnection` directly; wasmJs reports `BrowserDelegated` with the external-interface mapping as
+  the one documented remaining follow-up.
+- **Typed error sweep** — `PeerConnectionFailureReason` (sealed `Ice`/`Dtls`/`Sctp`/`Unknown`, composing
+  each layer's typed reason unchanged) + `DtlsFailureReason` (defined ahead of W4) + `WebRtcException`;
+  signaling-API misuse is typed `JsepStateException`/`SdpFormatException` (directive #3). Mapping into
+  socket's `SocketException` hierarchy (RFC §3.1) is **deferred**: depending on `com.ditchoom:socket`
+  duplicate-symbols socket's vendored BoringSSL against buffer-crypto's on every native target — gated on
+  an upstream BoringSSL dedup, exactly as DTLS is gated on W4.
+- **Tests (all platforms, `runTest` virtual time):** the full offer/answer → ICE → (plaintext DTLS) → SCTP
+  → data-channel round-trip with scripted signaling (the W6 exit fixture) — green on
+  jvm/linuxX64/jsNode/**jsBrowser (Karma)**/wasmJsNode/wasmJsBrowser/androidHost; lifecycle-liveness
+  regressions (close-before-connect terminates, typed signaling errors); the candidate-codec T0; the
+  error-sweep mapping. Adversarial-review gate (3 parallel reviewers) ran — every confirmed defect
+  (role-negotiation deadlock, five lifecycle/liveness hangs/leaks, six API-surface findings, four
+  browser-delegation defects) fixed with a regression fixture. `.api` committed as the public commitment.
+
 ### Added — W5: `webrtc-sctp` association + DataChannel (SCTP RFC 4960 subset + RFC 3758 + DCEP 8832 + RFC 8831)
 - **Sans-io SCTP association (`SctpAssociation`)** — a pure `handle(event, now): List<Output>` plus
   `nextDeadline(now): Instant?`, **no dispatcher, clock, RNG, or I/O inside** (RFC §5.1). It owns the

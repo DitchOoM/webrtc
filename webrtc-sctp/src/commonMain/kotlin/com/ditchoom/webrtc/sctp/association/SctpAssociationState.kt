@@ -57,13 +57,16 @@ public sealed interface SctpFailureReason {
     ) : SctpFailureReason
 }
 
-/** The specific handshake/protocol fault behind an [SctpFailureReason.ProtocolViolation]. */
+/**
+ * The specific handshake/protocol fault behind an [SctpFailureReason.ProtocolViolation].
+ *
+ * A COOKIE-ECHO carrying a cookie this endpoint did not mint is deliberately **not** here: RFC 4960
+ * §5.1.5 says to *silently discard* it (it may be a stale, replayed, or forged cookie), so it never
+ * escalates to a typed failure — only these two genuinely-fatal handshake faults do.
+ */
 public enum class ProtocolViolationKind {
     /** An INIT-ACK carried no State Cookie parameter (RFC 4960 §3.3.3.1). */
     MissingStateCookie,
-
-    /** A COOKIE-ECHO carried a cookie this endpoint did not mint (bad magic / stale). */
-    InvalidCookie,
 
     /** An INIT advertised zero inbound or outbound streams (RFC 4960 §3.3.2 requires ≥ 1). */
     ZeroStreams,

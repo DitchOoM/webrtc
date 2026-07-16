@@ -22,6 +22,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 
@@ -64,8 +65,8 @@ class IceSctpEndToEndTest {
             bob.bindHost("10.0.0.2", 5000)
             alice.connectTo(bob)
             bob.connectTo(alice)
-            withTimeoutOrNull(timeout) { alice.awaitConnected() }
-            withTimeoutOrNull(timeout) { bob.awaitConnected() }
+            assertNotNull(withTimeoutOrNull(timeout) { alice.awaitConnected() }, "alice ICE connected")
+            assertNotNull(withTimeoutOrNull(timeout) { bob.awaitConnected() }, "bob ICE connected")
 
             // ICE is up; layer the SCTP data-channel stack over the nominated pair (DTLS slots in here at W4).
             val client = SctpDataChannelStack(alice.sctpTransport(), backgroundScope, clock, SctpRole.Client, random = Random(21))
@@ -107,8 +108,8 @@ class IceSctpEndToEndTest {
             bob.bindHost("10.0.1.2", 5000)
             alice.connectTo(bob)
             bob.connectTo(alice)
-            withTimeoutOrNull(timeout) { alice.awaitConnected() }
-            withTimeoutOrNull(timeout) { bob.awaitConnected() }
+            assertNotNull(withTimeoutOrNull(timeout) { alice.awaitConnected() }, "alice ICE connected")
+            assertNotNull(withTimeoutOrNull(timeout) { bob.awaitConnected() }, "bob ICE connected")
 
             val client = SctpDataChannelStack(alice.sctpTransport(), backgroundScope, clock, SctpRole.Client, random = Random(41))
             val server = SctpDataChannelStack(bob.sctpTransport(), backgroundScope, clock, SctpRole.Server, random = Random(42))

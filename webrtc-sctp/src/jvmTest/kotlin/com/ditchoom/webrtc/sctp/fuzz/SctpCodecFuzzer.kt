@@ -6,6 +6,8 @@ import com.ditchoom.buffer.managed
 import com.ditchoom.webrtc.sctp.SctpChunk
 import com.ditchoom.webrtc.sctp.SctpDecodeResult
 import com.ditchoom.webrtc.sctp.SctpPacket
+import com.ditchoom.webrtc.sctp.SctpPacketBuilder
+import com.ditchoom.webrtc.sctp.VerificationTag
 import com.ditchoom.webrtc.sctp.asSupportedExtensions
 import com.ditchoom.webrtc.sctp.association.SctpAssociation
 import com.ditchoom.webrtc.sctp.association.SctpConfig
@@ -68,14 +70,40 @@ object SctpCodecFuzzer {
     }
 
     private fun exerciseAssociation(source: com.ditchoom.buffer.ReadBuffer) {
-        val closed = SctpAssociation(SctpConfig(), Random(1))
+        // 1. Raw bytes to a fresh + a mid-handshake machine — the decode-reject / bad-CRC drop paths.
+        val rawClosed = SctpAssociation(SctpConfig(), Random(1))
         source.position(0)
-        closed.handle(SctpEvent.DatagramReceived(source.slice()), fuzzEpoch)
+        rawClosed.handle(SctpEvent.DatagramReceived(source.slice()), fuzzEpoch)
 
-        val handshaking = SctpAssociation(SctpConfig(), Random(2))
-        handshaking.handle(SctpEvent.Associate, fuzzEpoch)
+        // 2. If the bytes are structurally a packet, RE-STAMP them with a valid CRC32c and a matching
+        // verification tag and feed those — otherwise the checksum/tag gates in onDatagram reject virtually
+        // every undirected input before the chunk state machine runs, and the association-layer handlers
+        // (onInit/onInitAck/onCookieEcho/onData/onSack/onForwardTsn/onShutdown) get zero coverage. This is
+        // what makes the "totality at the association layer" claim actually tested (review finding R5-1).
         source.position(0)
-        handshaking.handle(SctpEvent.DatagramReceived(source.slice()), fuzzEpoch)
+        val packet = (SctpPacket.decode(source.slice()) as? SctpDecodeResult.Success)?.packet ?: return
+
+        val closed = SctpAssociation(SctpConfig(), Random(3))
+        feedRestamped(closed, packet, VerificationTag(0u)) // pre-TCB: INIT (tag 0) + local-tag-0 acceptance
+
+        val handshaking = SctpAssociation(SctpConfig(), Random(4))
+        handshaking.handle(SctpEvent.Associate, fuzzEpoch)
+        feedRestamped(handshaking, packet, handshaking.localVerificationTag) // CookieWait: pass the tag gate
+    }
+
+    // Rebuild [packet]'s chunks under a header carrying [tag] (or 0 when the first chunk is INIT, per the
+    // tag rule) with a freshly computed valid checksum, and drive it into [assoc].
+    private fun feedRestamped(
+        assoc: SctpAssociation,
+        packet: SctpPacket,
+        tag: VerificationTag,
+    ) {
+        val headerTag = if (packet.chunks.firstOrNull() is SctpChunk.Init) VerificationTag(0u) else tag
+        val builder = SctpPacketBuilder(packet.sourcePort, packet.destinationPort, headerTag)
+        for (chunk in packet.chunks) builder.add(chunk)
+        val encoded = builder.encode(factory)
+        encoded.position(0)
+        assoc.handle(SctpEvent.DatagramReceived(encoded.slice()), fuzzEpoch)
     }
 
     private fun exercisePacket(packet: SctpPacket) {

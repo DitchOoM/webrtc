@@ -40,6 +40,21 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
   also feeds hostile bytes into `association.handle` (T0 totality at the association layer); a 3 M-run
   campaign was clean. `CountingBufferFactory` proves the `BufferFactory` is threaded through the hot
   paths and an idle association allocates nothing per tick (directive #6).
+- **Adversarial-review gate (5 parallel reviewers) — confirmed defects fixed, each with a regression
+  fixture** (directive #5): a lone FORWARD-TSN now elicits a SACK (RFC 3758 §3.6); T3 retransmits are
+  **paced by cwnd** (§6.3.3 E3) instead of dumping the whole flight; a fast-retransmitted chunk resets
+  its missing-report count (no infinite re-fast-retransmit); partial-reliability abandonment runs on the
+  SACK path too (a timed message is no longer retransmitted forever when T3 never fires); a **reflected
+  T-bit ABORT** from a peer that lost its TCB is accepted (§8.5.1) so a dead-peer restart tears us down;
+  a gap-ack-block offset beyond a `u16` is **omitted** rather than wrapped into a malformed `end < start`
+  block; ordered delivery **wraps the SSN** (no stall after 65535 ordered messages); the RFC 7053 I-bit
+  and gap-fill now force a prompt SACK; a cross-stream/SSN fragment splice is rejected; the DataChannel
+  driver **completes pending `open`/`send` deferreds exceptionally on teardown** (was: caller hangs
+  forever), stops the loop on a received ABORT, validates incoming-OPEN stream-id parity, and buffers
+  data that races ahead of its DCEP OPEN. The Jazzer lane was strengthened to re-stamp a valid CRC so
+  the association handlers are actually exercised (edge coverage 1052 → 1472); the invariant campaign was
+  split into an all-platform smoke set + a JVM deep-run (hundreds of seeds + fragmentation-under-loss),
+  and the sim conductor now throws on non-convergence so a livelock can never pass silently.
 
 ### Added — W3: `webrtc-ice` (ICE agent — RFC 8445 + trickle 8838 + consent 7675)
 - **Sans-io ICE agent core (`IceAgent`)** — a pure `handle(event, now): List<Output>` plus

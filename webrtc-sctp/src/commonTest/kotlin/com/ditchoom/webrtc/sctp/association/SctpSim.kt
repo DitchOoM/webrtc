@@ -55,7 +55,12 @@ internal class SctpSim(
 
     fun associateA() = post(toA = true, SctpEvent.Associate)
 
-    /** Run the event loop until both endpoints are quiescent (no packets, no armed timers) or [maxSteps]. */
+    /**
+     * Run the event loop until both endpoints are quiescent (no packets, no armed timers). Returns the
+     * step count. **Throws** if [maxSteps] is exhausted — a livelocked/hung association must never pass
+     * silently regardless of what the caller asserts afterward (the liveness invariant, RFC §5.3 #5, is
+     * enforced here in the conductor, not left to each test to remember).
+     */
     fun run(maxSteps: Int = 200_000): Int {
         var steps = 0
         while (steps < maxSteps) {
@@ -82,11 +87,11 @@ internal class SctpSim(
                 fired = true
             }
             if (fired) continue
-            val next = listOfNotNull(queue.minOfOrNull { it.at }, aDl, bDl).minOrNull() ?: break
-            if (next <= now) break
+            val next = listOfNotNull(queue.minOfOrNull { it.at }, aDl, bDl).minOrNull() ?: return steps
+            if (next <= now) return steps
             now = next
         }
-        return steps
+        error("SCTP sim did not converge in $maxSteps steps (livelock/hang): a=${a.state} b=${b.state}")
     }
 
     private fun apply(

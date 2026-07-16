@@ -26,9 +26,10 @@ internal enum class TxState {
 
 /**
  * One DATA chunk the sender is tracking for reliability (RFC 4960 §6.1). Carries everything needed to
- * rebuild the wire chunk on a retransmit — the copied [userData] view is retained for the chunk's
- * lifetime and released when it is acked or abandoned. [reliability] and [firstSentAt] drive RFC 3758
- * abandonment.
+ * rebuild the wire chunk on a retransmit — the copied [userData] view is retained (GC-managed) for the
+ * chunk's lifetime and dropped from the queue when the chunk is acked or abandoned (explicit pool
+ * `release` of the copy is the deferred directive-#6 refactor). [reliability] and [firstSentAt] drive
+ * RFC 3758 abandonment.
  */
 internal class OutstandingData(
     val tsn: Tsn,
@@ -104,9 +105,6 @@ internal class RetransmissionQueue(
 
     val isEmpty: Boolean get() = outstanding.isEmpty()
 
-    /** True if any chunk is currently marked [TxState.NeedsRetransmit]. */
-    fun hasRetransmitsPending(): Boolean = outstanding.values.any { it.txState == TxState.NeedsRetransmit }
-
     fun setPeerReceiveWindow(rwnd: UInt) {
         peerReceiveWindow = rwnd
     }
@@ -117,19 +115,29 @@ internal class RetransmissionQueue(
         outstandingBytes += data.bytes
     }
 
-    /** The chunks currently marked for retransmit, cleared back to [TxState.InFlight] and re-counted. */
-    fun drainRetransmits(now: Instant): List<OutstandingData> {
-        val out = ArrayList<OutstandingData>()
-        for (data in outstanding.values) {
-            if (data.txState == TxState.NeedsRetransmit) {
-                data.txState = TxState.InFlight
-                data.lastSentAt = now
-                data.retransmitCount += 1
-                outstandingBytes += data.bytes
-                out += data
-            }
-        }
-        return out
+    /**
+     * Chunks currently marked for retransmit, in TSN send order — the caller ([SctpAssociation.trySend])
+     * sends them **paced by cwnd** (RFC 4960 §6.3.3 E3: the collapsed cwnd bounds how much of the lost
+     * flight goes out at once), calling [markRetransmitted] as each is actually put on the wire. They are
+     * not auto-flipped here, so an unsent remainder stays `NeedsRetransmit` for the next send opportunity.
+     */
+    fun retransmittable(): List<OutstandingData> = outstanding.values.filter { it.txState == TxState.NeedsRetransmit }
+
+    /**
+     * Mark one [NeedsRetransmit][TxState.NeedsRetransmit] chunk as (re)sent: back to [TxState.InFlight],
+     * re-counted into the flight size, retransmit count bumped, and — critically — its missing-report
+     * counter reset so a fresh set of three SACK gap reports is required before it is fast-retransmitted
+     * again (else it would be re-fast-retransmitted on every subsequent gapped SACK, RFC 4960 §7.2.4).
+     */
+    fun markRetransmitted(
+        data: OutstandingData,
+        now: Instant,
+    ) {
+        data.txState = TxState.InFlight
+        data.lastSentAt = now
+        data.retransmitCount += 1
+        data.missingReports = 0
+        outstandingBytes += data.bytes
     }
 
     /**
@@ -167,7 +175,15 @@ internal class RetransmissionQueue(
 
         // 2. Gap ack blocks: absolute TSN ranges (offset from cumulativeTsnAck) that are also received.
         val gapRanges = gapAckBlocks.map { (start, end) -> start.value to end.value }
+        // The high-water mark for the missing-report test is the highest TSN the SACK itself reports as
+        // received (the top of its gap blocks) — derived from the blocks, NOT from the chunks we still
+        // hold, so a chunk already removed (previously acked/retransmitted) can't make it under-report and
+        // delay a legitimate fast retransmit (RFC 4960 §7.2.4).
         var highestGapAcked = cumulativeTsnAck
+        for ((_, end) in gapRanges) {
+            val endTsn = Tsn(end)
+            if (highestGapAcked.sackPrecedes(endTsn)) highestGapAcked = endTsn
+        }
         val gapIterator = outstanding.entries.iterator()
         while (gapIterator.hasNext()) {
             val data = gapIterator.next().value
@@ -176,7 +192,6 @@ internal class RetransmissionQueue(
                     bytesAcked += data.bytes
                     outstandingBytes -= data.bytes
                 }
-                if (highestGapAcked.sackPrecedes(data.tsn)) highestGapAcked = data.tsn
                 gapIterator.remove()
             }
         }
@@ -252,13 +267,6 @@ internal class RetransmissionQueue(
         return abandonedStreams.entries.map { it.key to it.value }
     }
 
-    /** The earliest still-unacked TSN, or null if the queue is empty — used to time the T3-rtx timer. */
-    fun earliestSentAt(): Instant? =
-        outstanding.values
-            .filter { it.txState == TxState.InFlight }
-            .minByOrNull { it.lastSentAt }
-            ?.lastSentAt
-
     /** Chunks that must be discarded after a completed FORWARD-TSN (abandoned and now covered). */
     fun purgeAbandonedThrough(tsn: Tsn) {
         val it = outstanding.entries.iterator()
@@ -293,11 +301,14 @@ internal class RetransmissionQueue(
 
     private fun highestOutstandingTsn(): Tsn = outstanding.values.maxByOrNull { it.tsn.value }?.tsn ?: cumulativeAckPoint
 
+    // Wrap-aware absolute-TSN range membership (RFC 1982 serial space): a gap block whose absolute end
+    // crosses the 2³² boundary has startAbs > endAbs, so a plain `in startAbs..endAbs` would be an empty
+    // range and silently miss gap-acked chunks. Matches the serial-number discipline used elsewhere here.
     private fun inRange(
         tsn: UInt,
         startAbs: UInt,
         endAbs: UInt,
-    ): Boolean = tsn in startAbs..endAbs
+    ): Boolean = if (startAbs <= endAbs) tsn in startAbs..endAbs else tsn >= startAbs || tsn <= endAbs
 
     private companion object {
         private const val FAST_RETRANSMIT_THRESHOLD = 3

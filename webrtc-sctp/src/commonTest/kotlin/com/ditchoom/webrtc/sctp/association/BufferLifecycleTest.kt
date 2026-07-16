@@ -56,9 +56,12 @@ class BufferLifecycleTest {
         sim.run()
 
         val baseline = factory.allocations
-        // Fire many timer ticks with no application data: an established, drained association has no
-        // armed timers, so this must not allocate at all (steady RSS — no per-tick leak).
+        // Make the quiescence premise explicit (review finding R5-4): a drained, established association
+        // arms no timer, so a driver would never even fire TimerFired here — and if it does, it must be a
+        // pure no-op that allocates nothing (no re-arming timer silently allocating each period).
         var now = epoch
+        assertEquals(null, a.nextDeadline(now), "idle association arms no timer")
+        assertEquals(null, b.nextDeadline(now), "idle association arms no timer")
         repeat(1000) {
             now += kotlin.time.Duration.parse("1s")
             a.handle(SctpEvent.TimerFired, now)

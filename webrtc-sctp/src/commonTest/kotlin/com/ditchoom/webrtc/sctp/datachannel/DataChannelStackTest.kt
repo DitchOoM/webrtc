@@ -14,10 +14,12 @@ import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
@@ -108,6 +110,37 @@ class DataChannelStackTest {
                     .toList()
                     .map { it.text() }
             assertEquals((0 until n).map { "m$it" }, received, "reliable channel delivers all, in order, through loss")
+        }
+
+    @Test
+    fun open_after_transport_close_fails_fast_not_hangs() =
+        runTest {
+            val pair = MemoryTransportPair(backgroundScope)
+            val client = SctpDataChannelStack(pair.clientTransport, backgroundScope, clock(), SctpRole.Client, random = Random(10))
+            val server = SctpDataChannelStack(pair.serverTransport, backgroundScope, clock(), SctpRole.Server, random = Random(11))
+            client.start()
+            server.start()
+            client.open(DataChannelConfig(label = "live")) // establish
+            server.acceptBidirectional()
+
+            // The transport dies (peer socket gone): the client's reader sees EOF → the stack tears down.
+            pair.serverTransport.close()
+            kotlinx.coroutines.delay(2.seconds) // virtual time: let the reader see EOF and the drive loop tear down
+            assertEquals(true, client.isTornDown, "stack tore down after transport close (server=${server.isTornDown})")
+
+            // R4-F2: a subsequent open() must throw the typed close exception, not suspend forever.
+            val thrown =
+                try {
+                    withTimeout(30.seconds) { client.open(DataChannelConfig(label = "too-late")) }
+                    null
+                } catch (e: Throwable) {
+                    e
+                }
+            assertEquals(
+                SctpClosedException::class,
+                thrown?.let { it::class },
+                "open after teardown throws SctpClosedException, got $thrown",
+            )
         }
 
     @Test

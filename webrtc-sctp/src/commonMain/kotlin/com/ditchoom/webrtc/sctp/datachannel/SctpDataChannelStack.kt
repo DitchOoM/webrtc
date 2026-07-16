@@ -14,6 +14,7 @@ import com.ditchoom.webrtc.sctp.association.SctpAssociation
 import com.ditchoom.webrtc.sctp.association.SctpAssociationState
 import com.ditchoom.webrtc.sctp.association.SctpConfig
 import com.ditchoom.webrtc.sctp.association.SctpEvent
+import com.ditchoom.webrtc.sctp.association.SctpFailureReason
 import com.ditchoom.webrtc.sctp.association.SctpOutput
 import com.ditchoom.webrtc.sctp.association.SctpReliability
 import com.ditchoom.webrtc.sctp.association.SctpSendOptions
@@ -70,12 +71,21 @@ public class SctpDataChannelStack(
     private val accepted = Channel<DataChannelConnection>(Channel.UNLIMITED)
     private val channels = HashMap<Int, DataChannelConnection>()
     private val pendingOpens = ArrayDeque<OpenCommand>()
+
+    // Inbound user messages that arrived before their channel's DCEP OPEN registered the stream — held
+    // briefly (bounded) and flushed when the OPEN lands, so an unordered first message that SCTP delivers
+    // ahead of the still-in-order OPEN is not silently lost. Bounded to defeat a peer that never OPENs.
+    private val pendingInbound = HashMap<Int, ArrayDeque<PendingInbound>>()
     private var nextStreamId: Int = if (role == SctpRole.Client) 0 else 1
+    private var closed = false
 
     private val _state = MutableStateFlow<SctpAssociationState>(SctpAssociationState.Closed)
 
     /** The association lifecycle, surfaced for the PeerConnection layer / tests to await. */
     public val state: StateFlow<SctpAssociationState> get() = _state
+
+    /** True once the stack has torn down (transport close / abort) — test-visible, not public API. */
+    internal val isTornDown: Boolean get() = closed
 
     /** Launch the driver: the transport reader, and the single serialized association drive loop. */
     public fun start() {
@@ -91,8 +101,20 @@ public class SctpDataChannelStack(
     /** Open a data channel with explicit [config] (label / ordering / reliability) — RFC 8832 §5.1. */
     public suspend fun open(config: DataChannelConfig): Connection<ReadBuffer> {
         val deferred = CompletableDeferred<DataChannelConnection>()
-        inbox.send(DriveItem.Command(OpenCommand(config, deferred)))
+        post(OpenCommand(config, deferred))
         return deferred.await()
+    }
+
+    // Hand a command to the drive loop, failing fast with the typed close exception if the stack has torn
+    // down (either the `closed` flag is already set, or the inbox was closed under us mid-send) — so a
+    // caller never suspends forever on a command that will not be processed.
+    private suspend fun post(command: Command) {
+        if (closed) throw SctpClosedException(null)
+        try {
+            inbox.send(DriveItem.Command(command))
+        } catch (_: kotlinx.coroutines.channels.ClosedSendChannelException) {
+            throw SctpClosedException(null)
+        }
     }
 
     override suspend fun acceptBidirectional(): Connection<ReadBuffer> = accepted.receive()
@@ -103,9 +125,14 @@ public class SctpDataChannelStack(
 
     override suspend fun acceptUnidirectional(): Receiver<ReadBuffer> = accepted.receive()
 
-    /** Begin a graceful association shutdown (RFC 4960 §9.2). */
+    /** Begin a graceful association shutdown (RFC 4960 §9.2). No-op once the stack has closed. */
     public suspend fun shutdown() {
-        inbox.send(DriveItem.Command(ShutdownCommand))
+        if (closed) return
+        try {
+            inbox.send(DriveItem.Command(ShutdownCommand))
+        } catch (_: kotlinx.coroutines.channels.ClosedSendChannelException) {
+            // already torn down
+        }
     }
 
     // ── the drive loop (the only place association.handle is called) ──
@@ -126,7 +153,7 @@ public class SctpDataChannelStack(
 
     private suspend fun driveLoop() {
         if (role == SctpRole.Client) apply(association.handle(SctpEvent.Associate, now()))
-        while (true) {
+        while (!closed) {
             val deadline = association.nextDeadline(now())
             val item =
                 if (deadline == null) {
@@ -142,11 +169,11 @@ public class SctpDataChannelStack(
                 is DriveItem.Inbound -> apply(association.handle(SctpEvent.DatagramReceived(item.packet), now()))
                 is DriveItem.Command -> onCommand(item.command)
                 DriveItem.Timer -> apply(association.handle(SctpEvent.TimerFired, now()))
-                DriveItem.TransportClosed -> {
-                    tearDown()
-                    break
-                }
+                DriveItem.TransportClosed -> tearDown(null)
             }
+            // A received ABORT (apply → tearDown) or a transport close stops the loop here rather than
+            // continuing to drive `handle` on a dead association.
+            if (closed) break
         }
     }
 
@@ -162,6 +189,7 @@ public class SctpDataChannelStack(
                 apply(association.handle(SctpEvent.SendMessage(command.options, command.payload), now()))
                 command.deferred.complete(Unit)
             }
+            is CloseChannelCommand -> channels.remove(command.streamId.value)
             ShutdownCommand -> apply(association.handle(SctpEvent.Shutdown, now()))
         }
     }
@@ -197,7 +225,7 @@ public class SctpDataChannelStack(
                 }
                 is SctpOutput.StateChanged -> onStateChanged(output.state)
                 is SctpOutput.MessageReceived -> onMessage(output)
-                is SctpOutput.Aborted -> tearDown()
+                is SctpOutput.Aborted -> tearDown(output.reason)
             }
         }
     }
@@ -214,16 +242,30 @@ public class SctpDataChannelStack(
             onDcep(message)
             return
         }
-        val connection = channels[message.streamId.value] ?: return
         val payload = if (isEmptyPpid(message.payloadProtocolId)) ReadBuffer.EMPTY_BUFFER else message.payload
-        connection.deliver(payload)
+        val connection = channels[message.streamId.value]
+        if (connection != null) {
+            connection.deliver(payload)
+        } else {
+            // User data (an unordered first message) beat its ordered DCEP OPEN — hold it, bounded, until
+            // the OPEN registers the channel; drop beyond the cap (a peer sending data on a stream it
+            // never OPENs).
+            val queue = pendingInbound.getOrPut(message.streamId.value) { ArrayDeque() }
+            if (queue.size < MAX_PENDING_INBOUND) queue.addLast(PendingInbound(message.payloadProtocolId, payload))
+        }
     }
 
     private fun onDcep(message: SctpOutput.MessageReceived) {
         when (val decoded = (DataChannelMessage.decode(message.payload) as? DataChannelDecodeResult.Success)?.message) {
             is DataChannelMessage.Open -> {
-                val config = configOf(decoded)
-                registerChannel(message.streamId, config, incoming = true)
+                // RFC 8832 §6: the peer owns the opposite stream-id parity. Reject an OPEN on our own
+                // parity (a misbehaving/duplicate peer OPEN would otherwise overwrite a local channel),
+                // and reject a duplicate OPEN on an already-registered stream.
+                if (streamIsPeerParity(message.streamId) && message.streamId.value !in channels) {
+                    val config = configOf(decoded)
+                    registerChannel(message.streamId, config, incoming = true)
+                }
+                // Always ACK a (re-)OPEN so a peer whose ACK was lost converges.
                 sendOnStream(
                     message.streamId,
                     PayloadProtocolId.WebRtcDcep,
@@ -237,6 +279,13 @@ public class SctpDataChannelStack(
         }
     }
 
+    // Whether [streamId] carries the PEER's parity (RFC 8832 §6): a Client peer uses even ids, a Server
+    // peer odd — i.e. the opposite of our own role's parity.
+    private fun streamIsPeerParity(streamId: StreamId): Boolean {
+        val even = streamId.value % 2 == 0
+        return if (role == SctpRole.Client) !even else even
+    }
+
     private fun registerChannel(
         streamId: StreamId,
         config: DataChannelConfig,
@@ -244,6 +293,10 @@ public class SctpDataChannelStack(
     ): DataChannelConnection {
         val connection = DataChannelConnection(streamId, config, this)
         channels[streamId.value] = connection
+        // Flush any user data that arrived before this OPEN, in arrival order.
+        pendingInbound.remove(streamId.value)?.forEach { held ->
+            connection.deliver(if (isEmptyPpid(held.ppid)) ReadBuffer.EMPTY_BUFFER else held.payload)
+        }
         if (incoming) accepted.trySend(connection)
         return connection
     }
@@ -261,8 +314,19 @@ public class SctpDataChannelStack(
         val payload = if (empty) singleZeroByte() else message
         val deferred = CompletableDeferred<Unit>()
         val options = SctpSendOptions(streamId, ppid, unordered = !config.ordered, reliability = config.reliability)
-        inbox.send(DriveItem.Command(SendCommand(options, payload, deferred)))
+        post(SendCommand(options, payload, deferred))
         deferred.await()
+    }
+
+    // Post a channel-close so the drive loop drops it from the routing map (called by Connection.close);
+    // best-effort — a closed stack has already dropped every channel.
+    internal suspend fun closeChannel(streamId: StreamId) {
+        if (closed) return
+        try {
+            inbox.send(DriveItem.Command(CloseChannelCommand(streamId)))
+        } catch (_: kotlinx.coroutines.channels.ClosedSendChannelException) {
+            // already torn down
+        }
     }
 
     private fun sendOnStream(
@@ -276,12 +340,39 @@ public class SctpDataChannelStack(
         apply(association.handle(SctpEvent.SendMessage(options, payload), now()))
     }
 
-    private fun tearDown() {
+    // Tear the stack down exactly once (transport close or a received/failed association ABORT). Beyond
+    // closing the streams and I/O channels, it MUST complete every outstanding command deferred
+    // exceptionally — otherwise an open()/send()/shutdown() awaiting a command that will now never be
+    // processed suspends its caller coroutine forever (the leak the review caught).
+    private fun tearDown(reason: SctpFailureReason?) {
+        if (closed) return
+        closed = true
+        val cause = SctpClosedException(reason)
         for (connection in channels.values) connection.closeLocal()
         channels.clear()
+        pendingInbound.clear()
+        for (command in pendingOpens) command.deferred.completeExceptionally(cause)
+        pendingOpens.clear()
         accepted.close()
         outbound.close()
         transport.close()
+        inbox.close()
+        // Fail every command still queued (and thus every caller suspended on its deferred).
+        while (true) {
+            val item = inbox.tryReceive().getOrNull() ?: break
+            if (item is DriveItem.Command) failCommand(item.command, cause)
+        }
+    }
+
+    private fun failCommand(
+        command: Command,
+        cause: SctpClosedException,
+    ) {
+        when (command) {
+            is OpenCommand -> command.deferred.completeExceptionally(cause)
+            is SendCommand -> command.deferred.completeExceptionally(cause)
+            is CloseChannelCommand, ShutdownCommand -> Unit
+        }
     }
 
     private fun now(): Instant = clock()
@@ -346,6 +437,12 @@ public class SctpDataChannelStack(
 
         data object TransportClosed : DriveItem
     }
+
+    private companion object {
+        // Cap on user messages buffered per stream before its DCEP OPEN arrives — bounds a peer that
+        // sends data on a stream it never OPENs (see pendingInbound / onMessage).
+        private const val MAX_PENDING_INBOUND = 64
+    }
 }
 
 // The commands consumer coroutines hand to the drive loop (so association.handle is single-threaded).
@@ -362,7 +459,27 @@ internal class SendCommand(
     val deferred: CompletableDeferred<Unit>,
 ) : Command
 
+internal class CloseChannelCommand(
+    val streamId: StreamId,
+) : Command
+
 internal data object ShutdownCommand : Command
+
+// One inbound user message held until its channel's DCEP OPEN registers the stream (see pendingInbound).
+internal class PendingInbound(
+    val ppid: PayloadProtocolId,
+    val payload: ReadBuffer,
+)
+
+/**
+ * Thrown to a caller awaiting [SctpDataChannelStack.open] / a channel `send` / `shutdown` when the stack
+ * has torn down (transport closed, or the association aborted) — so the call fails fast with the typed
+ * [reason] instead of suspending forever. [reason] is the association's [SctpFailureReason] when the
+ * teardown was an abort, or null for a plain transport close.
+ */
+public class SctpClosedException(
+    public val reason: SctpFailureReason?,
+) : Exception("SCTP data-channel stack closed${reason?.let { ": $it" } ?: ""}")
 
 /**
  * One open data channel as a buffer-flow [Connection]<[ReadBuffer]> (RFC 8831). [send] posts one
@@ -388,6 +505,7 @@ public class DataChannelConnection internal constructor(
 
     override suspend fun close() {
         closeLocal()
+        stack.closeChannel(streamId) // drop from the routing map (no RFC 6525 stream reset in this subset — W7)
     }
 
     internal fun deliver(payload: ReadBuffer) {

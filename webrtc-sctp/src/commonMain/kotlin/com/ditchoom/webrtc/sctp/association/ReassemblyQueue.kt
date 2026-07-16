@@ -76,9 +76,14 @@ internal class ReassemblyQueue(
             Fragment(chunk.flags, chunk.streamId, chunk.streamSequenceNumber, chunk.payloadProtocolId, copyOf(chunk.userData))
         aboveCumulative += tsn.value
 
+        val cumBefore = cumulativeTsn.value
         val advancedContiguously = tsn.value == cumulativeTsn.next().value
         advanceCumulative()
-        if (!advancedContiguously) sackImmediatelyRequested = true
+        // SACK immediately (RFC 4960 §6.2 / RFC 7053 §5.2) on: out-of-order data (a gap opened); a
+        // gap FILLED (the cumulative TSN jumped by more than the one arriving chunk); or the sender's
+        // explicit SACK-IMMEDIATELY 'I' bit.
+        val gapFilled = (cumulativeTsn.value - cumBefore) > 1u
+        if (!advancedContiguously || gapFilled || chunk.flags.immediate) sackImmediatelyRequested = true
 
         return reassembleDeliverable()
     }
@@ -107,7 +112,13 @@ internal class ReassemblyQueue(
         for (s in streams) {
             val skipTo = s.streamSequenceNumber.value.toInt() + 1
             val current = nextOrderedSsn[s.streamId] ?: 0
-            if (skipTo > current) nextOrderedSsn[s.streamId] = skipTo
+            if (skipTo > current) {
+                nextOrderedSsn[s.streamId] = skipTo
+                // Drop any already-reassembled-but-held ordered messages the skip jumps over — else a
+                // message the peer abandoned (yet whose fragments we happened to fully receive) sits in
+                // orderedReady forever, growing the map under sustained partial-reliability abandonment.
+                orderedReady[s.streamId]?.keys?.removeAll { it < skipTo }
+            }
         }
         return reassembleDeliverable()
     }
@@ -124,10 +135,16 @@ internal class ReassemblyQueue(
                 runEnd = sorted[i + 1]
                 i++
             }
+            // A Gap Ack Block offset is a u16 (RFC 4960 §3.3.4). A run more than 65535 TSNs above the
+            // cumulative point cannot be represented — and casting it to UShort would wrap into a
+            // malformed (end < start) block the peer mis-decodes. Since `sorted` is ascending, once one
+            // run overflows so do all the rest, so stop emitting blocks here (the missing low TSN is
+            // recovered by T3 first, then these gaps become reportable).
+            if (runStart - cumulativeTsn.value > 0xFFFFu) break
             gaps +=
                 com.ditchoom.webrtc.sctp.GapAckBlock(
                     start = (runStart - cumulativeTsn.value).toUShort(),
-                    end = (runEnd - cumulativeTsn.value).toUShort(),
+                    end = (runEnd - cumulativeTsn.value).coerceAtMost(0xFFFFu).toUShort(),
                 )
             i++
         }
@@ -176,6 +193,19 @@ internal class ReassemblyQueue(
                 val frag = fragments[cur] ?: break
                 // A second Begin (other than the first) marks a new message — the run is truncated.
                 if (cur != startTsn && frag.flags.beginning) break
+                // All fragments of a user message share one stream id, ordering, and (when ordered) SSN
+                // (RFC 4960 §6.9). A malformed peer that splices a B on (stream 1, ssn 4) to an E on
+                // (stream 2, ssn 9) must not be assembled into one message attributed to the head —
+                // treat a stream/ordering/SSN discontinuity as an incomplete run (dropped, not delivered).
+                if (cur != startTsn &&
+                    (
+                        frag.streamId != start.streamId ||
+                            frag.flags.unordered != start.flags.unordered ||
+                            (!start.flags.unordered && frag.ssn != start.ssn)
+                    )
+                ) {
+                    break
+                }
                 run += frag
                 if (frag.flags.ending) {
                     complete = true
@@ -194,7 +224,11 @@ internal class ReassemblyQueue(
             while (true) {
                 val message = ready.remove(expected) ?: break
                 out += message
-                expected += 1
+                // The Stream Sequence Number is a u16 that wraps (RFC 4960 §6.6): mask so that after the
+                // 65535th ordered message on a stream `expected` folds back to 0 to match the sender's
+                // wrapped SSN — otherwise it climbs to 65536, never matches an incoming ssn, and every
+                // subsequent ordered message is stuck in `ready` forever.
+                expected = (expected + 1) and 0xFFFF
             }
             nextOrderedSsn[streamId] = expected
         }

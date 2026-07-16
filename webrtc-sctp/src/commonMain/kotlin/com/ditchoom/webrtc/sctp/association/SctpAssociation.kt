@@ -32,6 +32,11 @@ import kotlin.time.Instant
  *
  * Entropy is injected once ([random], directive #2): it seeds the Verification Tag and the initial TSN,
  * so a scenario replays bit-for-bit. Production wires `CryptoRandom`; tests wire a seeded [Random].
+ *
+ * **Path liveness** is intentionally delegated, not duplicated: this subset sends no SCTP HEARTBEATs, so
+ * an association with no outstanding data does not itself detect a silently-dead peer. In WebRTC that is
+ * covered a layer down by ICE consent freshness (RFC 7675, W3), which tears down the transport on a dead
+ * path and thereby closes the association — so a redundant SCTP heartbeat timer is deliberately omitted.
  */
 public class SctpAssociation(
     private val config: SctpConfig = SctpConfig(),
@@ -45,8 +50,12 @@ public class SctpAssociation(
     public val state: SctpAssociationState get() = _state
 
     // ── Association control block (populated as the handshake completes) ──
-    private var localVerificationTag: VerificationTag = VerificationTag(0u) // tag the peer must echo to us
-    private var peerVerificationTag: VerificationTag = VerificationTag(0u) // tag we stamp on packets to the peer
+    // Visibility is `internal` (not public — absent from the .api) purely so regression fixtures can
+    // craft packets carrying the correct tags; the setters stay private.
+    internal var localVerificationTag: VerificationTag = VerificationTag(0u) // tag the peer must echo to us
+        private set
+    internal var peerVerificationTag: VerificationTag = VerificationTag(0u) // tag we stamp on packets to the peer
+        private set
     private var localInitialTsn: Tsn = Tsn(0u)
     private var nextTsn: Tsn = Tsn(0u)
     private var peerSupportsForwardTsn: Boolean = false
@@ -245,7 +254,10 @@ public class SctpAssociation(
         if (!packet.verifyChecksum()) return
         if (!verificationTagOk(packet)) return
 
-        var sawData = false
+        // A SACK is owed for any chunk that advances the receiver's cumulative TSN — DATA *or* a
+        // FORWARD-TSN (RFC 3758 §3.6 requires an immediate SACK in reply to FORWARD-TSN, even when it
+        // rides alone with no bundled DATA; otherwise the peer's advanced-ack point is never confirmed).
+        var sackOwed = false
         for (chunk in packet.chunks) {
             when (chunk) {
                 is SctpChunk.Init -> onInit(chunk, now, out)
@@ -253,11 +265,14 @@ public class SctpAssociation(
                 is SctpChunk.CookieEcho -> onCookieEcho(chunk, now, out)
                 SctpChunk.CookieAck -> onCookieAck(now, out)
                 is SctpChunk.Data -> {
-                    sawData = true
+                    sackOwed = true
                     onData(chunk, out)
                 }
                 is SctpChunk.Sack -> onSack(chunk, now, out)
-                is SctpChunk.ForwardTsn -> onForwardTsn(chunk, out)
+                is SctpChunk.ForwardTsn -> {
+                    sackOwed = true
+                    onForwardTsn(chunk, out)
+                }
                 is SctpChunk.Heartbeat -> emitPacket(listOf(SctpChunk.HeartbeatAck(chunk.info)), peerVerificationTag, out)
                 is SctpChunk.HeartbeatAck -> Unit
                 is SctpChunk.Abort -> {
@@ -271,7 +286,7 @@ public class SctpAssociation(
                 is SctpChunk.Unrecognized -> Unit
             }
         }
-        if (sawData) maybeSack(now, out)
+        if (sackOwed) maybeSack(now, out)
     }
 
     private fun onData(
@@ -307,6 +322,11 @@ public class SctpAssociation(
         } else if (outcome.cumulativeAdvanced) {
             t3Deadline = now + rtt.rto
         }
+        // RFC 3758: expiry is also checked here, not only on T3 — a partially-reliable message can spend
+        // its retransmit/lifetime budget while OTHER data keeps advancing the cum ack (so T3 is
+        // perpetually restarted and never fires); without this it would be fast-retransmitted forever
+        // instead of being abandoned and skipped via FORWARD-TSN.
+        abandonExpired(now, out)
         trySend(now, out)
         maybeCompleteShutdown(now, out)
     }
@@ -369,7 +389,13 @@ public class SctpAssociation(
         val rq = retransmissionQueue ?: return
         val cc = congestion ?: return
 
-        for (data in rq.drainRetransmits(now)) {
+        // Retransmit the lost flight, but PACED BY cwnd (RFC 4960 §6.3.3 E3): after a T3 collapse to one
+        // MTU we must not dump 100 outstanding chunks back onto the wire at once. Always send at least the
+        // earliest one (flight size is 0 right after a T3 marked everything for retransmit); the remainder
+        // stays NeedsRetransmit and goes out on the next SACK/timer as cwnd re-opens.
+        for (data in rq.retransmittable()) {
+            if (rq.outstandingBytes > 0 && rq.outstandingBytes + data.bytes > cc.cwnd) break
+            rq.markRetransmitted(data, now)
             emitPacket(listOf(data.toChunk()), peerVerificationTag, out)
         }
 
@@ -640,11 +666,17 @@ public class SctpAssociation(
     }
 
     // The verification tag rule (RFC 4960 §8.5): an inbound packet must carry our Verification Tag —
-    // except a packet whose first chunk is INIT (tag 0), or a COOKIE-ECHO/-ACK during setup, which we
-    // key by phase rather than by an established tag.
+    // except a packet whose first chunk is INIT (tag 0), or a COOKIE-ECHO/-ACK during setup (keyed by
+    // phase), or a reflected ABORT: a peer that lost our TCB (crash/restart) sends an out-of-the-blue
+    // ABORT with the T-bit set carrying the tag it saw on OUR packet (= our peerVerificationTag, RFC 4960
+    // §8.5.1) — accepting it is what lets a dead-peer restart actually tear us down instead of leaving us
+    // Established forever.
     private fun verificationTagOk(packet: SctpPacket): Boolean {
         val first = packet.chunks.firstOrNull() ?: return false
         if (first is SctpChunk.Init) return packet.verificationTag.value == 0u
+        if (first is SctpChunk.Abort && first.verificationTagReflected) {
+            return packet.verificationTag == peerVerificationTag || packet.verificationTag == localVerificationTag
+        }
         if (localVerificationTag.value == 0u) return true // pre-TCB (e.g. INIT-ACK / COOKIE-ECHO landing)
         return packet.verificationTag == localVerificationTag
     }
@@ -699,7 +731,7 @@ public class SctpAssociation(
 
     // ── State Cookie (RFC 4960 §5.1.3) — a self-authenticated TCB snapshot. Over DTLS the transport
     // already authenticates the peer, so the cookie carries a fixed magic rather than an HMAC; a cookie
-    // without our magic is one we did not mint and is dropped (InvalidCookie). ──
+    // without our magic is one we did not mint and is silently dropped (RFC 4960 §5.1.5). ──
     private class Cookie(
         val peerTag: VerificationTag,
         val peerInitialTsn: Tsn,

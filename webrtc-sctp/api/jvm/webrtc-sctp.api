@@ -710,7 +710,6 @@ public final class com/ditchoom/webrtc/sctp/VerificationTagCodec : com/ditchoom/
 }
 
 public final class com/ditchoom/webrtc/sctp/association/ProtocolViolationKind : java/lang/Enum {
-	public static final field InvalidCookie Lcom/ditchoom/webrtc/sctp/association/ProtocolViolationKind;
 	public static final field MissingStateCookie Lcom/ditchoom/webrtc/sctp/association/ProtocolViolationKind;
 	public static final field ZeroStreams Lcom/ditchoom/webrtc/sctp/association/ProtocolViolationKind;
 	public static fun getEntries ()Lkotlin/enums/EnumEntries;
@@ -1046,6 +1045,11 @@ public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelConnection : 
 	public fun receive ()Lkotlinx/coroutines/flow/Flow;
 	public fun send (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public synthetic fun send (Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/SctpClosedException : java/lang/Exception {
+	public fun <init> (Lcom/ditchoom/webrtc/sctp/association/SctpFailureReason;)V
+	public final fun getReason ()Lcom/ditchoom/webrtc/sctp/association/SctpFailureReason;
 }
 
 public final class com/ditchoom/webrtc/sctp/datachannel/SctpDataChannelStack : com/ditchoom/buffer/flow/StreamMux {

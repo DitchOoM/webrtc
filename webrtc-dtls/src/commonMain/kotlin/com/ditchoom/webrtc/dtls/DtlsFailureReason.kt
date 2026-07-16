@@ -22,7 +22,9 @@ public sealed interface DtlsFailureReason {
     public object BackendUnavailable : DtlsFailureReason
 
     /** An unexpected backend/library failure; [diagnostic] is a non-discriminant human aid. */
-    public data class Internal(val diagnostic: String) : DtlsFailureReason
+    public data class Internal(
+        val diagnostic: String,
+    ) : DtlsFailureReason
 }
 
 /** Thrown when a DTLS backend cannot be constructed or driven; carries a typed [reason]. */

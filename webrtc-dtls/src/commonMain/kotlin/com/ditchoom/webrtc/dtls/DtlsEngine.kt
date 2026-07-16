@@ -46,7 +46,9 @@ public sealed interface DtlsState {
     public object Closed : DtlsState
 
     /** The transport failed with a typed [reason]; terminal. */
-    public class Failed(public val reason: DtlsFailureReason) : DtlsState
+    public class Failed(
+        public val reason: DtlsFailureReason,
+    ) : DtlsState
 }
 
 /**
@@ -86,13 +88,19 @@ public expect class DtlsEngine(
     public fun start(nowMicros: Long): DtlsStep
 
     /** Feed one inbound DTLS record datagram; drives the handshake or decrypts application data. */
-    public fun onDatagram(record: ReadBuffer, nowMicros: Long): DtlsStep
+    public fun onDatagram(
+        record: ReadBuffer,
+        nowMicros: Long,
+    ): DtlsStep
 
     /** Fire an expired DTLS timer (retransmits the current flight). */
     public fun onTimeout(nowMicros: Long): DtlsStep
 
     /** Encrypt and enqueue application data once [DtlsState.Established]. */
-    public fun send(applicationData: ReadBuffer, nowMicros: Long): DtlsStep
+    public fun send(
+        applicationData: ReadBuffer,
+        nowMicros: Long,
+    ): DtlsStep
 
     /** Begin an orderly close (queues a close_notify to send). */
     public fun beginClose(nowMicros: Long): DtlsStep

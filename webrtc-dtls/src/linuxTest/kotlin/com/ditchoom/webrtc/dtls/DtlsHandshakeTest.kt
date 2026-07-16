@@ -95,8 +95,14 @@ class DtlsHandshakeTest {
                 val deadlines = listOfNotNull(client.nextTimeoutMicros(now), server.nextTimeoutMicros(now))
                 if (deadlines.isEmpty()) break
                 now = maxOf(now + 1, deadlines.min())
-                client.onTimeout(now).let { cState = it.state; toServer.addAll(it.records) }
-                server.onTimeout(now).let { sState = it.state; toClient.addAll(it.records) }
+                client.onTimeout(now).let {
+                    cState = it.state
+                    toServer.addAll(it.records)
+                }
+                server.onTimeout(now).let {
+                    sState = it.state
+                    toClient.addAll(it.records)
+                }
             }
         }
         return cState to sState

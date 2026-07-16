@@ -60,7 +60,10 @@ fun createBuildBoringSslSslTask(arch: String): TaskProvider<Task> {
             val scratch = boringSslBuildScratch.get().asFile
             val srcDir = File(scratch, "boringssl")
 
-            fun run(vararg cmd: String, dir: File) {
+            fun run(
+                vararg cmd: String,
+                dir: File,
+            ) {
                 val rc =
                     ProcessBuilder(*cmd)
                         .directory(dir)
@@ -115,7 +118,10 @@ fun createBuildBoringSslSslTask(arch: String): TaskProvider<Task> {
             }
             cmakeArgs.add("..")
 
-            fun runIn(dir: File, vararg cmd: String) {
+            fun runIn(
+                dir: File,
+                vararg cmd: String,
+            ) {
                 val rc =
                     ProcessBuilder(*cmd)
                         .directory(dir)

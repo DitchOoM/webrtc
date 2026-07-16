@@ -1,9 +1,11 @@
 public final class com/ditchoom/webrtc/dtls/CertificateFingerprint {
+	public static final field Companion Lcom/ditchoom/webrtc/dtls/CertificateFingerprint$Companion;
 	public static final synthetic fun box-impl (Ljava/lang/String;)Lcom/ditchoom/webrtc/dtls/CertificateFingerprint;
 	public static fun constructor-impl (Ljava/lang/String;)Ljava/lang/String;
 	public fun equals (Ljava/lang/Object;)Z
 	public static fun equals-impl (Ljava/lang/String;Ljava/lang/Object;)Z
 	public static final fun equals-impl0 (Ljava/lang/String;Ljava/lang/String;)Z
+	public static final fun getSdp-impl (Ljava/lang/String;)Ljava/lang/String;
 	public final fun getSha256Hex ()Ljava/lang/String;
 	public fun hashCode ()I
 	public static fun hashCode-impl (Ljava/lang/String;)I
@@ -12,9 +14,70 @@ public final class com/ditchoom/webrtc/dtls/CertificateFingerprint {
 	public final synthetic fun unbox-impl ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/dtls/CertificateFingerprint$Companion {
+	public final fun ofHex-rvP_gv8 (Ljava/lang/String;)Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/dtls/Dtls {
 	public static final field INSTANCE Lcom/ditchoom/webrtc/dtls/Dtls;
 	public static final field MODULE Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/dtls/DtlsConfig {
+	public fun <init> ()V
+	public fun <init> (Lcom/ditchoom/buffer/BufferFactory;ZI)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;ZIILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getBufferFactory ()Lcom/ditchoom/buffer/BufferFactory;
+	public final fun getEnableDtls13 ()Z
+	public final fun getMaxDatagramSize ()I
+}
+
+public final class com/ditchoom/webrtc/dtls/DtlsEngine {
+	public fun <init> (Lcom/ditchoom/webrtc/dtls/DtlsRole;Lcom/ditchoom/webrtc/dtls/DtlsConfig;)V
+	public final fun beginClose (J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
+	public final fun close ()V
+	public final fun getLocalFingerprint-ZfS6PIY ()Ljava/lang/String;
+	public final fun nextTimeoutMicros (J)Ljava/lang/Long;
+	public final fun onDatagram (Lcom/ditchoom/buffer/ReadBuffer;J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
+	public final fun onTimeout (J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
+	public final fun send (Lcom/ditchoom/buffer/ReadBuffer;J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
+	public final fun start (J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
+}
+
+public final class com/ditchoom/webrtc/dtls/DtlsException : java/lang/Exception {
+	public fun <init> (Lcom/ditchoom/webrtc/dtls/DtlsFailureReason;Ljava/lang/String;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/dtls/DtlsFailureReason;Ljava/lang/String;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getReason ()Lcom/ditchoom/webrtc/dtls/DtlsFailureReason;
+}
+
+public abstract interface class com/ditchoom/webrtc/dtls/DtlsFailureReason {
+}
+
+public final class com/ditchoom/webrtc/dtls/DtlsFailureReason$BackendUnavailable : com/ditchoom/webrtc/dtls/DtlsFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/dtls/DtlsFailureReason$BackendUnavailable;
+}
+
+public final class com/ditchoom/webrtc/dtls/DtlsFailureReason$HandshakeFailure : com/ditchoom/webrtc/dtls/DtlsFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/dtls/DtlsFailureReason$HandshakeFailure;
+}
+
+public final class com/ditchoom/webrtc/dtls/DtlsFailureReason$Internal : com/ditchoom/webrtc/dtls/DtlsFailureReason {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/webrtc/dtls/DtlsFailureReason$Internal;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/dtls/DtlsFailureReason$Internal;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/dtls/DtlsFailureReason$Internal;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDiagnostic ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/dtls/DtlsFailureReason$PeerCertificateMissing : com/ditchoom/webrtc/dtls/DtlsFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/dtls/DtlsFailureReason$PeerCertificateMissing;
+}
+
+public final class com/ditchoom/webrtc/dtls/DtlsFailureReason$RecordLayerError : com/ditchoom/webrtc/dtls/DtlsFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/dtls/DtlsFailureReason$RecordLayerError;
 }
 
 public final class com/ditchoom/webrtc/dtls/DtlsRole : java/lang/Enum {
@@ -23,5 +86,43 @@ public final class com/ditchoom/webrtc/dtls/DtlsRole : java/lang/Enum {
 	public static fun getEntries ()Lkotlin/enums/EnumEntries;
 	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/webrtc/dtls/DtlsRole;
 	public static fun values ()[Lcom/ditchoom/webrtc/dtls/DtlsRole;
+}
+
+public abstract interface class com/ditchoom/webrtc/dtls/DtlsState {
+}
+
+public final class com/ditchoom/webrtc/dtls/DtlsState$Closed : com/ditchoom/webrtc/dtls/DtlsState {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/dtls/DtlsState$Closed;
+}
+
+public final class com/ditchoom/webrtc/dtls/DtlsState$Established : com/ditchoom/webrtc/dtls/DtlsState {
+	public synthetic fun <init> (Ljava/lang/String;Lcom/ditchoom/webrtc/dtls/DtlsVersion;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getNegotiatedVersion ()Lcom/ditchoom/webrtc/dtls/DtlsVersion;
+	public final fun getPeerFingerprint-ZfS6PIY ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/dtls/DtlsState$Failed : com/ditchoom/webrtc/dtls/DtlsState {
+	public fun <init> (Lcom/ditchoom/webrtc/dtls/DtlsFailureReason;)V
+	public final fun getReason ()Lcom/ditchoom/webrtc/dtls/DtlsFailureReason;
+}
+
+public final class com/ditchoom/webrtc/dtls/DtlsState$Handshaking : com/ditchoom/webrtc/dtls/DtlsState {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/dtls/DtlsState$Handshaking;
+}
+
+public final class com/ditchoom/webrtc/dtls/DtlsStep {
+	public fun <init> (Ljava/util/List;Ljava/util/List;Lcom/ditchoom/webrtc/dtls/DtlsState;)V
+	public final fun getApplicationData ()Ljava/util/List;
+	public final fun getRecords ()Ljava/util/List;
+	public final fun getState ()Lcom/ditchoom/webrtc/dtls/DtlsState;
+}
+
+public final class com/ditchoom/webrtc/dtls/DtlsVersion : java/lang/Enum {
+	public static final field Dtls12 Lcom/ditchoom/webrtc/dtls/DtlsVersion;
+	public static final field Dtls13 Lcom/ditchoom/webrtc/dtls/DtlsVersion;
+	public static final field Unknown Lcom/ditchoom/webrtc/dtls/DtlsVersion;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/webrtc/dtls/DtlsVersion;
+	public static fun values ()[Lcom/ditchoom/webrtc/dtls/DtlsVersion;
 }
 

@@ -34,7 +34,6 @@ public value class CertificateFingerprint(
 
     public companion object {
         /** Build from a lowercase/uppercase hex digest string (colons tolerated and stripped). */
-        public fun ofHex(hex: String): CertificateFingerprint =
-            CertificateFingerprint(hex.replace(":", "").lowercase())
+        public fun ofHex(hex: String): CertificateFingerprint = CertificateFingerprint(hex.replace(":", "").lowercase())
     }
 }

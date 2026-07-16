@@ -20,11 +20,17 @@ public actual class DtlsEngine actual constructor(
 
     public actual fun start(nowMicros: Long): DtlsStep = unavailable()
 
-    public actual fun onDatagram(record: ReadBuffer, nowMicros: Long): DtlsStep = unavailable()
+    public actual fun onDatagram(
+        record: ReadBuffer,
+        nowMicros: Long,
+    ): DtlsStep = unavailable()
 
     public actual fun onTimeout(nowMicros: Long): DtlsStep = unavailable()
 
-    public actual fun send(applicationData: ReadBuffer, nowMicros: Long): DtlsStep = unavailable()
+    public actual fun send(
+        applicationData: ReadBuffer,
+        nowMicros: Long,
+    ): DtlsStep = unavailable()
 
     public actual fun beginClose(nowMicros: Long): DtlsStep = unavailable()
 

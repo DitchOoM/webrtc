@@ -76,12 +76,13 @@ public actual class DtlsEngine actual constructor(
     private var terminal: DtlsState? = null
     private var establishedState: DtlsState.Established? = null
 
-    public actual val localFingerprint: CertificateFingerprint = memScoped {
-        val out = allocArray<UByteVar>(32)
-        val n = bd_local_fingerprint(engine, out)
-        if (n != 32) throw DtlsException(DtlsFailureReason.Internal("local fingerprint digest failed"))
-        CertificateFingerprint(hex(out, 32))
-    }
+    public actual val localFingerprint: CertificateFingerprint =
+        memScoped {
+            val out = allocArray<UByteVar>(32)
+            val n = bd_local_fingerprint(engine, out)
+            if (n != 32) throw DtlsException(DtlsFailureReason.Internal("local fingerprint digest failed"))
+            CertificateFingerprint(hex(out, 32))
+        }
 
     public actual fun start(nowMicros: Long): DtlsStep = pump(nowMicros)
 
@@ -183,11 +184,9 @@ public actual class DtlsEngine actual constructor(
         return DtlsState.Established(fp, version).also { establishedState = it }
     }
 
-    private fun failWith(reason: DtlsFailureReason): DtlsStep =
-        DtlsStep(emptyList(), emptyList(), failReasonState(reason))
+    private fun failWith(reason: DtlsFailureReason): DtlsStep = DtlsStep(emptyList(), emptyList(), failReasonState(reason))
 
-    private fun failReasonState(reason: DtlsFailureReason): DtlsState.Failed =
-        DtlsState.Failed(reason).also { terminal = it }
+    private fun failReasonState(reason: DtlsFailureReason): DtlsState.Failed = DtlsState.Failed(reason).also { terminal = it }
 
     private fun feed(record: ReadBuffer) {
         val len = record.limit() - record.position()

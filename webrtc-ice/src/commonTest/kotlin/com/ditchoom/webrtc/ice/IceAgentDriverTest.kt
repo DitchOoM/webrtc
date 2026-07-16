@@ -68,8 +68,22 @@ class IceAgentDriverTest {
             assertNotNull(withTimeoutOrNull(timeout) { alice.awaitConnected() }, "alice ICE connected")
             assertNotNull(withTimeoutOrNull(timeout) { bob.awaitConnected() }, "bob ICE connected")
 
-            val client = SctpDataChannelStack(alice.appDataTransport().asSctpTransport(), backgroundScope, clock, SctpRole.Client, random = Random(201))
-            val server = SctpDataChannelStack(bob.appDataTransport().asSctpTransport(), backgroundScope, clock, SctpRole.Server, random = Random(202))
+            val client =
+                SctpDataChannelStack(
+                    alice.appDataTransport().asSctpTransport(),
+                    backgroundScope,
+                    clock,
+                    SctpRole.Client,
+                    random = Random(201),
+                )
+            val server =
+                SctpDataChannelStack(
+                    bob.appDataTransport().asSctpTransport(),
+                    backgroundScope,
+                    clock,
+                    SctpRole.Server,
+                    random = Random(202),
+                )
             client.start()
             server.start()
 
@@ -81,7 +95,11 @@ class IceAgentDriverTest {
             channel.send(textBuffer("world"))
             val received =
                 withTimeoutOrNull(timeout) {
-                    incoming.receive().take(2).toList().map { it.text() }
+                    incoming
+                        .receive()
+                        .take(2)
+                        .toList()
+                        .map { it.text() }
                 }
             assertEquals(listOf("hello", "world"), received)
 

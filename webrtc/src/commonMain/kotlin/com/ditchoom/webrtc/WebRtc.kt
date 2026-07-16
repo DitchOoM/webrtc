@@ -17,23 +17,29 @@ public value class DataChannelId(
 )
 
 /**
- * Peer-connection lifecycle as a sealed hierarchy where each state carries exactly the data that is
- * valid in it — and nothing that isn't. There is no `connected: Boolean` + nullable
- * `failureReason` soup that could encode "connected AND failed"; the illegal states are simply
- * unrepresentable. (Standing directive: no impossible states in the type system.)
+ * Peer-connection lifecycle (W3C `RTCPeerConnectionState`) as a sealed hierarchy where each state carries
+ * exactly the data that is valid in it — and nothing that isn't. There is no `connected: Boolean` +
+ * nullable `failureReason` soup that could encode "connected AND failed"; the illegal states are simply
+ * unrepresentable (DESIGN §4). [Failed] carries the **typed** [PeerConnectionFailureReason], never a
+ * string (directive #3) — the same value the terminal [WebRtcException] throws.
  */
 public sealed interface PeerConnectionState {
-    public object New : PeerConnectionState
+    /** Constructed, no negotiation started (W3C `new`). */
+    public data object New : PeerConnectionState
 
-    public object Connecting : PeerConnectionState
+    /** ICE/DTLS/SCTP establishment is in progress (W3C `connecting`). */
+    public data object Connecting : PeerConnectionState
 
+    /** The data-channel transport is up over the nominated ICE pair (W3C `connected`). */
     public data class Connected(
-        val selectedPairId: Long,
+        public val selectedPairId: Long,
     ) : PeerConnectionState
 
+    /** Establishment failed or the session was lost with a typed cause (W3C `failed`). */
     public data class Failed(
-        val reason: String,
+        public val reason: PeerConnectionFailureReason,
     ) : PeerConnectionState
 
-    public object Closed : PeerConnectionState
+    /** The session was closed locally (W3C `closed`). */
+    public data object Closed : PeerConnectionState
 }

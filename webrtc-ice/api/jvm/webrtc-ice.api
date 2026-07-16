@@ -46,6 +46,10 @@ public final class com/ditchoom/webrtc/ice/ComponentId : java/lang/Enum {
 	public static fun values ()[Lcom/ditchoom/webrtc/ice/ComponentId;
 }
 
+public abstract interface class com/ditchoom/webrtc/ice/DatagramBinder {
+	public abstract fun bind (Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
 public final class com/ditchoom/webrtc/ice/Foundation {
 	public static final field Companion Lcom/ditchoom/webrtc/ice/Foundation$Companion;
 	public static final synthetic fun box-impl (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/Foundation;
@@ -80,6 +84,28 @@ public final class com/ditchoom/webrtc/ice/IceAgent {
 	public final fun getState ()Lcom/ditchoom/webrtc/ice/IceConnectionState;
 	public final fun handle (Lcom/ditchoom/webrtc/ice/IceEvent;Lkotlin/time/Instant;)Ljava/util/List;
 	public final fun nextDeadline (Lkotlin/time/Instant;)Lkotlin/time/Instant;
+}
+
+public final class com/ditchoom/webrtc/ice/IceAgentDriver {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/IceRole;Lkotlin/random/Random;Lcom/ditchoom/webrtc/ice/DatagramBinder;Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lcom/ditchoom/webrtc/ice/IceConfig;)V
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceRole;Lkotlin/random/Random;Lcom/ditchoom/webrtc/ice/DatagramBinder;Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lcom/ditchoom/webrtc/ice/IceConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun addRemoteCandidate (Lcom/ditchoom/webrtc/ice/IceCandidate;)V
+	public final fun appDataTransport ()Lcom/ditchoom/webrtc/ice/IceDataTransport;
+	public final fun close ()V
+	public final fun drop (Lcom/ditchoom/webrtc/ice/IceCandidate;)V
+	public final fun gatherHost (Ljava/lang/String;ILcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun gatherHost$default (Lcom/ditchoom/webrtc/ice/IceAgentDriver;Ljava/lang/String;ILcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun gatherRelay (Lcom/ditchoom/buffer/flow/SocketAddress;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun getAgent ()Lcom/ditchoom/webrtc/ice/IceAgent;
+	public final fun getLocalCandidateGathered ()Lkotlinx/coroutines/flow/Flow;
+	public final fun getLocalCandidates ()Ljava/util/List;
+	public final fun getLocalCredentials ()Lcom/ditchoom/webrtc/ice/IceCredentials;
+	public final fun getSelectedPair ()Lcom/ditchoom/webrtc/ice/CandidatePair;
+	public final fun getState ()Lkotlinx/coroutines/flow/StateFlow;
+	public final fun post (Lcom/ditchoom/webrtc/ice/IceEvent;)V
+	public final fun restart ()V
+	public final fun setRemoteCredentials (Lcom/ditchoom/webrtc/ice/IceCredentials;)V
+	public final fun start ()V
 }
 
 public final class com/ditchoom/webrtc/ice/IceAttributes {
@@ -210,6 +236,12 @@ public final class com/ditchoom/webrtc/ice/IceCandidate$ServerReflexive : com/di
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/ice/IceCandidateLine {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/IceCandidateLine;
+	public final fun format (Lcom/ditchoom/webrtc/ice/IceCandidate;)Ljava/lang/String;
+	public final fun parse (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/IceCandidate;
+}
+
 public final class com/ditchoom/webrtc/ice/IceConfig {
 	public synthetic fun <init> (JLcom/ditchoom/webrtc/stun/StunRetransmitPolicy;JJJLcom/ditchoom/buffer/BufferFactory;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public synthetic fun <init> (JLcom/ditchoom/webrtc/stun/StunRetransmitPolicy;JJJLcom/ditchoom/buffer/BufferFactory;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
@@ -305,6 +337,12 @@ public final class com/ditchoom/webrtc/ice/IceCredentials {
 
 public final class com/ditchoom/webrtc/ice/IceCredentials$Companion {
 	public final fun random (Lkotlin/random/Random;)Lcom/ditchoom/webrtc/ice/IceCredentials;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/IceDataTransport {
+	public abstract fun close ()V
+	public abstract fun receive (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun send (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
 public abstract interface class com/ditchoom/webrtc/ice/IceEvent {

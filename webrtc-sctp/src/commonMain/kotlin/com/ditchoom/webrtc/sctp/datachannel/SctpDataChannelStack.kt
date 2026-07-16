@@ -8,6 +8,7 @@ import com.ditchoom.buffer.flow.Connection
 import com.ditchoom.buffer.flow.Receiver
 import com.ditchoom.buffer.flow.Sender
 import com.ditchoom.buffer.flow.StreamMux
+import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.webrtc.sctp.PayloadProtocolId
 import com.ditchoom.webrtc.sctp.StreamId
 import com.ditchoom.webrtc.sctp.association.SctpAssociation
@@ -476,10 +477,15 @@ internal class PendingInbound(
  * has torn down (transport closed, or the association aborted) — so the call fails fast with the typed
  * [reason] instead of suspending forever. [reason] is the association's [SctpFailureReason] when the
  * teardown was an abort, or null for a plain transport close.
+ *
+ * It extends socket's abstract [SocketClosedException] (the same extension point the QUIC module's
+ * `QuicCloseException` uses) so a data-channel consumer catches it uniformly with every other transport
+ * failure via `catch (e: SocketClosedException)` / `catch (e: SocketException)` / `catch (e: IOException)`
+ * on JVM (RFC §3.1 "one thrown vocabulary"). The typed [reason] stays the discriminant, never the string.
  */
 public class SctpClosedException(
     public val reason: SctpFailureReason?,
-) : Exception("SCTP data-channel stack closed${reason?.let { ": $it" } ?: ""}")
+) : SocketClosedException("SCTP data-channel stack closed${reason?.let { ": $it" } ?: ""}")
 
 /**
  * One open data channel as a buffer-flow [Connection]<[ReadBuffer]> (RFC 8831). [send] posts one

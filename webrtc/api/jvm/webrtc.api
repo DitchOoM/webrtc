@@ -12,11 +12,141 @@ public final class com/ditchoom/webrtc/DataChannelId {
 	public final synthetic fun unbox-impl ()I
 }
 
+public abstract interface class com/ditchoom/webrtc/DtlsFailureReason {
+	public abstract fun getDescription ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/DtlsFailureReason$FingerprintMismatch : com/ditchoom/webrtc/DtlsFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/DtlsFailureReason$FingerprintMismatch;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/DtlsFailureReason$HandshakeFailed : com/ditchoom/webrtc/DtlsFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/DtlsFailureReason$HandshakeFailed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/DtlsFailureReason$Timeout : com/ditchoom/webrtc/DtlsFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/DtlsFailureReason$Timeout;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/DtlsRole : java/lang/Enum {
+	public static final field Client Lcom/ditchoom/webrtc/DtlsRole;
+	public static final field Server Lcom/ditchoom/webrtc/DtlsRole;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/webrtc/DtlsRole;
+	public static fun values ()[Lcom/ditchoom/webrtc/DtlsRole;
+}
+
+public abstract interface class com/ditchoom/webrtc/DtlsTransportFactory {
+	public abstract fun secure (Lcom/ditchoom/webrtc/ice/IceDataTransport;Lcom/ditchoom/webrtc/DtlsRole;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/webrtc/IceGatheringPolicy {
+	public abstract fun gather (Lcom/ditchoom/webrtc/ice/IceAgentDriver;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/webrtc/NativePeerConnection : com/ditchoom/webrtc/RtcPeerConnection {
+	public fun <init> (Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lkotlin/random/Random;Lcom/ditchoom/webrtc/ice/DatagramBinder;Lcom/ditchoom/webrtc/IceGatheringPolicy;Lcom/ditchoom/webrtc/PeerConnectionConfig;Lcom/ditchoom/webrtc/DtlsTransportFactory;)V
+	public synthetic fun <init> (Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lkotlin/random/Random;Lcom/ditchoom/webrtc/ice/DatagramBinder;Lcom/ditchoom/webrtc/IceGatheringPolicy;Lcom/ditchoom/webrtc/PeerConnectionConfig;Lcom/ditchoom/webrtc/DtlsTransportFactory;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun addIceCandidate (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun createAnswer (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun createDataChannel (Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun createOffer (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun getConnectionState ()Lkotlinx/coroutines/flow/StateFlow;
+	public fun getIncomingDataChannels ()Lkotlinx/coroutines/flow/Flow;
+	public fun getLocalIceCandidates ()Lkotlinx/coroutines/flow/Flow;
+	public fun getSignalingState ()Lkotlinx/coroutines/flow/StateFlow;
+	public fun setLocalDescription (Lcom/ditchoom/webrtc/sdp/SdpType;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun setRemoteDescription (Lcom/ditchoom/webrtc/sdp/SdpType;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/webrtc/PeerConnectionConfig {
+	public static final field Companion Lcom/ditchoom/webrtc/PeerConnectionConfig$Companion;
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Lcom/ditchoom/webrtc/sdp/Fingerprint;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Lcom/ditchoom/webrtc/sdp/Fingerprint;Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/IceConfig;
+	public final fun component2 ()Lcom/ditchoom/webrtc/sctp/association/SctpConfig;
+	public final fun component3 ()Lcom/ditchoom/webrtc/sdp/Fingerprint;
+	public final fun component4-QcrJwnM ()Ljava/lang/String;
+	public final fun copy-tBsNbWI (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Lcom/ditchoom/webrtc/sdp/Fingerprint;Ljava/lang/String;)Lcom/ditchoom/webrtc/PeerConnectionConfig;
+	public static synthetic fun copy-tBsNbWI$default (Lcom/ditchoom/webrtc/PeerConnectionConfig;Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Lcom/ditchoom/webrtc/sdp/Fingerprint;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionConfig;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getIceConfig ()Lcom/ditchoom/webrtc/ice/IceConfig;
+	public final fun getLocalFingerprint ()Lcom/ditchoom/webrtc/sdp/Fingerprint;
+	public final fun getMid-QcrJwnM ()Ljava/lang/String;
+	public final fun getSctpConfig ()Lcom/ditchoom/webrtc/sctp/association/SctpConfig;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/PeerConnectionConfig$Companion {
+	public final fun getPLACEHOLDER_FINGERPRINT ()Lcom/ditchoom/webrtc/sdp/Fingerprint;
+}
+
+public abstract interface class com/ditchoom/webrtc/PeerConnectionFailureReason {
+	public abstract fun getDescription ()Ljava/lang/String;
+	public abstract fun toConnectionFailureReason ()Lcom/ditchoom/socket/ConnectionFailureReason;
+}
+
+public final class com/ditchoom/webrtc/PeerConnectionFailureReason$Dtls : com/ditchoom/webrtc/PeerConnectionFailureReason {
+	public fun <init> (Lcom/ditchoom/webrtc/DtlsFailureReason;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/DtlsFailureReason;
+	public final fun copy (Lcom/ditchoom/webrtc/DtlsFailureReason;)Lcom/ditchoom/webrtc/PeerConnectionFailureReason$Dtls;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/PeerConnectionFailureReason$Dtls;Lcom/ditchoom/webrtc/DtlsFailureReason;ILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionFailureReason$Dtls;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getReason ()Lcom/ditchoom/webrtc/DtlsFailureReason;
+	public fun hashCode ()I
+	public fun toConnectionFailureReason ()Lcom/ditchoom/socket/ConnectionFailureReason;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/PeerConnectionFailureReason$Ice : com/ditchoom/webrtc/PeerConnectionFailureReason {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/IceFailureReason;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/IceFailureReason;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/IceFailureReason;)Lcom/ditchoom/webrtc/PeerConnectionFailureReason$Ice;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/PeerConnectionFailureReason$Ice;Lcom/ditchoom/webrtc/ice/IceFailureReason;ILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionFailureReason$Ice;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getReason ()Lcom/ditchoom/webrtc/ice/IceFailureReason;
+	public fun hashCode ()I
+	public fun toConnectionFailureReason ()Lcom/ditchoom/socket/ConnectionFailureReason;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/PeerConnectionFailureReason$Sctp : com/ditchoom/webrtc/PeerConnectionFailureReason {
+	public fun <init> (Lcom/ditchoom/webrtc/sctp/association/SctpFailureReason;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sctp/association/SctpFailureReason;
+	public final fun copy (Lcom/ditchoom/webrtc/sctp/association/SctpFailureReason;)Lcom/ditchoom/webrtc/PeerConnectionFailureReason$Sctp;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/PeerConnectionFailureReason$Sctp;Lcom/ditchoom/webrtc/sctp/association/SctpFailureReason;ILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionFailureReason$Sctp;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getReason ()Lcom/ditchoom/webrtc/sctp/association/SctpFailureReason;
+	public fun hashCode ()I
+	public fun toConnectionFailureReason ()Lcom/ditchoom/socket/ConnectionFailureReason;
+	public fun toString ()Ljava/lang/String;
+}
+
 public abstract interface class com/ditchoom/webrtc/PeerConnectionState {
 }
 
 public final class com/ditchoom/webrtc/PeerConnectionState$Closed : com/ditchoom/webrtc/PeerConnectionState {
 	public static final field INSTANCE Lcom/ditchoom/webrtc/PeerConnectionState$Closed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
 }
 
 public final class com/ditchoom/webrtc/PeerConnectionState$Connected : com/ditchoom/webrtc/PeerConnectionState {
@@ -32,25 +162,62 @@ public final class com/ditchoom/webrtc/PeerConnectionState$Connected : com/ditch
 
 public final class com/ditchoom/webrtc/PeerConnectionState$Connecting : com/ditchoom/webrtc/PeerConnectionState {
 	public static final field INSTANCE Lcom/ditchoom/webrtc/PeerConnectionState$Connecting;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
 }
 
 public final class com/ditchoom/webrtc/PeerConnectionState$Failed : com/ditchoom/webrtc/PeerConnectionState {
-	public fun <init> (Ljava/lang/String;)V
-	public final fun component1 ()Ljava/lang/String;
-	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/webrtc/PeerConnectionState$Failed;
-	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/PeerConnectionState$Failed;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionState$Failed;
+	public fun <init> (Lcom/ditchoom/webrtc/PeerConnectionFailureReason;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/PeerConnectionFailureReason;
+	public final fun copy (Lcom/ditchoom/webrtc/PeerConnectionFailureReason;)Lcom/ditchoom/webrtc/PeerConnectionState$Failed;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/PeerConnectionState$Failed;Lcom/ditchoom/webrtc/PeerConnectionFailureReason;ILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionState$Failed;
 	public fun equals (Ljava/lang/Object;)Z
-	public final fun getReason ()Ljava/lang/String;
+	public final fun getReason ()Lcom/ditchoom/webrtc/PeerConnectionFailureReason;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
 
 public final class com/ditchoom/webrtc/PeerConnectionState$New : com/ditchoom/webrtc/PeerConnectionState {
 	public static final field INSTANCE Lcom/ditchoom/webrtc/PeerConnectionState$New;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/PlaintextDtls : com/ditchoom/webrtc/DtlsTransportFactory {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/PlaintextDtls;
+	public fun secure (Lcom/ditchoom/webrtc/ice/IceDataTransport;Lcom/ditchoom/webrtc/DtlsRole;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/webrtc/RtcPeerConnection {
+	public abstract fun addIceCandidate (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun createAnswer (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun createDataChannel (Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun createDataChannel$default (Lcom/ditchoom/webrtc/RtcPeerConnection;Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public abstract fun createOffer (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun getConnectionState ()Lkotlinx/coroutines/flow/StateFlow;
+	public abstract fun getIncomingDataChannels ()Lkotlinx/coroutines/flow/Flow;
+	public abstract fun getLocalIceCandidates ()Lkotlinx/coroutines/flow/Flow;
+	public abstract fun getSignalingState ()Lkotlinx/coroutines/flow/StateFlow;
+	public abstract fun setLocalDescription (Lcom/ditchoom/webrtc/sdp/SdpType;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun setRemoteDescription (Lcom/ditchoom/webrtc/sdp/SdpType;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/webrtc/RtcPeerConnection$DefaultImpls {
+	public static synthetic fun createDataChannel$default (Lcom/ditchoom/webrtc/RtcPeerConnection;Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 }
 
 public final class com/ditchoom/webrtc/WebRtc {
 	public static final field INSTANCE Lcom/ditchoom/webrtc/WebRtc;
 	public static final field MODULE Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/WebRtcException : com/ditchoom/socket/SocketClosedException, com/ditchoom/socket/ConnectionFailure {
+	public fun <init> (Lcom/ditchoom/webrtc/PeerConnectionFailureReason;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/PeerConnectionFailureReason;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getFailure ()Lcom/ditchoom/webrtc/PeerConnectionFailureReason;
+	public fun getReason ()Lcom/ditchoom/socket/ConnectionFailureReason;
 }
 

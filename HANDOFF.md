@@ -10,11 +10,28 @@ this file. Update it whenever you stop mid-wave.
 ### START HERE — W4 (fresh session), branch `w4-webrtc-dtls` (3 commits off `main` @ `0e1a702`)
 
 **Two decisions were resolved and recorded in the `EXECUTION_PLAN.md` decision log — read those two rows first:**
-1. **§11.3 (DTLS version)** → both 1.2 + 1.3 via BoringSSL config; **min pinned 1.2** (the field floor
-   Chrome/Pion speak). `DtlsConfig.enableDtls13` opts into 1.3 (default off, so the portable floor
-   matches the future boringssl-kmp, which is 1.2-only at its API-21 pin).
+1. **§11.3 (DTLS version)** → **min 1.2 / max 1.3, 1.3 ON by default** (`DtlsConfig.enableDtls13 = true`).
+   The field has moved to 1.3 (**verified by search, not assumed**): Firefox ships it in Release,
+   Chrome/BoringSSL has it on by default (libwebrtc flipped in 2025), and BoringSSL itself now defaults
+   to 1.3. Min stays 1.2 purely for breadth — **Pion's released v3 is still 1.2-only** — and negotiation
+   falls back automatically. **Both paths are asserted by tests**, not assumed.
 2. **W4 sequencing** → **native-Linux DTLS now, self-contained; JVM/Android/Apple deferred to
    `boringssl-kmp`.** This *inverted a plan premise* — see "the boringssl-kmp reality" below.
+
+**A third thing to know: RFC §11.5 — pure-Kotlin DTLS 1.3 over buffer-crypto is now an open question
++ a candidate wave (W4b).** Audited this session: buffer-crypto already has ~every primitive TLS 1.3
+needs (`Hkdf.extractInto`/`expandInto` **separately** = the key-schedule shape, AEAD, X25519/P-256,
+ECDSA/Ed25519, streaming SHA, constant-time, CryptoRandom). The **only** gap is a raw AES block for
+RFC 9147 §4.2.3 sequence-number encryption → an additive buffer-crypto PR (W1 precedent). What
+BoringSSL uniquely gives us is *the protocol*, not the crypto — plus ASN.1 DER for the self-signed
+cert. Because both browsers now do 1.3, a **1.3-only** core already talks to the whole browser field
+(1.2 is a later breadth add for Pion), and 1.3 is the *simpler, more misuse-resistant* protocol — so
+this is far more tractable than "reimplement TLS" sounds. It would delete the native dep, the
+duplicate-symbol class, the boringssl-kmp dependency, **and** unblock the W6 SocketException bridge.
+**Do not do it instead of finishing W4** — `DtlsEngine`'s caller-clocked sans-io `expect` already fits
+it exactly, so a pure-Kotlin core later just *becomes* the commonMain implementation and inherits
+W4's fixtures; and BoringSSL should stay permanently as the **differential-testing oracle**. Full
+rationale in RFC §11.5 / EXECUTION_PLAN "W4b".
 
 **The linkage (the crux — proven empirically, do not re-litigate):** `webrtc-dtls` links **only**
 `libssl.a`, built from **buffer-crypto's exact pinned commit `63893acb`**, and lets libssl's undefined
@@ -47,8 +64,9 @@ tripwire: it links libssl + libcrypto in one K/N binary and would fail if a seco
   address) stages through one reusable per-engine 64 KiB native `scratch`. No `ByteArray` anywhere.
 - `jvm/android/js/wasmJs` — typed `DtlsUnavailable` actuals (`BackendUnavailable`), fail-fast.
 - `linuxTest` — **the W4 exit fixture**: `two_stacks_complete_a_dtls_handshake_under_virtual_time`
-  (both sides Established, each verifying the *other's* real cert fingerprint) +
-  `application_data_flows_after_the_handshake` + the linkage tripwire. Whole suite: **1 ms**.
+  (both sides Established, each verifying the *other's* real cert fingerprint, negotiated **1.3**) +
+  `two_stacks_fall_back_to_dtls_1_2_when_1_3_is_disabled` (the Pion/1.2 interop lane, negotiated
+  **1.2**) + `application_data_flows_after_the_handshake` + the linkage tripwire. **7/7 in 2 ms.**
 
 **A trap that cost real time — do not reintroduce:** a wrapper returning a **positive status sentinel**
 from a **byte-count** function is catastrophic. `bd_read_app` returned `BD_WANT_READ = 1` for "no data",
@@ -93,7 +111,11 @@ migration **step 9, last**, after buffer-crypto/socket/quiche migrate onto the o
 **So:** JVM/Android/Apple DTLS unblocks when boringssl-kmp publishes *and* grows a DTLS surface (JVM/
 Android need no native-link dedup — buffer-crypto is pure JCA there, so those are clash-free whenever it
 lands; **Apple/native additionally require the buffer-crypto migration** or they re-create the clash).
-Note buffer-crypto's API-42 gives us **DTLS 1.2 + 1.3** on native today; boringssl-kmp's API-21 is 1.2-only.
+**Worth raising upstream (their repo):** boringssl-kmp's quiche-anchored API-21 pin has **no
+`DTLS1_3_VERSION`** — its own RFC locks in a "DTLS 1.2 baseline" — so that route would ship
+JVM/Android/Apple a **1.2-only** DTLS stack just as both browser engines standardise on 1.3 (§11.3).
+The quiche anchor is the cause. buffer-crypto's API-42 gives us 1.2 **and** 1.3 on native today. This
+is also a point in favour of the §11.5 / W4b pure-Kotlin route, which sidesteps the pin entirely.
 
 **Also deferred (documented in code):** real-network **MTU/datagram-boundary** preservation — the memory
 BIO is a byte stream, so a flight is drained and sent as ONE datagram (valid: DTLS records self-delimit,

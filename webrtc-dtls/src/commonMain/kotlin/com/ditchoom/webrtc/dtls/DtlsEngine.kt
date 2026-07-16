@@ -12,14 +12,19 @@ public enum class DtlsVersion { Dtls12, Dtls13, Unknown }
  * The one un-seamed source of entropy is BoringSSL's internal RNG shaping the ClientHello / keys —
  * the documented ±1-datagram Tier-B drift residue (RFC §5.1), not a Kotlin `Random.Default`.
  *
- * @param bufferFactory pooled buffers for the record I/O edge (default: the managed factory).
- * @param enableDtls13 raise the negotiated max to DTLS 1.3; min stays 1.2, the WebRTC field floor
- *   (§11.3). Off by default so the portable interop floor matches the future `boringssl-kmp` (1.2-only).
+ * @param bufferFactory pooled buffers for the record I/O edge. Pass a **pooled native** factory in
+ *   production: a native-backed buffer hands BoringSSL its own address (no staging copy), while a
+ *   GC-heap buffer (the `managed()` default) is staged through an internal native scratch.
+ * @param enableDtls13 negotiate up to DTLS 1.3; min always stays 1.2 (§11.3). **On by default**: both
+ *   major browser engines now ship DTLS 1.3 for WebRTC (Firefox in Release, Chrome/BoringSSL on by
+ *   default since the libwebrtc flip in 2025), and BoringSSL itself defaults to it. Version negotiation
+ *   falls back to 1.2 for peers that lack 1.3 — notably Pion, whose released v3 is still 1.2-only. Set
+ *   this false to pin 1.2 (e.g. to reproduce a 1.2-only interop lane).
  * @param maxDatagramSize the largest record datagram we read out of the backend in one step.
  */
 public class DtlsConfig(
     public val bufferFactory: BufferFactory = BufferFactory.managed(),
-    public val enableDtls13: Boolean = false,
+    public val enableDtls13: Boolean = true,
     public val maxDatagramSize: Int = 1500,
 )
 

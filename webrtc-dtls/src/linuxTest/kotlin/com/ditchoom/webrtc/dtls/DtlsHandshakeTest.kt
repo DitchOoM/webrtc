@@ -31,6 +31,32 @@ class DtlsHandshakeTest {
             assertEquals(server.localFingerprint, c.peerFingerprint)
             assertEquals(client.localFingerprint, s.peerFingerprint)
             assertEquals(64, client.localFingerprint.sha256Hex.length) // 32 bytes → 64 hex chars
+
+            // The default config negotiates 1.3 (§11.3): both browser engines ship it now.
+            assertEquals(DtlsVersion.Dtls13, c.negotiatedVersion)
+            assertEquals(DtlsVersion.Dtls13, s.negotiatedVersion)
+        } finally {
+            client.close()
+            server.close()
+        }
+    }
+
+    /**
+     * The 1.2 floor still works (§11.3): pinning `enableDtls13 = false` is the interop lane for peers
+     * without 1.3 — notably Pion, whose released v3 is DTLS 1.2 only.
+     */
+    @Test
+    fun two_stacks_fall_back_to_dtls_1_2_when_1_3_is_disabled() {
+        val pinned = DtlsConfig(enableDtls13 = false)
+        val client = DtlsEngine(DtlsRole.Client, pinned)
+        val server = DtlsEngine(DtlsRole.Server, pinned)
+        try {
+            val (c, s) = drive(client, server)
+            assertIs<DtlsState.Established>(c, "client established, was $c")
+            assertIs<DtlsState.Established>(s, "server established, was $s")
+            assertEquals(DtlsVersion.Dtls12, c.negotiatedVersion)
+            assertEquals(DtlsVersion.Dtls12, s.negotiatedVersion)
+            assertEquals(server.localFingerprint, c.peerFingerprint)
         } finally {
             client.close()
             server.close()

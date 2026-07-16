@@ -233,6 +233,7 @@ its Java 21 classes.
 | W5 | `webrtc-sctp` + DCEP + `DataChannel` as `StreamMux`; end-to-end TB: two full stacks over vnet exchange data channel messages deterministically | W3, W4 |
 | W6 | `webrtc` root: JSEP/SDP (`webrtc-sdp` lands here), `PeerConnection`, browser `RTCPeerConnection` actuals, typed error sweep | W5 |
 | W7 | Container harness (coturn, NAT profiles, Pion + Chrome interop), `webrtc-testsuite` publish, consumer-smoke project | W6 |
+| W4b | *(candidate, §11.5)* pure-Kotlin **DTLS 1.3** core over `buffer-crypto` in `commonMain` — retires the one native dep, lights up every target, kills the duplicate-symbol class + unblocks the `SocketException` bridge. 1.3-first; 1.2 later for Pion breadth. BoringSSL stays as the differential oracle. | W4, + an additive `buffer-crypto` raw-AES-block PR (RFC 9147 §4.2.3 seq-num encryption) |
 | P2 | `webrtc-rtp`/`webrtc-srtp`, media transport surface (capability-by-type), platform codec adapters *outside* this library | W6 |
 
 ## 10. Non-goals
@@ -256,3 +257,47 @@ its Java 21 classes.
 4. **mDNS candidates (`.local` obfuscation):** gathering-side responder is platform work
    (multicast) — ship in W3 or defer behind a flag? Recommendation: resolve-only in W3 (needed to
    *reach* browser peers), responder deferred.
+5. **Pure-Kotlin DTLS 1.3 over `buffer-crypto` — retire the one native dependency?** (raised
+   2026-07-16, after W4-native landed.) §1 says the protocol cores are **ours**; DTLS is the single
+   exception, and it is the exception that costs the most: the cinterop/`libssl` provisioning, the
+   duplicate-symbol hazard against buffer-crypto's libcrypto, the deferred `SocketException` bridge
+   (blocked *only* by BoringSSL colliding with socket's vendored copy), and the whole
+   `boringssl-kmp` sequencing problem — **every one of which exists solely because we link
+   BoringSSL.** A `commonMain` DTLS core would delete all of it at once and light up **every**
+   target (JVM/Android/Apple/Linux) with no backend gap, no FFI edge, no memory-BIO copy, and no
+   thread-local clock hack — i.e. true sans-io + true zero-copy, exactly like `webrtc-sctp`.
+   - **What BoringSSL actually gives us is the *protocol*, not the crypto.** The whole `bd_*` surface
+     is: the handshake FSM + record layer + retransmission, self-signed X.509 generation (ASN.1 DER —
+     serialization, not crypto), `X509_digest` fingerprints (just SHA-256 over the DER), and the
+     DTLS-SRTP exporter (Phase 2). The primitives underneath are already in `buffer-crypto`.
+   - **Primitive coverage (audited 2026-07-16): essentially complete.** `Hkdf` exposes
+     `extractInto`/`expandInto` **separately** — precisely the TLS 1.3 key-schedule shape (Derive-Secret
+     expands an existing secret), and buffer-side so it stays zero-copy; plus AEAD (AES-GCM +
+     ChaCha20-Poly1305), `KeyAgreement` (X25519 / P-256), ECDSA + Ed25519 with `EcdsaSignatureEncoding`,
+     streaming SHA-256/384/512 (transcript hash), HMAC, constant-time compare, `CryptoRandom`,
+     `secureFixedPool`, even an `HpkeKdf`. That covers `TLS_AES_128_GCM_SHA256` + `key_share` +
+     `ecdsa_secp256r1_sha256` — the entire mandatory WebRTC profile.
+   - **One gap:** no raw AES block/ECB, needed for DTLS 1.3 record **sequence-number encryption**
+     (RFC 9147 §4.2.3). Additive upstream `buffer-crypto` PR — the W1 precedent (HMAC-SHA1 + `crc32`
+     landed in buffer#288 and shipped *before* webrtc consumed them). DTLS 1.2 needs no such primitive.
+   - **Why 1.3-first is now the tractable direction** (this inverts the earlier "you'd have to write
+     the crufty 1.2 half first" objection): both browser engines ship 1.3 today (§11.3), so a
+     **1.3-only** core already talks to the whole browser field, and DTLS **negotiates** — 1.2 is an
+     optional later add for breadth (Pion's released v3, legacy SFUs), not a prerequisite. TLS 1.3 is
+     also deliberately the *simpler, more misuse-resistant* protocol (no renegotiation, no CBC,
+     AEAD-only, simplified state machine); the classic TLS footguns live in 1.2.
+   - **Cost / risk:** ~3–6k lines of security-critical code — handshake FSM, key schedule, record
+     layer with epochs + anti-replay, flight fragmentation/reassembly + ACKs (RFC 9147 §7), and a
+     bounded ASN.1 DER slice (emit a fixed self-signed template; from the peer, extract only the
+     SubjectPublicKeyInfo for CertificateVerify — the fingerprint itself needs no parsing). Rolling
+     the *protocol* over vetted *primitives* is well-trodden (Pion, rustls, Go `crypto/tls`), but
+     protocol bugs are vulnerabilities, not defects: this needs the T0 reject/fuzz discipline
+     throughout.
+   - **Recommendation: yes, as its own wave — not instead of W4.** W4-native is proven and un-gates
+     the W5/W6 end-to-end TB fixture; it must land. Nothing is wasted by doing so: `DtlsEngine` is
+     already a caller-clocked sans-io `expect` class, so a pure-Kotlin core satisfies that exact
+     interface and simply *becomes* the `commonMain` implementation (the expect/actual disappears),
+     inheriting the handshake + TB fixtures as its conformance suite on day one. And **keep the
+     BoringSSL backend permanently as the differential-testing oracle** — handshaking
+     pure-Kotlin ↔ BoringSSL in both directions over the vnet under virtual time is the single best
+     way to validate a from-scratch TLS stack. Gate the wave on the `buffer-crypto` AES-block PR.

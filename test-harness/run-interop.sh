@@ -21,10 +21,18 @@ set -a
 . ./harness.env
 set +a
 
-# ── peer image path: prebuilt (host-built .kexe, arch-matched) by default; self-build for portability ──
+# ── peer image path: three ways to get the binary into the image ──
+#   1. HARNESS_SELF_BUILD=1        → build inside the image (portable: macOS/Apple, any arch)
+#   2. PEER_KEXE points at a file  → use it as-is, DON'T build (CI ships a cross-built artifact this way —
+#                                    K/N can't host on linux-arm64, so the arm64 peer is cross-built on x64
+#                                    and the arm64 runner only RUNS it)
+#   3. otherwise                   → build on the host for the host arch (local Linux dev)
 if [ "${HARNESS_SELF_BUILD:-0}" = "1" ]; then
     export PEER_DOCKERFILE="Dockerfile"
     echo "[run] peer image: self-building inside the image (portable — arm64 / Apple / x64)"
+elif [ -n "${PEER_KEXE:-}" ] && [ -f "../${PEER_KEXE}" ]; then
+    export PEER_DOCKERFILE="Dockerfile.prebuilt"
+    echo "[run] peer image: prebuilt (supplied) ${PEER_KEXE}"
 else
     case "$(uname -m)" in
         x86_64|amd64) KN=X64 ;;

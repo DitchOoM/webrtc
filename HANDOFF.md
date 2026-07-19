@@ -48,10 +48,19 @@ this file. Update it whenever you stop mid-wave.
 4. **answerer teardown race:** the answerer closed its SCTP association the instant after `send(pong)`,
    racing reliable delivery → offerer's `receive()` timed out. Fixed with a bounded flush linger.
 
-**Gates green:** `:webrtc-harness-endpoint` compiles + links (x64 **and** arm64); `:webrtc-ice:apiCheck`
-passes (re-dumped); standing-directive greps clean (the `Clock.System` line carries an inline
-`@Suppress("UnseamedEntropy")` — the grep is line-based). **Not yet run:** the FULL `./gradlew build allTests`
-across every module + the harness-l2 CI lane on real runners (arm64 lane unproven off this box).
+**Gates green:** `:webrtc-harness-endpoint` compiles + links (x64 **and** arm64 via cross-compile);
+`:webrtc-ice:apiCheck` passes (re-dumped); `./gradlew build allTests` green (Linux side); standing-directive
+greps clean (the `Clock.System` line carries an inline `@Suppress("UnseamedEntropy")` — the grep is
+line-based). **CI (PR #17):** standing-directives, build-apple, all fuzz, and **harness-l2 (x64)** PASS on
+real runners — the full 7-scenario NAT matrix establishes on a stock `ubuntu-24.04`, not just WSL2.
+
+**The arm64 gotcha (carry this forward):** Kotlin/Native **cannot host its compiler on a linux/arm64
+host** (`Unknown host target: linux aarch64`) — every other lane builds on x64 (`build-linux` *cross*-builds
+arm64). So the `harness-l2` arm64 leg does NOT gradle-build on the arm64 runner: `build-peer` (x64)
+**cross-builds both arches** and uploads them as an artifact; the arm64 `l2` job **downloads and only runs**
+its binary in native arm64 containers (no QEMU on the data path). `run-interop.sh` gained a "supplied
+`PEER_KEXE` → use as-is, don't build" path for exactly this (validated locally via the x64 binary). The
+arm64 runtime lane needs the `ubuntu-24.04-arm` runner enabled for the repo.
 
 **A strategic thread opened this session (see `~/git/cinterop-issues/`):** the owner is leaning toward
 **option (II) — pure-Kotlin DTLS 1.3 over buffer-crypto** (RFC §11.5 / W4b) instead of linking BoringSSL,

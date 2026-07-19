@@ -3,11 +3,80 @@
 Live state of the current wave. A resumed session reads `RFC_KMP_WEBRTC.md` → `EXECUTION_PLAN.md` →
 this file. Update it whenever you stop mid-wave.
 
-## Where we are: **W6 MERGED (PR #14, `0e1a702`). W4 (`webrtc-dtls`, BoringSSL) IN PROGRESS on branch `w4-webrtc-dtls` — the hard part is DONE and proven: a real caller-clocked BoringSSL DTLS engine handshakes two of our own stacks under virtual time on linuxX64 (6/6 green, 1 ms). Remaining: wire it into `webrtc` root (replace `PlaintextDtls`) + the real ICE+DTLS+SCTP TB fixture + PR.**
+## Where we are: **W6 MERGED (PR #14, `0e1a702`). W4 (`webrtc-dtls`, BoringSSL) — BUILT, exit gate GREEN, and the adversarial-review gate is now DONE on branch `w4-webrtc-dtls`: real DTLS wired into `PeerConnection`; two peers complete ICE → **real DTLS** → SCTP → data channels under virtual time. Remaining: CHANGELOG is updated; **PR next** (`skip-release` via REST API).**
+
+### Adversarial-review gate — DONE (4 parallel lanes; all confirmed defects fixed + regression fixtures)
+CI-directive greps clean (no primitive arrays, no unseamed clock/random); driver/lifecycle lane found no
+blockers (pump, handshakeTimeout, peer-fingerprint check, role-from-`a=setup` all correct). Five
+MAJOR/BLOCKER findings fixed, each with a fixture (see CHANGELOG "Hardened"): **(1 BLOCKER)**
+`CertificateFingerprint` primary ctor made **private** + validating `ofHex` (the RFC 8122 identity check was
+casing-fragile; `.api` re-dumped — constructor removed); **(2)** fatal read-path error → `Failed(RecordLayerError)`
+(was swallowed → wedged `Established`); **(3)** GC-heap FFI staging bounded (was an unbounded over-read);
+**(4)** `handshakeTimeout` liveness fixture added (`DtlsHandshakeTimeoutTest`); **(5)** three real buffer-leak
+sources closed (bd_new BIO partial-alloc, native ctor-throw, driver teardown-race) + the alloc invariant
+scoped honestly to bounded-allocation (W3/W5 posture). Plus a malformed-record T0 fixture. **All green:**
+`webrtc-dtls`+`webrtc` linuxX64 tests, apiCheck, ktlintCheck all pass. **One finding NOT covered by a
+deterministic fixture:** the pure `BD_FATAL`-on-read branch — DTLS silently drops malformed records rather
+than faulting, so a genuine post-handshake fatal alert isn't synthesizable at this seam; the fix is
+defensive and the malformed-record test covers the read-path robustness.
 
 ---
 
-### START HERE — W4 (fresh session), branch `w4-webrtc-dtls` (3 commits off `main` @ `0e1a702`)
+### START HERE — W4 wiring session (what this session did)
+
+**The headline: `PlaintextDtls` is no longer the only option — `BoringSslDtls` is real and the W4 exit
+fixture passes.** `webrtc/src/linuxTest/.../PeerConnectionDtlsEndToEndTest.kt` is the gate W5 and W6
+both deferred: two `NativePeerConnection`s negotiate offer/answer, nominate an ICE pair, complete a
+**real BoringSSL DTLS handshake**, bring up SCTP, and exchange data-channel messages both ways — 7 ms of
+virtual time, zero wall-clock.
+
+**Four design decisions this session made (each deliberate — don't silently revert):**
+1. **The DTLS role moved out of the `DtlsEngine` constructor into `start(role, now)`.** Forced by a real
+   ordering constraint: the engine mints its self-signed cert at construction, but `a=fingerprint` must
+   go into the *offer*, long before `a=setup` negotiates the role. So an endpoint has an identity from
+   birth and learns its role from signaling later — which is exactly WebRTC's own model. In C, `bd_new`
+   lost `is_client` and gained `bd_set_role` (SSL_set_connect/accept_state is legal any time before the
+   first `SSL_do_handshake`). A `started` guard makes driving-before-start a `check()`, not a segfault.
+2. **Certificate identity lives on the DTLS factory** (`DtlsTransportFactory.localFingerprint`), and
+   `PeerConnectionConfig.localFingerprint` (the W6 all-zero placeholder) is **deleted**. `PeerConnection`
+   now advertises `dtls.localFingerprint`, so advertising one digest while presenting another is
+   unrepresentable rather than merely discouraged. `DtlsTransportFactory` is therefore no longer a
+   `fun interface`, and `secure()` takes the peer's `Fingerprint`.
+3. **One DTLS vocabulary.** The root's W6-era duplicate `DtlsFailureReason` is **deleted**;
+   `PeerConnectionFailureReason.Dtls` composes webrtc-dtls's sealed reason unchanged, exactly as
+   `Ice`/`Sctp` compose theirs (and it dodges an import clash between two same-named types). The
+   webrtc-dtls vocabulary now spans the whole layer and marks each case *(engine)* or *(driver)*.
+4. **`DtlsConfig.handshakeTimeout` (30 s default)** closes a liveness hole: DTLS retransmits a lost
+   flight forever, so a peer that goes silent mid-handshake would otherwise hang the session. The
+   sans-io engine has no clock, so the driver enforces it — hence the config field with no engine use.
+
+**A latent CI break this session found and fixed:** `webrtc-dtls` had **no `appleMain` actual**, and the
+convention plugin registers Apple targets **only on macOS hosts** — so it compiled clean on this Linux
+box and would have failed `build-apple` on the runner. `appleMain` now carries typed
+`BackendUnavailable` actuals. **Apple needs more than JVM/Android do**: buffer-crypto is CommonCrypto
+there, so there is no already-linked libcrypto for a libssl.a to resolve against — Apple DTLS needs the
+buffer-crypto BoringSSL migration first, not just a boringssl-kmp release.
+
+**A hang I wrote and caught in self-review (the shape to watch for in this driver):** when the pump exits
+on a record-layer failure it left `outbound` **open**, so a later `send()` would `trySend` successfully
+and `await` an ack no pump would ever complete. Fix: close `outbound` *before* draining it in the pump's
+`finally`, so `trySend` fails fast with a typed reason.
+
+**Where the remaining W4 exit criteria landed:** the dropped-flight **retransmission** fixture and the
+injected-factory/bounded-allocation invariant are both in
+`webrtc-dtls/src/linuxTest/.../DtlsRetransmissionTest.kt`. The retransmission test is deliberately
+non-vacuous: it asserts the timer arms, does **not** fire early, and that the retransmitted flight
+actually completes the handshake.
+
+**Status of the gates:** `./gradlew build` green (3 runs, incl. two `--rerun-tasks`); ktlint + apiDump +
+detekt + both standing-directive greps green; linuxArm64 cinterop re-verified against the new `.def`.
+**One unexplained transient `BUILD FAILED`** was seen once and never reproduced across three subsequent
+full builds — re-run `./gradlew build` before pushing and, if it recurs, capture the log (the known
+suspect is the documented `node:internal/timers` JS-node flake).
+
+---
+
+### (prior) START HERE — W4 (fresh session), branch `w4-webrtc-dtls` (3 commits off `main` @ `0e1a702`)
 
 **Two decisions were resolved and recorded in the `EXECUTION_PLAN.md` decision log — read those two rows first:**
 1. **§11.3 (DTLS version)** → **min 1.2 / max 1.3, 1.3 ON by default** (`DtlsConfig.enableDtls13 = true`).
@@ -77,8 +146,8 @@ Byte-count wrappers now report `BD_NO_DATA = 0` with **negative-only** errors, p
 `(ulimit -v 2000000; timeout 90 ./webrtc-dtls/build/bin/linuxX64/debugTest/test.kexe)` — do **not**
 `ulimit` the Gradle daemon itself (it needs > 4 GB and will fail to start).
 
-**Next steps, in order:**
-1. **Wire `webrtc` root (replace `PlaintextDtls`)** — the one remaining headline deliverable. Add
+**Next steps, in order:** *(steps 1–3 are DONE — see the wiring-session section at the top of this file)*
+1. ~~**Wire `webrtc` root (replace `PlaintextDtls`)**~~ — **DONE** (`BoringSslDtls`). Add
    `api(project(":webrtc-dtls"))` to `webrtc/build.gradle.kts`, then implement `BoringSslDtls :
    DtlsTransportFactory` in `webrtc` root `commonMain`: a **coroutine driver** that constructs
    `DtlsEngine` (the expect class, so root `commonMain` can reference it), pumps it over

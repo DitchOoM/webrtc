@@ -110,9 +110,14 @@ static inline void bd_free(bd_engine *e) {
     free(e);
 }
 
-/* Create a DTLS engine. is_client selects ClientHello-sender + SCTP-client role. enable_dtls13
- * raises the max version to 1.3 (min stays 1.2, the WebRTC field floor). Returns NULL on failure. */
-static inline bd_engine *bd_new(int is_client, int enable_dtls13) {
+/* Create a DTLS engine and its self-signed identity. enable_dtls13 raises the max version to 1.3 (min
+ * stays 1.2, the WebRTC field floor). Returns NULL on failure.
+ *
+ * The role is NOT set here — see bd_set_role. The certificate exists from construction (so the
+ * a=fingerprint can go in the offer), while client-vs-server is only known once a=setup is negotiated
+ * (RFC 8842). BoringSSL is fine with this: the connect/accept state need only be set before the first
+ * SSL_do_handshake. */
+static inline bd_engine *bd_new(int enable_dtls13) {
     bd_engine *e = (bd_engine *)calloc(1, sizeof(bd_engine));
     if (!e) return NULL;
     if (bd_make_cert(&e->pkey, &e->cert) != BD_OK) { free(e); return NULL; }
@@ -132,15 +137,27 @@ static inline bd_engine *bd_new(int is_client, int enable_dtls13) {
     if (!e->ssl) { bd_free(e); return NULL; }
     e->rbio = BIO_new(BIO_s_mem());
     e->wbio = BIO_new(BIO_s_mem());
-    if (!e->rbio || !e->wbio) { bd_free(e); return NULL; }
+    if (!e->rbio || !e->wbio) {
+        /* SSL_set_bio has NOT run yet, so ssl doesn't own these — bd_free's SSL_free won't reclaim
+         * them. Free the one that did allocate here so a partial failure doesn't leak a BIO. */
+        if (e->rbio) BIO_free(e->rbio);
+        if (e->wbio) BIO_free(e->wbio);
+        e->rbio = NULL; e->wbio = NULL;
+        bd_free(e); return NULL;
+    }
     /* An empty mem BIO must report "retry" (want-read), not EOF, so libssl waits for more data. */
     BIO_set_mem_eof_return(e->rbio, -1);
     BIO_set_mem_eof_return(e->wbio, -1);
     SSL_set_bio(e->ssl, e->rbio, e->wbio);   /* ssl takes ownership of both BIOs */
     SSL_set_mtu(e->ssl, 1200);
     SSL_set_options(e->ssl, SSL_OP_NO_QUERY_MTU);
-    if (is_client) SSL_set_connect_state(e->ssl); else SSL_set_accept_state(e->ssl);
     return e;
+}
+
+/* Adopt the negotiated role: is_client selects ClientHello-sender (a=setup:active) + SCTP-client role,
+ * otherwise passive/server. Must be called before the first bd_do_handshake. */
+static inline void bd_set_role(bd_engine *e, int is_client) {
+    if (is_client) SSL_set_connect_state(e->ssl); else SSL_set_accept_state(e->ssl);
 }
 
 /* Drive the handshake one step. Returns BD_OK (finished), BD_WANT_READ (needs more inbound data),

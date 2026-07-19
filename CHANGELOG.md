@@ -6,6 +6,85 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Added — W4: `webrtc-dtls` — real BoringSSL DTLS 1.2/1.3, wired into `PeerConnection`
+- **`DtlsEngine`** — a caller-clocked, sans-io DTLS endpoint (`expect class`; RFC §5.1): `start` /
+  `onDatagram` / `onTimeout` / `send` / `beginClose` + `nextTimeoutMicros`, all in epoch-micros from the
+  driver's injected clock. No dispatcher, no `Clock.System`, no I/O, no coroutine inside it. BoringSSL's
+  DTLS timers are driven through an injected `current_time_cb`, so a whole handshake — **retransmissions
+  included** — replays under `runTest` at zero wall-clock. Sealed `DtlsState`
+  (Handshaking/Established/Closed/Failed) + sealed `DtlsFailureReason` (directive #3); `DtlsConfig` seams
+  (`bufferFactory`, `enableDtls13`, `handshakeTimeout`).
+- **The Kotlin/Native BoringSSL backend (Linux x64 + arm64)** — `webrtc-dtls` provisions a **same-commit**
+  (`63893acb`) `libssl.a` and links **only** that, letting libssl's undefined `AES_*`/`SHA256_*` resolve
+  against buffer-crypto's single already-linked `libcrypto` — no second copy, so no duplicate-symbol clash
+  (`DtlsBackendLinkNativeTest` is the tripwire). Self-signed P-256 certificate + `X509_digest`
+  fingerprints, DTLS-SRTP exporter + `use_srtp` (ready for Phase-2 media). The FFI buffer edge is a
+  fast/slow split: a native-backed buffer hands BoringSSL its own address (zero staging copy — pass a
+  pooled native factory in production), a GC-heap buffer stages through one reusable per-engine native
+  scratch. No `ByteArray` anywhere (directive #1).
+- **§11.3 resolved on evidence: min DTLS 1.2 / max 1.3, 1.3 ON by default.** Verified by search, not
+  assumed: Firefox ships DTLS 1.3 in Release and Chrome/BoringSSL has it on by default (libwebrtc flipped
+  in 2025). The 1.2 floor stays purely for breadth — Pion's released v3 is still 1.2-only — and negotiation
+  falls back automatically. **Both versions are asserted by tests**, never assumed.
+- **`BoringSslDtls`** (webrtc root) — the coroutine **driver** that replaces `PlaintextDtls`: one pump
+  coroutine owns the engine and serializes every interaction with it (inbound records from the ICE seam,
+  outbound application data, expired DTLS timers) through a single `select`, exactly as `IceAgentDriver`
+  clocks the ICE core — which is what makes the not-thread-safe engine safe by construction. It exposes the
+  established engine as the `SctpDatagramTransport` the data-channel stack already rode, so DTLS was **a
+  swap, not a rewrite**: nothing above (SCTP/PeerConnection) or below (ICE) changed shape.
+- **`a=fingerprint` verification (RFC 8122/8827) — the check the whole security model rests on.** BoringSSL
+  accepts any certificate by design (WebRTC verifies by fingerprint, never by CA chain), so the driver holds
+  the peer's certificate to the digest its SDP advertised and fails the session typed if it differs; a peer
+  advertising no usable SHA-256 digest is refused rather than trusted. Certificate identity now lives on the
+  **DTLS factory** (`DtlsTransportFactory.localFingerprint`), not in `PeerConnectionConfig`, so advertising
+  one fingerprint while presenting another is unrepresentable (DESIGN §4) — this also resolves an ordering
+  constraint, since the digest must exist at `createOffer` time but the role only at `a=setup`. Accordingly
+  the DTLS **role moved from the `DtlsEngine` constructor to `start(role, now)`**: an endpoint has an
+  identity from birth and learns its role from signaling later, as WebRTC models it.
+- **One DTLS vocabulary.** The root module's W6-era duplicate `DtlsFailureReason` is **removed**;
+  `PeerConnectionFailureReason.Dtls` now composes webrtc-dtls's sealed reason unchanged, exactly as `Ice`
+  and `Sctp` compose theirs. `DtlsConfig.handshakeTimeout` closes a liveness hole: DTLS retransmits a lost
+  flight forever, so without a budget a peer that goes silent mid-handshake would hang the session (RFC
+  §5.3 #5 — reach a state or a typed failure, never hang).
+- **Tests.** **The W4 exit fixture** (`webrtc/linuxTest`): two `NativePeerConnection`s complete a full
+  session over the vnet with **real DTLS in the seam** — ICE nomination → DTLS handshake → SCTP association
+  → data channels both ways, under virtual time — the end-to-end gate W5 and W6 could only prove with the
+  plaintext stand-in. Plus: the two-stack handshake fixture (each side verifying the *other's* real cert
+  fingerprint, negotiated 1.3) + the 1.2-fallback/Pion interop lane + app-data round-trip; the
+  **dropped-flight retransmission** fixture (a timer must arm, not fire early, and the retransmitted flight
+  must actually complete the handshake); the fingerprint-**mismatch** and **absent-fingerprint** negatives
+  (both fail typed, never connect); the injected-factory/bounded-allocation invariant (directive #6); and
+  the libssl/libcrypto single-copy link tripwire.
+- **Platform reality (V6_MAC_VALIDATION):** Linux K/N is the only target with a DTLS backend this wave.
+  JVM/Android/**Apple** get typed `BackendUnavailable` actuals and are **compile-faithful only** — Apple has
+  **no** DTLS backend. JVM/Android/Apple DTLS is deferred to the `boringssl-kmp` binary factory, which
+  cannot serve today: it is unpublished, its JVM FFM shim is crypto-only, its Apple lane is unbuilt, and its
+  quiche-anchored API-21 pin has no `DTLS1_3_VERSION` (it would ship a 1.2-only stack) and would
+  duplicate-symbol against buffer-crypto's BoringSSL on native. See EXECUTION_PLAN "W4 sequencing".
+
+#### Hardened — adversarial-review gate (4 parallel lanes: native/FFI, driver/lifecycle, types/API, tests)
+Each confirmed defect ships its regression fixture (directive #5):
+- **`CertificateFingerprint` is now unforgeable-by-construction** — the primary constructor is **private**
+  and `ofHex` is the only builder; it validates the digest is exactly 64 hex chars and normalizes case +
+  colons. Previously a public constructor could store a non-normalized string, making the RFC 8122
+  `a=fingerprint` equality check (a security discriminant, RFC 8827) casing-fragile and `sdpValue` render
+  garbage. `.api` changed (constructor removed) — cheap now, binary-breaking after release.
+  (`CertificateFingerprintTest`.)
+- **A fatal record-layer error on the read path now surfaces `Failed(RecordLayerError)`** instead of being
+  swallowed as end-of-data — a post-handshake fatal alert can no longer leave a dead transport
+  masquerading as `Established`.
+- **The GC-heap FFI staging path is bounded** — a datagram larger than the 64 KiB scratch is rejected up
+  front rather than read past the buffer's end (native-backed buffers keep the copy-free path).
+  (`…rejected_not_over_read`.)
+- **The driver-enforced `handshakeTimeout` liveness bound is now covered** — a silent peer fails typed
+  (`HandshakeTimeout`) under virtual time rather than hanging. (`DtlsHandshakeTimeoutTest`.)
+- **Buffer-leak sources closed** — the memory-BIO leak on a partial-allocation failure in `bd_new`, the
+  native-engine leak if construction throws after `bd_new`, and the driver dropping (not releasing) a
+  decrypted app-data buffer on a teardown race are all fixed; the allocation test's invariant is scoped
+  honestly to bounded-allocation (matching the W3/W5 posture).
+- **Read-path T0 robustness** — a malformed datagram fed mid-handshake is dropped, never wedges or crashes
+  the engine. (`…malformed_datagrams…`.)
+
 ### Added — W6: `webrtc` root — `PeerConnection` + browser delegation + typed error sweep
 - **`RtcPeerConnection` + `NativePeerConnection`** (the consumer session API, RFC §3.1) — a caller-clocked,
   seam-injected driver composing the sans-io cores: the `JsepSession` offer/answer machine (webrtc-sdp),

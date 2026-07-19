@@ -1,11 +1,11 @@
 public final class com/ditchoom/webrtc/dtls/CertificateFingerprint {
 	public static final field Companion Lcom/ditchoom/webrtc/dtls/CertificateFingerprint$Companion;
 	public static final synthetic fun box-impl (Ljava/lang/String;)Lcom/ditchoom/webrtc/dtls/CertificateFingerprint;
-	public static fun constructor-impl (Ljava/lang/String;)Ljava/lang/String;
 	public fun equals (Ljava/lang/Object;)Z
 	public static fun equals-impl (Ljava/lang/String;Ljava/lang/Object;)Z
 	public static final fun equals-impl0 (Ljava/lang/String;Ljava/lang/String;)Z
 	public static final fun getSdp-impl (Ljava/lang/String;)Ljava/lang/String;
+	public static final fun getSdpValue-impl (Ljava/lang/String;)Ljava/lang/String;
 	public final fun getSha256Hex ()Ljava/lang/String;
 	public fun hashCode ()I
 	public static fun hashCode-impl (Ljava/lang/String;)I
@@ -24,16 +24,16 @@ public final class com/ditchoom/webrtc/dtls/Dtls {
 }
 
 public final class com/ditchoom/webrtc/dtls/DtlsConfig {
-	public fun <init> ()V
-	public fun <init> (Lcom/ditchoom/buffer/BufferFactory;ZI)V
-	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;ZIILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;ZIJILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;ZIJLkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun getBufferFactory ()Lcom/ditchoom/buffer/BufferFactory;
 	public final fun getEnableDtls13 ()Z
+	public final fun getHandshakeTimeout-UwyO8pc ()J
 	public final fun getMaxDatagramSize ()I
 }
 
 public final class com/ditchoom/webrtc/dtls/DtlsEngine {
-	public fun <init> (Lcom/ditchoom/webrtc/dtls/DtlsRole;Lcom/ditchoom/webrtc/dtls/DtlsConfig;)V
+	public fun <init> (Lcom/ditchoom/webrtc/dtls/DtlsConfig;)V
 	public final fun beginClose (J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
 	public final fun close ()V
 	public final fun getLocalFingerprint-ZfS6PIY ()Ljava/lang/String;
@@ -41,7 +41,7 @@ public final class com/ditchoom/webrtc/dtls/DtlsEngine {
 	public final fun onDatagram (Lcom/ditchoom/buffer/ReadBuffer;J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
 	public final fun onTimeout (J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
 	public final fun send (Lcom/ditchoom/buffer/ReadBuffer;J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
-	public final fun start (J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
+	public final fun start (Lcom/ditchoom/webrtc/dtls/DtlsRole;J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
 }
 
 public final class com/ditchoom/webrtc/dtls/DtlsException : java/lang/Exception {
@@ -57,8 +57,20 @@ public final class com/ditchoom/webrtc/dtls/DtlsFailureReason$BackendUnavailable
 	public static final field INSTANCE Lcom/ditchoom/webrtc/dtls/DtlsFailureReason$BackendUnavailable;
 }
 
+public final class com/ditchoom/webrtc/dtls/DtlsFailureReason$FingerprintMismatch : com/ditchoom/webrtc/dtls/DtlsFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/dtls/DtlsFailureReason$FingerprintMismatch;
+}
+
+public final class com/ditchoom/webrtc/dtls/DtlsFailureReason$FingerprintMissing : com/ditchoom/webrtc/dtls/DtlsFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/dtls/DtlsFailureReason$FingerprintMissing;
+}
+
 public final class com/ditchoom/webrtc/dtls/DtlsFailureReason$HandshakeFailure : com/ditchoom/webrtc/dtls/DtlsFailureReason {
 	public static final field INSTANCE Lcom/ditchoom/webrtc/dtls/DtlsFailureReason$HandshakeFailure;
+}
+
+public final class com/ditchoom/webrtc/dtls/DtlsFailureReason$HandshakeTimeout : com/ditchoom/webrtc/dtls/DtlsFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/dtls/DtlsFailureReason$HandshakeTimeout;
 }
 
 public final class com/ditchoom/webrtc/dtls/DtlsFailureReason$Internal : com/ditchoom/webrtc/dtls/DtlsFailureReason {

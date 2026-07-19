@@ -6,7 +6,6 @@ import com.ditchoom.buffer.ReadBuffer
 // "W4 sequencing" row. Construction fails fast with a typed [DtlsFailureReason.BackendUnavailable];
 // the webrtc-root driver surfaces it as a typed PeerConnection failure rather than a hang.
 public actual class DtlsEngine actual constructor(
-    role: DtlsRole,
     config: DtlsConfig,
 ) {
     init {
@@ -18,7 +17,10 @@ public actual class DtlsEngine actual constructor(
 
     public actual val localFingerprint: CertificateFingerprint get() = unavailable()
 
-    public actual fun start(nowMicros: Long): DtlsStep = unavailable()
+    public actual fun start(
+        role: DtlsRole,
+        nowMicros: Long,
+    ): DtlsStep = unavailable()
 
     public actual fun onDatagram(
         record: ReadBuffer,

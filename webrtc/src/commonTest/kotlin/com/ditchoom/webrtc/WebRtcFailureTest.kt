@@ -1,5 +1,6 @@
 package com.ditchoom.webrtc
 
+import com.ditchoom.webrtc.dtls.DtlsFailureReason
 import com.ditchoom.webrtc.ice.IceFailureReason
 import com.ditchoom.webrtc.sctp.association.SctpFailureReason
 import com.ditchoom.webrtc.sctp.datachannel.SctpClosedException
@@ -31,7 +32,7 @@ class WebRtcFailureTest {
                 PeerConnectionFailureReason.Ice(IceFailureReason.NoCandidatePairs),
                 PeerConnectionFailureReason.Ice(IceFailureReason.ConsentExpired),
                 PeerConnectionFailureReason.Dtls(DtlsFailureReason.FingerprintMismatch),
-                PeerConnectionFailureReason.Dtls(DtlsFailureReason.HandshakeFailed),
+                PeerConnectionFailureReason.Dtls(DtlsFailureReason.HandshakeFailure),
                 PeerConnectionFailureReason.Sctp(SctpFailureReason.HandshakeTimeout),
                 PeerConnectionFailureReason.Sctp(SctpFailureReason.AbortReceived),
                 PeerConnectionFailureReason.Unknown("browser reported failed"),

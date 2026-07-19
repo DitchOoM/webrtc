@@ -3,6 +3,8 @@ package com.ditchoom.webrtc.dtls
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.managed
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /** Negotiated DTLS version (RFC 6347 / 9147). [Unknown] covers a value we don't model. */
 public enum class DtlsVersion { Dtls12, Dtls13, Unknown }
@@ -21,11 +23,17 @@ public enum class DtlsVersion { Dtls12, Dtls13, Unknown }
  *   falls back to 1.2 for peers that lack 1.3 — notably Pion, whose released v3 is still 1.2-only. Set
  *   this false to pin 1.2 (e.g. to reproduce a 1.2-only interop lane).
  * @param maxDatagramSize the largest record datagram we read out of the backend in one step.
+ * @param handshakeTimeout how long a driver waits for the handshake before failing it with
+ *   [DtlsFailureReason.HandshakeTimeout]. DTLS itself retransmits a lost flight with exponential
+ *   backoff and never gives up, so without a budget a peer that goes silent mid-handshake would hang
+ *   the session forever; this is the liveness bound (RFC §5.3 #5: reach a state or a typed failure,
+ *   never hang). Unused by the sans-io engine, which has no clock of its own — the driver enforces it.
  */
 public class DtlsConfig(
     public val bufferFactory: BufferFactory = BufferFactory.managed(),
     public val enableDtls13: Boolean = true,
     public val maxDatagramSize: Int = 1500,
+    public val handshakeTimeout: Duration = 30.seconds,
 )
 
 /**
@@ -79,18 +87,32 @@ public class DtlsStep(
  * every call within one logical instant. [nextTimeoutMicros] returns the absolute epoch-micros at which
  * [onTimeout] must next be called (null = no timer armed).
  *
+ * **Identity at construction, role at [start].** The engine generates its self-signed certificate when
+ * it is constructed, so [localFingerprint] is readable immediately — which is what the session layer
+ * needs, because the `a=fingerprint` goes into the *offer*, long before `a=setup` negotiates who is
+ * client (RFC 8842). The role is therefore not a constructor parameter: an endpoint has an identity
+ * from birth and learns its role from signaling later, exactly as WebRTC models it.
+ *
  * Lifecycle: construct → [start] → feed [onDatagram]/[onTimeout] until [DtlsState.Established] → [send]
  * / receive application data → [beginClose] → [close]. Not thread-safe; confine to one driver coroutine.
  */
 public expect class DtlsEngine(
-    role: DtlsRole,
     config: DtlsConfig,
 ) {
-    /** Our own certificate's SHA-256 fingerprint — the `a=fingerprint` we advertise (available now). */
+    /**
+     * Our own certificate's SHA-256 fingerprint — the `a=fingerprint` we advertise. Readable from
+     * construction, before [start], so it can be put in the offer (see the class note on role).
+     */
     public val localFingerprint: CertificateFingerprint
 
-    /** Begin the handshake (client sends ClientHello). Returns the first flight to send. */
-    public fun start(nowMicros: Long): DtlsStep
+    /**
+     * Adopt [role] (from the negotiated `a=setup`) and begin the handshake; a [DtlsRole.Client] sends
+     * the ClientHello. Returns the first flight to send. Call exactly once, before any [onDatagram].
+     */
+    public fun start(
+        role: DtlsRole,
+        nowMicros: Long,
+    ): DtlsStep
 
     /** Feed one inbound DTLS record datagram; drives the handshake or decrypts application data. */
     public fun onDatagram(

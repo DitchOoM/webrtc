@@ -12,6 +12,10 @@ kotlin {
             api(project(":webrtc-ice"))
             api(project(":webrtc-sctp"))
             api(project(":webrtc-sdp"))
+            // W4: the real DTLS transport (BoringSslDtls drives webrtc-dtls's caller-clocked engine).
+            // Native-Linux has the BoringSSL backend; every other target's actual reports a typed
+            // BackendUnavailable — see the EXECUTION_PLAN "W4 sequencing" row.
+            api(project(":webrtc-dtls"))
             api(libs.buffer.flow)
             api(libs.kotlinx.coroutines.core)
         }

@@ -14,6 +14,7 @@ import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_new
 import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_peer_fingerprint
 import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_pending
 import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_read_app
+import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_set_role
 import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_shutdown
 import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_take
 import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_timeout_us
@@ -56,11 +57,10 @@ private const val SCRATCH_SIZE = 1 shl 16
  */
 @OptIn(ExperimentalForeignApi::class)
 public actual class DtlsEngine actual constructor(
-    role: DtlsRole,
     private val config: DtlsConfig,
 ) {
     private val engine =
-        bd_new(if (role == DtlsRole.Client) 1 else 0, if (config.enableDtls13) 1 else 0)
+        bd_new(if (config.enableDtls13) 1 else 0)
             ?: throw DtlsException(
                 DtlsFailureReason.Internal("bd_new failed — BoringSSL SSL_CTX/cert init"),
             )
@@ -68,34 +68,65 @@ public actual class DtlsEngine actual constructor(
     // Native FFI staging buffer (freed in close()), used ONLY as a fallback when a datagram is a
     // GC-heap buffer with no stable native address. Native buffers (a pooled native factory — the
     // production hot path, directive #6) pass their own address straight to BoringSSL, no staging.
-    private val scratch = NativeBuffer.allocate(SCRATCH_SIZE, ByteOrder.BIG_ENDIAN)
-    private val scratchPtr: CPointer<UByteVar> = scratch.nativeAddress.toCPointer()!!
+    private val scratch: NativeBuffer
+    private val scratchPtr: CPointer<UByteVar>
 
     private var closed = false
+    private var started = false
     private var handshakeDone = false
     private var terminal: DtlsState? = null
     private var establishedState: DtlsState.Established? = null
 
-    public actual val localFingerprint: CertificateFingerprint =
-        memScoped {
-            val out = allocArray<UByteVar>(32)
-            val n = bd_local_fingerprint(engine, out)
-            if (n != 32) throw DtlsException(DtlsFailureReason.Internal("local fingerprint digest failed"))
-            CertificateFingerprint(hex(out, 32))
-        }
+    public actual val localFingerprint: CertificateFingerprint
 
-    public actual fun start(nowMicros: Long): DtlsStep = pump(nowMicros)
+    // bd_new above already allocated the SSL_CTX/SSL/cert. If any remaining native setup throws (a
+    // scratch OOM, or a fingerprint digest failure), close() is never reachable — the object never
+    // finishes constructing — so free the engine (and any scratch) here rather than leak it.
+    init {
+        var stagingBuffer: NativeBuffer? = null
+        try {
+            val s = NativeBuffer.allocate(SCRATCH_SIZE, ByteOrder.BIG_ENDIAN)
+            stagingBuffer = s
+            scratch = s
+            scratchPtr = s.nativeAddress.toCPointer()!!
+            localFingerprint =
+                memScoped {
+                    val out = allocArray<UByteVar>(32)
+                    val n = bd_local_fingerprint(engine, out)
+                    if (n != 32) throw DtlsException(DtlsFailureReason.Internal("local fingerprint digest failed"))
+                    CertificateFingerprint.ofHex(hex(out, 32))
+                }
+        } catch (t: Throwable) {
+            stagingBuffer?.close()
+            bd_free(engine)
+            throw t
+        }
+    }
+
+    public actual fun start(
+        role: DtlsRole,
+        nowMicros: Long,
+    ): DtlsStep {
+        // Idempotent: a second start() must not re-enter SSL_set_connect_state on a live handshake.
+        if (!started) {
+            started = true
+            bd_set_role(engine, if (role == DtlsRole.Client) 1 else 0)
+        }
+        return pump(nowMicros)
+    }
 
     public actual fun onDatagram(
         record: ReadBuffer,
         nowMicros: Long,
     ): DtlsStep {
+        requireStarted()
         terminal?.let { return DtlsStep(emptyList(), emptyList(), it) }
         feed(record)
         return pump(nowMicros)
     }
 
     public actual fun onTimeout(nowMicros: Long): DtlsStep {
+        requireStarted()
         terminal?.let { return DtlsStep(emptyList(), emptyList(), it) }
         bd_handle_timeout(engine, nowMicros)
         return pump(nowMicros)
@@ -105,6 +136,7 @@ public actual class DtlsEngine actual constructor(
         applicationData: ReadBuffer,
         nowMicros: Long,
     ): DtlsStep {
+        requireStarted()
         terminal?.let { return DtlsStep(emptyList(), emptyList(), it) }
         val len = applicationData.limit() - applicationData.position()
         if (len <= 0) return DtlsStep(collectRecords(), emptyList(), stateNow())
@@ -124,7 +156,7 @@ public actual class DtlsEngine actual constructor(
     }
 
     public actual fun nextTimeoutMicros(nowMicros: Long): Long? {
-        if (terminal != null) return null
+        if (!started || terminal != null) return null
         val us = bd_timeout_us(engine, nowMicros)
         return if (us < 0) null else nowMicros + us
     }
@@ -137,6 +169,13 @@ public actual class DtlsEngine actual constructor(
     }
 
     // ── internals ────────────────────────────────────────────────────────────────────────────────
+
+    // Driving libssl before a role is adopted would enter SSL_do_handshake with neither connect nor
+    // accept state set — a caller contract violation (API misuse), not a peer/protocol failure, so it
+    // is an IllegalStateException rather than a typed DtlsFailureReason (DESIGN §3).
+    private fun requireStarted() {
+        check(started) { "DtlsEngine.start(role, now) must be called before driving the engine" }
+    }
 
     /** Advance the handshake / drain application data, then collect outbound records + current state. */
     private fun pump(nowMicros: Long): DtlsStep {
@@ -162,7 +201,13 @@ public actual class DtlsEngine actual constructor(
                     terminal = DtlsState.Closed
                     return DtlsStep(collectRecords(), appData ?: emptyList(), DtlsState.Closed)
                 }
-                if (n < 0) break // BD_FATAL on the read path — surface via the record layer below
+                if (n < 0) {
+                    // BD_FATAL on the read path is a genuine record-layer break (a fatal alert or a
+                    // decrypt failure past tolerance) — NOT a droppable bad datagram, which SSL_read
+                    // reports as BD_NO_DATA. Surface it as Failed so a dead transport can never keep
+                    // masquerading as Established; deliver whatever was legitimately decrypted first.
+                    return DtlsStep(emptyList(), appData ?: emptyList(), failReasonState(DtlsFailureReason.RecordLayerError))
+                }
                 (appData ?: mutableListOf<ReadBuffer>().also { appData = it }).add(copyOutOfScratch(n))
             }
         }
@@ -201,6 +246,14 @@ public actual class DtlsEngine actual constructor(
     private fun inputPointer(buf: ReadBuffer): CPointer<UByteVar> {
         val access = buf.nativeMemoryAccess
         if (access != null) return (access.nativeAddress + buf.position()).toCPointer()!!
+        // Slow path: a GC-heap buffer must be staged through the fixed scratch. A datagram larger than
+        // scratch cannot be staged in one shot, and passing its full length on to BoringSSL would read
+        // past the buffer's end — bound it here (native-backed buffers take the copy-free path above and
+        // have no such limit). DTLS records self-delimit well under 64 KiB, so this never bites the stack.
+        val len = buf.limit() - buf.position()
+        require(len <= SCRATCH_SIZE) {
+            "heap datagram of $len B exceeds the $SCRATCH_SIZE B FFI staging bound — pass a native-backed buffer"
+        }
         val save = buf.position()
         scratch.resetForWrite()
         scratch.write(buf)
@@ -257,7 +310,7 @@ public actual class DtlsEngine actual constructor(
         memScoped {
             val out = allocArray<UByteVar>(32)
             if (bd_peer_fingerprint(engine, out) != 32) return@memScoped null
-            CertificateFingerprint(hex(out, 32))
+            CertificateFingerprint.ofHex(hex(out, 32))
         }
 }
 

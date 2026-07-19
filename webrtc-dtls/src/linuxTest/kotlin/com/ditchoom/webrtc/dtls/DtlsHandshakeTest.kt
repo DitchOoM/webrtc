@@ -20,8 +20,8 @@ import kotlin.test.assertTrue
 class DtlsHandshakeTest {
     @Test
     fun two_stacks_complete_a_dtls_handshake_under_virtual_time() {
-        val client = DtlsEngine(DtlsRole.Client, DtlsConfig())
-        val server = DtlsEngine(DtlsRole.Server, DtlsConfig())
+        val client = DtlsEngine(DtlsConfig())
+        val server = DtlsEngine(DtlsConfig())
         try {
             val (c, s) = drive(client, server)
             assertIs<DtlsState.Established>(c, "client established, was $c")
@@ -48,8 +48,8 @@ class DtlsHandshakeTest {
     @Test
     fun two_stacks_fall_back_to_dtls_1_2_when_1_3_is_disabled() {
         val pinned = DtlsConfig(enableDtls13 = false)
-        val client = DtlsEngine(DtlsRole.Client, pinned)
-        val server = DtlsEngine(DtlsRole.Server, pinned)
+        val client = DtlsEngine(pinned)
+        val server = DtlsEngine(pinned)
         try {
             val (c, s) = drive(client, server)
             assertIs<DtlsState.Established>(c, "client established, was $c")
@@ -65,8 +65,8 @@ class DtlsHandshakeTest {
 
     @Test
     fun application_data_flows_after_the_handshake() {
-        val client = DtlsEngine(DtlsRole.Client, DtlsConfig())
-        val server = DtlsEngine(DtlsRole.Server, DtlsConfig())
+        val client = DtlsEngine(DtlsConfig())
+        val server = DtlsEngine(DtlsConfig())
         try {
             drive(client, server)
             // Client encrypts a payload; server must decrypt the identical bytes.
@@ -87,6 +87,61 @@ class DtlsHandshakeTest {
         }
     }
 
+    /**
+     * T0 robustness on the record read path (adversarial-gate follow-up): a malformed datagram fed
+     * mid-handshake must be silently dropped (RFC 6347) — never crash the parser, fault the handshake,
+     * or wedge the engine. Junk is interleaved ahead of the real traffic each side sees; both must still
+     * reach [DtlsState.Established].
+     */
+    @Test
+    fun malformed_datagrams_during_the_handshake_are_dropped_and_never_wedge_it() {
+        val client = DtlsEngine(DtlsConfig())
+        val server = DtlsEngine(DtlsConfig())
+        try {
+            val toServer = ArrayDeque<ReadBuffer>()
+            val toClient = ArrayDeque<ReadBuffer>()
+            var cState: DtlsState = client.start(DtlsRole.Client, now).also { toServer.addAll(it.records) }.state
+            var sState: DtlsState = server.start(DtlsRole.Server, now).also { toClient.addAll(it.records) }.state
+            // A bogus record (unknown content type 0xFF) ahead of each side's real flight.
+            toServer.addFirst(bytesOf(0xFF, 0xFE, 0xFD, 0x00, 0x01, 0x02, 0x03))
+            toClient.addFirst(bytesOf(0xFF, 0xFE, 0xFD, 0x00, 0x01, 0x02, 0x03))
+
+            var guard = 0
+            while (guard++ < 200) {
+                if (cState is DtlsState.Established && sState is DtlsState.Established) break
+                if (cState is DtlsState.Failed || sState is DtlsState.Failed) break
+                if (toServer.isNotEmpty()) {
+                    server.onDatagram(toServer.removeFirst(), now).let {
+                        sState = it.state
+                        toClient.addAll(it.records)
+                    }
+                } else if (toClient.isNotEmpty()) {
+                    client.onDatagram(toClient.removeFirst(), now).let {
+                        cState = it.state
+                        toServer.addAll(it.records)
+                    }
+                } else {
+                    val deadlines = listOfNotNull(client.nextTimeoutMicros(now), server.nextTimeoutMicros(now))
+                    if (deadlines.isEmpty()) break
+                    now = maxOf(now + 1, deadlines.min())
+                    client.onTimeout(now).let {
+                        cState = it.state
+                        toServer.addAll(it.records)
+                    }
+                    server.onTimeout(now).let {
+                        sState = it.state
+                        toClient.addAll(it.records)
+                    }
+                }
+            }
+            assertIs<DtlsState.Established>(cState, "client established despite the junk record, was $cState")
+            assertIs<DtlsState.Established>(sState, "server established despite the junk record, was $sState")
+        } finally {
+            client.close()
+            server.close()
+        }
+    }
+
     // ── a deterministic synchronous two-endpoint conductor over a virtual clock ─────────────────────
 
     private var now = 0L
@@ -99,8 +154,10 @@ class DtlsHandshakeTest {
         val toServer = ArrayDeque<ReadBuffer>()
         val toClient = ArrayDeque<ReadBuffer>()
 
-        var cState: DtlsState = client.start(now).also { toServer.addAll(it.records) }.state
-        var sState: DtlsState = DtlsState.Handshaking
+        // Each side adopts its negotiated a=setup role at start; the client's ClientHello is the first
+        // flight, the server's start only arms its accept state (it produces nothing until fed).
+        var cState: DtlsState = client.start(DtlsRole.Client, now).also { toServer.addAll(it.records) }.state
+        var sState: DtlsState = server.start(DtlsRole.Server, now).also { toClient.addAll(it.records) }.state
 
         var guard = 0
         while (guard++ < 200) {

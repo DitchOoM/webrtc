@@ -71,7 +71,13 @@ jobs:
           echo "Computed version: ${version}"
 
       - name: Build + test (Linux/JVM/JS/WASM/Android)
-        run: ./gradlew build allTests ${{ inputs.gradle-args }} --no-configuration-cache
+        # pipefail so the step fails on Gradle's exit code, not tee's; --stacktrace + the tee'd log make
+        # a compiler ICE / cmake-config failure (which produce NO test-results artifact) diagnosable from
+        # a downloadable file instead of the scrollback. Uploaded below on failure.
+        run: |
+          set -o pipefail
+          ./gradlew build allTests ${{ inputs.gradle-args }} --no-configuration-cache --stacktrace 2>&1 \
+            | tee build-linux.log
 
       # On ANY failure, capture the actual reason instead of leaving only the console tail: the JUnit
       # XML carries each failing test's full stack + captured stdout/stderr (and, for our seeded
@@ -89,6 +95,18 @@ jobs:
             **/build/reports/tests/**
           retention-days: 14
           if-no-files-found: ignore
+
+      # The build log carries what the JUnit XML cannot: Kotlin compiler internal errors (e.g. a wasmJs
+      # WasmIrToBinary ICE) and native cmake/toolchain-config failures leave no test-results artifact, so
+      # without this a non-test failure means reading the raw Actions log. --stacktrace is captured above.
+      - name: Upload full build log (on failure)
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-linux
+          path: build-linux.log
+          retention-days: 14
+          if-no-files-found: warn
 
       - name: Binary-compatibility check (public ABI)
         run: ./gradlew apiCheck ${{ inputs.gradle-args }} --no-configuration-cache

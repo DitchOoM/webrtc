@@ -64,8 +64,10 @@ class SctpMalformedCorpusTest {
 
     @Test
     fun decodeIsTotalOverArbitraryBytes() {
+        // Fast cross-platform totality smoke (kept small so it stays well under the JS-node 2s Mocha
+        // budget — 20k flaked there at ~1.9s). Deep coverage-guided fuzzing is :webrtc-sctp:sctpCodecFuzz.
         val random = Random(0x5C_7C_1D)
-        repeat(20_000) {
+        repeat(2_000) {
             val n = random.nextInt(0, 300)
             val buf = BufferFactory.managed().allocate(maxOf(1, n), ByteOrder.BIG_ENDIAN)
             repeat(n) { buf.writeByte(random.nextInt().toByte()) }

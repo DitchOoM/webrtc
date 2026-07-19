@@ -77,9 +77,11 @@ class SdpMalformedCorpusTest {
 
     @Test
     fun parseIsTotalOverArbitraryBytes() {
-        // The core T0 invariant: no input makes parse throw. Seeded, so a failure reproduces.
+        // The core T0 invariant: no input makes parse throw. Seeded, so a failure reproduces. Fast
+        // cross-platform smoke (kept small so it stays well under the JS-node 2s Mocha budget — 20k
+        // flaked there at ~1.9s). Deep coverage-guided fuzzing is :webrtc-sdp:sdpCodecFuzz.
         val random = Random(0x5DDF00D)
-        repeat(20_000) {
+        repeat(2_000) {
             val n = random.nextInt(0, 256)
             val buf = BufferFactory.Default.allocate(maxOf(1, n), ByteOrder.BIG_ENDIAN)
             repeat(n) { buf.writeByte(random.nextInt().toByte()) }
@@ -92,10 +94,11 @@ class SdpMalformedCorpusTest {
 
     @Test
     fun parseIsTotalOverAsciiLineNoise() {
-        // Bias toward text so we exercise the line walk, not just the header reject.
+        // Bias toward text so we exercise the line walk, not just the header reject. Fast smoke count
+        // (see parseIsTotalOverArbitraryBytes — 20k flaked JS-node at the 2s Mocha budget).
         val random = Random(0xBAD5EED)
         val alphabet = "v=o0s-t a:mIPNc/.\r\n1234;".toCharArray()
-        repeat(20_000) {
+        repeat(2_000) {
             val len = random.nextInt(0, 200)
             val sb = StringBuilder(len)
             repeat(len) { sb.append(alphabet[random.nextInt(alphabet.size)]) }

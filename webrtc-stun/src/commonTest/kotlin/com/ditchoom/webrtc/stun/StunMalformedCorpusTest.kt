@@ -64,9 +64,13 @@ class StunMalformedCorpusTest {
 
     @Test
     fun decodeIsTotalOverArbitraryBytes() {
-        // The core T0 invariant: no input makes decode throw. Seeded, so a failure reproduces.
+        // The core T0 invariant: no input makes decode throw. Seeded, so a failure reproduces. Kept a
+        // fast cross-platform smoke: 20k iterations ran ~0.1s on the JVM but ~1.9s on JS-node — right
+        // against Mocha's 2s per-test budget, so it flaked on loaded runners. Deep, coverage-guided
+        // fuzzing of decode is the :webrtc-stun:stunCodecFuzz Jazzer lane (120s); this only smoke-checks
+        // totality on every platform.
         val random = Random(0xC0FFEE)
-        repeat(20_000) {
+        repeat(2_000) {
             val n = random.nextInt(0, 256)
             val buf = BufferFactory.Default.allocate(maxOf(1, n), ByteOrder.BIG_ENDIAN)
             repeat(n) { buf.writeByte(random.nextInt().toByte()) }

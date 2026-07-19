@@ -53,15 +53,27 @@ fi
 
 INFRA="coturn rendezvous nat_a nat_b"
 
-teardown() { docker compose down -v --remove-orphans >/dev/null 2>&1 || true; }
-trap teardown EXIT
-
 # Docker-host setup: a container acting as a router BETWEEN two Docker bridge networks only forwards if
 # host bridge-netfilter is OFF — otherwise the bridged frames traverse the host's Docker FORWARD/ISOLATION
 # chain (via physdev) and get dropped, so no traffic crosses the NAT (seen as peers stuck in New/Connecting).
-# Set it via a privileged host-netns container (the daemon is root even where the caller isn't). Harmless
-# if already 0; a no-op on hosts that don't load br_netfilter. On a plain Linux CI runner you may instead
-# `sudo sysctl` it in the workflow.
+# Set it via a privileged host-netns container (the daemon is root even where the caller isn't).
+#
+# This is a HOST-GLOBAL sysctl affecting every Docker workload, so we capture the original value and
+# RESTORE it on teardown rather than leaving the host mutated. On a plain Linux CI runner you may instead
+# `sudo sysctl` it in the workflow (there the runner is disposable, so restore is moot).
+BRIDGE_NF_ORIG=$(docker run --rm --privileged --network host alpine:3.20 \
+    sh -c 'cat /proc/sys/net/bridge/bridge-nf-call-iptables 2>/dev/null' 2>/dev/null || echo "")
+
+teardown() {
+    docker compose down -v --remove-orphans >/dev/null 2>&1 || true
+    # Restore the host sysctl we changed, so the harness leaves no global footprint.
+    if [ -n "$BRIDGE_NF_ORIG" ]; then
+        docker run --rm --privileged --network host alpine:3.20 \
+            sysctl -w "net.bridge.bridge-nf-call-iptables=$BRIDGE_NF_ORIG" >/dev/null 2>&1 || true
+    fi
+}
+trap teardown EXIT
+
 docker run --rm --privileged --network host alpine:3.20 \
     sysctl -w net.bridge.bridge-nf-call-iptables=0 net.bridge.bridge-nf-call-ip6tables=0 >/dev/null 2>&1 \
     || echo "::warning::could not set bridge-nf-call-iptables=0 — container routing across NATs may fail"
@@ -96,8 +108,12 @@ run_scenario() {
     fi
 
     if [ "$netem" != "-" ]; then
-        docker compose exec -T nat_a /netem.sh add $netem || true
-        docker compose exec -T nat_b /netem.sh add $netem || true
+        # Fail-HARD if netem can't be applied — otherwise the impaired lane silently runs UNIMPAIRED and
+        # passes, giving false confidence in the one scenario whose whole point is the degraded data path.
+        if ! docker compose exec -T nat_a /netem.sh add $netem || ! docker compose exec -T nat_b /netem.sh add $netem; then
+            echo "::error::[$name] netem failed to apply — impaired lane would run unimpaired"
+            fail=$((fail + 1)); failed_names="$failed_names $name"; return
+        fi
     fi
 
     # Start both peers; they run to completion (establish + echo, or watchdog timeout) and exit.

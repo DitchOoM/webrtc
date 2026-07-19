@@ -91,9 +91,12 @@ services:
       dockerfile: "test-harness/peer/${PEER_DOCKERFILE:-Dockerfile}"
       args: { PEER_KEXE: "${PEER_KEXE:-}" }
     cap_add: [NET_ADMIN]
-    # socket-udp's Linux datapath uses io_uring, whose syscalls Docker's default seccomp profile denies
-    # (EPERM on io_uring_setup). Relax seccomp for the peer only (test harness, not production).
-    security_opt: ["seccomp=unconfined"]
+    # socket-udp's Linux datapath is io_uring, whose syscalls (io_uring_setup/enter/register) Docker's
+    # default seccomp profile denies (EPERM). `seccomp=unconfined` opens them — broader than ideal, but
+    # the blast radius is small: the peer is NOT privileged and holds only NET_ADMIN, so the dangerous
+    # unconfined syscalls (mount/init_module/bpf/…) still fail without their caps. `no-new-privileges`
+    # blocks privilege escalation on top. (A tighter option is a custom profile = default + io_uring.)
+    security_opt: ["seccomp=unconfined", "no-new-privileges:true"]
     environment:
       GATEWAY_IP: "${NAT_A_LAN_IP}"
       WEBRTC_ROLE: offerer
@@ -124,7 +127,7 @@ services:
       dockerfile: "test-harness/peer/${PEER_DOCKERFILE:-Dockerfile}"
       args: { PEER_KEXE: "${PEER_KEXE:-}" }
     cap_add: [NET_ADMIN]
-    security_opt: ["seccomp=unconfined"]  # io_uring (socket-udp) — see peer_a
+    security_opt: ["seccomp=unconfined", "no-new-privileges:true"]  # io_uring (socket-udp) — see peer_a
     environment:
       GATEWAY_IP: "${NAT_B_LAN_IP}"
       WEBRTC_ROLE: answerer
@@ -149,6 +152,6 @@ services:
       rendezvous: { condition: service_healthy }
       nat_b: { condition: service_healthy }
 
-  # netem impairment (loss/delay/jitter/reorder) is applied to a peer's LAN interface on demand by
-  # run-interop.sh (`tc qdisc … netem`) via `docker exec` on nat_a/nat_b, so it composes with any NAT
-  # profile without a separate service. See run-interop.sh `impaired` scenarios.
+  # netem impairment (loss/delay/jitter/reorder) is applied to each NAT's PUBLIC (WAN) interface — the
+  # data path between the peers — on demand by run-interop.sh (`nat/netem.sh` via `docker exec` on
+  # nat_a/nat_b), so it composes with any NAT profile without a separate service. See the `impaired` scenario.

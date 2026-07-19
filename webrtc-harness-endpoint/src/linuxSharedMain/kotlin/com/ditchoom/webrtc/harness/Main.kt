@@ -98,11 +98,16 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
                     ),
             )
 
+        // Two signaling sockets (PUT + poll), owned here so they are closed AFTER bg.cancel() stops the
+        // loops that use them — closing them earlier would leave those loops spinning on a closed socket.
+        val sigOut = UdpSignaling.open(cfg.rendezvousHost, cfg.rendezvousPort, cfg.session, net)
+        val sigIn = UdpSignaling.open(cfg.rendezvousHost, cfg.rendezvousPort, cfg.session, net)
+
         val ok =
             withTimeoutOrNull(cfg.timeout) {
                 when (cfg.role) {
-                    Role.Offerer -> runOfferer(bg, pc, cfg, net)
-                    Role.Answerer -> runAnswerer(bg, pc, cfg, net)
+                    Role.Offerer -> runOfferer(bg, pc, cfg, sigOut, sigIn)
+                    Role.Answerer -> runAnswerer(bg, pc, cfg, sigOut, sigIn)
                 }
             } ?: run {
                 println("[harness] TIMEOUT after ${cfg.timeout}; state=${pc.connectionState.value}")
@@ -110,6 +115,8 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
             }
 
         bg.cancel()
+        sigOut.close()
+        sigIn.close()
         pc.close()
         if (ok) 0 else 1
     }
@@ -118,11 +125,9 @@ private suspend fun runOfferer(
     bg: CoroutineScope,
     pc: NativePeerConnection,
     cfg: HarnessConfig,
-    net: BufferFactory,
+    sigOut: UdpSignaling,
+    sigIn: UdpSignaling,
 ): Boolean {
-    val sigOut = UdpSignaling.open(cfg.rendezvousHost, cfg.rendezvousPort, cfg.session, net)
-    val sigIn = UdpSignaling.open(cfg.rendezvousHost, cfg.rendezvousPort, cfg.session, net)
-
     val channel = pc.createDataChannel(DataChannelConfig(label = "harness"))
     val offer = pc.createOffer()
     pc.setLocalDescription(SdpType.Offer, offer)
@@ -167,11 +172,9 @@ private suspend fun runAnswerer(
     bg: CoroutineScope,
     pc: NativePeerConnection,
     cfg: HarnessConfig,
-    net: BufferFactory,
+    sigOut: UdpSignaling,
+    sigIn: UdpSignaling,
 ): Boolean {
-    val sigOut = UdpSignaling.open(cfg.rendezvousHost, cfg.rendezvousPort, cfg.session, net)
-    val sigIn = UdpSignaling.open(cfg.rendezvousHost, cfg.rendezvousPort, cfg.session, net)
-
     // Await the offer (bounded by the outer watchdog), then answer.
     var offer: String? = null
     while (offer == null) {

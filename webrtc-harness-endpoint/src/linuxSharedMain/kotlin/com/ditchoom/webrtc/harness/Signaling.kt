@@ -25,15 +25,23 @@ import kotlin.time.Duration.Companion.seconds
  * it is a harness rendezvous, deliberately minimal. The wire format is the KSP-generated buffer-codec
  * schema in [PutRequest]/[GetRequest]/[MailboxResponse].
  *
- * **Reliability over UDP:** PUT carries a caller-assigned `recordId` (monotonic per slot), so the relay
- * stores records in an ordered, id-keyed map and a retransmit is idempotent. GET carries a `since` index
- * and returns only records at or after it. The client retransmits a PUT until it sees an ack and polls a
- * GET on an interval — the standard lost-datagram recovery, bounded by a watchdog.
+ * **Correlation (required over UDP):** each request carries a fresh [nextNonce] the reply echoes. UDP has
+ * no request/response pairing, so [awaitReply] drains and discards (and frees) every datagram whose nonce
+ * doesn't match the request it is waiting on — otherwise a delayed/duplicate reply arriving after a
+ * per-request timeout would offset the socket by one forever and mis-pair every later reply.
+ *
+ * **Reliability:** PUT carries a caller-assigned `recordId` (monotonic per slot), so the relay stores
+ * records in an id-keyed map and a retransmit is idempotent. `put` retransmits until a **matching** ack;
+ * `poll` returns the records at or after `since`. Bounded by a watchdog.
  *
  * **Single-consumer:** one [UdpSignaling] instance is driven by exactly one coroutine (open a second
  * instance for a concurrent activity) so two coroutines never race the one socket's `receive()`.
+ *
+ * **Buffers:** the request buffer is freed in `finally` (even on cancellation), and every received
+ * datagram payload is freed as it is drained — the native factory ([BufferFactory.deterministic]) is
+ * malloc-backed and caller-owned.
  */
-internal class UdpSignaling private constructor(
+internal class UdpSignaling internal constructor(
     private val channel: DatagramChannel,
     private val rendezvous: SocketAddress,
     private val session: String,
@@ -41,26 +49,36 @@ internal class UdpSignaling private constructor(
     // buffer, so frames must be encoded into native memory. Same factory the datapath uses.
     private val factory: BufferFactory,
 ) {
-    /** PUT [payload] as record [recordId] into [slot]; retransmit until acked or [timeout]. */
+    // Monotonic per-instance request correlator. Unique among this socket's in-flight requests (single-
+    // consumer), which is all correlation needs; wraps harmlessly at the harness's request counts.
+    private var nonceCounter: UInt = 0u
+
+    private fun nextNonce(): UInt = nonceCounter++
+
+    /** PUT [payload] as record [recordId] into [slot]; retransmit until a matching ack or [timeout]. */
     suspend fun put(
         slot: String,
         recordId: Int,
         payload: String,
         timeout: Duration = PUT_TIMEOUT,
     ): Boolean {
-        val request = PutRequestCodec.encodeToPlatformBuffer(PutRequest(OP_PUT, "$session/$slot", recordId.toUInt(), payload), factory)
-        val acked =
-            withTimeoutOrNull(timeout) {
-                while (true) {
-                    channel.send(request.slice(), to = rendezvous)
-                    val reply = withTimeoutOrNull(RETRANSMIT) { receiveReply() }
-                    if (reply == true) return@withTimeoutOrNull true
+        val nonce = nextNonce()
+        val request = PutRequestCodec.encodeToPlatformBuffer(PutRequest(OP_PUT, nonce, "$session/$slot", recordId.toUInt(), payload), factory)
+        try {
+            val acked =
+                withTimeoutOrNull(timeout) {
+                    while (true) {
+                        channel.send(request.slice(), to = rendezvous)
+                        // Wait a retransmit interval for an ack echoing OUR nonce (stale acks are drained).
+                        if (withTimeoutOrNull(RETRANSMIT) { awaitReply(nonce) } != null) return@withTimeoutOrNull true
+                    }
+                    @Suppress("UNREACHABLE_CODE")
+                    true
                 }
-                @Suppress("UNREACHABLE_CODE")
-                true
-            }
-        request.freeNativeMemory()
-        return acked ?: false
+            return acked ?: false
+        } finally {
+            request.freeNativeMemory()
+        }
     }
 
     /**
@@ -73,31 +91,46 @@ internal class UdpSignaling private constructor(
         since: Int,
         timeout: Duration = GET_TIMEOUT,
     ): List<String> {
-        val request = GetRequestCodec.encodeToPlatformBuffer(GetRequest(OP_GET, "$session/$slot", since.toUInt()), factory)
-        val records =
-            withTimeoutOrNull(timeout) {
-                channel.send(request.slice(), to = rendezvous)
-                when (val r = channel.receive()) {
-                    is DatagramReadResult.Received ->
-                        MailboxResponseCodec.decode(r.datagram.payload, DecodeContext.Empty).records.map { it.payload }
-                    is DatagramReadResult.Closed -> emptyList()
+        val nonce = nextNonce()
+        val request = GetRequestCodec.encodeToPlatformBuffer(GetRequest(OP_GET, nonce, "$session/$slot", since.toUInt()), factory)
+        try {
+            val records =
+                withTimeoutOrNull(timeout) {
+                    channel.send(request.slice(), to = rendezvous)
+                    awaitReply(nonce)?.records?.map { it.payload }
                 }
-            }
-        request.freeNativeMemory()
-        return records ?: emptyList()
+            return records ?: emptyList()
+        } finally {
+            request.freeNativeMemory()
+        }
     }
 
     fun close() = channel.close()
 
-    // Await any datagram from the relay (a PUT ack carries no useful body — arrival IS the ack).
-    private suspend fun receiveReply(): Boolean =
-        when (channel.receive()) {
-            is DatagramReadResult.Received -> true
-            is DatagramReadResult.Closed -> false
+    // Receive datagrams until one whose MailboxResponse echoes [expectedNonce]. Frees EVERY datagram it
+    // consumes (the received payloads are caller-owned native memory) and discards non-matching or
+    // undecodable ones — this is both the leak fix and the request/response correlation. Bounded by the
+    // caller's `withTimeoutOrNull`, which cancels the pending `receive()`.
+    private suspend fun awaitReply(expectedNonce: UInt): MailboxResponse? {
+        while (true) {
+            val datagram =
+                when (val r = channel.receive()) {
+                    is DatagramReadResult.Received -> r.datagram
+                    is DatagramReadResult.Closed -> return null
+                }
+            val response =
+                try {
+                    MailboxResponseCodec.decode(datagram.payload, DecodeContext.Empty)
+                } catch (e: Exception) {
+                    null
+                }
+            datagram.payload.freeNativeMemory()
+            if (response != null && response.nonce == expectedNonce) return response
         }
+    }
 
     companion object {
-        private val RETRANSMIT = 300.milliseconds
+        private val RETRANSMIT = 500.milliseconds
         private val PUT_TIMEOUT = 15.seconds
         private val GET_TIMEOUT = 1.seconds
 

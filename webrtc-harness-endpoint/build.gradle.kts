@@ -64,6 +64,12 @@ kotlin {
             implementation(libs.buffer.codec)
             implementation(libs.kotlinx.coroutines.core)
         }
+        // Unit tests for the harness's own logic (e.g. the signaling request/response correlation). Native
+        // test compilations run on the matching host (linuxX64Test on an x64 runner) under `./gradlew build`.
+        commonTest.dependencies {
+            implementation(kotlin("test"))
+            implementation(libs.kotlinx.coroutines.test)
+        }
     }
 }
 

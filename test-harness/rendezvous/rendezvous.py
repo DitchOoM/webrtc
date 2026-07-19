@@ -13,15 +13,18 @@ only transport it can — raw UDP — and this relay speaks it back. Nothing is 
 Wire format — big-endian — MUST match the KSP-generated buffer-codec schema in the peer's
 `SignalingWire.kt` (PutRequest / GetRequest / MailboxResponse / MailboxRecord):
 
-    PutRequest  : op=1(u8)  keyLen(u16)  key(utf8)  recordId(u32)  payloadLen(u32)  payload(utf8)
-    GetRequest  : op=2(u8)  keyLen(u16)  key(utf8)  since(u32)
-    Response    : status=0(u8)  total(u32)  records[]      (each record: payloadLen(u32) payload(utf8))
+    PutRequest  : op=1(u8)  nonce(u32)  keyLen(u16)  key(utf8)  recordId(u32)  payloadLen(u32)  payload(utf8)
+    GetRequest  : op=2(u8)  nonce(u32)  keyLen(u16)  key(utf8)  since(u32)
+    Response    : status=0(u8)  nonce(u32)  total(u32)  records[]   (each record: payloadLen(u32) payload)
 
 `key` is "<session>/<slot>"; a slot is offer | answer | cand/offerer | cand/answerer. A PUT stores a
 record under (key, recordId) — id-keyed so a UDP retransmit is idempotent. A GET returns the CONTIGUOUS
 run of records from index `since` (stopping at the first missing recordId), so a reordered/late PUT can
 never make the poller skip a record: the gap just waits for that record's retransmit. Records are
 returned in recordId order.
+
+`nonce` is echoed back in the response — the client's request/response correlator over UDP (a delayed or
+duplicate reply that doesn't match the awaited nonce is drained + discarded rather than mis-paired).
 """
 import os
 import socket
@@ -34,9 +37,9 @@ OP_GET = 2
 mailboxes: dict[str, dict[int, bytes]] = {}
 
 
-def _response(records: list[bytes], total: int) -> bytes:
+def _response(nonce: int, records: list[bytes], total: int) -> bytes:
     out = bytearray()
-    out += struct.pack(">BI", 0, total)  # status=0 (OK), total record count (informational)
+    out += struct.pack(">BII", 0, nonce, total)  # status=0 (OK), echoed nonce, total record count
     for payload in records:
         out += struct.pack(">I", len(payload)) + payload
     return bytes(out)
@@ -47,6 +50,8 @@ def _handle(data: bytes) -> bytes | None:
         return None
     op = data[0]
     pos = 1
+    (nonce,) = struct.unpack_from(">I", data, pos)  # correlator, echoed back
+    pos += 4
     (key_len,) = struct.unpack_from(">H", data, pos)
     pos += 2
     key = data[pos:pos + key_len].decode("utf-8")
@@ -57,8 +62,8 @@ def _handle(data: bytes) -> bytes | None:
         pos += 8
         payload = data[pos:pos + payload_len]
         mailboxes.setdefault(key, {})[record_id] = payload
-        # Ack: an empty-records response — the peer's put() only needs a datagram back to confirm.
-        return _response([], len(mailboxes[key]))
+        # Ack: an empty-records response — the peer's put() only needs a nonce-matching datagram to confirm.
+        return _response(nonce, [], len(mailboxes[key]))
 
     if op == OP_GET:
         (since,) = struct.unpack_from(">I", data, pos)
@@ -68,7 +73,7 @@ def _handle(data: bytes) -> bytes | None:
         while i in box:  # contiguous run from `since` — stop at the first gap
             records.append(box[i])
             i += 1
-        return _response(records, len(box))
+        return _response(nonce, records, len(box))
 
     return None  # unknown opcode — ignore
 

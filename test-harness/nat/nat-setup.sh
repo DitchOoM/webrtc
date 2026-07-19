@@ -44,8 +44,12 @@ case "$NAT_PROFILE" in
     ;;
   address-restricted)
     iptables -t nat -A POSTROUTING -o "$WAN" -j MASQUERADE
-    # Record every destination IP the LAN sends to; allow inbound UDP from those IPs on ANY port.
-    iptables -A FORWARD -i "$LAN" -o "$WAN" -m recent --name seen --rdest --set
+    # Record every destination IP the LAN sends to, then allow inbound UDP from those IPs on ANY port.
+    # The `--set` rule MUST run before the baseline `-i LAN -o WAN -j ACCEPT` (line 35) — that ACCEPT is
+    # terminating, so an APPENDED `--set` would never execute and the `recent` list would stay empty,
+    # silently degrading this profile to port-restricted. Insert the recorder at the head of FORWARD
+    # (before the baseline ACCEPT); it has no `-j`, so it records and falls through to the ACCEPT.
+    iptables -I FORWARD 1 -i "$LAN" -o "$WAN" -m recent --name seen --rdest --set
     iptables -A FORWARD -i "$WAN" -o "$LAN" -p udp -m recent --name seen --rsource --rcheck --seconds 120 -j ACCEPT
     ;;
   full-cone)

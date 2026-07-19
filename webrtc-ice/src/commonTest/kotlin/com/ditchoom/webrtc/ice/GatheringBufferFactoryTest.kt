@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalDatagramApi::class, ExperimentalCoroutinesApi::class)
+@file:OptIn(ExperimentalDatagramApi::class, ExperimentalCoroutinesApi::class, ExperimentalTime::class)
 
 package com.ditchoom.webrtc.ice
 
@@ -15,6 +15,8 @@ import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.Ecn
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.webrtc.ice.vnet.NatProfile
+import com.ditchoom.webrtc.ice.vnet.Vnets
 import com.ditchoom.webrtc.stun.RawAttribute
 import com.ditchoom.webrtc.stun.StunClass
 import com.ditchoom.webrtc.stun.StunDecodeResult
@@ -30,6 +32,10 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.ExperimentalTime
+import kotlin.time.Instant
 
 /**
  * Regression fixture for the **W7 real-network gathering-factory bug** (HANDOFF W7 Phase 1): the srflx
@@ -48,6 +54,7 @@ import kotlin.test.assertIs
 class GatheringBufferFactoryTest {
     private val stunServer = SocketAddress.ofLiteral("192.0.2.1", 3478)
     private val local = SocketAddress.ofLiteral("10.0.0.1", 5000)
+    private val epoch = Instant.fromEpochSeconds(0)
 
     /** The fix: when the injected factory is threaded through, the datagram is native → send accepted →
      *  the srflx round-trip completes. This assertion FAILS against the pre-fix `.encode()` (heap factory). */
@@ -79,6 +86,78 @@ class GatheringBufferFactoryTest {
                 }
             assertEquals("send requires a native-memory buffer", error.message)
         }
+
+    /**
+     * The DRIVER-level guard — this is the wiring that actually shipped the bug. The two functions above
+     * are only reached correctly if [IceAgentDriver] threads its [IceConfig.bufferFactory] into
+     * `gatherServerReflexive` (srflx) AND `TurnAllocation` (relay). Here the binder wraps the vnet in a
+     * [FactoryAssertingChannel] that rejects any datagram not built from the injected factory (io_uring's
+     * rule), and gathering runs against real vnet STUN + TURN servers. All three candidate types appear
+     * ONLY if both wiring lines are present — reverting either (`IceAgentDriver` dropping the
+     * `bufferFactory`/`config.bufferFactory` argument) drops srflx or relay and fails this test, which the
+     * function-level tests above do not catch (they inject the factory themselves).
+     */
+    @Test
+    fun the_driver_threads_the_injected_factory_into_srflx_and_relay_gathering() =
+        runTest {
+            val factory = TaggingBufferFactory()
+            val meetup = Vnets.meetup(backgroundScope, profileA = NatProfile.FullCone, profileB = NatProfile.FullCone)
+            val clock: () -> Instant = { epoch + testScheduler.currentTime.milliseconds }
+            val binder = DatagramBinder { FactoryAssertingChannel(meetup.vnet.bind(it), factory) }
+
+            val driver =
+                IceAgentDriver(
+                    role = IceRole.Controlling,
+                    random = Random(7),
+                    binder = binder,
+                    scope = backgroundScope,
+                    clock = clock,
+                    config = IceConfig(bufferFactory = factory),
+                )
+            driver.start()
+            driver.gatherHost("10.0.0.2", 5000, stunServer = meetup.stunAddress)
+            driver.gatherRelay(meetup.turnAddress, Vnets.TURN_USERNAME, Vnets.TURN_PASSWORD, "10.0.0.2", 6000)
+
+            val candidates = driver.localCandidates
+            assertTrue(candidates.any { it is IceCandidate.Host }, "host gathered")
+            assertTrue(
+                candidates.any { it is IceCandidate.ServerReflexive },
+                "srflx gathered — driver threaded the factory into gatherServerReflexive (F1)",
+            )
+            assertTrue(
+                candidates.any { it is IceCandidate.Relayed },
+                "relay gathered — driver threaded the factory into TurnAllocation (F2)",
+            )
+        }
+}
+
+/**
+ * Wraps a vnet [DatagramChannel] and rejects any `send` whose payload was NOT allocated by [factory] —
+ * modeling io_uring's native-buffer requirement over the vnet's lossless channel. Only the driver's own
+ * channels are wrapped (the binder), so the vnet's STUN/TURN servers reply normally; this asserts purely
+ * that the DRIVER's outbound gathering datagrams came from the injected factory.
+ */
+private class FactoryAssertingChannel(
+    private val inner: DatagramChannel,
+    private val factory: TaggingBufferFactory,
+) : DatagramChannel {
+    override val localAddress: SocketAddress? get() = inner.localAddress
+    override val isOpen: Boolean get() = inner.isOpen
+    override val maxWritableSize: Int get() = inner.maxWritableSize
+    override val capabilities: DatagramCapabilities get() = inner.capabilities
+
+    override suspend fun receive(): DatagramReadResult = inner.receive()
+
+    override suspend fun send(
+        payload: ReadBuffer,
+        to: SocketAddress?,
+        options: DatagramSendOptions,
+    ) {
+        check(factory.owns(payload)) { "send requires a native-memory buffer" }
+        inner.send(payload, to, options)
+    }
+
+    override fun close() = inner.close()
 }
 
 /**

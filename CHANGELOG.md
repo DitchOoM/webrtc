@@ -27,6 +27,24 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
   fail against the pre-fix code). Also documented: io_uring needs `seccomp=unconfined` under Docker, container-router forwarding
   needs host `bridge-nf-call-iptables=0`, and the answerer lingers before teardown so the final `pong` is
   reliably delivered.
+- **Adversarial-review gate (5 parallel lanes; confirmed defects fixed + fixtures):**
+  - **Signaling correlation + leak** — the UDP rendezvous replies carried no correlator, so a delayed/duplicate
+    reply could offset a socket by one and mis-pair every later reply (an answer-SDP fed into `addIceCandidate`,
+    a candidate silently dropped); and received datagram payloads were never freed. Fixed: a per-request
+    `nonce` echoed in `MailboxResponse`, `awaitReply` drains + frees any non-matching datagram, request freed
+    in `finally`, signaling sockets closed after teardown. Fixture: `SignalingCorrelationTest`.
+  - **webrtc-ice fixture rigor** — added a driver-level test proving `IceAgentDriver` threads
+    `config.bufferFactory` into **both** `gatherServerReflexive` (srflx) and `TurnAllocation` (relay) —
+    reverting either wiring line now fails a test (the function-level tests alone did not catch it).
+  - **NAT `address-restricted` fidelity** — the `recent`-module rules were dead code (a terminating baseline
+    `ACCEPT` preceded them), silently degrading the profile to port-restricted; the recorder now inserts at the
+    head of `FORWARD` so the profile is genuinely address-dependent.
+  - **Harness hygiene** — `.dockerignore` (the peer build context was the whole repo); the host
+    `bridge-nf-call-iptables` sysctl is captured and **restored** on teardown; the impaired lane now
+    **fails hard** if netem can't apply (was silently running unimpaired); `no-new-privileges` added alongside
+    the io_uring `seccomp=unconfined`.
+  - Refuted: the TURN long-term-key concern (relay-only establishes empirically — coturn accepts the peer's
+    short-term MI; the long-term-key derivation is a pre-existing, documented L3/real-TURN follow-up).
 
 ### Added — W4: `webrtc-dtls` — real BoringSSL DTLS 1.2/1.3, wired into `PeerConnection`
 - **`DtlsEngine`** — a caller-clocked, sans-io DTLS endpoint (`expect class`; RFC §5.1): `start` /

@@ -85,28 +85,41 @@ docker run --rm --privileged --network host alpine:3.20 \
     sysctl -w net.bridge.bridge-nf-call-iptables=0 net.bridge.bridge-nf-call-ip6tables=0 >/dev/null 2>&1 \
     || echo "::warning::could not set bridge-nf-call-iptables=0 — container routing across NATs may fail"
 
-# ── the scenario matrix — name | nat_a | nat_b | ice_policy | netem(args or "-") ──
-# Covers each of the four NAT profiles, the symmetric→relay fallback, an explicit relay-only lane, and an
-# impaired data path. Each expects BOTH peers to exit 0.
+# ── the scenario matrix — name | nat_a | nat_b | ice_policy | netem(args or "-") | b_impl(native|pion) ──
+# Covers each of the four NAT profiles, the symmetric→relay fallback, an explicit relay-only lane, an
+# impaired data path (all our-peer ⇄ our-peer), plus the W7 Phase-2(a) interop lane where the answerer is
+# a real Pion (Go) peer. Each expects BOTH peers to exit 0. b_impl defaults to native when the column is
+# omitted. The pion lane forces DTLS 1.2 (Pion v3 is 1.2-only) — see run_scenario.
 SCENARIOS="
-full-cone            | full-cone          | full-cone          | all   | -
-port-restricted      | port-restricted    | port-restricted    | all   | -
-address-restricted   | address-restricted | address-restricted | all   | -
-symmetric-relay      | symmetric          | symmetric          | all   | -
-mixed-sym-port       | symmetric          | port-restricted    | all   | -
-relay-only           | port-restricted    | port-restricted    | relay | -
-impaired-loss-delay  | port-restricted    | port-restricted    | all   | loss 5% delay 20ms 5ms distribution normal
+full-cone            | full-cone          | full-cone          | all   | -                                                | native
+port-restricted      | port-restricted    | port-restricted    | all   | -                                                | native
+address-restricted   | address-restricted | address-restricted | all   | -                                                | native
+symmetric-relay      | symmetric          | symmetric          | all   | -                                                | native
+mixed-sym-port       | symmetric          | port-restricted    | all   | -                                                | native
+relay-only           | port-restricted    | port-restricted    | relay | -                                                | native
+impaired-loss-delay  | port-restricted    | port-restricted    | all   | loss 5% delay 20ms 5ms distribution normal      | native
+pion-interop         | port-restricted    | port-restricted    | all   | -                                                | pion
 "
 
 only="${1:-}"
 pass=0; fail=0; failed_names=""
 
 run_scenario() {
-    local name="$1" nat_a="$2" nat_b="$3" policy="$4" netem="$5"
+    local name="$1" nat_a="$2" nat_b="$3" policy="$4" netem="$5" b_impl="${6:-native}"
     echo ""
-    echo "═══ scenario: $name  (nat_a=$nat_a nat_b=$nat_b policy=$policy netem=${netem}) ═══"
+    echo "═══ scenario: $name  (nat_a=$nat_a nat_b=$nat_b policy=$policy netem=${netem} b=${b_impl}) ═══"
 
     export NAT_A_PROFILE="$nat_a" NAT_B_PROFILE="$nat_b" ICE_POLICY="$policy" SESSION="$name"
+
+    # Choose the "b side": the native answerer peer_b, or the Pion (Go) interop echo-peer. The Pion lane
+    # is gated behind the `pion` compose profile (COMPOSE_PROFILES) and pins DTLS 1.2 on BOTH peers
+    # (PEER_DTLS13=false) — Pion v3 is DTLS-1.2-only, and our peer_a would otherwise negotiate up to 1.3.
+    local b_service
+    if [ "$b_impl" = "pion" ]; then
+        b_service="pion"; export COMPOSE_PROFILES="pion" PEER_DTLS13="false"
+    else
+        b_service="peer_b"; unset COMPOSE_PROFILES; export PEER_DTLS13="true"
+    fi
 
     # Fresh stack per scenario for isolation (NAT rules + conntrack state must not bleed across profiles).
     # stack_down ONLY — the host bridge-nf sysctl stays as set for the whole run (restored once on EXIT).
@@ -125,15 +138,16 @@ run_scenario() {
     fi
 
     # Start both peers; they run to completion (establish + echo, or watchdog timeout) and exit.
-    docker compose up -d peer_a peer_b
+    # --build so the peer/pion images reflect current source (see compose-up-retry.sh for the rationale).
+    docker compose up -d --build peer_a "$b_service"
     # `docker compose wait` blocks until stop; its output form varies ("0" vs "container … status code 0"),
     # so extract the trailing exit code robustly.
     local rc_a rc_b
     rc_a=$(docker compose wait peer_a 2>/dev/null | grep -oE '[0-9]+$' | tail -1)
-    rc_b=$(docker compose wait peer_b 2>/dev/null | grep -oE '[0-9]+$' | tail -1)
+    rc_b=$(docker compose wait "$b_service" 2>/dev/null | grep -oE '[0-9]+$' | tail -1)
 
     echo "── peer_a (offerer) ──"; docker compose logs --no-log-prefix peer_a
-    echo "── peer_b (answerer) ──"; docker compose logs --no-log-prefix peer_b
+    echo "── $b_service (answerer) ──"; docker compose logs --no-log-prefix "$b_service"
 
     if [ "$rc_a" = "0" ] && [ "$rc_b" = "0" ]; then
         echo "✅ [$name] PASS (offerer rc=$rc_a answerer rc=$rc_b)"; pass=$((pass+1))
@@ -144,11 +158,12 @@ run_scenario() {
 }
 
 # Here-string (not a pipe) so the loop runs in THIS shell and the tallies persist.
-while IFS='|' read -r name a b policy netem; do
+while IFS='|' read -r name a b policy netem b_impl; do
     name=$(echo "$name" | xargs); [ -z "$name" ] && continue
     a=$(echo "$a" | xargs); b=$(echo "$b" | xargs); policy=$(echo "$policy" | xargs); netem=$(echo "$netem" | xargs)
+    b_impl=$(echo "$b_impl" | xargs); [ -z "$b_impl" ] && b_impl=native
     if [ -n "$only" ] && [ "$only" != "$name" ]; then continue; fi
-    run_scenario "$name" "$a" "$b" "$policy" "$netem"
+    run_scenario "$name" "$a" "$b" "$policy" "$netem" "$b_impl"
 done <<< "$SCENARIOS"
 
 echo ""

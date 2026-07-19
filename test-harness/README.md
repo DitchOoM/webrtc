@@ -52,9 +52,28 @@ cd test-harness
 ```
 
 Scenarios (in `run-interop.sh`): each NAT profile direct, `symmetric×symmetric` → relay, a mixed
-sym×port lane, an explicit `relay-only` lane, and an `impaired` (netem) lane. A scenario **passes** iff
-both peers exit `0` — and each exits `0` only after it CONNECTED *and* the `ping`/`pong` crossed the
-encrypted data channel. Every run tears the whole stack down (containers + networks + volumes) on exit.
+sym×port lane, an explicit `relay-only` lane, an `impaired` (netem) lane, and the **`pion-interop`**
+lane (below). A scenario **passes** iff both peers exit `0` — and each exits `0` only after it CONNECTED
+*and* the `ping`/`pong` crossed the encrypted data channel. Every run tears the whole stack down
+(containers + networks + volumes) on exit.
+
+## Interop: the Pion lane (W7 Phase 2a)
+
+The `pion-interop` scenario swaps the native answerer `peer_b` for a real **Pion (Go) echo-peer**
+(`pion/`), so our native offerer establishes against an independent WebRTC implementation — the
+differential oracle. It runs the same topology (Pion behind `nat_b`, gathering from the same coturn,
+signaling over the same rendezvous — the Go client in `pion/signaling.go` speaks the identical
+buffer-codec wire schema). Pion accepts the data channel and echoes `ping`→`pong`.
+
+- **DTLS 1.2**: Pion's released v3 is DTLS-1.2-only, so this lane sets `PEER_DTLS13=false` (via
+  `WEBRTC_DTLS13`) — our peer pins its tested 1.2 fallback and version negotiation meets at 1.2.
+- The Pion service is gated behind the `pion` compose profile (activated by `run-interop.sh` for this
+  scenario only); it and `peer_b` share `PEER_B_IP` but never run at once.
+- Its image builds natively per-arch (pure Go, no cross-compile / QEMU), so CI needs no extra build step.
+
+```bash
+./run-interop.sh pion-interop       # our native offerer ⇄ Pion answerer, DTLS 1.2, over port-restricted NAT
+```
 
 ### Portability (arch-matched, no QEMU)
 
@@ -85,3 +104,4 @@ daemon is root even where you aren't); CI sets it with `sudo sysctl`. It's harml
 | `rendezvous/` | UDP keyed-mailbox relay (`rendezvous.py`) + image |
 | `nat/` | NAT gateway image + `nat-setup.sh` (the 4 profiles) + `netem.sh` |
 | `peer/` | `Dockerfile` (self-building, portable) + `Dockerfile.prebuilt` (fast) + entrypoint |
+| `pion/` | the Pion (Go) interop echo-peer: `main.go` + `signaling.go` (rendezvous client) + image |

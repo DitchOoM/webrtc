@@ -1,0 +1,157 @@
+name: webrtc-l2-harness
+
+# L2 interop harness — two native peers behind their own NAT gateways establish a full WebRTC data
+# channel (ICE → real BoringSSL DTLS → SCTP) across real Linux kernels, gathering srflx/relay candidates
+# from real coturn and signaling over the UDP rendezvous. run-interop.sh drives this, swapping the NAT
+# profile (${NAT_A_PROFILE}/${NAT_B_PROFILE}) and policy (${ICE_POLICY}) per scenario. All ${VARS} are
+# substituted from harness.env (run-interop.sh exports it); services also get it at runtime via env_file.
+#
+#   peer_a ─lan_a─ nat_a ═══pub═══ coturn / rendezvous ═══pub═══ nat_b ─lan_b─ peer_b
+
+networks:
+  pub:
+    ipam: { config: [{ subnet: "${PUB_SUBNET}" }] }
+  lan_a:
+    ipam: { config: [{ subnet: "${LAN_A_SUBNET}" }] }
+  lan_b:
+    ipam: { config: [{ subnet: "${LAN_B_SUBNET}" }] }
+
+services:
+  coturn:
+    image: coturn/coturn:4.6
+    env_file: ./harness.env
+    entrypoint: ["/bin/sh", "/etc/coturn/entrypoint.sh"]
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+      - ./coturn/entrypoint.sh:/etc/coturn/entrypoint.sh:ro
+    networks:
+      pub: { ipv4_address: "${COTURN_IP}" }
+    healthcheck:
+      test: ["CMD-SHELL", "pidof turnserver >/dev/null 2>&1 || pgrep turnserver >/dev/null 2>&1"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 2s
+
+  rendezvous:
+    build: { context: ., dockerfile: rendezvous/Dockerfile }
+    env_file: ./harness.env
+    networks:
+      pub: { ipv4_address: "${RENDEZVOUS_IP}" }
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f rendezvous.py >/dev/null 2>&1"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 1s
+
+  nat_a:
+    build: { context: ., dockerfile: nat/Dockerfile }
+    cap_add: [NET_ADMIN]
+    sysctls: { net.ipv4.ip_forward: 1 }
+    environment:
+      NAT_PROFILE: "${NAT_A_PROFILE:-port-restricted}"
+      NAT_WAN_IP: "${NAT_A_WAN_IP}"
+      NAT_LAN_IP: "${NAT_A_LAN_IP}"
+      PEER_IP: "${PEER_A_IP}"
+      ICE_PORT: "${ICE_PORT}"
+    networks:
+      pub: { ipv4_address: "${NAT_A_WAN_IP}" }
+      lan_a: { ipv4_address: "${NAT_A_LAN_IP}" }
+    healthcheck:
+      test: ["CMD-SHELL", "iptables -t nat -S | grep -q MASQUERADE"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 1s
+
+  nat_b:
+    build: { context: ., dockerfile: nat/Dockerfile }
+    cap_add: [NET_ADMIN]
+    sysctls: { net.ipv4.ip_forward: 1 }
+    environment:
+      NAT_PROFILE: "${NAT_B_PROFILE:-port-restricted}"
+      NAT_WAN_IP: "${NAT_B_WAN_IP}"
+      NAT_LAN_IP: "${NAT_B_LAN_IP}"
+      PEER_IP: "${PEER_B_IP}"
+      ICE_PORT: "${ICE_PORT}"
+    networks:
+      pub: { ipv4_address: "${NAT_B_WAN_IP}" }
+      lan_b: { ipv4_address: "${NAT_B_LAN_IP}" }
+    healthcheck:
+      test: ["CMD-SHELL", "iptables -t nat -S | grep -q MASQUERADE"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 1s
+
+  peer_a:
+    build:
+      context: ..
+      dockerfile: "test-harness/peer/${PEER_DOCKERFILE:-Dockerfile}"
+      args: { PEER_KEXE: "${PEER_KEXE:-}" }
+    cap_add: [NET_ADMIN]
+    # socket-udp's Linux datapath is io_uring, whose syscalls (io_uring_setup/enter/register) Docker's
+    # default seccomp profile denies (EPERM). `seccomp=unconfined` opens them — broader than ideal, but
+    # the blast radius is small: the peer is NOT privileged and holds only NET_ADMIN, so the dangerous
+    # unconfined syscalls (mount/init_module/bpf/…) still fail without their caps. `no-new-privileges`
+    # blocks privilege escalation on top. (A tighter option is a custom profile = default + io_uring.)
+    security_opt: ["seccomp=unconfined", "no-new-privileges:true"]
+    environment:
+      GATEWAY_IP: "${NAT_A_LAN_IP}"
+      WEBRTC_ROLE: offerer
+      WEBRTC_SESSION: "${SESSION:-l2}"
+      WEBRTC_LOCAL_IP: "${PEER_A_IP}"
+      WEBRTC_LOCAL_PORT: "${ICE_PORT}"
+      WEBRTC_RELAY_PORT: "${RELAY_BIND_PORT}"
+      WEBRTC_STUN_HOST: "${COTURN_IP}"
+      WEBRTC_STUN_PORT: "${STUN_PORT}"
+      WEBRTC_TURN_HOST: "${COTURN_IP}"
+      WEBRTC_TURN_PORT: "${STUN_PORT}"
+      WEBRTC_TURN_USER: "${TURN_USER}"
+      WEBRTC_TURN_PASS: "${TURN_PASS}"
+      WEBRTC_RENDEZVOUS_HOST: "${RENDEZVOUS_IP}"
+      WEBRTC_RENDEZVOUS_PORT: "${RENDEZVOUS_PORT}"
+      WEBRTC_ICE_POLICY: "${ICE_POLICY:-all}"
+      WEBRTC_TIMEOUT_MS: "${PEER_TIMEOUT_MS}"
+    networks:
+      lan_a: { ipv4_address: "${PEER_A_IP}" }
+    depends_on:
+      coturn: { condition: service_healthy }
+      rendezvous: { condition: service_healthy }
+      nat_a: { condition: service_healthy }
+
+  peer_b:
+    build:
+      context: ..
+      dockerfile: "test-harness/peer/${PEER_DOCKERFILE:-Dockerfile}"
+      args: { PEER_KEXE: "${PEER_KEXE:-}" }
+    cap_add: [NET_ADMIN]
+    security_opt: ["seccomp=unconfined", "no-new-privileges:true"]  # io_uring (socket-udp) — see peer_a
+    environment:
+      GATEWAY_IP: "${NAT_B_LAN_IP}"
+      WEBRTC_ROLE: answerer
+      WEBRTC_SESSION: "${SESSION:-l2}"
+      WEBRTC_LOCAL_IP: "${PEER_B_IP}"
+      WEBRTC_LOCAL_PORT: "${ICE_PORT}"
+      WEBRTC_RELAY_PORT: "${RELAY_BIND_PORT}"
+      WEBRTC_STUN_HOST: "${COTURN_IP}"
+      WEBRTC_STUN_PORT: "${STUN_PORT}"
+      WEBRTC_TURN_HOST: "${COTURN_IP}"
+      WEBRTC_TURN_PORT: "${STUN_PORT}"
+      WEBRTC_TURN_USER: "${TURN_USER}"
+      WEBRTC_TURN_PASS: "${TURN_PASS}"
+      WEBRTC_RENDEZVOUS_HOST: "${RENDEZVOUS_IP}"
+      WEBRTC_RENDEZVOUS_PORT: "${RENDEZVOUS_PORT}"
+      WEBRTC_ICE_POLICY: "${ICE_POLICY:-all}"
+      WEBRTC_TIMEOUT_MS: "${PEER_TIMEOUT_MS}"
+    networks:
+      lan_b: { ipv4_address: "${PEER_B_IP}" }
+    depends_on:
+      coturn: { condition: service_healthy }
+      rendezvous: { condition: service_healthy }
+      nat_b: { condition: service_healthy }
+
+  # netem impairment (loss/delay/jitter/reorder) is applied to each NAT's PUBLIC (WAN) interface — the
+  # data path between the peers — on demand by run-interop.sh (`nat/netem.sh` via `docker exec` on
+  # nat_a/nat_b), so it composes with any NAT profile without a separate service. See the `impaired` scenario.

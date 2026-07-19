@@ -3,17 +3,24 @@
 // binary-compat validation) lives entirely in the build-logic `webrtc.multiplatform-library`
 // convention plugin. This file carries only the aggregate lifecycle tasks CI invokes.
 
-// Aggregate detekt across every module (each module applies detekt via the convention plugin).
+// The published library modules — every subproject EXCEPT the non-published native-executable harness
+// endpoint (:webrtc-harness-endpoint), which applies `webrtc.native-executable`, not the library
+// convention, so it has no detekt / apiCheck / android-host / js-browser / allTests tasks to aggregate.
+// It is built via the top-level `build`/`assemble` lifecycle and linked explicitly by the L2 harness CI
+// job; it never participates in the library aggregates below.
+val libraryModules = subprojects.filter { it.name != "webrtc-harness-endpoint" }
+
+// Aggregate detekt across every library module (each applies detekt via the convention plugin).
 tasks.register("detektAll") {
     description = "Run detekt static analysis across all modules and Kotlin source sets (non-blocking)."
     group = "verification"
-    dependsOn(subprojects.map { "${it.path}:detekt" })
+    dependsOn(libraryModules.map { "${it.path}:detekt" })
 }
 
 tasks.register("allTests") {
     description = "Run tests for all modules and platforms"
     group = "verification"
-    dependsOn(subprojects.map { "${it.path}:allTests" })
+    dependsOn(libraryModules.map { "${it.path}:allTests" })
 }
 
 // Pre-publish gate: allTests + the Android-host and JS-browser suites that `allTests` skips and that
@@ -23,9 +30,9 @@ tasks.register("prePublishCheck") {
     group = "verification"
     dependsOn("allTests")
     // Android host unit tests (new AGP KMP DSL task name) + JS browser tests — the two suites that
-    // `allTests` skips and that have historically masked platform-only bugs.
-    dependsOn(subprojects.map { "${it.path}:testAndroidHostTest" })
-    dependsOn(subprojects.map { "${it.path}:jsBrowserTest" })
+    // `allTests` skips and that have historically masked platform-only bugs. Library modules only.
+    dependsOn(libraryModules.map { "${it.path}:testAndroidHostTest" })
+    dependsOn(libraryModules.map { "${it.path}:jsBrowserTest" })
 }
 
 // Gate the local-publish safety net so CI can skip it: the build lanes already run the full test

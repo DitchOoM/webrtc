@@ -1,0 +1,119 @@
+name: "L2 Interop Harness"
+
+# W7 L2 (Integration): two native peers establish a full WebRTC data channel (ICE → real BoringSSL DTLS
+# → SCTP → data channel) across REAL Linux NAT kernels, over each RFC 4787 NAT profile + a relay-only and
+# an impaired lane. Separate from the fast deterministic PR lanes (review.yaml) — Docker + real kernels.
+#
+# Arch-matched RUNTIME without QEMU, working around the K/N toolchain: Kotlin/Native cannot host its
+# compiler on a linux/arm64 host (`Unknown host target: linux aarch64`), so the peer is CROSS-built for
+# BOTH arches on an x64 host (`build-peer`), then each arch's runner only RUNS its own binary in native
+# containers (`l2` matrix). No emulation on the data path.
+
+on:
+  pull_request:
+    paths:
+      - 'test-harness/**'
+      - 'webrtc-harness-endpoint/**'
+      - 'webrtc/**'
+      - 'webrtc-ice/**'
+      - 'webrtc-dtls/**'
+      - 'webrtc-sctp/**'
+      - 'webrtc-stun/**'
+      - 'webrtc-sdp/**'
+      - '.github/workflows/harness-l2.yaml'
+  workflow_call:
+
+jobs:
+  build-peer:
+    name: "cross-build peer (x64 → x64 + arm64)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      # linuxArm64's BoringSSL is cross-compiled with the aarch64 GNU toolchain (webrtc-dtls'
+      # buildBoringsslSslArm64); the runner doesn't ship it. linuxX64 uses the native gcc already present.
+      - name: Install aarch64 cross-toolchain (linuxArm64 BoringSSL)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Cache Konan
+        uses: actions/cache@v5
+        with:
+          path: ~/.konan
+          key: konan-harness-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-harness-${{ runner.os }}-
+
+      - name: Cross-build the release peer for both arches
+        run: |
+          ./gradlew --no-configuration-cache \
+            :webrtc-harness-endpoint:linkPeerReleaseExecutableLinuxX64 \
+            :webrtc-harness-endpoint:linkPeerReleaseExecutableLinuxArm64
+
+      # Common ancestor `…/build/bin` is stripped by upload-artifact@v4, so the artifact holds
+      # linuxX64/… and linuxArm64/… — the l2 job downloads it back under …/build/bin.
+      - name: Upload peer binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: peer-binaries
+          path: |
+            webrtc-harness-endpoint/build/bin/linuxX64/peerReleaseExecutable/peer.kexe
+            webrtc-harness-endpoint/build/bin/linuxArm64/peerReleaseExecutable/peer.kexe
+          if-no-files-found: error
+          retention-days: 3
+
+  l2:
+    name: "establish over NAT profiles (${{ matrix.arch }})"
+    needs: build-peer
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, arch: X64, konan: linuxX64 }
+          - { runner: ubuntu-24.04-arm, arch: Arm64, konan: linuxArm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      # No gradle / Kotlin-Native on this job — it RUNS the cross-built binary (works on the arm64 host,
+      # which cannot build one). Docker builds the coturn/rendezvous/nat images natively for its arch.
+      - name: Download peer binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: peer-binaries
+          path: webrtc-harness-endpoint/build/bin
+
+      - name: Restore exec bit
+        run: chmod +x "webrtc-harness-endpoint/build/bin/${{ matrix.konan }}/peerReleaseExecutable/peer.kexe"
+
+      # Container-as-router between two Docker bridge networks only forwards with bridge netfilter OFF.
+      - name: Enable container-router forwarding
+        run: sudo sysctl -w net.bridge.bridge-nf-call-iptables=0 net.bridge.bridge-nf-call-ip6tables=0 || true
+
+      # PEER_KEXE points at the downloaded binary → run-interop.sh uses it as-is (no build).
+      - name: L2 interop matrix
+        env:
+          PEER_KEXE: "webrtc-harness-endpoint/build/bin/${{ matrix.konan }}/peerReleaseExecutable/peer.kexe"
+        run: |
+          set -o pipefail
+          bash test-harness/run-interop.sh 2>&1 | tee l2-harness.log
+
+      - name: Upload harness log (on failure)
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: l2-harness-log-${{ matrix.arch }}
+          path: l2-harness.log
+          retention-days: 14
+          if-no-files-found: ignore

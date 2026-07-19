@@ -35,3 +35,9 @@ include(":webrtc-ice")        // ICE agent (RFC 8445 + trickle) — sans-io core
 include(":webrtc-dtls")       // DTLS 1.2/1.3 + SRTP exporter — BoringSSL backends (W4)
 include(":webrtc-sctp")       // SCTP subset over DTLS + DCEP — pure Kotlin, sans-io (W5)
 include(":webrtc-testsuite")  // published consumer harness: vnet, timeline engine, control plane (W7)
+
+// L2/L3 interop harness endpoint (W7) — a NON-published native executable, not a library. It composes
+// the real stack (:webrtc NativePeerConnection + real BoringSSL DTLS) over real UDP (socket-udp) and is
+// driven as a container endpoint against coturn + real NAT kernels. Deliberately does NOT apply the
+// webrtc.multiplatform-library convention (no publish/apiCheck/apple/js). See test-harness/README.md.
+include(":webrtc-harness-endpoint")

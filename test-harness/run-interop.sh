@@ -64,9 +64,16 @@ INFRA="coturn rendezvous nat_a nat_b"
 BRIDGE_NF_ORIG=$(docker run --rm --privileged --network host alpine:3.20 \
     sh -c 'cat /proc/sys/net/bridge/bridge-nf-call-iptables 2>/dev/null' 2>/dev/null || echo "")
 
+# Per-scenario stack reset — brings the compose stack down (fresh NAT rules + conntrack per profile).
+# It MUST NOT touch the host bridge-nf sysctl: that is set ONCE for the whole run and restored ONCE at the
+# very end. (An earlier version restored bridge-nf here, in the per-scenario reset — which re-enabled bridge
+# netfilter before every scenario after the first, breaking NAT forwarding for the rest of the matrix.)
+stack_down() { docker compose down -v --remove-orphans >/dev/null 2>&1 || true; }
+
+# Final teardown (EXIT only): stack down + restore the one host sysctl we changed, so the harness leaves
+# no global footprint.
 teardown() {
-    docker compose down -v --remove-orphans >/dev/null 2>&1 || true
-    # Restore the host sysctl we changed, so the harness leaves no global footprint.
+    stack_down
     if [ -n "$BRIDGE_NF_ORIG" ]; then
         docker run --rm --privileged --network host alpine:3.20 \
             sysctl -w "net.bridge.bridge-nf-call-iptables=$BRIDGE_NF_ORIG" >/dev/null 2>&1 || true
@@ -102,7 +109,8 @@ run_scenario() {
     export NAT_A_PROFILE="$nat_a" NAT_B_PROFILE="$nat_b" ICE_POLICY="$policy" SESSION="$name"
 
     # Fresh stack per scenario for isolation (NAT rules + conntrack state must not bleed across profiles).
-    teardown
+    # stack_down ONLY — the host bridge-nf sysctl stays as set for the whole run (restored once on EXIT).
+    stack_down
     if ! ./compose-up-retry.sh $INFRA; then
         echo "::error::[$name] infra failed to come up"; fail=$((fail+1)); failed_names="$failed_names $name"; return
     fi

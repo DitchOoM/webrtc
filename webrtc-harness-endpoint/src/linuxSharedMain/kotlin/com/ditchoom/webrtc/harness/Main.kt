@@ -94,7 +94,16 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
                 config =
                     PeerConnectionConfig(
                         iceConfig = IceConfig(bufferFactory = net),
-                        sctpConfig = SctpConfig(bufferFactory = net),
+                        // Fast SCTP RTO for the harness's low-RTT network: the default 3s initial RTO
+                        // (RFC 4960, tuned for the internet) means a single lost DATA chunk — e.g. the
+                        // echo pong under the impaired lane's loss — waits 3s before the first retransmit,
+                        // which races the answerer's teardown. Sub-second recovery makes loss reliable here.
+                        sctpConfig =
+                            SctpConfig(
+                                bufferFactory = net,
+                                rtoInitial = 500.milliseconds,
+                                rtoMin = 100.milliseconds,
+                            ),
                     ),
             )
 
@@ -232,8 +241,11 @@ private suspend fun awaitEstablished(pc: NativePeerConnection): Boolean {
 }
 
 private val POLL_INTERVAL = 200.milliseconds
-private val ECHO_TIMEOUT = 10.seconds
 
-// Answerer flush window: keep the SCTP association alive after send(pong) so reliable delivery + SACK
-// complete before teardown. On the loopback/vnet RTT this is generous; bounded well under ECHO_TIMEOUT.
-private val FLUSH_LINGER = 4.seconds
+// Echo/flush windows for the IMPAIRED lane: with the harness's fast SCTP RTO (500ms initial, 100ms min),
+// a lost pong (or SACK) is recovered in well under a second per retransmit, so these need only cover a
+// handful of losses. The answerer keeps its association ALIVE (still retransmitting) for FLUSH_LINGER after
+// send(pong), and the offerer waits ECHO_TIMEOUT (> FLUSH_LINGER, so it listens for the whole retransmit
+// window). Watchdogs, not wall-clock budgets (directive #4); the answerer's exit is the only thing slowed.
+private val ECHO_TIMEOUT = 15.seconds
+private val FLUSH_LINGER = 10.seconds

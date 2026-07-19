@@ -20,7 +20,8 @@ play in the socket repo.
 | 2026-07-15 | **Transport prerequisites landed in socket; W3 is next (dev-unblocked, merge-gated)** | socket merged the `socket-udp` UDP `commonMain` seam (PR #239) + the deterministic vnet/sim harness (#225). So **W2 is a socket deliverable, not a webrtc wave** — webrtc consumes it. Develop W3 (`webrtc-ice`) now against a socket `publishToMavenLocal`; **do not merge webrtc transport code until `socket-udp` is on Central** (it is not — latest socket 3.10.1 predates #239, whose deploy failed). |
 | resolved 2026-07-15 | RFC §11.1 — simulation-engine home → **lives in the socket sibling** (the #225 deterministic-simulation harness), not a standalone `ditchoom-simulation` | webrtc consumes socket's vnet; no separate sim module needed |
 | resolved 2026-07-15 | RFC §11.2 — SCTP subset scope → **dcSCTP-style data-channel subset: no multihoming, no stream interleaving** (single path, one cwnd) | full RFC 9260 is not needed for RTCDataChannel semantics; resolved as W5 started |
-| *open* | RFC §11.3 — DTLS 1.2-first interop vs 1.3 (recommend: both via BoringSSL config, interop-test 1.2) | must resolve before W4 |
+| resolved 2026-07-16 | RFC §11.3 — DTLS version → **min 1.2 / max 1.3, and 1.3 is ON by default** (`DtlsConfig.enableDtls13 = true`) | We do not hand-roll the record/handshake layer — BoringSSL owns it — so both versions are a `SSL_CTX_set_min_proto_version(DTLS1_2_VERSION)` / `set_max_proto_version(DTLS1_3_VERSION)` config choice, not extra code. **The field has moved to 1.3** (verified 2026-07-16, not assumed): Firefox ships DTLS 1.3 for WebRTC in **Release** ([bug 1884140](https://bugzilla.mozilla.org/show_bug.cgi?id=1884140)); Chrome/BoringSSL has it **on by default** ([chromium 382915276](https://issues.chromium.org/issues/382915276)), the libwebrtc default having flipped during 2025 — BoringSSL itself now defaults to 1.3. So defaulting to 1.2 would be *pessimising against the actual field*. Min stays **1.2** purely for breadth: **Pion's released v3 is still DTLS 1.2 only** ([pion/dtls](https://github.com/pion/dtls), 1.3 in progress on a frozen `main`, [NLnet/NGI0-funded](https://nlnet.nl/project/PION-DTLS1.3/)), and version negotiation falls back for it automatically. **Both paths are empirically proven** on the W4-native backend (buffer-crypto's BoringSSL `63893acb`/API 42 exposes both): `two_stacks_complete_a_dtls_handshake_under_virtual_time` asserts a negotiated **1.3**, and `two_stacks_fall_back_to_dtls_1_2_when_1_3_is_disabled` asserts **1.2** — neither is assumed. **Consequence for `boringssl-kmp` (see the W4-sequencing row):** its canonical pin is quiche-anchored `44b3df6f` = **BoringSSL API 21, which has no `DTLS1_3_VERSION`** and whose own RFC locks in a "DTLS 1.2 baseline" — so that route would ship JVM/Android/Apple a **1.2-only** stack as browsers standardise on 1.3. That is a genuine strike against it and is worth raising upstream (the quiche anchor is the cause). No DTLS 1.0/1.1 (RFC §10 non-goal). **Phase-2 footgun to remember:** the DTLS-SRTP exporter differs between (D)TLS 1.2 and 1.3 (empty-context vs no-context) and caused a real [Chrome↔Firefox interop bug](https://issues.webrtc.org/issues/401460270) — irrelevant to Phase 1 (data channels ride the record layer, no exporter). |
+| resolved 2026-07-16 | **W4 sequencing — native-Linux DTLS lands now, self-contained on buffer-crypto's BoringSSL; JVM/Android/Apple defer to `boringssl-kmp`** | Investigation (2 agents) established: buffer-crypto exposes reusable BoringSSL **only** on K/N Linux (`libcrypto.a`, commit `63893acb`, via its published cinterop klib) — JVM/Android are pure JCA, Apple is CommonCrypto, so there is **no** native BoringSSL to reuse off-Linux. The sibling `com.ditchoom.boringssl:boringssl-kmp` binary-factory (native provision plugin + JVM FFM MRJAR + Android prefab AAR) is the intended cross-platform home and names `webrtc-dtls` explicitly — but it is **unpublished (0.0.1-dev)**, its JVM FFM shim is **crypto-only (no DTLS yet)**, its **Apple lane is unbuilt**, and its API-21 pin **duplicate-symbol-clashes** with buffer-crypto's API-42 libcrypto in one K/N binary (webrtc already links buffer-crypto via STUN). Its own RFC sequences `webrtc-dtls` as migration **step 9 (last)**, after buffer-crypto/socket/quiche migrate onto the one canonical copy. So: **W4 now = real DTLS on K/N Linux only** — reuse buffer-crypto's single `libcrypto.a` + add a **same-commit (`63893acb`) `libssl.a`** (verified locally: defines `SSL_*`/`DTLS_*`, leaves `AES_*`/`SHA256_*` undefined → resolve against buffer-crypto's libcrypto, no dup symbols). Apple/JVM/Android/JS get typed `DtlsUnavailable` actuals (compile + throw), documented as consuming `boringssl-kmp` once it publishes + grows a DTLS surface. The real end-to-end ICE+DTLS+SCTP TB fixture (W5/W6 exit) runs on linuxX64. |
 | resolved 2026-07-15 | RFC §11.4 — mDNS → **resolve-only in W3; responder deferred** (behind a capability flag) | The gathering-side responder is multicast platform work (a `224.0.0.251:5353` listener per interface); it is not on the critical path for *reaching* peers. A browser peer that advertises a `.local` srflx-masking candidate must be *resolved* to its host IP for us to send checks, so resolve-only is mandatory in W3; advertising our own `.local` candidates (the responder) buys only privacy and is deferred behind a flag until a harness lane needs it. mDNS resolution rides the injected gathering seam (a `MdnsResolver` interface, deterministic stub in tests), never a hardwired multicast socket in the core. |
 
 ## 1. Orchestration model
@@ -116,15 +117,37 @@ signaling seam. Seeded `Random` for tie-breaker/ufrag/pwd/foundations from day o
   smoke lane (pinned seeds) + JVM deep-run lane wired with shrinker; ICE state invariants in the
   fuzz invariant set; typed `IceFailureReason` surface complete.
 
-### W4 — `webrtc-dtls` · status: ☐ **PARKED (user request) — pick up in parallel with / after W5; the one native dep, runner-validated** · *parallel-ok with W1–W3; resolves §11.3 first*
-BoringSSL backends reusing quiche build infra: cinterop (Apple/Linux), JNI (Android), FFM (JVM,
-multi-release JAR). Memory-BIO driver, caller-clocked (`DTLSv1_get_timeout` →
-`nextDeadline`), native handles via `toNativeData()`, wrapper alloc/free tracked. DTLS-SRTP key
-exporter (unused until P2, but the surface is cheap now). Certificate/fingerprint generation +
-verification (a=fingerprint model, not CA validation).
-- **Exit:** handshake between two of our stacks over the vnet completes under virtual time
-  (RNG-drift bounds asserted, the Tier-B discipline); retransmission fixture (dropped flight)
-  green; wrapper-free invariant in fuzz set; Apple/Android lanes runtime-validated on runners.
+### W4 — `webrtc-dtls` · status: ◑ **engine BUILT + proven on `w4-webrtc-dtls` (K/N Linux, runtime-validated); wiring + TB fixture + PR remain** · *§11.3 + W4-sequencing resolved (see the decision log)*
+**Scope was corrected mid-wave.** The plan's premise — "BoringSSL backends *reusing quiche build
+infra*: cinterop (Apple/Linux), JNI (Android), FFM (JVM)" — proved **false**: buffer-crypto exposes
+reusable BoringSSL **only** on K/N Linux (JVM/Android are pure JCA, Apple is CommonCrypto), and
+socket's quiche BoringSSL is a *different commit* that duplicate-symbol-clashes. So W4 delivers
+**real DTLS on K/N Linux, self-contained** (link only a same-commit `libssl.a`; reuse buffer-crypto's
+single `libcrypto.a`), with **Apple/JVM/Android/JS deferred to `boringssl-kmp`** behind typed
+`BackendUnavailable` actuals. See the "W4 sequencing" decision row.
+Memory-BIO driver, caller-clocked (`DTLSv1_get_timeout` → `nextDeadline`, with the virtual clock
+injected via `SSL_CTX_set_current_time_cb` + a thread-local — its `ssl` arg is always NULL). DTLS-SRTP
+key exporter surface (unused until P2). Self-signed cert + `a=fingerprint` generation/verification
+(fingerprint model, not CA validation).
+- **Done:** two-stack handshake under virtual time (both **1.3** and, with `enableDtls13=false`,
+  **1.2** — asserted, not assumed); app-data round-trip; libssl/libcrypto single-copy link tripwire.
+  7/7 green on linuxX64 in 2 ms.
+- **Exit (remaining):** wire `BoringSslDtls` into `webrtc` root replacing `PlaintextDtls`; the real
+  ICE+DTLS+SCTP end-to-end TB fixture (native-gated — this is the W5/W6 exit gate it un-gates);
+  retransmission fixture (dropped flight); wrapper-free/no-leak invariant. **Apple/Android have no
+  DTLS backend this wave** — say so in the PR (V6_MAC_VALIDATION).
+
+### W4b — pure-Kotlin DTLS 1.3 over `buffer-crypto` · status: ☐ **candidate (RFC §11.5), not scheduled** · *depends on W4 + an additive buffer-crypto raw-AES-block PR*
+Retire the one native dependency: a `commonMain` DTLS 1.3 core over buffer-crypto's primitives —
+deleting the cinterop/`libssl` provisioning, the duplicate-symbol hazard, the `boringssl-kmp`
+sequencing problem, and the blocked `SocketException` bridge *all at once*, while lighting up every
+target with no backend gap. Primitives are essentially all present (HKDF `extractInto`/`expandInto`
+separately — the TLS 1.3 key-schedule shape — AEAD, X25519/P-256, ECDSA/Ed25519, streaming SHA);
+the one gap is a raw AES block for RFC 9147 §4.2.3 sequence-number encryption. **1.3-first** (both
+browser engines ship it; DTLS negotiates, so 1.2 is a later breadth add for Pion). `DtlsEngine`'s
+caller-clocked sans-io `expect` already fits — a pure-Kotlin core becomes the `commonMain`
+implementation and inherits W4's fixtures as its conformance suite; **keep BoringSSL as the
+differential-testing oracle**. Full rationale + cost/risk in RFC §11.5.
 
 ### W5 — `webrtc-sctp` + DCEP + DataChannel · status: ◑ **association FSM + RFC 3758 + DCEP + `DataChannel` (buffer-flow `StreamMux`) BUILT on `w5-webrtc-sctp` (green all platforms, end-to-end over the merged W3 ICE stack via a plaintext DTLS-shaped seam); PR open, `skip-release`, unmerged. Real-DTLS end-to-end remains the exit gate once W4 lands (W6's job).** · *§11.2 resolved (dcSCTP subset)*
 The **chunk codec + DCEP messages** (pure, sans-io, commonMain) are done and merged. The **SCTP

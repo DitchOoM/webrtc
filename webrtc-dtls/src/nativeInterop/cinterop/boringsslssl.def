@@ -1,0 +1,275 @@
+language = C
+package = com.ditchoom.webrtc.dtls.cinterop.boringssl
+
+# ── webrtc-dtls · Kotlin/Native DTLS backend over BoringSSL's libssl ─────────────────────────────
+#
+# LINKAGE (the load-bearing decision — see EXECUTION_PLAN "W4 sequencing" row): this backend links
+# ONLY `libssl.a`, built from the SAME BoringSSL commit (63893acb…) that `:buffer-crypto` builds its
+# `libcrypto.a` from. libssl's undefined `AES_*`/`SHA256_*`/`EVP_*` symbols resolve at final link
+# against buffer-crypto's `libcrypto.a` (already embedded, once, in buffer-crypto's published cinterop
+# klib and contributed transitively). We embed NO second libcrypto → no duplicate-symbol clash. The
+# `-libraryPath`/`-staticLibrary libssl.a` opts are injected by build.gradle.kts, not here (mirrors
+# buffer-crypto's boringsslcrypto.def).
+#
+# GOTCHA (same as buffer-crypto / socket): Kotlin/Native cinterop returns EMPTY bindings for
+# BoringSSL functions declared only via `headers =`. Every entry point is therefore a `static inline`
+# C wrapper (`bd_*`) in the body below, and Kotlin calls those wrappers, never the raw library symbols.
+#
+# CALLER-CLOCKED (RFC §5.1 determinism): BoringSSL's DTLS timers read time via a
+# `SSL_CTX_set_current_time_cb` callback. Its `ssl` argument is ALWAYS NULL (documented), so the
+# injected virtual time is carried in a thread-local (`bd_now_us`) that every driving wrapper sets from
+# the caller's `now` before entering libssl — making `DTLSv1_get_timeout` relative to virtual time and
+# handshake retransmission fully deterministic under `runTest`.
+
+headers = openssl/ssl.h openssl/bio.h openssl/x509.h openssl/x509v3.h openssl/evp.h openssl/ec.h openssl/ec_key.h openssl/obj.h openssl/nid.h openssl/asn1.h openssl/err.h openssl/rand.h openssl/srtp.h stdint.h string.h stdlib.h
+
+compilerOpts.linux = -D_GNU_SOURCE
+
+---
+
+#include <stdint.h>
+#include <string.h>
+#include <stdlib.h>
+
+/* Return codes shared with Kotlin.
+ *
+ * CAREFUL: functions that return a BYTE COUNT (bd_read_app, bd_take, bd_feed) must never use a
+ * positive status sentinel — a 1-byte read and "want read" would be indistinguishable, and a caller
+ * checking `n > 0` first would treat "no data" as data and spin forever. So those report "no data"
+ * as BD_NO_DATA (0) and every real error as a NEGATIVE value. Only the pure-status wrappers
+ * (bd_do_handshake) use BD_WANT_READ. */
+#define BD_OK 0
+#define BD_NO_DATA 0
+#define BD_WANT_READ 1
+#define BD_FATAL (-1)
+#define BD_CLOSED (-2)
+
+/* Per-endpoint engine state: the BoringSSL objects + our self-signed identity. */
+typedef struct bd_engine_st {
+    SSL_CTX *ctx;
+    SSL *ssl;
+    BIO *rbio;   /* we BIO_write inbound datagrams here; libssl reads records from it   */
+    BIO *wbio;   /* libssl writes outbound records here; we BIO_read them to send        */
+    EVP_PKEY *pkey;
+    X509 *cert;
+    int last_err;   /* last SSL_get_error, for typed diagnostics */
+} bd_engine;
+
+/* ── Injected clock (thread-local; the cb's ssl arg is always NULL) ────────────────────────────── */
+static __thread long long bd_now_us = 0;
+
+static void bd_current_time_cb(const SSL *ssl, struct timeval *out_clock) {
+    (void)ssl;
+    out_clock->tv_sec = (long)(bd_now_us / 1000000LL);
+    out_clock->tv_usec = (long)(bd_now_us % 1000000LL);
+}
+
+/* Set the virtual clock the DTLS timers see. Every driving wrapper calls this first. */
+static inline void bd_set_now(long long now_us) { bd_now_us = now_us; }
+
+/* WebRTC verifies the peer by fingerprint (a=fingerprint), never by CA chain: accept any presented
+ * cert here, then compare its SHA-256 against the SDP-advertised digest out of band. */
+static int bd_verify_cb(int ok, X509_STORE_CTX *store) { (void)ok; (void)store; return 1; }
+
+/* Generate a fresh self-signed P-256 certificate + key (one per endpoint, per RFC 8827). Validity
+ * dates use wall-clock (harmless: never chain-verified) and the key uses BoringSSL's RNG, so the cert
+ * bytes — and thus the fingerprint — differ per run; callers read the fingerprint at runtime. */
+static int bd_make_cert(EVP_PKEY **out_pkey, X509 **out_cert) {
+    EC_KEY *ec = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+    if (!ec) return BD_FATAL;
+    if (!EC_KEY_generate_key(ec)) { EC_KEY_free(ec); return BD_FATAL; }
+    EVP_PKEY *pkey = EVP_PKEY_new();
+    if (!pkey || !EVP_PKEY_assign_EC_KEY(pkey, ec)) {
+        EC_KEY_free(ec);
+        if (pkey) EVP_PKEY_free(pkey);
+        return BD_FATAL;
+    }
+    /* pkey now owns ec. */
+    X509 *x = X509_new();
+    if (!x) { EVP_PKEY_free(pkey); return BD_FATAL; }
+    X509_set_version(x, 2 /* v3 */);
+    ASN1_INTEGER_set(X509_get_serialNumber(x), 1);
+    X509_gmtime_adj(X509_getm_notBefore(x), -60LL * 60 * 24);
+    X509_gmtime_adj(X509_getm_notAfter(x), 60LL * 60 * 24 * 30);
+    X509_set_pubkey(x, pkey);
+    X509_NAME *nm = X509_get_subject_name(x);
+    X509_NAME_add_entry_by_txt(nm, "CN", MBSTRING_ASC, (const unsigned char *)"WebRTC", -1, -1, 0);
+    X509_set_issuer_name(x, nm);
+    if (!X509_sign(x, pkey, EVP_sha256())) { X509_free(x); EVP_PKEY_free(pkey); return BD_FATAL; }
+    *out_pkey = pkey;
+    *out_cert = x;
+    return BD_OK;
+}
+
+static inline void bd_free(bd_engine *e) {
+    if (!e) return;
+    if (e->ssl) SSL_free(e->ssl);          /* frees rbio + wbio it owns via SSL_set_bio */
+    if (e->ctx) SSL_CTX_free(e->ctx);
+    if (e->cert) X509_free(e->cert);
+    if (e->pkey) EVP_PKEY_free(e->pkey);
+    free(e);
+}
+
+/* Create a DTLS engine and its self-signed identity. enable_dtls13 raises the max version to 1.3 (min
+ * stays 1.2, the WebRTC field floor). Returns NULL on failure.
+ *
+ * The role is NOT set here — see bd_set_role. The certificate exists from construction (so the
+ * a=fingerprint can go in the offer), while client-vs-server is only known once a=setup is negotiated
+ * (RFC 8842). BoringSSL is fine with this: the connect/accept state need only be set before the first
+ * SSL_do_handshake. */
+static inline bd_engine *bd_new(int enable_dtls13) {
+    bd_engine *e = (bd_engine *)calloc(1, sizeof(bd_engine));
+    if (!e) return NULL;
+    if (bd_make_cert(&e->pkey, &e->cert) != BD_OK) { free(e); return NULL; }
+
+    e->ctx = SSL_CTX_new(DTLS_method());
+    if (!e->ctx) { bd_free(e); return NULL; }
+    SSL_CTX_set_min_proto_version(e->ctx, DTLS1_2_VERSION);
+    SSL_CTX_set_max_proto_version(e->ctx, enable_dtls13 ? DTLS1_3_VERSION : DTLS1_2_VERSION);
+    SSL_CTX_set_current_time_cb(e->ctx, bd_current_time_cb);
+    SSL_CTX_set_verify(e->ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, bd_verify_cb);
+    if (!SSL_CTX_use_certificate(e->ctx, e->cert)) { bd_free(e); return NULL; }
+    if (!SSL_CTX_use_PrivateKey(e->ctx, e->pkey)) { bd_free(e); return NULL; }
+    /* DTLS-SRTP offer (unused until Phase 2 media, but the extension is cheap to negotiate now). */
+    SSL_CTX_set_tlsext_use_srtp(e->ctx, "SRTP_AEAD_AES_128_GCM:SRTP_AES128_CM_SHA1_80");
+
+    e->ssl = SSL_new(e->ctx);
+    if (!e->ssl) { bd_free(e); return NULL; }
+    e->rbio = BIO_new(BIO_s_mem());
+    e->wbio = BIO_new(BIO_s_mem());
+    if (!e->rbio || !e->wbio) {
+        /* SSL_set_bio has NOT run yet, so ssl doesn't own these — bd_free's SSL_free won't reclaim
+         * them. Free the one that did allocate here so a partial failure doesn't leak a BIO. */
+        if (e->rbio) BIO_free(e->rbio);
+        if (e->wbio) BIO_free(e->wbio);
+        e->rbio = NULL; e->wbio = NULL;
+        bd_free(e); return NULL;
+    }
+    /* An empty mem BIO must report "retry" (want-read), not EOF, so libssl waits for more data. */
+    BIO_set_mem_eof_return(e->rbio, -1);
+    BIO_set_mem_eof_return(e->wbio, -1);
+    SSL_set_bio(e->ssl, e->rbio, e->wbio);   /* ssl takes ownership of both BIOs */
+    SSL_set_mtu(e->ssl, 1200);
+    SSL_set_options(e->ssl, SSL_OP_NO_QUERY_MTU);
+    return e;
+}
+
+/* Adopt the negotiated role: is_client selects ClientHello-sender (a=setup:active) + SCTP-client role,
+ * otherwise passive/server. Must be called before the first bd_do_handshake. */
+static inline void bd_set_role(bd_engine *e, int is_client) {
+    if (is_client) SSL_set_connect_state(e->ssl); else SSL_set_accept_state(e->ssl);
+}
+
+/* Drive the handshake one step. Returns BD_OK (finished), BD_WANT_READ (needs more inbound data),
+ * or BD_FATAL. Records to send are drained separately via bd_pending/bd_take. */
+static inline int bd_do_handshake(bd_engine *e, long long now_us) {
+    bd_set_now(now_us);
+    int r = SSL_do_handshake(e->ssl);
+    if (r == 1) return BD_OK;
+    int err = SSL_get_error(e->ssl, r);
+    e->last_err = err;
+    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) return BD_WANT_READ;
+    return BD_FATAL;
+}
+
+/* Feed an inbound DTLS datagram into the read BIO. Returns bytes written or BD_FATAL. */
+static inline int bd_feed(bd_engine *e, const uint8_t *data, int len) {
+    int n = BIO_write(e->rbio, data, len);
+    return n == len ? n : BD_FATAL;
+}
+
+/* Bytes of outbound record data waiting in the write BIO. */
+static inline int bd_pending(bd_engine *e) { return (int)BIO_ctrl_pending(e->wbio); }
+
+/* Drain up to cap bytes of outbound record data. Returns bytes read (0 if none). */
+static inline int bd_take(bd_engine *e, uint8_t *out, int cap) {
+    int n = BIO_read(e->wbio, out, cap);
+    return n > 0 ? n : 0;
+}
+
+/* Next DTLS timeout in microseconds relative to now, or -1 if no timer is armed. */
+static inline long long bd_timeout_us(bd_engine *e, long long now_us) {
+    bd_set_now(now_us);
+    struct timeval tv;
+    if (DTLSv1_get_timeout(e->ssl, &tv) != 1) return -1;
+    return (long long)tv.tv_sec * 1000000LL + (long long)tv.tv_usec;
+}
+
+/* Fire an expired DTLS timeout (retransmits the current flight). Returns BD_OK/BD_FATAL. */
+static inline int bd_handle_timeout(bd_engine *e, long long now_us) {
+    bd_set_now(now_us);
+    int r = DTLSv1_handle_timeout(e->ssl);
+    if (r < 0) { e->last_err = SSL_get_error(e->ssl, r); return BD_FATAL; }
+    return BD_OK;
+}
+
+/* Encrypt application data. Returns bytes accepted or BD_FATAL. */
+static inline int bd_write_app(bd_engine *e, const uint8_t *data, int len, long long now_us) {
+    bd_set_now(now_us);
+    int r = SSL_write(e->ssl, data, len);
+    if (r > 0) return r;
+    e->last_err = SSL_get_error(e->ssl, r);
+    return BD_FATAL;
+}
+
+/* Decrypt application data into out. Returns the byte count (>0), BD_NO_DATA (0) when nothing is
+ * buffered, BD_CLOSED on peer close_notify, or BD_FATAL. Note BD_NO_DATA is 0, never a positive
+ * sentinel — see the return-code comment above. */
+static inline int bd_read_app(bd_engine *e, uint8_t *out, int cap, long long now_us) {
+    bd_set_now(now_us);
+    int r = SSL_read(e->ssl, out, cap);
+    if (r > 0) return r;
+    int err = SSL_get_error(e->ssl, r);
+    e->last_err = err;
+    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) return BD_NO_DATA;
+    if (err == SSL_ERROR_ZERO_RETURN) return BD_CLOSED;
+    return BD_FATAL;
+}
+
+static inline int bd_is_done(bd_engine *e) { return SSL_is_init_finished(e->ssl) ? 1 : 0; }
+
+/* Begin an orderly close (queues a close_notify into the write BIO). */
+static inline int bd_shutdown(bd_engine *e, long long now_us) {
+    bd_set_now(now_us);
+    return SSL_shutdown(e->ssl);
+}
+
+/* SHA-256 fingerprint (32 bytes) of our own certificate — the a=fingerprint we advertise. */
+static inline int bd_local_fingerprint(bd_engine *e, uint8_t *out32) {
+    unsigned int n = 0;
+    if (!X509_digest(e->cert, EVP_sha256(), out32, &n)) return BD_FATAL;
+    return (int)n;
+}
+
+/* SHA-256 fingerprint (32 bytes) of the peer's certificate, for a=fingerprint verification.
+ * Returns 32 on success, BD_FATAL if no peer cert is present. */
+static inline int bd_peer_fingerprint(bd_engine *e, uint8_t *out32) {
+    X509 *peer = SSL_get_peer_certificate(e->ssl);
+    if (!peer) return BD_FATAL;
+    unsigned int n = 0;
+    int ok = X509_digest(peer, EVP_sha256(), out32, &n);
+    X509_free(peer);
+    return ok ? (int)n : BD_FATAL;
+}
+
+/* Export DTLS-SRTP keying material (RFC 5764 §4.2 label). Fills out_len bytes; BD_OK/BD_FATAL. */
+static inline int bd_export_srtp_keys(bd_engine *e, uint8_t *out, int out_len) {
+    static const char label[] = "EXTRACTOR-dtls_srtp";
+    int r = SSL_export_keying_material(e->ssl, out, (size_t)out_len,
+                                       label, sizeof(label) - 1, NULL, 0, 0);
+    return r == 1 ? BD_OK : BD_FATAL;
+}
+
+/* Negotiated SRTP protection profile id (0 if none). */
+static inline int bd_srtp_profile(bd_engine *e) {
+    const SRTP_PROTECTION_PROFILE *p = SSL_get_selected_srtp_profile(e->ssl);
+    return p ? (int)p->id : 0;
+}
+
+/* Negotiated protocol version (e.g. DTLS1_2_VERSION), for diagnostics/telemetry. */
+static inline int bd_version_negotiated(bd_engine *e) { return SSL_version(e->ssl); }
+
+static inline int bd_last_err(bd_engine *e) { return e->last_err; }
+
+/* libssl build sanity for the link smoke test. */
+static inline long bd_smoke(void) { return (long)(uintptr_t)DTLS_method(); }

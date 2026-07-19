@@ -1,33 +1,8 @@
 package com.ditchoom.webrtc
 
+import com.ditchoom.webrtc.dtls.DtlsFailureReason
 import com.ditchoom.webrtc.ice.IceFailureReason
 import com.ditchoom.webrtc.sctp.association.SctpFailureReason
-
-/**
- * Why a DTLS handshake failed — a sealed, exhaustive vocabulary defined here (W6) so the session-layer
- * error sweep is complete before the real backend (W4) lands (HANDOFF W6 step 4: map ICE + SCTP + "the
- * coming DTLS reasons" into one typed vocabulary). The BoringSSL driver produces these; until then the
- * plaintext DTLS stand-in never fails, so no value is constructed at runtime yet.
- */
-public sealed interface DtlsFailureReason {
-    /** Human-readable summary — the sealed value is the discriminant, never the string (directive #3). */
-    public val description: String
-
-    /** The DTLS handshake did not complete (alert, record error, or version/cipher mismatch). */
-    public data object HandshakeFailed : DtlsFailureReason {
-        override val description: String get() = "DTLS handshake failed"
-    }
-
-    /** The peer's certificate fingerprint did not match the `a=fingerprint` in its SDP (RFC 8122). */
-    public data object FingerprintMismatch : DtlsFailureReason {
-        override val description: String get() = "DTLS certificate fingerprint did not match the SDP a=fingerprint"
-    }
-
-    /** The handshake did not complete within its retransmission budget. */
-    public data object Timeout : DtlsFailureReason {
-        override val description: String get() = "DTLS handshake timed out"
-    }
-}
 
 /**
  * The exhaustive, typed cause of a WebRTC session failure. It composes the sub-layer sealed reasons
@@ -55,11 +30,15 @@ public sealed interface PeerConnectionFailureReason {
         override val description: String get() = "ICE failed: $reason"
     }
 
-    /** The DTLS handshake over the selected pair failed (W4). */
+    /**
+     * The DTLS handshake over the selected pair failed, or its `a=fingerprint` check did (W4). The
+     * webrtc-dtls layer owns this vocabulary — including the RFC 8122 fingerprint verdicts, which the
+     * session driver makes because the sans-io engine is signaling-agnostic (see [DtlsFailureReason]).
+     */
     public data class Dtls(
         public val reason: DtlsFailureReason,
     ) : PeerConnectionFailureReason {
-        override val description: String get() = reason.description
+        override val description: String get() = "DTLS failed: $reason"
     }
 
     /** The SCTP association aborted or never established (RFC 4960 / RFC 3758). */

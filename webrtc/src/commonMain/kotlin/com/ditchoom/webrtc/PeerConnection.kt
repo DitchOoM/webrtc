@@ -4,6 +4,7 @@ package com.ditchoom.webrtc
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.Connection
+import com.ditchoom.webrtc.dtls.DtlsFailureReason
 import com.ditchoom.webrtc.ice.IceAgentDriver
 import com.ditchoom.webrtc.ice.IceCandidateLine
 import com.ditchoom.webrtc.ice.IceConfig
@@ -30,6 +31,7 @@ import com.ditchoom.webrtc.sdp.SdpType
 import com.ditchoom.webrtc.sdp.SessionDescription
 import com.ditchoom.webrtc.sdp.SetupRole
 import com.ditchoom.webrtc.sdp.SignalingState
+import com.ditchoom.webrtc.sdp.fingerprints
 import com.ditchoom.webrtc.sdp.icePwd
 import com.ditchoom.webrtc.sdp.iceUfrag
 import com.ditchoom.webrtc.sdp.setup
@@ -65,24 +67,19 @@ public fun interface IceGatheringPolicy {
     public suspend fun gather(driver: IceAgentDriver)
 }
 
-/** Static configuration for a [NativePeerConnection] (W3C `RTCConfiguration`, the subset we honor). */
+/**
+ * Static configuration for a [NativePeerConnection] (W3C `RTCConfiguration`, the subset we honor).
+ *
+ * The local `a=fingerprint` is deliberately **not** here: certificate identity belongs to the DTLS
+ * factory that holds the certificate ([DtlsTransportFactory.localFingerprint]), so advertising a digest
+ * other than the one we present is unrepresentable rather than merely discouraged (DESIGN §4).
+ */
 public data class PeerConnectionConfig(
     public val iceConfig: IceConfig = IceConfig(),
     public val sctpConfig: SctpConfig = SctpConfig(),
-    /**
-     * The local certificate fingerprint carried in `a=fingerprint` (RFC 8122). DTLS (W4) owns real
-     * certificate identity; until then this is a placeholder the SDP carries verbatim, unverified.
-     */
-    public val localFingerprint: Fingerprint = PLACEHOLDER_FINGERPRINT,
     /** The `m=application` media id (RFC 8829 §5.2.1). */
     public val mid: Mid = Mid("0"),
-) {
-    public companion object {
-        /** A syntactically valid SHA-256 fingerprint placeholder (all-zero) — replaced by W4's real cert. */
-        public val PLACEHOLDER_FINGERPRINT: Fingerprint =
-            Fingerprint("sha-256", List(32) { "00" }.joinToString(":"))
-    }
-}
+)
 
 /**
  * The consumer session API (RFC §3.1) — a **Layer-2 session** (`establish` is signaling-shaped, not
@@ -146,7 +143,7 @@ public interface RtcPeerConnection {
  * The **native-stack** [RtcPeerConnection] (RFC §1.1: we own the protocol on every non-browser target).
  * It is a driver composing the sans-io cores: the [JsepSession] offer/answer machine (webrtc-sdp), the
  * [IceAgentDriver] (webrtc-ice) over an injected [IceGatheringPolicy], the injected [DtlsTransportFactory]
- * (plaintext while W4 is parked — the same seam W5 proved SCTP over), and the [SctpDataChannelStack]
+ * ([BoringSslDtls] on a target with a backend), and the [SctpDataChannelStack]
  * (webrtc-sctp) over the nominated pair. Every seam — [scope], [clock], [random], the network binder
  * inside the gathering policy — is injected, so the whole session replays under `runTest` virtual time
  * (RFC §5.1). Its own mutable negotiation state is confined behind [negotiationLock]; the cores beneath
@@ -156,10 +153,12 @@ public interface RtcPeerConnection {
  * DTLS role — and thus the SCTP role and DCEP stream-id parity — is **negotiated from `a=setup`** (RFC
  * 8842), not assumed from who offered: the answerer picks the complement of the offer's setup, and the
  * offerer adopts the complement of the answer's, so we don't deadlock against a peer that answers passive
- * or offers active. The real ICE+**DTLS**+SCTP end-to-end is the exit gate once W4 lands; the injected
- * [dtls] factory is the seam DTLS slots in at — pass [PlaintextDtls] explicitly for the W5-proven
- * plaintext stand-in (it is **not** wire-secure; there is deliberately no default, so the insecure choice
- * is greppable at every call site).
+ * or offers active.
+ *
+ * The injected [dtls] factory is both the security boundary and the endpoint's certificate identity:
+ * pass [BoringSslDtls] for real DTLS (native only this wave), or [PlaintextDtls] for the W5-proven
+ * plaintext stand-in — which is **not** wire-secure. There is deliberately no default, so the insecure
+ * choice is greppable at every call site.
  */
 public class NativePeerConnection(
     private val scope: CoroutineScope,
@@ -199,6 +198,11 @@ public class NativePeerConnection(
     // peer's setup implies (offerer-passive vs offerer-active, answerer-active vs answerer-passive) instead
     // of assuming the browser default and deadlocking against a peer that answers passive / offers active.
     private var remoteSetup: SetupRole? = null
+
+    // The peer's a=fingerprint (RFC 8122), captured from its description. DTLS verifies the certificate
+    // the peer presents against exactly this — it is the only thing binding the signaling channel we
+    // trust to the data path we don't, so a session whose SDP carried none is refused, never trusted.
+    private var remoteFingerprint: Fingerprint? = null
 
     // Resolved once both descriptions are applied; runEstablishment awaits it before the DTLS handshake.
     private val roleResolved = CompletableDeferred<DtlsRole>()
@@ -333,7 +337,15 @@ public class NativePeerConnection(
                 return
             }
             val dtlsRole = roleResolved.await()
-            val transport = dtls.secure(d.appDataTransport(), dtlsRole)
+            // A peer that advertised no a=fingerprint cannot be verified, so it is refused with a typed
+            // reason (RFC 8827) rather than connected to insecurely or left to hang.
+            val peerFingerprint =
+                negotiationLock.withLock { remoteFingerprint }
+                    ?: run {
+                        fail(PeerConnectionFailureReason.Dtls(DtlsFailureReason.FingerprintMissing))
+                        return
+                    }
+            val transport = dtls.secure(d.appDataTransport(), dtlsRole, peerFingerprint)
             val sctpRole = if (dtlsRole == DtlsRole.Client) SctpRole.Client else SctpRole.Server
             val liveStack =
                 SctpDataChannelStack(transport, scope, clock, sctpRole, config.sctpConfig, sctpRandom).also { it.start() }
@@ -425,6 +437,11 @@ public class NativePeerConnection(
         }
         // The peer's negotiated DTLS role (RFC 8842) — used to derive our own role (see resolveRole).
         remoteSetup = media?.setup() ?: description.setup()
+        // RFC 8122 §5 / RFC 8827: the fingerprint may sit in the media section or be inherited from the
+        // session level. Multiple lines are legal; we verify against the first (we accept exactly one
+        // certificate, and a peer offering several digests for one cert gains nothing by the extras).
+        remoteFingerprint =
+            (media?.fingerprints() ?: emptyList()).firstOrNull() ?: description.fingerprints().firstOrNull()
         media?.candidates()?.forEach { line -> IceCandidateLine.parse(line)?.let { driver?.addRemoteCandidate(it) } }
     }
 
@@ -435,7 +452,9 @@ public class NativePeerConnection(
         DataChannelParameters(
             iceUfrag = d.localCredentials.ufrag.value,
             icePwd = d.localCredentials.password.value,
-            fingerprint = config.localFingerprint,
+            // The digest of the certificate the DTLS factory actually presents — never a config value,
+            // so what we advertise and what we prove are the same thing by construction (RFC 8122).
+            fingerprint = dtls.localFingerprint,
             setup = setup,
             mid = config.mid,
         )

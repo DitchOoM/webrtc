@@ -3,6 +3,7 @@ package com.ditchoom.webrtc
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.webrtc.ice.IceDataTransport
 import com.ditchoom.webrtc.sctp.datachannel.SctpDatagramTransport
+import com.ditchoom.webrtc.sdp.Fingerprint
 
 /**
  * Which side of the DTLS handshake this endpoint plays (RFC 8842 / the SDP `a=setup` attribute): the
@@ -18,36 +19,54 @@ public enum class DtlsRole {
 /**
  * Wraps the raw ICE app-data seam ([IceDataTransport], the demuxed non-STUN half of the selected pair)
  * into the secured [SctpDatagramTransport] the data-channel stack rides — **the one boundary where DTLS
- * lives** (RFC §6 step 4). This is the injected seam so that:
+ * lives** (RFC §6 step 4). [BoringSslDtls] is the real implementation (W4); [PlaintextDtls] is the
+ * insecure stand-in kept for the platforms and fixtures that have no backend.
  *
- *  - **now (W4 parked):** [PlaintextDtls] passes bytes through unchanged, exactly the plaintext stand-in
- *    W5 proved the SCTP stack over — the full ICE+**DTLS**+SCTP end-to-end fixture is the exit gate once
- *    the real backend lands (HANDOFF: "build against the plaintext DTLS-shaped seam now");
- *  - **W4:** a BoringSSL-backed factory replaces [PlaintextDtls] here with no change above or below it —
- *    the SCTP association and the ICE agent both keep their exact interfaces (the swap, not a rewrite).
+ * The factory owns the **local certificate identity**, not just the handshake: [localFingerprint] is the
+ * `a=fingerprint` [NativePeerConnection] advertises in its offer/answer. That is deliberate — it makes
+ * "advertise one fingerprint, present another" unrepresentable (DESIGN §4), which matters because the
+ * advertised digest is the *only* thing binding the signaling channel to the media/data path (RFC 8827).
+ * It also fixes an ordering constraint: the fingerprint must exist at `createOffer` time, long before
+ * `a=setup` resolves the role at [secure].
  */
-public fun interface DtlsTransportFactory {
+public interface DtlsTransportFactory {
+    /**
+     * The `a=fingerprint` (RFC 8122) of the certificate this factory presents. Stable for the lifetime
+     * of the factory — one factory is one endpoint identity, so one [NativePeerConnection].
+     */
+    public val localFingerprint: Fingerprint
+
     /**
      * Perform the DTLS handshake as [role] over [iceData] and return the secured record layer as an
-     * [SctpDatagramTransport]. Throws [WebRtcException] with a [PeerConnectionFailureReason.Dtls] cause if
-     * the handshake fails.
+     * [SctpDatagramTransport], verifying the peer's certificate against [peerFingerprint] — the digest
+     * the peer advertised in its SDP. Throws [WebRtcException] with a [PeerConnectionFailureReason.Dtls]
+     * cause if the handshake fails or the peer presents a certificate that does not match.
      */
     public suspend fun secure(
         iceData: IceDataTransport,
         role: DtlsRole,
+        peerFingerprint: Fingerprint,
     ): SctpDatagramTransport
 }
 
 /**
- * The **plaintext** DTLS stand-in used while W4 is parked: it adapts [IceDataTransport] straight onto
- * [SctpDatagramTransport] with no handshake and no encryption — the identical seam W5 tested the SCTP
- * association over. It exists so the whole session composes and the round-trip fixture runs today; it is
- * **not** wire-secure and must be swapped for the BoringSSL factory before any real-network use (W4/W7).
+ * The **plaintext** DTLS stand-in: it adapts [IceDataTransport] straight onto [SctpDatagramTransport]
+ * with no handshake and no encryption — the seam W5 tested the SCTP association over, and still the only
+ * option on targets with no DTLS backend (JVM/Android/Apple this wave — see the EXECUTION_PLAN "W4
+ * sequencing" row). It presents no certificate, so [localFingerprint] is the all-zero placeholder and
+ * [peerFingerprint] is **not verified** — nothing is authenticated because nothing is encrypted.
+ *
+ * It is **not** wire-secure and must never be used against a real peer: prefer [BoringSslDtls]. There is
+ * deliberately no default factory, so every insecure call site is greppable.
  */
 public object PlaintextDtls : DtlsTransportFactory {
+    /** A syntactically valid SHA-256 placeholder — this stand-in has no certificate to digest. */
+    override val localFingerprint: Fingerprint = Fingerprint("sha-256", List(32) { "00" }.joinToString(":"))
+
     override suspend fun secure(
         iceData: IceDataTransport,
         role: DtlsRole,
+        peerFingerprint: Fingerprint,
     ): SctpDatagramTransport =
         object : SctpDatagramTransport {
             override suspend fun send(packet: ReadBuffer) = iceData.send(packet)

@@ -4,8 +4,9 @@ name: "Build & Test (Linux)"
 # local Maven repo uploaded as the `maven-local-linux` artifact. Outputs the computed version so the
 # caller can thread it into validate / publish.
 #
-# W0 skeleton: no native toolchain steps yet. When webrtc-dtls lands its BoringSSL backends (W4), add
-# the vendored-BoringSSL build steps here (reuse the socket-quic-quiche/quiche build infra, per RFC §8).
+# W4: webrtc-dtls provisions BoringSSL `libssl.a` for BOTH linux targets during `build`. linuxX64 uses
+# the runner's native gcc (preinstalled); linuxArm64 is cross-compiled and needs the aarch64 GNU
+# toolchain — installed below. cmake/make are preinstalled on ubuntu-24.04.
 
 on:
   workflow_call:
@@ -40,6 +41,14 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6
 
+      # linuxArm64 BoringSSL (webrtc-dtls :buildBoringsslSslArm64) is cross-compiled with the aarch64 GNU
+      # toolchain; the runner doesn't ship it. Without this, cmake fails "CMAKE_C_COMPILER
+      # aarch64-linux-gnu-gcc ... not found in the PATH". linuxX64 uses the native gcc already present.
+      - name: Install aarch64 cross-toolchain (linuxArm64 BoringSSL)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
       # Kotlin/Native toolchain + prebuilts (linuxX64/linuxArm64 compiles, qemu-aarch64). Mirrors the
       # Apple lane; keyed on the version catalog so a Kotlin bump busts it.
       - name: Cache Konan
@@ -62,7 +71,13 @@ jobs:
           echo "Computed version: ${version}"
 
       - name: Build + test (Linux/JVM/JS/WASM/Android)
-        run: ./gradlew build allTests ${{ inputs.gradle-args }} --no-configuration-cache
+        # pipefail so the step fails on Gradle's exit code, not tee's; --stacktrace + the tee'd log make
+        # a compiler ICE / cmake-config failure (which produce NO test-results artifact) diagnosable from
+        # a downloadable file instead of the scrollback. Uploaded below on failure.
+        run: |
+          set -o pipefail
+          ./gradlew build allTests ${{ inputs.gradle-args }} --no-configuration-cache --stacktrace 2>&1 \
+            | tee build-linux.log
 
       # On ANY failure, capture the actual reason instead of leaving only the console tail: the JUnit
       # XML carries each failing test's full stack + captured stdout/stderr (and, for our seeded
@@ -80,6 +95,18 @@ jobs:
             **/build/reports/tests/**
           retention-days: 14
           if-no-files-found: ignore
+
+      # The build log carries what the JUnit XML cannot: Kotlin compiler internal errors (e.g. a wasmJs
+      # WasmIrToBinary ICE) and native cmake/toolchain-config failures leave no test-results artifact, so
+      # without this a non-test failure means reading the raw Actions log. --stacktrace is captured above.
+      - name: Upload full build log (on failure)
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-linux
+          path: build-linux.log
+          retention-days: 14
+          if-no-files-found: warn
 
       - name: Binary-compatibility check (public ABI)
         run: ./gradlew apiCheck ${{ inputs.gradle-args }} --no-configuration-cache

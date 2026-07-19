@@ -1,29 +1,8 @@
-public abstract interface class com/ditchoom/webrtc/DtlsFailureReason {
-	public abstract fun getDescription ()Ljava/lang/String;
-}
-
-public final class com/ditchoom/webrtc/DtlsFailureReason$FingerprintMismatch : com/ditchoom/webrtc/DtlsFailureReason {
-	public static final field INSTANCE Lcom/ditchoom/webrtc/DtlsFailureReason$FingerprintMismatch;
-	public fun equals (Ljava/lang/Object;)Z
-	public fun getDescription ()Ljava/lang/String;
-	public fun hashCode ()I
-	public fun toString ()Ljava/lang/String;
-}
-
-public final class com/ditchoom/webrtc/DtlsFailureReason$HandshakeFailed : com/ditchoom/webrtc/DtlsFailureReason {
-	public static final field INSTANCE Lcom/ditchoom/webrtc/DtlsFailureReason$HandshakeFailed;
-	public fun equals (Ljava/lang/Object;)Z
-	public fun getDescription ()Ljava/lang/String;
-	public fun hashCode ()I
-	public fun toString ()Ljava/lang/String;
-}
-
-public final class com/ditchoom/webrtc/DtlsFailureReason$Timeout : com/ditchoom/webrtc/DtlsFailureReason {
-	public static final field INSTANCE Lcom/ditchoom/webrtc/DtlsFailureReason$Timeout;
-	public fun equals (Ljava/lang/Object;)Z
-	public fun getDescription ()Ljava/lang/String;
-	public fun hashCode ()I
-	public fun toString ()Ljava/lang/String;
+public final class com/ditchoom/webrtc/BoringSslDtls : com/ditchoom/webrtc/DtlsTransportFactory {
+	public fun <init> (Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lcom/ditchoom/webrtc/dtls/DtlsConfig;)V
+	public synthetic fun <init> (Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lcom/ditchoom/webrtc/dtls/DtlsConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun getLocalFingerprint ()Lcom/ditchoom/webrtc/sdp/Fingerprint;
+	public fun secure (Lcom/ditchoom/webrtc/ice/IceDataTransport;Lcom/ditchoom/webrtc/DtlsRole;Lcom/ditchoom/webrtc/sdp/Fingerprint;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
 public final class com/ditchoom/webrtc/DtlsRole : java/lang/Enum {
@@ -35,7 +14,8 @@ public final class com/ditchoom/webrtc/DtlsRole : java/lang/Enum {
 }
 
 public abstract interface class com/ditchoom/webrtc/DtlsTransportFactory {
-	public abstract fun secure (Lcom/ditchoom/webrtc/ice/IceDataTransport;Lcom/ditchoom/webrtc/DtlsRole;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun getLocalFingerprint ()Lcom/ditchoom/webrtc/sdp/Fingerprint;
+	public abstract fun secure (Lcom/ditchoom/webrtc/ice/IceDataTransport;Lcom/ditchoom/webrtc/DtlsRole;Lcom/ditchoom/webrtc/sdp/Fingerprint;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
 public abstract interface class com/ditchoom/webrtc/IceGatheringPolicy {
@@ -64,26 +44,19 @@ public final class com/ditchoom/webrtc/NativePeerConnection : com/ditchoom/webrt
 }
 
 public final class com/ditchoom/webrtc/PeerConnectionConfig {
-	public static final field Companion Lcom/ditchoom/webrtc/PeerConnectionConfig$Companion;
-	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Lcom/ditchoom/webrtc/sdp/Fingerprint;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Lcom/ditchoom/webrtc/sdp/Fingerprint;Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()Lcom/ditchoom/webrtc/ice/IceConfig;
 	public final fun component2 ()Lcom/ditchoom/webrtc/sctp/association/SctpConfig;
-	public final fun component3 ()Lcom/ditchoom/webrtc/sdp/Fingerprint;
-	public final fun component4-QcrJwnM ()Ljava/lang/String;
-	public final fun copy-tBsNbWI (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Lcom/ditchoom/webrtc/sdp/Fingerprint;Ljava/lang/String;)Lcom/ditchoom/webrtc/PeerConnectionConfig;
-	public static synthetic fun copy-tBsNbWI$default (Lcom/ditchoom/webrtc/PeerConnectionConfig;Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Lcom/ditchoom/webrtc/sdp/Fingerprint;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionConfig;
+	public final fun component3-QcrJwnM ()Ljava/lang/String;
+	public final fun copy-z8l160A (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;)Lcom/ditchoom/webrtc/PeerConnectionConfig;
+	public static synthetic fun copy-z8l160A$default (Lcom/ditchoom/webrtc/PeerConnectionConfig;Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionConfig;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getIceConfig ()Lcom/ditchoom/webrtc/ice/IceConfig;
-	public final fun getLocalFingerprint ()Lcom/ditchoom/webrtc/sdp/Fingerprint;
 	public final fun getMid-QcrJwnM ()Ljava/lang/String;
 	public final fun getSctpConfig ()Lcom/ditchoom/webrtc/sctp/association/SctpConfig;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
-}
-
-public final class com/ditchoom/webrtc/PeerConnectionConfig$Companion {
-	public final fun getPLACEHOLDER_FINGERPRINT ()Lcom/ditchoom/webrtc/sdp/Fingerprint;
 }
 
 public abstract interface class com/ditchoom/webrtc/PeerConnectionFailureReason {
@@ -91,13 +64,13 @@ public abstract interface class com/ditchoom/webrtc/PeerConnectionFailureReason 
 }
 
 public final class com/ditchoom/webrtc/PeerConnectionFailureReason$Dtls : com/ditchoom/webrtc/PeerConnectionFailureReason {
-	public fun <init> (Lcom/ditchoom/webrtc/DtlsFailureReason;)V
-	public final fun component1 ()Lcom/ditchoom/webrtc/DtlsFailureReason;
-	public final fun copy (Lcom/ditchoom/webrtc/DtlsFailureReason;)Lcom/ditchoom/webrtc/PeerConnectionFailureReason$Dtls;
-	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/PeerConnectionFailureReason$Dtls;Lcom/ditchoom/webrtc/DtlsFailureReason;ILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionFailureReason$Dtls;
+	public fun <init> (Lcom/ditchoom/webrtc/dtls/DtlsFailureReason;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/dtls/DtlsFailureReason;
+	public final fun copy (Lcom/ditchoom/webrtc/dtls/DtlsFailureReason;)Lcom/ditchoom/webrtc/PeerConnectionFailureReason$Dtls;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/PeerConnectionFailureReason$Dtls;Lcom/ditchoom/webrtc/dtls/DtlsFailureReason;ILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionFailureReason$Dtls;
 	public fun equals (Ljava/lang/Object;)Z
 	public fun getDescription ()Ljava/lang/String;
-	public final fun getReason ()Lcom/ditchoom/webrtc/DtlsFailureReason;
+	public final fun getReason ()Lcom/ditchoom/webrtc/dtls/DtlsFailureReason;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -208,7 +181,8 @@ public final class com/ditchoom/webrtc/PeerConnectionSupport_jvmMainKt {
 
 public final class com/ditchoom/webrtc/PlaintextDtls : com/ditchoom/webrtc/DtlsTransportFactory {
 	public static final field INSTANCE Lcom/ditchoom/webrtc/PlaintextDtls;
-	public fun secure (Lcom/ditchoom/webrtc/ice/IceDataTransport;Lcom/ditchoom/webrtc/DtlsRole;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun getLocalFingerprint ()Lcom/ditchoom/webrtc/sdp/Fingerprint;
+	public fun secure (Lcom/ditchoom/webrtc/ice/IceDataTransport;Lcom/ditchoom/webrtc/DtlsRole;Lcom/ditchoom/webrtc/sdp/Fingerprint;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
 public abstract interface class com/ditchoom/webrtc/RtcPeerConnection {

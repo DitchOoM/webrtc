@@ -39,6 +39,14 @@ internal class SctpSim(
     private val queue = ArrayList<InFlight>()
     private val impairRandom = Random(seedA * 31 + seedB)
 
+    /**
+     * Test hook: when non-null, a datagram is dropped iff this returns true for its destination —
+     * evaluated once per transmit, in send order, **before** the [Impairment]. Lets a fixture drop one
+     * *specific* packet deterministically (e.g. the answerer's first echo DATA) rather than leaning on a
+     * probabilistic loss rate. `toA` is true when the datagram is bound for endpoint A.
+     */
+    var dropFilter: ((toA: Boolean) -> Boolean)? = null
+
     /** Messages delivered up to each endpoint, in order (endpoint A's inbox, endpoint B's inbox). */
     val inboxA = ArrayList<SctpOutput.MessageReceived>()
     val inboxB = ArrayList<SctpOutput.MessageReceived>()
@@ -61,7 +69,24 @@ internal class SctpSim(
      * silently regardless of what the caller asserts afterward (the liveness invariant, RFC §5.3 #5, is
      * enforced here in the conductor, not left to each test to remember).
      */
-    fun run(maxSteps: Int = 200_000): Int {
+    fun run(maxSteps: Int = 200_000): Int = drive(deadline = null, maxSteps = maxSteps)
+
+    /**
+     * Step the event loop like [run], but never advance the virtual clock past [deadline]: process every
+     * packet and timer due at or before [deadline], then stop (leaving [now] == deadline when work
+     * remains beyond it). Lets a fixture assert **observable state at a bounded instant** — e.g. "the lost
+     * echo was recovered within the budget" — which a run-to-quiescence, that always *eventually* delivers,
+     * cannot express. Resumable: a later [runUntil]/[run] continues from where this stopped.
+     */
+    fun runUntil(
+        deadline: Instant,
+        maxSteps: Int = 200_000,
+    ): Int = drive(deadline = deadline, maxSteps = maxSteps)
+
+    private fun drive(
+        deadline: Instant?,
+        maxSteps: Int,
+    ): Int {
         var steps = 0
         while (steps < maxSteps) {
             steps++
@@ -89,6 +114,11 @@ internal class SctpSim(
             if (fired) continue
             val next = listOfNotNull(queue.minOfOrNull { it.at }, aDl, bDl).minOrNull() ?: return steps
             if (next <= now) return steps
+            // Bounded run: nothing is due at or before the deadline, so stop the clock there and return.
+            if (deadline != null && next > deadline) {
+                now = deadline
+                return steps
+            }
             now = next
         }
         error("SCTP sim did not converge in $maxSteps steps (livelock/hang): a=${a.state} b=${b.state}")
@@ -112,6 +142,8 @@ internal class SctpSim(
         fromA: Boolean,
         payload: ReadBuffer,
     ) {
+        // A datagram FROM A is bound for B and vice-versa; the targeted drop hook sees the destination.
+        if (dropFilter?.invoke(!fromA) == true) return
         val decision = impairment.decide(impairRandom)
         for (copyDelay in decision.deliveries) {
             queue += InFlight(toB = fromA, payload = payload, at = now + copyDelay)

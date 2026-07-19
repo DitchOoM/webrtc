@@ -2,6 +2,8 @@
 
 package com.ditchoom.webrtc.ice
 
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
@@ -97,9 +99,13 @@ public suspend fun gatherServerReflexive(
     random: Random,
     timeout: Duration = DEFAULT_GATHER_TIMEOUT,
     retransmitInterval: Duration = DEFAULT_GATHER_RTO,
+    // The datagram allocator — MUST be the injected one on a real socket: a native-UDP send (socket-udp's
+    // io_uring) rejects a GC-heap buffer, so the default is only safe on the in-memory vnet. The driver
+    // threads `IceConfig.bufferFactory` here (W7 real-network fix; the vnet never exercised this).
+    bufferFactory: BufferFactory = BufferFactory.Default,
 ): ServerReflexiveResult {
     val transactionId = TransactionId.random(random)
-    val request = StunMessageBuilder.of(StunClass.Request, StunMethod.Binding, transactionId).addFingerprint().encode()
+    val request = StunMessageBuilder.of(StunClass.Request, StunMethod.Binding, transactionId).addFingerprint().encode(bufferFactory)
     // Retransmit the Binding every [retransmitInterval] until a matching response arrives or [timeout]
     // elapses (RFC 8489 §6.2.1 spirit) — a single lost request or response must not cost the whole srflx.
     val result =

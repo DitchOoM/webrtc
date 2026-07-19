@@ -6,6 +6,28 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Added — W7 Phase 1: L2 container harness (native peers ⇄ real NAT kernels)
+- **`:webrtc-harness-endpoint`** — a non-published Kotlin/Native executable (`linuxX64` + `linuxArm64`) that
+  composes the production `NativePeerConnection` + `BoringSslDtls` over **real UDP** (`socket-udp`) and runs
+  as a container endpoint. Config from `WEBRTC_*` env; offer/answer/candidates exchanged over a **UDP
+  rendezvous** (a buffer-codec KSP-generated wire schema — the native peer can only link `socket-udp`, not
+  socket core/quic, without a BoringSSL duplicate-symbol break); proves the data path with a `ping`/`pong`.
+  Applies a new `webrtc.native-executable` build-logic convention (KGP+KSP on one classloader).
+- **`test-harness/`** — a docker-compose L2 harness (mirrors socket's): real **coturn** STUN/TURN, a UDP
+  **rendezvous** relay, two **NAT gateways** implementing all four RFC 4787 profiles (full-cone /
+  address-restricted / port-restricted / symmetric — iptables, fidelity documented), **netem** impairment,
+  and two peer containers. `run-interop.sh` drives the scenario matrix (each profile + relay-only + impaired)
+  and asserts a two-peer establish + echo in each; `harness-l2.yaml` runs it arch-matched (x64 + arm64).
+  **7/7 scenarios pass** locally: two peers establish real ICE → BoringSSL DTLS → SCTP → data channel across
+  real Linux NAT kernels.
+- **Hardened (real-network bugs the vnet never surfaced):** `webrtc-ice` gathering now threads
+  `IceConfig.bufferFactory` into `gatherServerReflexive` (additive param) + `TurnAllocation` — a heap buffer
+  is rejected by `socket-udp`'s io_uring `send`, so real srflx/relay gathering needs the injected native
+  factory — shipped with its deterministic fixture (`GatheringBufferFactoryTest`, all platforms; proven to
+  fail against the pre-fix code). Also documented: io_uring needs `seccomp=unconfined` under Docker, container-router forwarding
+  needs host `bridge-nf-call-iptables=0`, and the answerer lingers before teardown so the final `pong` is
+  reliably delivered.
+
 ### Added — W4: `webrtc-dtls` — real BoringSSL DTLS 1.2/1.3, wired into `PeerConnection`
 - **`DtlsEngine`** — a caller-clocked, sans-io DTLS endpoint (`expect class`; RFC §5.1): `start` /
   `onDatagram` / `onTimeout` / `send` / `beginClose` + `nextTimeoutMicros`, all in epoch-micros from the

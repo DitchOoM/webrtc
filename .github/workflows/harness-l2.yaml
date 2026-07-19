@@ -1,0 +1,79 @@
+name: "L2 Interop Harness"
+
+# W7 L2 (Integration): two native peers establish a full WebRTC data channel (ICE → real BoringSSL DTLS
+# → SCTP → data channel) across REAL Linux NAT kernels, over each RFC 4787 NAT profile + a relay-only and
+# an impaired lane. Arch-matched (no QEMU): an x64 runner builds+runs the linuxX64 peer, an arm64 runner
+# the linuxArm64 peer. Separate from the fast deterministic PR lanes (review.yaml) — Docker + real kernels,
+# so it runs only when the harness or transport stack changes.
+
+on:
+  pull_request:
+    paths:
+      - 'test-harness/**'
+      - 'webrtc-harness-endpoint/**'
+      - 'webrtc/**'
+      - 'webrtc-ice/**'
+      - 'webrtc-dtls/**'
+      - 'webrtc-sctp/**'
+      - 'webrtc-stun/**'
+      - 'webrtc-sdp/**'
+      - '.github/workflows/harness-l2.yaml'
+  workflow_call:
+
+jobs:
+  l2:
+    name: "establish over NAT profiles (${{ matrix.arch }})"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, arch: X64 }
+          - { runner: ubuntu-24.04-arm, arch: Arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      # Kotlin/Native toolchain + BoringSSL build cache. Native gcc + cmake are preinstalled on the
+      # ubuntu runners, and the peer is built for the RUNNER's own arch — no aarch64 cross-toolchain
+      # (unlike build-linux, which cross-builds arm64 on x64).
+      - name: Cache Konan
+        uses: actions/cache@v5
+        with:
+          path: ~/.konan
+          key: konan-harness-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-harness-${{ runner.os }}-${{ runner.arch }}-
+
+      # Container-as-router between two Docker bridge networks only forwards with bridge netfilter OFF
+      # (else bridged frames hit the host Docker FORWARD/ISOLATION chain via physdev and are dropped).
+      # run-interop.sh also sets this via a privileged container, but the runner has root, so do it here too.
+      - name: Enable container-router forwarding
+        run: sudo sysctl -w net.bridge.bridge-nf-call-iptables=0 net.bridge.bridge-nf-call-ip6tables=0 || true
+
+      - name: Build native peer (linux${{ matrix.arch }})
+        run: ./gradlew --no-configuration-cache ":webrtc-harness-endpoint:linkPeerReleaseExecutableLinux${{ matrix.arch }}"
+
+      # Runs the full scenario matrix (each NAT profile + relay-only + impaired), asserting a two-peer
+      # establish + data-channel echo in each. The prebuilt fast path reuses the binary built above.
+      - name: L2 interop matrix
+        run: |
+          set -o pipefail
+          bash test-harness/run-interop.sh 2>&1 | tee l2-harness.log
+
+      - name: Upload harness log (on failure)
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: l2-harness-log-${{ matrix.arch }}
+          path: l2-harness.log
+          retention-days: 14
+          if-no-files-found: ignore

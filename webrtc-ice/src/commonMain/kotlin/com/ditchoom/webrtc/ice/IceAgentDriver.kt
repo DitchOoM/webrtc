@@ -76,7 +76,7 @@ public class IceAgentDriver(
     private val binder: DatagramBinder,
     private val scope: CoroutineScope,
     private val clock: () -> Instant,
-    config: IceConfig = IceConfig(),
+    private val config: IceConfig = IceConfig(),
 ) {
     // Derive two independent, deterministic streams from the single injected seam: the agent and the
     // gathering coroutines run concurrently, so they must not share one Random's mutable state.
@@ -143,7 +143,7 @@ public class IceAgentDriver(
         gather(host)
 
         if (stunServer != null) {
-            when (val reflexive = gatherServerReflexive(channel, stunServer, gatheringRandom)) {
+            when (val reflexive = gatherServerReflexive(channel, stunServer, gatheringRandom, bufferFactory = config.bufferFactory)) {
                 is ServerReflexiveResult.Discovered ->
                     gather(
                         IceCandidate.ServerReflexive(
@@ -183,7 +183,7 @@ public class IceAgentDriver(
     ): IceCandidate? {
         val socketAddress = SocketAddress.ofLiteral(ip, port)
         val underlying = binder.bind(socketAddress)
-        val allocation = TurnAllocation(underlying, turnServer, username, password, gatheringRandom, scope)
+        val allocation = TurnAllocation(underlying, turnServer, username, password, gatheringRandom, scope, config.bufferFactory)
         val relayedSocket = allocation.allocate() ?: return null
         val relayedAddress = relayedSocket.toTransportAddress()
         val relay =

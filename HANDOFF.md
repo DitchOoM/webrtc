@@ -3,9 +3,117 @@
 Live state of the current wave. A resumed session reads `RFC_KMP_WEBRTC.md` → `EXECUTION_PLAN.md` →
 this file. Update it whenever you stop mid-wave.
 
-## Where we are: **W6 MERGED (PR #14, `0e1a702`). W4 (`webrtc-dtls`, BoringSSL) — BUILT, exit gate GREEN, and the adversarial-review gate is now DONE on branch `w4-webrtc-dtls`: real DTLS wired into `PeerConnection`; two peers complete ICE → **real DTLS** → SCTP → data channels under virtual time. Remaining: CHANGELOG is updated; **PR next** (`skip-release` via REST API).**
+## Where we are: **W7 Phase 1 (L2 container harness) BUILT + runtime-validated on this box. Branch `w7-harness-l2` off `main` @ `c057a57`. Two NATIVE peers establish a full WebRTC data channel — real ICE hole-punch → real BoringSSL DTLS → SCTP → bidirectional ping/pong — across REAL Linux NAT kernels, over ALL FOUR RFC 4787 profiles + relay-only + impaired. `test-harness/run-interop.sh` = 7 scenarios, 7/7 PASS locally (x64). NEXT: Phase 2 — Pion + Chrome interop (STOP HERE for review first, per the wave plan).**
 
-### Adversarial-review gate — DONE (4 parallel lanes; all confirmed defects fixed + regression fixtures)
+---
+
+### START HERE — W7 Phase 2 (interop: Pion + Chrome). Phase 1 is done + reviewed; branch off `w7-harness-l2`.
+
+**Phase 1 landed (this session) — what exists now, all runtime-validated on this box:**
+- **`:webrtc-harness-endpoint`** — a NEW non-published Kotlin/Native executable module (`linuxX64` +
+  `linuxArm64`, both link + run; x64 fully validated). It composes the PRODUCTION stack —
+  `NativePeerConnection` + `BoringSslDtls` over **real UDP** (`socket-udp`) — and drives it as a container
+  endpoint. Config from `WEBRTC_*` env; offer/answer/candidates over a **UDP rendezvous** (buffer-codec
+  KSP-generated wire schema — `SignalingWire.kt`); proves the data path with a `ping`/`pong`. Applies a new
+  `build-logic/webrtc.native-executable` convention (KGP+KSP from build-logic's classloader — a module
+  `alias(...)` double-loads KGP). Root `build.gradle.kts` aggregates (`allTests`/`detektAll`/`prePublishCheck`)
+  now filter to `libraryModules` (this module has no such tasks). Sources live in ONE `src/linuxSharedMain`
+  dir added to both targets' *main* source sets — KSP 2.3.10 has no common-metadata task for a native-only
+  module, so per-target KSP generates into `<target>Main`, invisible to a shared `linuxMain`; the shared-dir
+  trick sidesteps it with zero duplication. (The `…Main` name keeps it under the standing-directive grep.)
+- **`test-harness/`** — the L2 compose harness (mirrors socket's): **coturn** (real STUN/TURN), a Python
+  **UDP rendezvous** relay, two **NAT gateways** (`nat/nat-setup.sh` — all 4 RFC 4787 profiles; fidelity
+  table in `test-harness/README.md`), **netem** on demand, two **peer** containers (self-building
+  `Dockerfile` for portability incl. Apple Silicon, + fast `Dockerfile.prebuilt`). `run-interop.sh` drives
+  the scenario matrix, asserts BOTH peers exit 0 (established + echoed), and tears the stack down on exit.
+  `.github/workflows/harness-l2.yaml` runs it arch-matched (x64 + arm64 runners, no QEMU).
+
+**Bugs this session found + fixed (real-network surfaced them; the vnet never did) — carry into review:**
+1. **webrtc-ice production fix:** the gathering drivers built STUN datagrams with the DEFAULT (heap)
+   buffer factory, bypassing `IceConfig.bufferFactory`. On real io_uring UDP (`socket-udp`) a heap buffer is
+   rejected (`send requires a native-memory buffer`) → srflx/relay gathering crashed. Fixed:
+   `gatherServerReflexive` takes a `bufferFactory` (additive param, `.api` re-dumped); `IceAgentDriver` now
+   threads `config.bufferFactory` into both `gatherServerReflexive` and `TurnAllocation`. The peer injects
+   `BufferFactory.deterministic()` (Linux native) into `IceConfig`/`SctpConfig`/`DtlsConfig`. **Fixture
+   (directive #5) DONE:** `webrtc-ice/commonTest/GatheringBufferFactoryTest` — a `TaggingBufferFactory` +
+   a `NativeOnlyChannel` that rejects any datagram not built from the injected factory (models io_uring's
+   "send requires a native-memory buffer"). Two tests (srflx Discovered with the injected factory; rejected
+   with the default heap factory). **Proven non-vacuous** — the positive test fails against the pre-fix
+   `.encode()`. Runs on all platforms under `runTest`.
+2. **io_uring under Docker:** Docker's default seccomp denies `io_uring_setup` → peers need
+   `security_opt: [seccomp=unconfined]` (in compose).
+3. **container-router forwarding:** a container routing between two Docker bridge networks only forwards
+   with host `net.bridge.bridge-nf-call-iptables=0` (else bridged frames hit the host Docker ISOLATION via
+   physdev). `run-interop.sh` sets it via a privileged host-netns container; CI via `sudo sysctl`.
+4. **answerer teardown race:** the answerer closed its SCTP association the instant after `send(pong)`,
+   racing reliable delivery → offerer's `receive()` timed out. Fixed with a bounded flush linger.
+
+**Gates green:** `:webrtc-harness-endpoint` compiles + links (x64 **and** arm64); `:webrtc-ice:apiCheck`
+passes (re-dumped); standing-directive greps clean (the `Clock.System` line carries an inline
+`@Suppress("UnseamedEntropy")` — the grep is line-based). **Not yet run:** the FULL `./gradlew build allTests`
+across every module + the harness-l2 CI lane on real runners (arm64 lane unproven off this box).
+
+**A strategic thread opened this session (see `~/git/cinterop-issues/`):** the owner is leaning toward
+**option (II) — pure-Kotlin DTLS 1.3 over buffer-crypto** (RFC §11.5 / W4b) instead of linking BoringSSL,
+which would retire the peer-binary hacks (native-only, cinterop, native buffer factory) by letting the peer
+be JVM. A dedicated agent verified it's viable (only 2 gaps: a raw-AES buffer-crypto PR + a ~150-line cert
+wrapper) and wrote `W4B-DTLS-SPIKE-PLAN.md` (3 spikes, go/no-go = a browser handshake). W7 is the interop
+harness that de-risks it, and today's BoringSSL native path is its differential oracle — so Phase 1 is
+needed under either option. **Decision pending the spikes; do not start the DTLS rewrite inside W7.**
+
+**Phase 2 scope (unchanged from the plan below):** (a) **Pion echo-peer** container (Go, DTLS 1.2 → run our
+side with `DtlsConfig(enableDtls13=false)`), (b) **headless Chrome via Karma** ⇄ our linuxX64 peer, both over
+a scripted signaling bridge (the UDP rendezvous already is one — Chrome will need a JS shim to speak it, or
+add an HTTP face to the rendezvous for the browser lane only). Then Phase 3 (testsuite publish).
+
+---
+
+### START HERE — W7 (harness + interop + testsuite publish). Fresh session; branch off `main` @ `c057a57`.
+
+**Read first:** `RFC_KMP_WEBRTC.md` (§5.2 vnet, §8 harness) → `EXECUTION_PLAN.md` (W7 row) → this section →
+`TESTING.md` §L2/L3 (the operative deliverables) → sibling `socket`'s `test-harness/` + `socket-testsuite/`
+(the pattern to MIRROR, not consume — verified: socket's harness is QUIC-coupled and unpublishable for us).
+
+**The one correction that reshapes the plan (do not miss it):** EXECUTION_PLAN/TESTING say "our **JVM** stack
+⇄ Pion/Chrome." **JVM has NO DTLS backend** (typed `BackendUnavailable` — W4 is native-Linux-only). So the
+"our side" interop endpoint MUST be the **native `linuxX64` binary**, the only backend with a real DTLS 1.3
+handshake. Plan text predates the W4-native-only reality; treat "JVM" as "linuxX64" for every interop lane.
+
+**What already exists (don't rebuild):** `webrtc-testsuite` is a published, validate-wired module *skeleton*
+(`src/commonMain/.../testsuite/WebRtcTestsuite.kt` placeholder; deps `:webrtc` + coroutines). There is **no**
+container/harness/docker dir yet. `peerConnectionSupport()` browser delegation (JS) already works (Karma-tested);
+**wasmJs delegation still throws `NotImplementedError`** (the one open W6 follow-up — fold into the Chrome lane).
+
+**Scope, three phases:**
+1. **L2 container harness** (Integration; no DTLS dep, can start first) — mirror socket's `test-harness/`
+   docker-compose: **coturn** (real STUN/TURN → srflx+relay gathering), **NAT-profile containers** (iptables/
+   netns per RFC 4787), **netem** impairment, **toxiproxy** on the signaling channel. Arch-matched CI matrix
+   (no QEMU), Colima on macOS. Exit: two-peer establish over each NAT profile against real kernels.
+2. **L3 interop** (needs the native stack) — (a) **Pion echo-peer container** (Go/pion-webrtc: accept offer,
+   answer, echo a data channel). **Pion released v3 is DTLS 1.2-only** (§11.3) → run this lane with
+   `DtlsConfig(enableDtls13=false)` (our 1.2 fallback is tested), or Pion's 1.3 branch. (b) **headless Chrome
+   via Karma** driving real `RTCPeerConnection` ⇄ our linuxX64 binary (Chrome does 1.3). Both need a **scripted
+   signaling bridge** (offer/answer over a file/HTTP/ws side channel — TESTING.md insists interop be
+   reproducible, not flaky live exchange). Exit: our stack ⇄ Pion AND ⇄ Chrome establish + echo data-channel
+   messages in CI.
+3. **Consumer testsuite + publish** — fill `webrtc-testsuite` with the `withWebRtcHarness { natType();
+   relayOnly(); impaired() }` DSL (mirror socket's `withNetworkHarness` + `HarnessController`); a clean-checkout
+   consumer-smoke project; it's already wired into validate-artifacts. Decouple the "first Central release" from
+   interop-green — get interop landing first.
+
+**Traps to carry in:** (a) the memory-BIO sends a whole flight as ONE datagram — fine on the vnet, but a
+**real-MTU path may need a datagram-preserving BIO** (documented W4 deferral; W7 real-network is where it could
+bite). (b) Browser-reachability gymnastics on Linux CI (socket documented these). (c) `SocketException` bridge
+is still blocked (socket↔buffer-crypto BoringSSL dup-symbol) — W7 does not need it. (d) `skip-release` label →
+`flow=dry-run` in `merged.yaml` (builds+validates, does NOT publish); a real release is `minor`/no-label.
+
+**Session hygiene:** this is a new wave → **fresh session, new branch off `main`** (`c057a57`). W4's 5 commits
++ CI fixes are on `main`. Standing traps unchanged: `skip-release` via `gh api …/labels` (not `gh pr edit`);
+Apple runtime-validated on the macOS runner; `git fetch` before reasoning about `main`.
+
+---
+
+### (W4, now merged) Adversarial-review gate — DONE (4 parallel lanes; all confirmed defects fixed + regression fixtures)
 CI-directive greps clean (no primitive arrays, no unseamed clock/random); driver/lifecycle lane found no
 blockers (pump, handshakeTimeout, peer-fingerprint check, role-from-`a=setup` all correct). Five
 MAJOR/BLOCKER findings fixed, each with a fixture (see CHANGELOG "Hardened"): **(1 BLOCKER)**

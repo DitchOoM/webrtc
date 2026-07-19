@@ -1,0 +1,17 @@
+# Fast path: COPY a peer binary already built on the host (arch-matched — the host gradle build produces
+# the host arch natively). run-interop.sh uses this by default on Linux/CI, where the build-linux job or
+# a local `./gradlew linkPeerReleaseExecutableLinux<arch>` has already produced the .kexe. On macOS/Apple,
+# use the self-building ../peer/Dockerfile instead (the host can't cross-build the linux BoringSSL dep).
+#
+# PEER_KEXE is the repo-relative path to the built binary (set by run-interop.sh for the current arch).
+# Build context is the REPO ROOT (compose sets context: ..).
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        iproute2 libstdc++6 && \
+    rm -rf /var/lib/apt/lists/*
+ARG PEER_KEXE
+COPY ${PEER_KEXE} /usr/local/bin/peer
+COPY test-harness/peer/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh /usr/local/bin/peer
+ENTRYPOINT ["/entrypoint.sh"]

@@ -20,14 +20,18 @@ import com.ditchoom.webrtc.dtls.wire.HandshakeMessage
  */
 internal class TranscriptHash(
     private val factory: BufferFactory,
+    // DTLS 1.3 hashes each message in the TLS 1.3 4-byte-header form (msg_type ‖ length ‖ body), omitting
+    // the DTLS message_seq/fragment fields (RFC 9147 §5.2); DTLS 1.2 hashes the full normalized 12-byte
+    // header. The FSM picks the mode; everything else (session_hash, Finished, CertVerify input) is common.
+    private val dtls13: Boolean = false,
 ) {
     private val messages = mutableListOf<ReadBuffer>()
 
-    /** Appends [message] in its normalized transcript form. */
+    /** Appends [message] in its normalized transcript form (12-byte DTLS 1.2 or 4-byte DTLS 1.3 header). */
     fun append(message: HandshakeMessage) {
-        val size = HandshakeMessage.HEADER_BYTES + message.length
+        val size = if (dtls13) message.transcript13Size else HandshakeMessage.HEADER_BYTES + message.length
         val buf = factory.allocate(size, ByteOrder.BIG_ENDIAN)
-        message.transcriptInto(buf)
+        if (dtls13) message.transcript13Into(buf) else message.transcriptInto(buf)
         buf.resetForRead()
         messages += buf
     }

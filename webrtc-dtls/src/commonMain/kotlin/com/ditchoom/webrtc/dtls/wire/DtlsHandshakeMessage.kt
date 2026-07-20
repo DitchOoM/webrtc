@@ -49,8 +49,24 @@ internal class HandshakeMessage(
      */
     fun transcriptInto(dest: WriteBuffer) = encodeInto(dest)
 
+    /**
+     * Emits the DTLS 1.3 transcript form: the TLS 1.3 **4-byte** handshake header (`msg_type ‖ uint24
+     * length`) followed by the body. The DTLS-specific `message_seq`/`fragment_offset`/`fragment_length`
+     * fields are omitted so the transcript hash matches TLS 1.3 exactly (RFC 9147 §5.2 / BoringSSL
+     * `SSLTranscript::Update` for DTLS ≥ 1.3, which writes `in.first<4>()` then `in.subspan<12>()`).
+     */
+    fun transcript13Into(dest: WriteBuffer) {
+        dest.writeByte((msgType.value and 0xFF).toByte())
+        dest.writeU24(length)
+        dest.writeView(body)
+    }
+
+    /** On-wire size of the DTLS 1.3 transcript form (4-byte header + body). */
+    val transcript13Size: Int get() = TLS13_HEADER_BYTES + length
+
     companion object {
         const val HEADER_BYTES = 12
+        const val TLS13_HEADER_BYTES = 4
 
         private fun writeHeader(
             dest: WriteBuffer,

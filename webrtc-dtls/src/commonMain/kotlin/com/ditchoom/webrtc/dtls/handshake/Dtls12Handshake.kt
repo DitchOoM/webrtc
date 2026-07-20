@@ -70,7 +70,7 @@ internal class Dtls12Handshake(
     // fingerprint is readable before the role is known) and reused for every handshake attempt. The
     // engine owns its lifecycle, so this class never closes it.
     private val certificate: SelfSignedCertificate,
-) {
+) : DtlsHandshakeFsm {
     private val factory: BufferFactory = config.bufferFactory
     private val random = config.random
     private val keySchedule = Tls12KeySchedule(factory)
@@ -112,7 +112,7 @@ internal class Dtls12Handshake(
 
     // ── public sans-io surface (mirrors DtlsEngine) ──────────────────────────────────────────────
 
-    fun start(nowMicros: Long): DtlsStep {
+    override fun start(nowMicros: Long): DtlsStep {
         check(!started) { "start() called twice" }
         started = true
         localRandom = randomBytes(RANDOM_BYTES)
@@ -126,7 +126,7 @@ internal class Dtls12Handshake(
         return step(emptyList(), emptyList()) // server waits for ClientHello
     }
 
-    fun onDatagram(
+    override fun onDatagram(
         datagram: ReadBuffer,
         nowMicros: Long,
     ): DtlsStep {
@@ -149,7 +149,7 @@ internal class Dtls12Handshake(
         return DtlsStep(out, appData, stateNow())
     }
 
-    fun onTimeout(nowMicros: Long): DtlsStep {
+    override fun onTimeout(nowMicros: Long): DtlsStep {
         terminal?.let { return DtlsStep(emptyList(), emptyList(), it) }
         val deadline = retransmitDeadline ?: return step(emptyList(), emptyList())
         if (nowMicros < deadline) return step(emptyList(), emptyList())
@@ -160,7 +160,7 @@ internal class Dtls12Handshake(
         return step(out, emptyList())
     }
 
-    fun sealApplicationData(
+    override fun sealApplicationData(
         applicationData: ReadBuffer,
         nowMicros: Long,
     ): DtlsStep {
@@ -178,7 +178,7 @@ internal class Dtls12Handshake(
      * Begin an orderly close: queue a `close_notify` alert (encrypted once we have keys) and transition
      * to [DtlsState.Closed]. Best-effort per RFC 6347 §4.1 — DTLS does not wait for the peer's reply.
      */
-    fun beginClose(nowMicros: Long): DtlsStep {
+    override fun beginClose(nowMicros: Long): DtlsStep {
         if (terminal is DtlsState.Closed) return DtlsStep(emptyList(), emptyList(), DtlsState.Closed)
         val out = mutableListOf<ReadBuffer>()
         val prot = protection
@@ -197,9 +197,9 @@ internal class Dtls12Handshake(
         return DtlsStep(out, emptyList(), DtlsState.Closed)
     }
 
-    fun nextTimeoutMicros(nowMicros: Long): Long? = if (terminal != null) null else retransmitDeadline
+    override fun nextTimeoutMicros(nowMicros: Long): Long? = if (terminal != null) null else retransmitDeadline
 
-    fun close() {
+    override fun close() {
         ecdhe.close()
         protection?.close()
     }

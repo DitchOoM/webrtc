@@ -5,6 +5,15 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.managed
 import com.ditchoom.webrtc.dtls.crypto.SelfSignedCertificate
 import com.ditchoom.webrtc.dtls.handshake.Dtls12Handshake
+import com.ditchoom.webrtc.dtls.handshake.Dtls13Handshake
+import com.ditchoom.webrtc.dtls.handshake.DtlsHandshakeFsm
+import com.ditchoom.webrtc.dtls.wire.ClientHello
+import com.ditchoom.webrtc.dtls.wire.ContentType
+import com.ditchoom.webrtc.dtls.wire.DtlsRecord
+import com.ditchoom.webrtc.dtls.wire.ExtensionType
+import com.ditchoom.webrtc.dtls.wire.HandshakeFragment
+import com.ditchoom.webrtc.dtls.wire.HandshakeType
+import com.ditchoom.webrtc.dtls.wire.Tls13Bodies
 import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -94,10 +103,12 @@ public class DtlsStep(
  *
  * This is a **pure-Kotlin** implementation (W4b): a single `commonMain` class over buffer-crypto's
  * primitives, running on every non-browser target (JVM/Android/Apple/Linux) with no native dependency.
- * It currently negotiates DTLS 1.2 (`TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256`); DTLS 1.3 is the next
- * increment (W4b task #6). Browsers never construct it — there `peerConnectionSupport()` delegates to
- * the platform `RTCPeerConnection`. The BoringSSL backend that seeded this seam now lives only in
- * `linuxTest` as a differential-testing oracle.
+ * It negotiates **DTLS 1.3** (`TLS_AES_128_GCM_SHA256`, RFC 9147) by default and falls back to **DTLS 1.2**
+ * (`TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256`) — a client picks its version FSM from
+ * [DtlsConfig.enableDtls13], a server selects by peeking the peer's ClientHello `supported_versions`.
+ * Browsers never construct it — there `peerConnectionSupport()` delegates to the platform
+ * `RTCPeerConnection`. The BoringSSL backend that seeded this seam now lives only in `linuxTest` as a
+ * differential-testing oracle (proving byte-level interop in both DTLS 1.2 and 1.3).
  *
  * `nowMicros` is epoch-microseconds from the driver's injected clock; the same value must be passed to
  * every call within one logical instant. [nextTimeoutMicros] returns the absolute epoch-micros at which
@@ -120,7 +131,8 @@ public class DtlsEngine(
     private val certificate: SelfSignedCertificate =
         SelfSignedCertificate.generate(config.bufferFactory, config.random)
 
-    private var handshake: Dtls12Handshake? = null
+    private var handshake: DtlsHandshakeFsm? = null
+    private var role: DtlsRole? = null
     private var closed = false
 
     /**
@@ -130,31 +142,53 @@ public class DtlsEngine(
     public val localFingerprint: CertificateFingerprint get() = certificate.fingerprint
 
     /**
-     * Adopt [role] (from the negotiated `a=setup`) and begin the handshake; a [DtlsRole.Client] sends
-     * the ClientHello. Returns the first flight to send. Call exactly once, before any [onDatagram].
+     * Adopt [role] (from the negotiated `a=setup`) and begin the handshake. A [DtlsRole.Client] sends the
+     * ClientHello immediately (its version FSM chosen from [DtlsConfig.enableDtls13]) and this returns its
+     * first flight. A [DtlsRole.Server] defers: it selects 1.3 or 1.2 by inspecting the peer's ClientHello
+     * `supported_versions` on the first [onDatagram] (real version negotiation), so this returns no records.
+     * Call exactly once, before any [onDatagram].
      */
     public fun start(
         role: DtlsRole,
         nowMicros: Long,
     ): DtlsStep {
-        check(handshake == null) { "DtlsEngine.start(role, now) called twice" }
-        return Dtls12Handshake(config, role, certificate).also { handshake = it }.start(nowMicros)
+        check(this.role == null) { "DtlsEngine.start(role, now) called twice" }
+        this.role = role
+        return when (role) {
+            DtlsRole.Client -> newHandshake(useDtls13 = config.enableDtls13, role).also { handshake = it }.start(nowMicros)
+            DtlsRole.Server -> DtlsStep(emptyList(), emptyList(), DtlsState.Handshaking) // FSM chosen on the ClientHello
+        }
     }
 
     /** Feed one inbound DTLS record datagram; drives the handshake or decrypts application data. */
     public fun onDatagram(
         record: ReadBuffer,
         nowMicros: Long,
-    ): DtlsStep = started().onDatagram(record, nowMicros)
+    ): DtlsStep {
+        val fsm =
+            handshake ?: run {
+                // Deferred server: pick the version from the ClientHello, then create + start + feed the FSM.
+                val serverRole = checkNotNull(role) { "DtlsEngine.start(role, now) must be called before driving the engine" }
+                val useDtls13 = config.enableDtls13 && clientHelloOffersDtls13(record)
+                newHandshake(useDtls13, serverRole).also {
+                    handshake = it
+                    it.start(nowMicros) // server start emits no records; it waits for this ClientHello
+                }
+            }
+        return fsm.onDatagram(record, nowMicros)
+    }
 
     /** Fire an expired DTLS timer (retransmits the current flight). */
-    public fun onTimeout(nowMicros: Long): DtlsStep = started().onTimeout(nowMicros)
+    public fun onTimeout(nowMicros: Long): DtlsStep =
+        handshake?.onTimeout(nowMicros) ?: DtlsStep(emptyList(), emptyList(), DtlsState.Handshaking)
 
     /** Encrypt and enqueue application data once [DtlsState.Established]. */
     public fun send(
         applicationData: ReadBuffer,
         nowMicros: Long,
-    ): DtlsStep = started().sealApplicationData(applicationData, nowMicros)
+    ): DtlsStep =
+        handshake?.sealApplicationData(applicationData, nowMicros)
+            ?: DtlsStep(emptyList(), emptyList(), DtlsState.Handshaking)
 
     /** Begin an orderly close (queues a close_notify to send). */
     public fun beginClose(nowMicros: Long): DtlsStep =
@@ -171,8 +205,42 @@ public class DtlsEngine(
         certificate.close()
     }
 
-    // Driving before a role is adopted is a caller-contract violation (API misuse), not a peer/protocol
-    // failure — an IllegalStateException, never a typed DtlsFailureReason (DESIGN §3).
-    private fun started(): Dtls12Handshake =
-        checkNotNull(handshake) { "DtlsEngine.start(role, now) must be called before driving the engine" }
+    private fun newHandshake(
+        useDtls13: Boolean,
+        role: DtlsRole,
+    ): DtlsHandshakeFsm =
+        if (useDtls13) {
+            Dtls13Handshake(config, role, certificate)
+        } else {
+            Dtls12Handshake(config, role, certificate)
+        }
+
+    /**
+     * True if [datagram] carries a complete ClientHello offering DTLS 1.3 (a `supported_versions` listing
+     * `0xFEFC`, the `TLS_AES_128_GCM_SHA256` suite, and a P-256 `key_share`). WebRTC ClientHellos are small
+     * and unfragmented, so the server can decide the version from the first datagram; anything it cannot
+     * parse as a 1.3-capable ClientHello falls back to the 1.2 FSM.
+     */
+    private fun clientHelloOffersDtls13(datagram: ReadBuffer): Boolean {
+        val records = DtlsRecord.decodeAll(datagram) ?: return false
+        for (record in records) {
+            if (record.contentType.value != ContentType.Handshake.value) continue
+            val fragments = HandshakeFragment.decodeAll(record.fragment) ?: continue
+            for (fragment in fragments) {
+                if (fragment.msgType.value != HandshakeType.ClientHello.value) continue
+                if (fragment.fragmentOffset != 0 || fragment.fragmentLength != fragment.length) continue
+                val ch = ClientHello.parse(fragment.fragmentBody) ?: continue
+                val offersVersion =
+                    ch.extensions
+                        .firstOrNull { it.type.value == ExtensionType.SupportedVersions.value }
+                        ?.let { Tls13Bodies.offersDtls13(it.body) } ?: false
+                val offersKeyShare =
+                    ch.extensions
+                        .firstOrNull { it.type.value == ExtensionType.KeyShare.value }
+                        ?.let { Tls13Bodies.parseKeyShareClientHello(it.body) != null } ?: false
+                if (offersVersion && offersKeyShare) return true
+            }
+        }
+        return false
+    }
 }

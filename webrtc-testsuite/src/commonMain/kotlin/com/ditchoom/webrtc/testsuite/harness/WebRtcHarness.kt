@@ -60,7 +60,7 @@ import kotlin.time.Instant
  * allocation (wrapped in a counting decorator — the `TrackingBufferFactory` invariant, exposed as
  * [WebRtcHarnessScope.allocationCount]), and [dtlsFactory] the DTLS backend. The default DTLS is
  * [PlaintextDtls] — the vnet needs no real crypto and it is the only backend on every platform until
- * W4b lands cross-platform DTLS; a native consumer can pass `{ BoringSslDtls(scope, clock) }`.
+ * W4b lands cross-platform DTLS; a native consumer can pass `{ PureKotlinDtls(scope, clock) }`.
  *
  * **Typed errors, never stringly** (directive #3): an establishment that fails surfaces as a
  * [WebRtcException] carrying the sealed [PeerConnectionFailureReason] (`Ice`/`Dtls`/`Sctp`), exactly as

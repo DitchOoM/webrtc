@@ -143,7 +143,7 @@ public interface RtcPeerConnection {
  * The **native-stack** [RtcPeerConnection] (RFC §1.1: we own the protocol on every non-browser target).
  * It is a driver composing the sans-io cores: the [JsepSession] offer/answer machine (webrtc-sdp), the
  * [IceAgentDriver] (webrtc-ice) over an injected [IceGatheringPolicy], the injected [DtlsTransportFactory]
- * ([BoringSslDtls] on a target with a backend), and the [SctpDataChannelStack]
+ * ([PureKotlinDtls] on any non-browser target), and the [SctpDataChannelStack]
  * (webrtc-sctp) over the nominated pair. Every seam — [scope], [clock], [random], the network binder
  * inside the gathering policy — is injected, so the whole session replays under `runTest` virtual time
  * (RFC §5.1). Its own mutable negotiation state is confined behind [negotiationLock]; the cores beneath
@@ -156,7 +156,8 @@ public interface RtcPeerConnection {
  * or offers active.
  *
  * The injected [dtls] factory is both the security boundary and the endpoint's certificate identity:
- * pass [BoringSslDtls] for real DTLS (native only this wave), or [PlaintextDtls] for the W5-proven
+ * pass [PureKotlinDtls] for real DTLS (every non-browser target — the engine is pure Kotlin), or
+ * [PlaintextDtls] for the W5-proven
  * plaintext stand-in — which is **not** wire-secure. There is deliberately no default, so the insecure
  * choice is greppable at every call site.
  */

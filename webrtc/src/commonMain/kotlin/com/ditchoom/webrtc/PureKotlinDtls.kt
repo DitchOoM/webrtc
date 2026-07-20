@@ -30,8 +30,11 @@ import com.ditchoom.webrtc.dtls.DtlsRole as EngineRole
 
 /**
  * The real DTLS transport (W4) — a **driver** for the caller-clocked, sans-io [DtlsEngine] (RFC §5.1:
- * cores own truth, drivers own I/O). It is the swap that replaces [PlaintextDtls] at
- * [DtlsTransportFactory.secure]: nothing above (SCTP, PeerConnection) or below (ICE) changes shape.
+ * cores own truth, drivers own I/O). The [DtlsEngine] it drives is now the **pure-Kotlin** DTLS 1.3/1.2
+ * engine (W4b — no native dependency), which is why this class is named for that, not for BoringSSL: it
+ * has never been a BoringSSL wrapper on this branch, and BoringSSL now lives only as a `linuxTest`
+ * differential oracle. It is the swap that replaces [PlaintextDtls] at [DtlsTransportFactory.secure]:
+ * nothing above (SCTP, PeerConnection) or below (ICE) changes shape.
  *
  * The engine has no clock, no coroutine and no socket of its own, so this class supplies all three:
  * one **pump** coroutine owns the engine and serializes every interaction with it — inbound records from
@@ -46,18 +49,19 @@ import com.ditchoom.webrtc.dtls.DtlsRole as EngineRole
  * decides the role (RFC 8842). Construct one per [NativePeerConnection] and [secure] once:
  *
  * ```kotlin
- * val dtls = BoringSslDtls(scope, clock)          // identity exists now — the a=fingerprint is readable
+ * val dtls = PureKotlinDtls(scope, clock)         // identity exists now — the a=fingerprint is readable
  * NativePeerConnection(scope, clock, random, binder, gathering, dtls = dtls)
  * ```
  *
- * Construction throws [WebRtcException] with [DtlsFailureReason.BackendUnavailable] on a target with no
- * backend (JVM/Android/Apple this wave — EXECUTION_PLAN "W4 sequencing"): fail fast at the call site
- * rather than at handshake time.
+ * The pure-Kotlin engine runs on **every non-browser target** (JVM/Android/Apple/Linux) over
+ * buffer-crypto's blocking primitives. Browsers never construct this — `peerConnectionSupport()`
+ * delegates to `RTCPeerConnection` there — because the one async-only crypto seam (raw ECDH on
+ * js/wasm) fails a handshake with a typed [DtlsFailureReason.BackendUnavailable] rather than blocking.
  *
  * @param config DTLS seams. Pass a **pooled native** `bufferFactory` in production — a native-backed
- *   buffer hands BoringSSL its own address, skipping the staging copy the GC-heap default needs.
+ *   buffer skips the staging copy the GC-heap default needs on the record layer's hot path.
  */
-public class BoringSslDtls(
+public class PureKotlinDtls(
     private val scope: CoroutineScope,
     private val clock: () -> Instant,
     private val config: DtlsConfig = DtlsConfig(),
@@ -80,7 +84,7 @@ public class BoringSslDtls(
     ): SctpDatagramTransport {
         // One engine per factory, so one handshake per factory: a second secure() would drive an
         // already-established SSL and silently corrupt it. Caller contract, hence a check (DESIGN §3).
-        check(!secured) { "BoringSslDtls.secure() is single-use — construct one factory per PeerConnection" }
+        check(!secured) { "PureKotlinDtls.secure() is single-use — construct one factory per PeerConnection" }
         secured = true
 
         // Verify the peer's advertised digest is one we can actually check BEFORE handshaking: an
@@ -182,8 +186,9 @@ public class BoringSslDtls(
             if (closed) return
             closed = true
             // Order matters: stop feeding the pump, let it run down (it frees the engine), then release
-            // the ICE seam. The engine's native memory is freed in the pump's finally, so it is freed
-            // exactly once, on the coroutine that owns it — never concurrently with a live handshake.
+            // the ICE seam. The engine's pooled scratch buffers are released in the pump's finally, so
+            // they are freed exactly once, on the coroutine that owns them — never concurrently with a
+            // live handshake.
             inbound.close()
             outbound.close()
             pump?.cancel()
@@ -213,8 +218,8 @@ public class BoringSslDtls(
                     state = step.state
                 }
             } finally {
-                // Whatever ended us — established-then-closed, failure, or cancellation — the native
-                // engine and its scratch buffer are freed here, on the one coroutine that owns them.
+                // Whatever ended us — established-then-closed, failure, or cancellation — the engine and
+                // its pooled scratch buffers are freed here, on the one coroutine that owns them.
                 engine.close()
                 // Close outbound BEFORE draining it: once closed, send()'s trySend fails fast with a
                 // typed reason. Draining first would leave the window where a send() lands in an open
@@ -261,9 +266,9 @@ public class BoringSslDtls(
 
         /** Put this step's records on the wire, surface its app data, and publish the resulting state. */
         private suspend fun apply(step: DtlsStep) {
-            // The memory BIO is a byte stream, so a flight is drained and sent as ONE datagram. Valid:
-            // DTLS records self-delimit, and it is correct on the vnet — a real-MTU path may need a
-            // datagram-preserving BIO (a W7 concern, documented in HANDOFF).
+            // A whole flight is drained and sent as ONE datagram. Valid: DTLS records self-delimit, and
+            // it is correct on the vnet — a real-MTU path may need per-record datagram framing / PMTU
+            // fragmentation (a W7 concern, documented in HANDOFF).
             for (record in step.records) iceData.send(record)
             for (data in step.applicationData) {
                 // trySend can fail if a concurrent close() already closed appData (a final inbound

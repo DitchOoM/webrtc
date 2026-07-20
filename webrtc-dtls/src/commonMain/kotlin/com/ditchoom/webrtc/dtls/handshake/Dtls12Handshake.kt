@@ -86,6 +86,7 @@ internal class Dtls12Handshake(
     private var peerCertDer: ReadBuffer? = null
     private var peerEcdhPoint: ReadBuffer? = null
     private var useExtendedMasterSecret = false
+    private var peerAdvertisedRenegotiation = false
     private var masterSecret: ReadBuffer? = null
     private var protection: Dtls12RecordProtection? = null
 
@@ -334,6 +335,12 @@ internal class Dtls12Handshake(
                 }
                 clientRandom = copyOf(ch.random)
                 useExtendedMasterSecret = ch.extensions.any { it.type.value == ExtensionType.ExtendedMasterSecret.value }
+                // RFC 5746 secure-renegotiation indication: the client signals support with an (empty)
+                // renegotiation_info extension or the TLS_EMPTY_RENEGOTIATION_INFO_SCSV. OpenSSL aborts a
+                // server that doesn't echo it ("unsafe legacy renegotiation disabled"), so track + echo it.
+                peerAdvertisedRenegotiation =
+                    ch.extensions.any { it.type.value == ExtensionType.RenegotiationInfo.value } ||
+                    ch.cipherSuites.any { it.value == RENEGOTIATION_SCSV }
                 transcript.append(message)
                 sendServerHelloFlight(out, now)
             }
@@ -373,6 +380,9 @@ internal class Dtls12Handshake(
         val flight = mutableListOf<FlightItem>()
         val extensions = mutableListOf<Extension>()
         if (useExtendedMasterSecret) extensions += Extension(ExtensionType.ExtendedMasterSecret, empty())
+        // Echo an empty renegotiation_info when the client indicated RFC 5746 support (initial handshake:
+        // renegotiated_connection is zero-length). Required by OpenSSL; browsers/BoringSSL send it too.
+        if (peerAdvertisedRenegotiation) extensions += renegotiationInfoExtension()
         val sh =
             buildBody {
                 ServerHello(
@@ -539,6 +549,9 @@ internal class Dtls12Handshake(
                 ecPointFormatsExtension(),
                 signatureAlgorithmsExtension(),
                 Extension(ExtensionType.ExtendedMasterSecret, empty()),
+                // RFC 5746: advertise secure-renegotiation support so servers that require it (OpenSSL)
+                // accept our initial handshake. Empty renegotiated_connection = initial handshake.
+                renegotiationInfoExtension(),
             )
         val ch =
             buildBody {
@@ -651,6 +664,14 @@ internal class Dtls12Handshake(
         return Extension(ExtensionType.SignatureAlgorithms, body)
     }
 
+    /** RFC 5746 renegotiation_info for an initial handshake: a single zero byte (empty renegotiated_connection). */
+    private fun renegotiationInfoExtension(): Extension {
+        val body = factory.allocate(1, ByteOrder.BIG_ENDIAN)
+        body.writeByte(0) // renegotiated_connection length = 0
+        body.resetForRead()
+        return Extension(ExtensionType.RenegotiationInfo, body)
+    }
+
     // ── small buffer helpers ─────────────────────────────────────────────────────────────────────
 
     private inline fun buildBody(block: (WriteBuffer) -> Unit): ReadBuffer {
@@ -734,6 +755,7 @@ internal class Dtls12Handshake(
         const val EPOCH_0 = 0
         const val EPOCH_1 = 1
         const val DTLS12 = 0xFEFD
+        const val RENEGOTIATION_SCSV = 0x00FF // TLS_EMPTY_RENEGOTIATION_INFO_SCSV (RFC 5746 §3.3)
         const val MAX_MESSAGE_BYTES = 4096
         const val INITIAL_RETRANSMIT_MICROS = 1_000_000L // RFC 6347 §4.2.4.1 initial timer = 1s
         const val MAX_RETRANSMIT_MICROS = 60_000_000L

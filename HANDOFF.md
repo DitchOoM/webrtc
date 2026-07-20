@@ -49,6 +49,16 @@ build green. The pure-Kotlin DTLS internals are built as `internal` in `commonMa
   cinterop to the test compilation; keep the existing `linuxTest` `DtlsHandshakeTest`/`DtlsRetransmissionTest` as the oracle.
   Best done fresh (structural, touches the public engine + build). THEN #6 DTLS 1.3; #7 PeerConnection wiring + interop +
   SRTP-exporter differential.
+- **⚠️ COVERAGE GAP — make differential testing a first-class goal of the fresh session (owner asked, 2026-07-20).** The
+  primitives ARE independently validated (PRF vs canonical KAT; cert vs JVM `java.security`; buffer-crypto Wycheproof-vetted),
+  BUT the handshake is only a **self-loopback** (our client ⇄ our server) — a *consistent* bug on both sides passes it. Close
+  the gap, ranked by value/effort: **(1)** openssl differential — our engine ⇄ `openssl s_server -dtls1_2` over a local UDP
+  socket in `jvmTest` (openssl 3.0.13 is on the box; doable now, no flip needed; may need
+  `-cipher ECDHE-ECDSA-AES128-GCM-SHA256` + `-verify` for our client cert; 1.3 interop wants newer openssl). **(2)** the flip
+  (#5) turns the existing `linuxTest` `DtlsHandshakeTest` into an **our-engine ⇄ BoringSSL** differential — the oracle W4b was
+  designed around. **(3)** SRTP-exporter OUTPUT differential vs BoringSSL (the spike left this reachable-but-unchecked).
+  **(4)** robustness in-suite: retransmit-under-loss, a fragmented-flight test, wire-parser Jazzer fuzz (mirror SCTP/STUN),
+  replay/malformed rejects, the HelloVerifyRequest path. **(5)** #7 interop (Chrome/Firefox/Pion) = the real acceptance bar.
 
 **W7 Phase 3 DONE (parallel, same 2 commits):** `webrtc-testsuite` filled — `withWebRtcHarness { natType(); relayOnly();
 impaired() }` DSL + typed config (`NatType`/`NetworkImpairment`/`HarnessManifest`) + jvmMain `HarnessController` (L2

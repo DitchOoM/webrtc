@@ -3,6 +3,62 @@
 Live state of the current wave. A resumed session reads `RFC_KMP_WEBRTC.md` → `EXECUTION_PLAN.md` →
 this file. Update it whenever you stop mid-wave.
 
+---
+
+## START HERE — W4b + W7 Phase 3 (fresh session). Branch `w4b-dtls-kotlin` off `main` @ `1518e8a`.
+
+**W4b (pure-Kotlin DTLS 1.3 over buffer-crypto) is now a GO — the earlier "do not start W4b, pending
+spikes" guidance below is STALE.** As of 2026-07-20:
+
+- **The 3 de-risking spikes were RUN and are ALL GREEN** (`~/git/cinterop-issues/09-dtls-over-buffer-crypto-SPIKE-RESULTS.md`):
+  key schedule/exporter 26/26 byte-exact vs RFC 8448; self-signed ECDSA-P256 cert openssl-verifies; a **live
+  DTLS 1.2 handshake vs `openssl s_server` + app data on the wire**. The crypto risk is retired. Full plan +
+  primitive audit: `08-dtls-over-buffer-crypto.md` + `W4B-DTLS-SPIKE-PLAN.md` (same dir).
+- **buffer 6.16.0 (on Maven Central) ships every prerequisite:** AES-ECB single block (`buffer#301`, DTLS 1.3
+  record-number enc), **`deriveTlsPremasterSecret`** raw (EC)DHE secret (`#302`, the load-bearing ECDHE
+  primitive — gates BOTH versions), public `exportSpki()`/`exportEncoded()` (cert SPKI). **DONE this session:**
+  webrtc bumped `6.11.0`→`6.16.0` (commit `6d0c0ba` on `w4b-dtls-kotlin`); compiles clean JVM+LinuxX64 all modules.
+
+**Two decisions made this session (owner-confirmed):**
+1. **`DtlsEngine` becomes a single pure-Kotlin `commonMain` implementation on ALL targets** (today it's
+   `expect`/`actual` with `BackendUnavailable` off-Linux). **BoringSSL-native is demoted to a `linuxTest`
+   differential oracle** — remove it from production. This retires the one native dep + the cinterop/dup-symbol
+   hazard and lights up JVM/Android/Apple.
+2. **Build the W4b DTLS 1.2 core AND W7 Phase 3 (`webrtc-testsuite`) in parallel** — they don't overlap.
+
+**W4b build order:** (1) ✅ buffer bump. (2) Refactor `webrtc-dtls`: sans-io `DtlsEngine` → `commonMain` core;
+add an **injected `Random` seam to `DtlsConfig`** (ECDHE ephemerals / ClientHello.random — `cryptoRandom` isn't
+seedable, the Tier-B residue W4 accepts). Reuse the existing sans-io interface + W4 fixtures
+(`DtlsRetransmissionTest`, the linuxX64 end-to-end handshake) — the BoringSSL fixture becomes the oracle.
+(3) **DTLS 1.2 FIRST** (spike-proven on the wire, lowest risk): record layer, handshake FSM (ClientHello→…→
+Finished), ECDHE via `deriveTlsPremasterSecret`, AES-128-GCM (`sealWithNonceBlocking`/`openWithNonceBlocking`),
+self-signed cert (`exportSpki` + a ~40–150-LOC TBSCertificate DER template — buffer-crypto has no X.509
+builder), inbound fragment reassembly. (4) **DTLS 1.3**: key schedule (RFC 8446/9147 `HKDF-Expand-Label` over
+`Hkdf.extractInto`/`expandInto`), record-number encryption via AES-ECB. (5) Wire into `PeerConnection`; run the
+interop harness with a **JVM/Kotlin peer ⇄ Chrome/Firefox/Pion** as conformance (BoringSSL stays the oracle).
+
+**Protocol gotchas the spikes cost real debugging on (carry these in):** the DTLS Finished/PRF transcript
+hashes the **FULL 12-byte DTLS handshake header** (message_seq + fragment fields, normalized to offset=0/
+length=full), NOT the TLS 4-byte header. Explicit-nonce AEAD maps 1:1 to TLS GCM (12-byte nonce = 4-byte
+write_IV ‖ 8-byte explicit; 13-byte TLS-1.2 AAD; bare `ciphertext‖tag`). ECDSA is DER-native (drops into the
+cert BIT STRING / wire sigs with zero conversion). `Salt.None` = RFC 5869 zero-block. Inbound handshake
+fragmentation is real (reassemble); outbound can stay unfragmented for a first cut (PMTU frag later).
+buffer-crypto APIs (all verified present): `Hkdf.extractInto`/`expandInto`, `Sha256Digest`, `HmacSha256Mac`,
+`deriveTlsPremasterSecret`, `KeyAgreementCurve.P256`, ECDSA `signBlocking`/`verifyBlocking` (Der),
+`CryptoCapabilities.aesEcb`, `exportSpki`/`exportEncoded`, `cryptoRandom`.
+
+**Also open (not W4b):** **PR #21** (`w7-browser-ci-tuning`, off `main`) — Node 24 slim browser base + gha
+layer cache + build-then-up ordering fix; `skip-release`; **open, awaiting CI green + merge** (its `l2-browser`
+jobs are the first real exercise of the gha cache). **W7 Phase 3:** `webrtc-testsuite` is still a 9-line
+placeholder — build `withWebRtcHarness { natType(); relayOnly(); impaired() }` + a clean-checkout
+consumer-smoke; decouple the first Central release from interop-green.
+
+**Release posture:** nothing mechanical blocks a Central `0.0.1` (pipeline+validate green). The gates are
+product: the DTLS platform gap (W4b closes it) + W7 Phase 3. Owner chose **Path B** — land cross-platform DTLS
++ Phase 3, THEN cut a broad `0.0.1`.
+
+---
+
 ## Where we are: **W7 Phase 2(b) — headless-browser interop (Chrome + Firefox) + wasmJs delegation — BUILT + runtime-validated on this box (x64). Branch off `main` @ `6838258` (Phase 2(a) / PR #18 merged). Our native `linuxX64` offerer establishes a full WebRTC data channel against real **headless Chrome** (Chromium libwebrtc) AND real **headless Firefox** (fully independent NSS/nICEr/usrsctp stack), both via Playwright — real ICE hole-punch → real BoringSSL **DTLS 1.3** (production default) → SCTP → bidirectional ping/pong — across a port-restricted NAT. `chrome-interop` + `firefox-interop` scenarios PASS (offerer rc=0, answerer rc=0). The last W6 browser gap is closed: **wasmJs `peerConnectionSupport()` delegation is real** (was `NotImplementedError`) and passes in a real headless Chrome (`wasmJsBrowserTest`). Full matrix now **9/9 native lanes** green (a stdin-drain harness bug fixed). NEXT: Phase 3 (testsuite publish).**
 
 ### Phase 2(b) landed (this session) — what exists, runtime-validated on this box:

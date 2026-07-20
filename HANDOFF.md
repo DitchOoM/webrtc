@@ -7,6 +7,52 @@ this file. Update it whenever you stop mid-wave.
 
 ## START HERE — W4b + W7 Phase 3 (fresh session). Branch `w4b-dtls-kotlin` off `main` @ `1518e8a`.
 
+### ⇢ LIVE PROGRESS (2026-07-20, session 4) — task #6 DTLS 1.3 DONE + differential-green both roles; engine on `Instant`; key material sealed-phased
+
+**Three commits on `w4b-dtls-kotlin` (`72a2cf7`, `dd53346`, `ee659e1`) on top of session 3. `./gradlew build`
+SUCCESSFUL (724 tasks); `:webrtc-dtls` linuxX64 33/33; apiCheck green. Our pure-Kotlin engine now negotiates
+**DTLS 1.3** by default and is proven byte-exact against BoringSSL negotiating real 1.3.**
+
+- **Task #6 (DTLS 1.3, RFC 9147) DONE ✅ (`72a2cf7`).** `TLS_AES_128_GCM_SHA256`. New `commonMain`:
+  `crypto/Tls13KeySchedule` (HKDF-Expand-Label with the **`"dtls13"`** label prefix — the load-bearing gotcha
+  vs TLS's `"tls13 "`; early/handshake/master secret tree; key/iv/**sn** traffic keys; Finished verify_data),
+  `crypto/Dtls13RecordProtection` (unified-header record layer; AEAD nonce over the full 48-bit seq; AAD = the
+  5-byte header w/ **plaintext** seq; **record-number encryption** via `AES-ECB(sn_key)` mask over
+  `CryptoCapabilities.aesEcb`; wire-seq reconstruction), `handshake/Dtls13Handshake` (mutually-auth FSM, epoch
+  0/2/3, CertificateVerify over the RFC 8446 signed content, Finished HMAC; transcript in the TLS-1.3 **4-byte**
+  header form per RFC 9147 §5.2), `wire/Tls13Bodies` (key_share/supported_versions/EncryptedExtensions/
+  Certificate13/CertificateRequest13). **Every byte-exact detail was matched against BoringSSL's own source**
+  (`build/boringssl/boringssl/ssl/{tls13_enc,dtls_record,tls13_both}.cc`) — see scratchpad `w4b-decisions.md`
+  "TASK #6 … byte-exact facts CONFIRMED".
+- **Version negotiation:** a new `DtlsHandshakeFsm` interface unifies 1.2/1.3. Client picks its FSM from
+  `enableDtls13`; **server peeks the ClientHello `supported_versions`/`key_share`** (real negotiation — accepts
+  both 1.2 and 1.3 clients). `DtlsEngine`'s public surface is unchanged in shape.
+- **Differential-green BOTH directions ✅.** `linuxTest/Dtls13DifferentialTest` (our engine ⇄ BoringSSL 1.3,
+  our-client and our-server, + app data both ways) + `commonTest/handshake/Dtls13HandshakeTest` (fast
+  self-loopback). **Un-pinned the oracle:** `bd_new` now calls `SSL_CTX_set1_groups_list(ctx, "P-256")` so
+  BoringSSL's client sends a P-256 key_share directly (its default is X25519) → our P-256 server needs no HRR.
+  The root end-to-end ICE+DTLS+SCTP test now runs through **1.3** by default too.
+- **Engine clock is now `kotlin.time.Instant` (`dd53346`), not `nowMicros: Long`** — aligns DTLS with the ICE/SCTP
+  cores (`nextDeadline(now: Instant): Instant?`). Public `.api` re-dumped. The webrtc-root `BoringSslDtls` driver
+  simplified (passes the injected `clock()` Instant straight through). The BoringSSL oracle converts Instant→
+  epoch-micros only at the C FFI edge. **Owner-requested this session.**
+- **Handshake key material is now sealed phases (`ee659e1`), not nullable soup** — `Keys.Pending → Handshake →
+  Application` (1.3) / `Keys.Pending → Derived` (1.2). Read-only accessors keep the old names, so only derivation
+  sites changed. Deliberate-absence nulls kept (`nextDeadline → null`; peer cert/point not-yet-received).
+  **Owner-requested this session.**
+- **NEXT = the ORIGINAL task #7** (unchanged by the two owner-requested refactors above): **(a)** rename the
+  webrtc-root `BoringSslDtls` driver — still a **misnomer** (drives the pure-Kotlin engine, not BoringSSL) and
+  its class doc still says "throws BackendUnavailable on a target with no backend" (stale — JVM/Apple work now);
+  **(b)** PeerConnection interop (Chrome/Firefox/Pion) against the **pure engine** (today's harness still uses the
+  BoringSSL native path); **(c)** the SRTP-exporter output differential vs BoringSSL (still deferred — our 1.3
+  engine has no `SSL_export_keying_material` exporter yet).
+- **Traps carried forward:** **HelloRetryRequest, X25519, and the client-side 1.3→1.2 downgrade are deferred to
+  interop (#7)** — our 1.3 is P-256-only and commits the client to its configured max version (the oracle is
+  pinned to P-256 to avoid HRR). The **openssl 1.3 `s_client` lane needs openssl ≥ 3.2** (box has 3.0.13) — the
+  1.2 openssl differential still runs; 1.3-openssl is skipped/noted. Run native tests under a memory cap
+  (`ulimit -v 8000000; timeout … test.kexe`) — the OOM-runaway trap. K/Wasm `compileTest…WasmJs` ICE is a flake
+  (re-run `build`); it did **not** hit this session.
+
 ### ⇢ LIVE PROGRESS (2026-07-20, session 3) — task #5 THE FLIP done + differential-tested; whole project green
 
 **Three commits on `w4b-dtls-kotlin` (`753747f`, `2212a21`, `fc338e8`). `./gradlew build` SUCCESSFUL — all

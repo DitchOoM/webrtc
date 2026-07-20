@@ -44,7 +44,11 @@ class DtlsOpensslDifferentialJvmTest {
             println("[skip] openssl not on PATH — DTLS openssl differential not run")
             return
         }
-        val work = File.createTempFile("dtls-openssl", "").apply { delete(); mkdirs() }
+        val work =
+            File.createTempFile("dtls-openssl", "").apply {
+                delete()
+                mkdirs()
+            }
         try {
             val cert = File(work, "client-cert.pem")
             val key = File(work, "client-key.pem")
@@ -55,15 +59,24 @@ class DtlsOpensslDifferentialJvmTest {
                 socket.soTimeout = POLL_MILLIS
                 val server = DtlsEngine(DtlsConfig(bufferFactory = factory, enableDtls13 = false))
                 val t0 = System.nanoTime()
+
                 fun nowUs() = (System.nanoTime() - t0) / 1000
 
                 // Launch openssl s_client as the DTLS client pointed at our socket.
                 val proc =
                     ProcessBuilder(
-                        "openssl", "s_client", "-dtls1_2", "-quiet",
-                        "-connect", "127.0.0.1:${socket.localPort}",
-                        "-cert", cert.absolutePath, "-key", key.absolutePath,
-                        "-cipher", "ECDHE-ECDSA-AES128-GCM-SHA256",
+                        "openssl",
+                        "s_client",
+                        "-dtls1_2",
+                        "-quiet",
+                        "-connect",
+                        "127.0.0.1:${socket.localPort}",
+                        "-cert",
+                        cert.absolutePath,
+                        "-key",
+                        key.absolutePath,
+                        "-cipher",
+                        "ECDHE-ECDSA-AES128-GCM-SHA256",
                     ).redirectErrorStream(true).start()
                 val opensslOut = ConcurrentLinkedQueue<String>()
                 val stdoutPump =
@@ -72,7 +85,10 @@ class DtlsOpensslDifferentialJvmTest {
                             proc.inputStream.bufferedReader().forEachLine { opensslOut.add(it) }
                         } catch (_: Throwable) {
                         }
-                    }.apply { isDaemon = true; start() }
+                    }.apply {
+                        isDaemon = true
+                        start()
+                    }
 
                 try {
                     server.start(DtlsRole.Server, nowUs()) // arms the server; no records until fed
@@ -216,10 +232,22 @@ class DtlsOpensslDifferentialJvmTest {
     ) {
         val rc =
             ProcessBuilder(
-                "openssl", "req", "-x509", "-newkey", "ec",
-                "-pkeyopt", "ec_paramgen_curve:prime256v1",
-                "-keyout", key.absolutePath, "-out", cert.absolutePath,
-                "-days", "1", "-nodes", "-subj", "/CN=openssl-peer",
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "ec",
+                "-pkeyopt",
+                "ec_paramgen_curve:prime256v1",
+                "-keyout",
+                key.absolutePath,
+                "-out",
+                cert.absolutePath,
+                "-days",
+                "1",
+                "-nodes",
+                "-subj",
+                "/CN=openssl-peer",
             ).redirectErrorStream(true).start().waitFor()
         assertEquals(0, rc, "openssl req generated a throwaway ECDSA cert")
     }
@@ -228,11 +256,17 @@ class DtlsOpensslDifferentialJvmTest {
     private fun sha256FingerprintOf(cert: File): String {
         val proc =
             ProcessBuilder("openssl", "x509", "-in", cert.absolutePath, "-noout", "-fingerprint", "-sha256")
-                .redirectErrorStream(true).start()
+                .redirectErrorStream(true)
+                .start()
         val line = proc.inputStream.bufferedReader().readText()
         proc.waitFor()
         // Format: "sha256 Fingerprint=AB:CD:...:EF"
-        val hex = line.substringAfter('=', "").trim().replace(":", "").lowercase()
+        val hex =
+            line
+                .substringAfter('=', "")
+                .trim()
+                .replace(":", "")
+                .lowercase()
         assertTrue(hex.length == 64, "parsed a 32-byte fingerprint from openssl x509, got '$line'")
         return hex
     }

@@ -9,6 +9,7 @@ import com.ditchoom.webrtc.dtls.DtlsRole
 import com.ditchoom.webrtc.dtls.DtlsState
 import com.ditchoom.webrtc.dtls.DtlsVersion
 import com.ditchoom.webrtc.dtls.crypto.SelfSignedCertificate
+import com.ditchoom.webrtc.dtls.engineCryptoAvailable
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -33,6 +34,7 @@ class Dtls12HandshakeTest {
 
     @Test
     fun two_pure_kotlin_stacks_complete_a_dtls12_handshake() {
+        if (!engineCryptoAvailable()) return // browsers delegate; the engine's blocking crypto isn't here
         val clientCert = cert()
         val serverCert = cert()
         val client = Dtls12Handshake(config(), DtlsRole.Client, clientCert)
@@ -57,6 +59,7 @@ class Dtls12HandshakeTest {
 
     @Test
     fun application_data_flows_encrypted_after_the_handshake() {
+        if (!engineCryptoAvailable()) return // browsers delegate; the engine's blocking crypto isn't here
         val clientCert = cert()
         val serverCert = cert()
         val client = Dtls12Handshake(config(), DtlsRole.Client, clientCert)

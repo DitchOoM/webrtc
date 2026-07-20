@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.managed
+import com.ditchoom.webrtc.dtls.engineCryptoAvailable
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -43,6 +44,7 @@ class Dtls12RecordProtectionTest {
 
     @Test
     fun client_sealed_record_opens_on_the_server() {
+        if (!engineCryptoAvailable()) return // browsers delegate; blocking AES-GCM isn't here
         val kb = keyBlock()
         val client = Dtls12RecordProtection.fromKeyBlock(kb, client = true, factory)
         val server = Dtls12RecordProtection.fromKeyBlock(kb, client = false, factory)
@@ -64,6 +66,7 @@ class Dtls12RecordProtectionTest {
 
     @Test
     fun a_tampered_byte_or_wrong_sequence_number_drops_the_record() {
+        if (!engineCryptoAvailable()) return // browsers delegate; blocking AES-GCM isn't here
         val kb = keyBlock()
         val client = Dtls12RecordProtection.fromKeyBlock(kb, client = true, factory)
         val server = Dtls12RecordProtection.fromKeyBlock(kb, client = false, factory)

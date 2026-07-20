@@ -1,6 +1,7 @@
 package com.ditchoom.webrtc.dtls.crypto
 
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.webrtc.dtls.engineCryptoAvailable
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -14,6 +15,7 @@ import kotlin.test.assertTrue
 class EcdheKeyExchangeTest {
     @Test
     fun both_sides_derive_the_same_premaster_secret() {
+        if (!engineCryptoAvailable()) return // browsers delegate; the engine's blocking crypto isn't here
         val a = EcdheKeyExchange.generate()
         val b = EcdheKeyExchange.generate()
         try {

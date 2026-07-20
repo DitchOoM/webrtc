@@ -8,6 +8,7 @@ import com.ditchoom.webrtc.dtls.DtlsConfig
 import com.ditchoom.webrtc.dtls.DtlsRole
 import com.ditchoom.webrtc.dtls.DtlsState
 import com.ditchoom.webrtc.dtls.DtlsVersion
+import com.ditchoom.webrtc.dtls.crypto.SelfSignedCertificate
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -26,30 +27,40 @@ class Dtls12HandshakeTest {
 
     private fun config() = DtlsConfig(bufferFactory = BufferFactory.managed(), random = Random(7))
 
+    // The engine owns the long-lived identity and passes it into the handshake; at this FSM level the
+    // test mints one cert per endpoint (its fingerprint is the `a=fingerprint` the peer authenticates).
+    private fun cert() = SelfSignedCertificate.generate(BufferFactory.managed(), Random(7))
+
     @Test
     fun two_pure_kotlin_stacks_complete_a_dtls12_handshake() {
-        val client = Dtls12Handshake(config(), DtlsRole.Client)
-        val server = Dtls12Handshake(config(), DtlsRole.Server)
+        val clientCert = cert()
+        val serverCert = cert()
+        val client = Dtls12Handshake(config(), DtlsRole.Client, clientCert)
+        val server = Dtls12Handshake(config(), DtlsRole.Server, serverCert)
         try {
             val (c, s) = drive(client, server)
             assertIs<DtlsState.Established>(c, "client established, was $c")
             assertIs<DtlsState.Established>(s, "server established, was $s")
 
             // Each side authenticated the OTHER's certificate.
-            assertEquals(server.localFingerprint, c.peerFingerprint)
-            assertEquals(client.localFingerprint, s.peerFingerprint)
+            assertEquals(serverCert.fingerprint, c.peerFingerprint)
+            assertEquals(clientCert.fingerprint, s.peerFingerprint)
             assertEquals(DtlsVersion.Dtls12, c.negotiatedVersion)
-            assertEquals(64, client.localFingerprint.sha256Hex.length)
+            assertEquals(64, clientCert.fingerprint.sha256Hex.length)
         } finally {
             client.close()
             server.close()
+            clientCert.close()
+            serverCert.close()
         }
     }
 
     @Test
     fun application_data_flows_encrypted_after_the_handshake() {
-        val client = Dtls12Handshake(config(), DtlsRole.Client)
-        val server = Dtls12Handshake(config(), DtlsRole.Server)
+        val clientCert = cert()
+        val serverCert = cert()
+        val client = Dtls12Handshake(config(), DtlsRole.Client, clientCert)
+        val server = Dtls12Handshake(config(), DtlsRole.Server, serverCert)
         try {
             drive(client, server)
             val payload = bytes(0xDE, 0xAD, 0xBE, 0xEF, 0x2A)
@@ -66,6 +77,8 @@ class Dtls12HandshakeTest {
         } finally {
             client.close()
             server.close()
+            clientCert.close()
+            serverCert.close()
         }
     }
 

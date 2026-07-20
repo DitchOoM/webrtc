@@ -4,19 +4,23 @@ plugins {
     id("webrtc.multiplatform-library")
 }
 
-// ── W4 · webrtc-dtls dependencies + the Kotlin/Native BoringSSL(libssl) provisioning ─────────────
+// ── W4b · webrtc-dtls dependencies + the Kotlin/Native BoringSSL(libssl) provisioning ────────────
 //
 // Targets, publishing, versioning, lint, and ABI validation all come from the
 // webrtc.multiplatform-library convention (build-logic/). This file adds only:
 //   1. module dependencies (buffer + buffer-crypto — the latter contributes the ONE libcrypto),
 //   2. the `buildBoringsslSsl<Arch>` task that provisions a same-commit `libssl.a` for K/N Linux, and
-//   3. the `boringsslssl` cinterop wiring on the Linux targets.
+//   3. the `boringsslssl` cinterop wiring scoped to the **linuxX64/linuxArm64 TEST compilation**.
 //
-// See the EXECUTION_PLAN "W4 sequencing" decision row and boringsslssl.def for the linkage rationale:
-// we link ONLY libssl.a (SSL/DTLS) and let its undefined libcrypto symbols resolve against
-// buffer-crypto's already-linked `libcrypto.a` (no second copy → no duplicate-symbol clash). Apple /
-// JVM / Android / JS DTLS is deferred to the `com.ditchoom.boringssl:boringssl-kmp` binary factory
-// (unpublished today); those targets get a typed `DtlsUnavailable` actual this wave.
+// W4b flipped production DTLS to a pure-Kotlin `commonMain` [DtlsEngine] over buffer-crypto — it runs
+// on every non-browser target with NO native dependency, so BoringSSL is no longer in the published
+// klib on any target. It survives here purely as the `linuxTest` **differential-testing oracle**
+// (BoringSslDtlsEngine): our engine ⇄ BoringSSL, proving interop against an independent stack. That is
+// why the cinterop attaches to the `test` compilation only — it must not leak into the shipped artifact.
+//
+// See boringsslssl.def for the linkage rationale: we link ONLY libssl.a (SSL/DTLS) and let its
+// undefined libcrypto symbols resolve against buffer-crypto's already-linked `libcrypto.a` (no second
+// copy → no duplicate-symbol clash — the same one-libcrypto invariant, now exercised only in tests).
 
 kotlin {
     sourceSets {
@@ -169,16 +173,20 @@ fun KotlinNativeTarget.configureDtlsCinterop(arch: String) {
     val incDir = boringsslDir.resolve("include")
     val buildTask = if (arch == "x64") buildBoringsslSslX64 else buildBoringsslSslArm64
 
-    compilations.getByName("main").cinterops.create("boringsslssl") {
+    // Scope the cinterop to the TEST compilation — BoringSSL is a linuxTest-only differential oracle
+    // (W4b), never part of the shipped klib. The test klib/binary embeds libssl.a; the published main
+    // klib carries none of it.
+    compilations.getByName("test").cinterops.create("boringsslssl") {
         defFile(project.file("src/nativeInterop/cinterop/boringsslssl.def"))
         includeDirs(incDir.absolutePath)
-        // Embed ONLY libssl.a into our klib. libcrypto is contributed once by buffer-crypto (do NOT
-        // add -staticLibrary libcrypto.a here — that is the duplicate-symbol trap).
+        // Embed ONLY libssl.a into the test klib. libcrypto is contributed once by buffer-crypto (do
+        // NOT add -staticLibrary libcrypto.a here — that is the duplicate-symbol trap).
         extraOpts("-libraryPath", libDir.absolutePath, "-staticLibrary", "libssl.a")
         tasks.named(interopProcessingTaskName).configure { dependsOn(buildTask) }
     }
     binaries.all {
-        // libssl's C++ TUs (ssl/*.cc) and libcrypto need pthread + the C++ runtime at final link.
+        // The only linked binary on a library target is the test executable; libssl's C++ TUs (ssl/*.cc)
+        // and libcrypto need pthread + the C++ runtime at that final link.
         linkerOpts("-L${libDir.absolutePath}", "-lssl", "-lpthread", "-lstdc++")
     }
 }

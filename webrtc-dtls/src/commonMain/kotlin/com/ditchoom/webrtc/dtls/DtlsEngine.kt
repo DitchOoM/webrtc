@@ -3,6 +3,8 @@ package com.ditchoom.webrtc.dtls
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.managed
+import com.ditchoom.webrtc.dtls.crypto.SelfSignedCertificate
+import com.ditchoom.webrtc.dtls.handshake.Dtls12Handshake
 import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -86,9 +88,16 @@ public class DtlsStep(
  * A caller-clocked, sans-io DTLS endpoint (RFC §5.1) — the swap that replaces the plaintext seam at
  * `DtlsTransportFactory.secure(...)`. There is no dispatcher, no `Clock.System`, no I/O and no
  * coroutine inside it: the driver (webrtc root) owns the socket and the clock, feeds this engine
- * inbound records + a virtual `nowMicros`, and puts the returned records on the wire. BoringSSL's DTLS
- * timers are driven through an injected `current_time_cb`, so handshake retransmission replays under
- * `runTest` virtual time.
+ * inbound records + a virtual `nowMicros`, and puts the returned records on the wire. The DTLS
+ * retransmission timers are driven off that injected `nowMicros`, so a lost-flight recovery replays
+ * under `runTest` virtual time.
+ *
+ * This is a **pure-Kotlin** implementation (W4b): a single `commonMain` class over buffer-crypto's
+ * primitives, running on every non-browser target (JVM/Android/Apple/Linux) with no native dependency.
+ * It currently negotiates DTLS 1.2 (`TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256`); DTLS 1.3 is the next
+ * increment (W4b task #6). Browsers never construct it — there `peerConnectionSupport()` delegates to
+ * the platform `RTCPeerConnection`. The BoringSSL backend that seeded this seam now lives only in
+ * `linuxTest` as a differential-testing oracle.
  *
  * `nowMicros` is epoch-microseconds from the driver's injected clock; the same value must be passed to
  * every call within one logical instant. [nextTimeoutMicros] returns the absolute epoch-micros at which
@@ -103,14 +112,22 @@ public class DtlsStep(
  * Lifecycle: construct → [start] → feed [onDatagram]/[onTimeout] until [DtlsState.Established] → [send]
  * / receive application data → [beginClose] → [close]. Not thread-safe; confine to one driver coroutine.
  */
-public expect class DtlsEngine(
-    config: DtlsConfig,
+public class DtlsEngine(
+    private val config: DtlsConfig,
 ) {
+    // Generated once, at construction, so [localFingerprint] is readable before the role is negotiated.
+    // Owned here (not by the handshake) and freed in [close]; the handshake reuses it per attempt.
+    private val certificate: SelfSignedCertificate =
+        SelfSignedCertificate.generate(config.bufferFactory, config.random)
+
+    private var handshake: Dtls12Handshake? = null
+    private var closed = false
+
     /**
      * Our own certificate's SHA-256 fingerprint — the `a=fingerprint` we advertise. Readable from
      * construction, before [start], so it can be put in the offer (see the class note on role).
      */
-    public val localFingerprint: CertificateFingerprint
+    public val localFingerprint: CertificateFingerprint get() = certificate.fingerprint
 
     /**
      * Adopt [role] (from the negotiated `a=setup`) and begin the handshake; a [DtlsRole.Client] sends
@@ -119,29 +136,43 @@ public expect class DtlsEngine(
     public fun start(
         role: DtlsRole,
         nowMicros: Long,
-    ): DtlsStep
+    ): DtlsStep {
+        check(handshake == null) { "DtlsEngine.start(role, now) called twice" }
+        return Dtls12Handshake(config, role, certificate).also { handshake = it }.start(nowMicros)
+    }
 
     /** Feed one inbound DTLS record datagram; drives the handshake or decrypts application data. */
     public fun onDatagram(
         record: ReadBuffer,
         nowMicros: Long,
-    ): DtlsStep
+    ): DtlsStep = started().onDatagram(record, nowMicros)
 
     /** Fire an expired DTLS timer (retransmits the current flight). */
-    public fun onTimeout(nowMicros: Long): DtlsStep
+    public fun onTimeout(nowMicros: Long): DtlsStep = started().onTimeout(nowMicros)
 
     /** Encrypt and enqueue application data once [DtlsState.Established]. */
     public fun send(
         applicationData: ReadBuffer,
         nowMicros: Long,
-    ): DtlsStep
+    ): DtlsStep = started().sealApplicationData(applicationData, nowMicros)
 
     /** Begin an orderly close (queues a close_notify to send). */
-    public fun beginClose(nowMicros: Long): DtlsStep
+    public fun beginClose(nowMicros: Long): DtlsStep =
+        handshake?.beginClose(nowMicros) ?: DtlsStep(emptyList(), emptyList(), DtlsState.Closed)
 
     /** Absolute epoch-micros at which [onTimeout] must next run, or null if no timer is armed. */
-    public fun nextTimeoutMicros(nowMicros: Long): Long?
+    public fun nextTimeoutMicros(nowMicros: Long): Long? = handshake?.nextTimeoutMicros(nowMicros)
 
-    /** Free all native resources. Idempotent. */
-    public fun close()
+    /** Free the certificate identity and any handshake key material. Idempotent. */
+    public fun close() {
+        if (closed) return
+        closed = true
+        handshake?.close()
+        certificate.close()
+    }
+
+    // Driving before a role is adopted is a caller-contract violation (API misuse), not a peer/protocol
+    // failure — an IllegalStateException, never a typed DtlsFailureReason (DESIGN §3).
+    private fun started(): Dtls12Handshake =
+        checkNotNull(handshake) { "DtlsEngine.start(role, now) must be called before driving the engine" }
 }

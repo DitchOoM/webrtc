@@ -15,7 +15,6 @@ import com.ditchoom.buffer.crypto.ecdsaSignatureToDer
 import com.ditchoom.buffer.crypto.ecdsaSignatureToP1363
 import com.ditchoom.buffer.crypto.signatures
 import com.ditchoom.buffer.crypto.spkiToEcPublicKey
-import com.ditchoom.webrtc.dtls.CertificateFingerprint
 import com.ditchoom.webrtc.dtls.DtlsConfig
 import com.ditchoom.webrtc.dtls.DtlsFailureReason
 import com.ditchoom.webrtc.dtls.DtlsRole
@@ -67,6 +66,10 @@ import com.ditchoom.webrtc.dtls.wire.SignatureSchemeId
 internal class Dtls12Handshake(
     private val config: DtlsConfig,
     private val role: DtlsRole,
+    // The engine's long-lived identity: generated once at [DtlsEngine] construction (so its
+    // fingerprint is readable before the role is known) and reused for every handshake attempt. The
+    // engine owns its lifecycle, so this class never closes it.
+    private val certificate: SelfSignedCertificate,
 ) {
     private val factory: BufferFactory = config.bufferFactory
     private val random = config.random
@@ -74,10 +77,7 @@ internal class Dtls12Handshake(
     private val reassembler = HandshakeReassembler(factory)
     private val transcript = TranscriptHash(factory)
 
-    private val certificate: SelfSignedCertificate = SelfSignedCertificate.generate(factory, random)
     private val ecdhe: EcdheKeyExchange = EcdheKeyExchange.generate()
-
-    val localFingerprint: CertificateFingerprint get() = certificate.fingerprint
 
     // ── negotiated / captured handshake material ─────────────────────────────────────────────────
     private lateinit var localRandom: ReadBuffer
@@ -173,10 +173,32 @@ internal class Dtls12Handshake(
         return DtlsStep(listOf(encode(record)), emptyList(), terminal!!)
     }
 
+    /**
+     * Begin an orderly close: queue a `close_notify` alert (encrypted once we have keys) and transition
+     * to [DtlsState.Closed]. Best-effort per RFC 6347 §4.1 — DTLS does not wait for the peer's reply.
+     */
+    fun beginClose(nowMicros: Long): DtlsStep {
+        if (terminal is DtlsState.Closed) return DtlsStep(emptyList(), emptyList(), DtlsState.Closed)
+        val out = mutableListOf<ReadBuffer>()
+        val prot = protection
+        if (prot != null && terminal is DtlsState.Established) {
+            val alert =
+                buildBody {
+                    it.writeByte(1) // level = warning
+                    it.writeByte(0) // description = close_notify
+                }
+            val seq = epoch1Seq++
+            val fragment = prot.seal(alert, EPOCH_1, seq, ContentType.Alert.value, DTLS12)
+            out += encode(DtlsRecord(ContentType.Alert, ProtocolVersion.Dtls12, EPOCH_1, seq, fragment))
+        }
+        cancelRetransmit()
+        terminal = DtlsState.Closed
+        return DtlsStep(out, emptyList(), DtlsState.Closed)
+    }
+
     fun nextTimeoutMicros(nowMicros: Long): Long? = if (terminal != null) null else retransmitDeadline
 
     fun close() {
-        certificate.close()
         ecdhe.close()
         protection?.close()
     }
@@ -192,10 +214,7 @@ internal class Dtls12Handshake(
             if (record.epoch >= EPOCH_1) {
                 val prot = protection ?: return // encrypted before keys — drop
                 prot.open(record.fragment, record.epoch, record.sequenceNumber, ContentType.Handshake.value, DTLS12)
-                    ?: run {
-                        println("DBG $role: decrypt FAILED epoch=${record.epoch} seq=${record.sequenceNumber}")
-                        return
-                    }
+                    ?: return // undecryptable handshake record — drop (RFC 6347)
             } else {
                 record.fragment
             }

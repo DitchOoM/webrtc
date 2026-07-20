@@ -12,6 +12,6 @@ import kotlin.test.assertTrue
 class DtlsBackendLinkNativeTest {
     @Test
     fun libssl_links_against_buffer_cryptos_libcrypto() {
-        assertTrue(dtlsBackendProbe() != 0L, "expected a live BoringSSL DTLS_method handle from libssl")
+        assertTrue(boringSslProbe() != 0L, "expected a live BoringSSL DTLS_method handle from libssl")
     }
 }

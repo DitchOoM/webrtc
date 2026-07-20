@@ -16,6 +16,7 @@ import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_pending
 import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_read_app
 import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_set_role
 import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_shutdown
+import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_smoke
 import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_take
 import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_timeout_us
 import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_version_negotiated
@@ -50,13 +51,21 @@ private const val DTLS1_3_VERSION = 0xfefc
 // factory. 64 KiB comfortably holds any single DTLS flight (a self-signed P-256 cert is small).
 private const val SCRATCH_SIZE = 1 shl 16
 
+/** The BoringSSL libssl link-smoke: a non-zero handle proves `DTLS_method` resolved against buffer-crypto's libcrypto. */
+@OptIn(ExperimentalForeignApi::class)
+internal fun boringSslProbe(): Long = bd_smoke()
+
 /**
- * Kotlin/Native BoringSSL DTLS backend (W4). Owns one `SSL` + memory-BIO pair through the `bd_*`
- * inline-C wrappers; caller-clocked via the injected `current_time_cb` (see boringsslssl.def). No
- * coroutine, no I/O, no wall-clock here — the driver supplies inbound records + a virtual `nowMicros`.
+ * The **differential-testing oracle** for W4b: the Kotlin/Native BoringSSL DTLS backend that seeded
+ * the [DtlsEngine] seam (W4), now demoted out of the published klib into `linuxTest` only. It owns one
+ * `SSL` + memory-BIO pair through the `bd_*` inline-C wrappers, caller-clocked via the injected
+ * `current_time_cb` (see boringsslssl.def), and presents the **same** sans-io surface as [DtlsEngine]
+ * so the very same driver loop can put our pure-Kotlin engine on one side and BoringSSL on the other.
+ * A green differential proves our engine interoperates with an independent, battle-tested stack — not
+ * just a mirror of its own bugs (the self-loopback gap the owner called out).
  */
 @OptIn(ExperimentalForeignApi::class)
-public actual class DtlsEngine actual constructor(
+internal class BoringSslDtlsEngine(
     private val config: DtlsConfig,
 ) {
     private val engine =
@@ -77,7 +86,7 @@ public actual class DtlsEngine actual constructor(
     private var terminal: DtlsState? = null
     private var establishedState: DtlsState.Established? = null
 
-    public actual val localFingerprint: CertificateFingerprint
+    val localFingerprint: CertificateFingerprint
 
     // bd_new above already allocated the SSL_CTX/SSL/cert. If any remaining native setup throws (a
     // scratch OOM, or a fingerprint digest failure), close() is never reachable — the object never
@@ -103,7 +112,7 @@ public actual class DtlsEngine actual constructor(
         }
     }
 
-    public actual fun start(
+    fun start(
         role: DtlsRole,
         nowMicros: Long,
     ): DtlsStep {
@@ -115,7 +124,7 @@ public actual class DtlsEngine actual constructor(
         return pump(nowMicros)
     }
 
-    public actual fun onDatagram(
+    fun onDatagram(
         record: ReadBuffer,
         nowMicros: Long,
     ): DtlsStep {
@@ -125,14 +134,14 @@ public actual class DtlsEngine actual constructor(
         return pump(nowMicros)
     }
 
-    public actual fun onTimeout(nowMicros: Long): DtlsStep {
+    fun onTimeout(nowMicros: Long): DtlsStep {
         requireStarted()
         terminal?.let { return DtlsStep(emptyList(), emptyList(), it) }
         bd_handle_timeout(engine, nowMicros)
         return pump(nowMicros)
     }
 
-    public actual fun send(
+    fun send(
         applicationData: ReadBuffer,
         nowMicros: Long,
     ): DtlsStep {
@@ -145,7 +154,7 @@ public actual class DtlsEngine actual constructor(
         return DtlsStep(collectRecords(), emptyList(), stateNow())
     }
 
-    public actual fun beginClose(nowMicros: Long): DtlsStep {
+    fun beginClose(nowMicros: Long): DtlsStep {
         if (closed || terminal is DtlsState.Closed) {
             return DtlsStep(emptyList(), emptyList(), DtlsState.Closed)
         }
@@ -155,13 +164,13 @@ public actual class DtlsEngine actual constructor(
         return DtlsStep(records, emptyList(), DtlsState.Closed)
     }
 
-    public actual fun nextTimeoutMicros(nowMicros: Long): Long? {
+    fun nextTimeoutMicros(nowMicros: Long): Long? {
         if (!started || terminal != null) return null
         val us = bd_timeout_us(engine, nowMicros)
         return if (us < 0) null else nowMicros + us
     }
 
-    public actual fun close() {
+    fun close() {
         if (closed) return
         closed = true
         bd_free(engine)
@@ -174,7 +183,7 @@ public actual class DtlsEngine actual constructor(
     // accept state set — a caller contract violation (API misuse), not a peer/protocol failure, so it
     // is an IllegalStateException rather than a typed DtlsFailureReason (DESIGN §3).
     private fun requireStarted() {
-        check(started) { "DtlsEngine.start(role, now) must be called before driving the engine" }
+        check(started) { "BoringSslDtlsEngine.start(role, now) must be called before driving the engine" }
     }
 
     /** Advance the handshake / drain application data, then collect outbound records + current state. */

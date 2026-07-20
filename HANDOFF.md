@@ -33,12 +33,22 @@ build green. The pure-Kotlin DTLS internals are built as `internal` in `commonMa
   the sans-io contract + existing fixtures) and that ONE primitive gets a single `internal expect fun rawEcdhSecret(...)`
   blocking bridge (`runBlocking` on jvm/android/linux/apple; throw on js/wasm) — the *only* per-platform seam; all engine
   LOGIC stays commonMain. NOT YET BUILT (needs `kotlinx-coroutines-core` added to those source sets) — it's the first step of task #4.
-- **NEXT = task #4, the DTLS 1.2 handshake FSM** (`handshake/`): client/server flights (ClientHello[+HVR cookie]→…→Finished),
-  `TranscriptHash` (running SHA-256 over normalized msgs + the RFC 7627 session_hash), SKE/CertificateVerify signing +
-  peer-cert verify, ChangeCipherSpec epoch bump, caller-clocked retransmission timers, the `rawEcdhSecret` bridge. Validate
-  with two pure-Kotlin engines over an in-memory pipe on JVM. THEN task #5 (flip `expect`→commonMain `DtlsEngine`; demote
-  BoringSSL native → a `linuxTest` differential oracle; delete stub actuals; edit `build.gradle.kts`); #6 DTLS 1.3; #7 wire
-  into PeerConnection + interop + SRTP-exporter differential.
+- **Task #4 DONE ✅ (commit `a9adce6`) — the pure-Kotlin DTLS 1.2 handshake completes end-to-end on JVM.** Two engines do a
+  full **mutually-authenticated** handshake (RFC 8827: both send Certificate+CertificateVerify; server sends
+  CertificateRequest) over an in-memory pipe under virtual time, then exchange encrypted app data. `handshake/Dtls12Handshake`
+  (sans-io FSM), `handshake/TranscriptHash`, `crypto/EcdheKeyExchange`+`crypto/RawEcdh.{6 targets}` (the ONE per-platform
+  seam — `deriveTlsPremasterSecret` is suspend-only → `runBlocking` bridge; js/wasm throw), `crypto/DerReader` (X.509 SPKI
+  extractor). `DtlsConfig` gained an injected `random` seam (apiDump'd). Tests `Dtls12HandshakeTest`, `EcdheKeyExchangeTest`.
+  **Traps that cost debugging (carry in):** WebRTC needs MUTUAL auth or the server has no peer cert; EMS `session_hash` is
+  computed BEFORE appending CertificateVerify; `onDatagram` must NOT short-circuit on `Established` (only Failed/Closed) or
+  post-handshake app data is dropped. **Deferred to interop (#7):** client HelloVerifyRequest handling (server skips HVR),
+  PMTU outbound fragmentation, anti-replay window, a retransmit-under-loss commonTest.
+- **NEXT = task #5, the flip:** make `DtlsEngine` a concrete `commonMain` class delegating to `Dtls12Handshake` (+ later
+  `Dtls13Handshake`); delete the 6 `expect`/`actual` `DtlsEngine.*.kt`; move the BoringSSL cinterop + native engine to
+  **`linuxTest`** as a differential oracle (out of the published klib) — edit `webrtc-dtls/build.gradle.kts` to scope the
+  cinterop to the test compilation; keep the existing `linuxTest` `DtlsHandshakeTest`/`DtlsRetransmissionTest` as the oracle.
+  Best done fresh (structural, touches the public engine + build). THEN #6 DTLS 1.3; #7 PeerConnection wiring + interop +
+  SRTP-exporter differential.
 
 **W7 Phase 3 DONE (parallel, same 2 commits):** `webrtc-testsuite` filled — `withWebRtcHarness { natType(); relayOnly();
 impaired() }` DSL + typed config (`NatType`/`NetworkImpairment`/`HarnessManifest`) + jvmMain `HarnessController` (L2

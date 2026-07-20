@@ -33,6 +33,14 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
   `harness-l2.yaml` runs the browsers as a parallel **`{arch × browser}` matrix** (`l2-browser`) split from
   the native `l2` job (which uses `HARNESS_SKIP` to drop them) — each image builds natively per-arch inside
   its job (Playwright fetches the per-arch engine), no cross-compile, no QEMU; `README.md` documents it.
+- **CI cost tuning:** the browser image uses a **Node 24 (current LTS) `-slim` base** (~43% smaller — chrome
+  2.0→1.2 GB, firefox 1.8→0.9 GB; Node 20 is EOL) with **Playwright 1.54**, and the `l2-browser` jobs build
+  it through a persistent **buildx + gha layer cache**
+  (`docker/build-push-action` with `cache-from/to: type=gha`, `load`), so the `playwright install` (engine
+  download) layer is restored from cache after the first run instead of re-downloaded. run-interop.sh now
+  **builds the peer images first, then starts both peers together in one `up`** (`HARNESS_NO_BROWSER_BUILD=1`
+  reuses the cache-warmed image) — which also fixed a latent ordering fragility where starting the offerer
+  and answerer in two separate `up` commands could make the offerer skip publishing its offer.
 - **Fixed (harness bug this surfaced):** `run-interop.sh`'s scenario loop read the scenario list from
   **stdin**, which `docker compose exec` (the netem `impaired` lane) attaches to and drains — so the matrix
   silently stopped after the first netem scenario, running **7/9** and never reaching `pion-interop` or

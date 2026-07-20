@@ -5,6 +5,6 @@
   "type": "module",
   "description": "W7 Phase 2(b) headless-browser interop answerer (Chromium / Firefox) — drives a real RTCPeerConnection against our native peer.",
   "dependencies": {
-    "playwright": "1.48.2"
+    "playwright": "1.54.0"
   }
 }

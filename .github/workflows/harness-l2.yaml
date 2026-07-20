@@ -137,9 +137,12 @@ jobs:
 
   # Browser interop as a per-{arch × engine} matrix of PARALLEL jobs — Chrome (Chromium libwebrtc) and
   # Firefox (NSS/nICEr/usrsctp, a fully independent oracle), each over DTLS 1.3 (our default). Each job
-  # runs ONLY its `<browser>-interop` scenario (run-interop.sh single-scenario allowlist); the browser
-  # image builds natively inside the job (Node + Playwright fetches the per-arch engine — no cross-compile,
-  # no QEMU). The Chromium/Firefox download adds a few minutes to each job's first build.
+  # runs ONLY its `<browser>-interop` scenario (run-interop.sh single-scenario allowlist). The browser
+  # image is built natively for the job's arch (no cross-compile, no QEMU) BUT with a persistent buildx +
+  # gha layer cache: the expensive `npm install` + `playwright install` (engine download) layers are
+  # restored from cache on unchanged inputs, so after the first run each job is a near-instant cache hit
+  # instead of a fresh multi-minute download. The image is loaded under compose's default name so
+  # run-interop.sh (HARNESS_NO_BROWSER_BUILD=1) reuses it without rebuilding.
   l2-browser:
     name: "interop: ${{ matrix.browser }} ⇄ native (${{ matrix.arch.name }})"
     needs: build-peer
@@ -167,9 +170,27 @@ jobs:
       - name: Enable container-router forwarding
         run: sudo sysctl -w net.bridge.bridge-nf-call-iptables=0 net.bridge.bridge-nf-call-ip6tables=0 || true
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Pre-build the browser image WITH a gha layer cache and load it into the daemon under compose's
+      # default image name (webrtc-l2-harness-<service>), so the interop step reuses it (no rebuild). The
+      # cache scope is per {engine × arch} so the arm64 and x64 caches never clobber each other.
+      - name: Build browser image (gha-cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: test-harness/browser
+          build-args: |
+            BROWSER=${{ matrix.browser == 'chrome' && 'chromium' || 'firefox' }}
+          tags: webrtc-l2-harness-${{ matrix.browser }}:latest
+          load: true
+          cache-from: type=gha,scope=browser-${{ matrix.browser }}-${{ matrix.arch.name }}
+          cache-to: type=gha,mode=max,scope=browser-${{ matrix.browser }}-${{ matrix.arch.name }}
+
       - name: "Interop: our native peer ⇄ ${{ matrix.browser }}"
         env:
           PEER_KEXE: "webrtc-harness-endpoint/build/bin/${{ matrix.arch.konan }}/peerReleaseExecutable/peer.kexe"
+          HARNESS_NO_BROWSER_BUILD: "1"  # reuse the gha-cached image built above
         run: |
           set -o pipefail
           bash test-harness/run-interop.sh "${{ matrix.browser }}-interop" 2>&1 | tee l2-browser.log

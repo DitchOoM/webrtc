@@ -149,9 +149,21 @@ run_scenario() {
         fi
     fi
 
-    # Start both peers; they run to completion (establish + echo, or watchdog timeout) and exit.
-    # --build so the peer/pion images reflect current source (see compose-up-retry.sh for the rationale).
-    docker compose up -d --build peer_a "$b_service"
+    # BUILD the peer images first, then start BOTH peers together in ONE `up` (offerer + answerer must come
+    # up together — starting them in two separate `up` commands perturbs the offerer's offer-publish and it
+    # never PUTs the offer). peer_a's prebuilt image must reflect the freshly-built binary → always build it
+    # (see compose-up-retry.sh for the stale-image rationale). The browser images take minutes to build
+    # (engine download), so CI prebuilds them ONCE with a persistent buildx/gha layer cache and sets
+    # HARNESS_NO_BROWSER_BUILD=1 to reuse that cache-warmed image here; locally (unset) we build it too.
+    docker compose build peer_a
+    if [ "${HARNESS_NO_BROWSER_BUILD:-0}" = "1" ] && { [ "$b_service" = "chrome" ] || [ "$b_service" = "firefox" ]; }; then
+        : # browser image was prebuilt + gha-cached by CI — don't rebuild
+    else
+        docker compose build "$b_service"
+    fi
+    # Now start both together with the already-built images (no build here → same ordering as before).
+    # They run to completion (establish + echo, or watchdog timeout) and exit.
+    docker compose up -d --no-build peer_a "$b_service"
     # `docker compose wait` blocks until stop; its output form varies ("0" vs "container … status code 0"),
     # so extract the trailing exit code robustly.
     local rc_a rc_b

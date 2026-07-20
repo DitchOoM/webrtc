@@ -7,6 +7,52 @@ this file. Update it whenever you stop mid-wave.
 
 ## START HERE — W4b + W7 Phase 3 (fresh session). Branch `w4b-dtls-kotlin` off `main` @ `1518e8a`.
 
+### ⇢ LIVE PROGRESS (2026-07-20, session 2) — W4b crypto/wire foundation done + tested; W7 Phase 3 landed
+
+**Two commits on `w4b-dtls-kotlin` (after the buffer bump). All `commonMain`/`commonTest`, JVM-verified,
+build green. The pure-Kotlin DTLS internals are built as `internal` in `commonMain` ALONGSIDE the intact
+`expect`/`actual` `DtlsEngine` — the risky `expect`→class flip happens only once a full handshake passes.**
+
+- **W4b tasks 1–3 DONE + tested (JVM):**
+  - **Wire codec** (`webrtc-dtls/commonMain/.../wire/`): `DtlsWire` (helpers + `ContentType`/`ProtocolVersion`/
+    `HandshakeType`), `DtlsRecord` (13B header, coalesced-record walk, `RecordSequence`), `DtlsHandshakeMessage`
+    (12B header; **`transcriptInto` emits the normalized full-header form** — the spike gotcha), `HandshakeReassembler`
+    (in-`message_seq`-order delivery + reorder window + DoS bound), `TlsExtension`, `HandshakeBodies`
+    (ClientHello/HelloVerifyRequest/ServerHello/Certificate/ServerKeyExchange/ClientKeyExchange/CertificateVerify).
+    Test `DtlsWireTest` (round-trips + T0 rejects).
+  - **TLS 1.2 key schedule** (`crypto/Tls12KeySchedule`): P_SHA256 PRF, ext-master-secret, key block, verify_data —
+    **pinned byte-exact to the canonical TLS 1.2 PRF-SHA256 KAT** (`Tls12KeyScheduleTest`).
+  - **Record protection** (`crypto/Dtls12RecordProtection`): AES-128-GCM explicit-nonce (12B nonce=4B IV‖8B explicit),
+    13B DTLS AAD, `explicit‖ct‖tag` framing — seal⇄open + tamper/wrong-seq drop (`Dtls12RecordProtectionTest`).
+  - **Self-signed cert** (`crypto/Der` + `crypto/SelfSignedCertificate`): hand-written TBSCertificate DER, ECDSA-P256,
+    SHA-256 fingerprint — validated against JVM `java.security` (`SelfSignedCertificateJvmTest`: parses + `verify(pubKey)`
+    + fingerprint==SHA256(DER)). Same class of proof as the openssl spike.
+- **THE ONE ARCHITECTURE DECISION (see scratchpad `w4b-decisions.md`, reproduce it if resuming fresh):** buffer-crypto's
+  crypto is all **blocking** on the 4 targets that actually run the engine (JVM/Android/Apple/Linux — browsers delegate),
+  **except `deriveTlsPremasterSecret` (raw ECDH) which is `suspend`-only**. So the engine stays **synchronous** (preserves
+  the sans-io contract + existing fixtures) and that ONE primitive gets a single `internal expect fun rawEcdhSecret(...)`
+  blocking bridge (`runBlocking` on jvm/android/linux/apple; throw on js/wasm) — the *only* per-platform seam; all engine
+  LOGIC stays commonMain. NOT YET BUILT (needs `kotlinx-coroutines-core` added to those source sets) — it's the first step of task #4.
+- **NEXT = task #4, the DTLS 1.2 handshake FSM** (`handshake/`): client/server flights (ClientHello[+HVR cookie]→…→Finished),
+  `TranscriptHash` (running SHA-256 over normalized msgs + the RFC 7627 session_hash), SKE/CertificateVerify signing +
+  peer-cert verify, ChangeCipherSpec epoch bump, caller-clocked retransmission timers, the `rawEcdhSecret` bridge. Validate
+  with two pure-Kotlin engines over an in-memory pipe on JVM. THEN task #5 (flip `expect`→commonMain `DtlsEngine`; demote
+  BoringSSL native → a `linuxTest` differential oracle; delete stub actuals; edit `build.gradle.kts`); #6 DTLS 1.3; #7 wire
+  into PeerConnection + interop + SRTP-exporter differential.
+
+**W7 Phase 3 DONE (parallel, same 2 commits):** `webrtc-testsuite` filled — `withWebRtcHarness { natType(); relayOnly();
+impaired() }` DSL + typed config (`NatType`/`NetworkImpairment`/`HarnessManifest`) + jvmMain `HarnessController` (L2
+naming-parity bridge) + a clean-checkout **consumer-smoke** (`.ci/consumer-smoke/`, passes vs `publishToMavenLocal`). All
+`:webrtc-testsuite` gates green (10/10 tests JVM/Android/linuxX64/js/wasm; `.api` dumped). **Design note to weigh:** the
+vnet/NAT/STUN/TURN sim is `internal` to `webrtc-ice/commonTest`, unusable from a *published* commonMain module, so it was
+**ported into `webrtc-testsuite/commonMain` (internal)** — a 2nd copy (follows the `webrtc/commonTest/TestNet.kt` precedent +
+RFC §7 "vnet is a testsuite deliverable"). **Do NOT lift `webrtc-ice`'s copy to production-public** (pollutes a prod module's
+ABI with a test sim) and the naive dedup (`webrtc-ice` test → `webrtc-testsuite`) is a **project cycle** (`webrtc-testsuite →
+:webrtc → :webrtc-ice`). True DRY would need a dedicated shared `webrtc-testkit` module — deferred; keep the 2 copies for now.
+Deferred by W7: wiring consumer-smoke into `review.yaml`, asymmetric per-peer NAT, CHANGELOG.
+
+---
+
 **W4b (pure-Kotlin DTLS 1.3 over buffer-crypto) is now a GO — the earlier "do not start W4b, pending
 spikes" guidance below is STALE.** As of 2026-07-20:
 

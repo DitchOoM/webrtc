@@ -3,3 +3,158 @@ public final class com/ditchoom/webrtc/testsuite/WebRtcTestsuite {
 	public static final field MODULE Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/testsuite/controller/HarnessController {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/testsuite/controller/HarnessController;
+	public final fun describe (Lcom/ditchoom/webrtc/testsuite/harness/NatType;ZLcom/ditchoom/webrtc/testsuite/harness/NetworkImpairment;)Lcom/ditchoom/webrtc/testsuite/controller/L2ScenarioDescriptor;
+	public static synthetic fun describe$default (Lcom/ditchoom/webrtc/testsuite/controller/HarnessController;Lcom/ditchoom/webrtc/testsuite/harness/NatType;ZLcom/ditchoom/webrtc/testsuite/harness/NetworkImpairment;ILjava/lang/Object;)Lcom/ditchoom/webrtc/testsuite/controller/L2ScenarioDescriptor;
+	public final fun natProfileName (Lcom/ditchoom/webrtc/testsuite/harness/NatType;)Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/testsuite/controller/IcePolicy : java/lang/Enum {
+	public static final field All Lcom/ditchoom/webrtc/testsuite/controller/IcePolicy;
+	public static final field Relay Lcom/ditchoom/webrtc/testsuite/controller/IcePolicy;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public final fun getWireName ()Ljava/lang/String;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/webrtc/testsuite/controller/IcePolicy;
+	public static fun values ()[Lcom/ditchoom/webrtc/testsuite/controller/IcePolicy;
+}
+
+public final class com/ditchoom/webrtc/testsuite/controller/L2ScenarioDescriptor {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/webrtc/testsuite/controller/IcePolicy;Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Lcom/ditchoom/webrtc/testsuite/controller/IcePolicy;
+	public final fun component4 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/webrtc/testsuite/controller/IcePolicy;Ljava/lang/String;)Lcom/ditchoom/webrtc/testsuite/controller/L2ScenarioDescriptor;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/testsuite/controller/L2ScenarioDescriptor;Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/webrtc/testsuite/controller/IcePolicy;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/testsuite/controller/L2ScenarioDescriptor;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getIcePolicy ()Lcom/ditchoom/webrtc/testsuite/controller/IcePolicy;
+	public final fun getNatAProfile ()Ljava/lang/String;
+	public final fun getNatBProfile ()Ljava/lang/String;
+	public final fun getNetem ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/testsuite/harness/HarnessEndpoint {
+	public fun <init> (Ljava/lang/String;I)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()I
+	public final fun copy (Ljava/lang/String;I)Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;Ljava/lang/String;IILjava/lang/Object;)Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getIp ()Ljava/lang/String;
+	public final fun getPort ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/testsuite/harness/HarnessManifest {
+	public fun <init> (Lcom/ditchoom/webrtc/testsuite/harness/NatType;ZLcom/ditchoom/webrtc/testsuite/harness/NetworkImpairment;Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/testsuite/harness/NatType;
+	public final fun component2 ()Z
+	public final fun component3 ()Lcom/ditchoom/webrtc/testsuite/harness/NetworkImpairment;
+	public final fun component4 ()Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;
+	public final fun component5 ()Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;
+	public final fun component6 ()Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;
+	public final fun component7 ()Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;
+	public final fun copy (Lcom/ditchoom/webrtc/testsuite/harness/NatType;ZLcom/ditchoom/webrtc/testsuite/harness/NetworkImpairment;Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;)Lcom/ditchoom/webrtc/testsuite/harness/HarnessManifest;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/testsuite/harness/HarnessManifest;Lcom/ditchoom/webrtc/testsuite/harness/NatType;ZLcom/ditchoom/webrtc/testsuite/harness/NetworkImpairment;Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;ILjava/lang/Object;)Lcom/ditchoom/webrtc/testsuite/harness/HarnessManifest;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAnswerer ()Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;
+	public final fun getImpairment ()Lcom/ditchoom/webrtc/testsuite/harness/NetworkImpairment;
+	public final fun getNatType ()Lcom/ditchoom/webrtc/testsuite/harness/NatType;
+	public final fun getOfferer ()Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;
+	public final fun getRelayOnly ()Z
+	public final fun getStun ()Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;
+	public final fun getTurn ()Lcom/ditchoom/webrtc/testsuite/harness/HarnessEndpoint;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/testsuite/harness/NatType {
+}
+
+public final class com/ditchoom/webrtc/testsuite/harness/NatType$AddressRestrictedCone : com/ditchoom/webrtc/testsuite/harness/NatType {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/testsuite/harness/NatType$AddressRestrictedCone;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/testsuite/harness/NatType$FullCone : com/ditchoom/webrtc/testsuite/harness/NatType {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/testsuite/harness/NatType$FullCone;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/testsuite/harness/NatType$None : com/ditchoom/webrtc/testsuite/harness/NatType {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/testsuite/harness/NatType$None;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/testsuite/harness/NatType$PortRestrictedCone : com/ditchoom/webrtc/testsuite/harness/NatType {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/testsuite/harness/NatType$PortRestrictedCone;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/testsuite/harness/NatType$Symmetric : com/ditchoom/webrtc/testsuite/harness/NatType {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/testsuite/harness/NatType$Symmetric;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/testsuite/harness/NetworkImpairment {
+	public static final field Companion Lcom/ditchoom/webrtc/testsuite/harness/NetworkImpairment$Companion;
+	public synthetic fun <init> (DDJJILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (DDJJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()D
+	public final fun component2 ()D
+	public final fun component3-UwyO8pc ()J
+	public final fun component4-UwyO8pc ()J
+	public final fun copy-VTINZ0E (DDJJ)Lcom/ditchoom/webrtc/testsuite/harness/NetworkImpairment;
+	public static synthetic fun copy-VTINZ0E$default (Lcom/ditchoom/webrtc/testsuite/harness/NetworkImpairment;DDJJILjava/lang/Object;)Lcom/ditchoom/webrtc/testsuite/harness/NetworkImpairment;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDuplicate ()D
+	public final fun getLoss ()D
+	public final fun getMaxDelay-UwyO8pc ()J
+	public final fun getMinDelay-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/testsuite/harness/NetworkImpairment$Companion {
+	public final fun of-O4J4VbY (JJDD)Lcom/ditchoom/webrtc/testsuite/harness/NetworkImpairment;
+	public static synthetic fun of-O4J4VbY$default (Lcom/ditchoom/webrtc/testsuite/harness/NetworkImpairment$Companion;JJDDILjava/lang/Object;)Lcom/ditchoom/webrtc/testsuite/harness/NetworkImpairment;
+}
+
+public final class com/ditchoom/webrtc/testsuite/harness/WebRtcHarnessConnection {
+	public final fun getAnswerer ()Lcom/ditchoom/webrtc/RtcPeerConnection;
+	public final fun getManifest ()Lcom/ditchoom/webrtc/testsuite/harness/HarnessManifest;
+	public final fun getOfferer ()Lcom/ditchoom/webrtc/RtcPeerConnection;
+	public final fun getSelectedPair ()Lcom/ditchoom/webrtc/ice/CandidatePair;
+}
+
+public final class com/ditchoom/webrtc/testsuite/harness/WebRtcHarnessKt {
+	public static final fun withWebRtcHarness-HOFDmpg (Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;JLcom/ditchoom/buffer/BufferFactory;Lkotlin/jvm/functions/Function0;JLkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun withWebRtcHarness-HOFDmpg$default (Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;JLcom/ditchoom/buffer/BufferFactory;Lkotlin/jvm/functions/Function0;JLkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/webrtc/testsuite/harness/WebRtcHarnessScope {
+	public final fun establish (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun getAllocationCount ()J
+	public final fun impaired (Lcom/ditchoom/webrtc/testsuite/harness/NetworkImpairment;)V
+	public final fun impaired-vLdBGDU (DJJD)V
+	public static synthetic fun impaired-vLdBGDU$default (Lcom/ditchoom/webrtc/testsuite/harness/WebRtcHarnessScope;DJJDILjava/lang/Object;)V
+	public final fun natType (Lcom/ditchoom/webrtc/testsuite/harness/NatType;)V
+	public final fun relayOnly ()V
+	public final fun roundTrip (Ljava/lang/String;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun roundTrip$default (Lcom/ditchoom/webrtc/testsuite/harness/WebRtcHarnessScope;Ljava/lang/String;Ljava/lang/String;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+

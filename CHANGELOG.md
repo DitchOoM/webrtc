@@ -6,6 +6,40 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Added — W7 Phase 2(b): headless-browser interop lanes (Chrome + Firefox) + wasmJs browser delegation
+- **`chrome-interop` + `firefox-interop` scenarios** — our native `linuxX64` offerer establishes a full
+  WebRTC data channel against a real **headless browser** (Playwright, `test-harness/browser/` — one
+  `BROWSER`-parameterized image, two engines) over **DTLS 1.3** (the native peer runs at its production
+  default — the opposite of the Pion 1.2 lane), and echoes `ping`→`pong` bidirectionally across a
+  port-restricted NAT. Two differential oracles beyond Pion: **Chrome** (Chromium's libwebrtc / BoringSSL /
+  dcSCTP) and **Firefox** (a *fully independent* stack — **NSS** DTLS, **nICEr** ICE, **usrsctp** — sharing
+  nothing with Chrome). **Both runtime-validated on this box** — native offerer CONNECTED at DTLS 1.3, the
+  browser `received "ping" (string=false)` → `echoed "pong"` → offerer got `pong`.
+- **Rendezvous HTTP face** — a browser has no raw UDP, so `rendezvous.py` grew a threaded HTTP front door
+  (`POST /put` + `GET /poll`, CORS-open) onto the **same** in-memory mailbox the UDP peers use (shared under
+  a lock). A browser and a native peer therefore meet in the same slot: the native offerer PUTs its offer
+  over UDP, Chrome polls it over HTTP; Chrome PUTs its answer over HTTP, the native peer polls it over UDP.
+  Backward-compatible — the native UDP lane still establishes unchanged.
+- **wasmJs `peerConnectionSupport()` delegation** — the last open W6 browser gap closed. The wasmJs actual
+  now delegates to the browser `RTCPeerConnection` for real (was `NotImplementedError`), mapped through the
+  `@JsFun` / `JsString` wasm-interop bridge (opaque `external interface : JsAny` handles; data-channel
+  payloads cross as byte-faithful lowercase hex — no `ByteArray`, no webgl externals). **Runtime-validated
+  in a real headless Chrome** via a new `wasmJsTest` loopback (mirror of the js delegation Karma test);
+  green on `wasmJsBrowserTest` (ChromeHeadless) and no-ops on `wasmJsNodeTest`.
+- **Wiring:** `docker-compose.yml` adds profile-gated `chrome` + `firefox` services (drop-ins for the native
+  `peer_b` on `nat_b`/`PEER_B_IP`, DTLS 1.3 default, mDNS host-candidate obfuscation disabled per engine so
+  our parser is fed real-IP candidates); `run-interop.sh` gains `b_impl=chrome|firefox` cases + the two
+  scenarios, plus a positional **allowlist** and a `HARNESS_SKIP` **skiplist** for scenario selection;
+  `harness-l2.yaml` runs the browsers as a parallel **`{arch × browser}` matrix** (`l2-browser`) split from
+  the native `l2` job (which uses `HARNESS_SKIP` to drop them) — each image builds natively per-arch inside
+  its job (Playwright fetches the per-arch engine), no cross-compile, no QEMU; `README.md` documents it.
+- **Fixed (harness bug this surfaced):** `run-interop.sh`'s scenario loop read the scenario list from
+  **stdin**, which `docker compose exec` (the netem `impaired` lane) attaches to and drains — so the matrix
+  silently stopped after the first netem scenario, running **7/9** and never reaching `pion-interop` or
+  `chrome-interop` (masked until now because Phase 2(a) validated Pion via the single-scenario path). The
+  loop now reads from a dedicated fd (`3<<<`), out of reach of any inner command's stdin, so the full matrix
+  runs all nine — verified locally: **9/9 pass**, both interop lanes included.
+
 ### Added — W7 Phase 1: L2 container harness (native peers ⇄ real NAT kernels)
 - **`:webrtc-harness-endpoint`** — a non-published Kotlin/Native executable (`linuxX64` + `linuxArm64`) that
   composes the production `NativePeerConnection` + `BoringSslDtls` over **real UDP** (`socket-udp`) and runs

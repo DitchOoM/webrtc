@@ -85,11 +85,12 @@ docker run --rm --privileged --network host alpine:3.20 \
     sysctl -w net.bridge.bridge-nf-call-iptables=0 net.bridge.bridge-nf-call-ip6tables=0 >/dev/null 2>&1 \
     || echo "::warning::could not set bridge-nf-call-iptables=0 — container routing across NATs may fail"
 
-# ── the scenario matrix — name | nat_a | nat_b | ice_policy | netem(args or "-") | b_impl(native|pion) ──
+# ── the scenario matrix — name | nat_a | nat_b | ice_policy | netem(args or "-") | b_impl(native|pion|chrome|firefox) ──
 # Covers each of the four NAT profiles, the symmetric→relay fallback, an explicit relay-only lane, an
-# impaired data path (all our-peer ⇄ our-peer), plus the W7 Phase-2(a) interop lane where the answerer is
-# a real Pion (Go) peer. Each expects BOTH peers to exit 0. b_impl defaults to native when the column is
-# omitted. The pion lane forces DTLS 1.2 (Pion v3 is 1.2-only) — see run_scenario.
+# impaired data path (all our-peer ⇄ our-peer), plus the W7 Phase-2 interop lanes where the answerer is a
+# real Pion (Go) peer [2(a)] or a real headless browser — Chrome / Firefox [2(b)]. Each expects BOTH peers
+# to exit 0. b_impl defaults to native when the column is omitted. The pion lane forces DTLS 1.2 (Pion v3 is
+# 1.2-only); the browser lanes run DTLS 1.3 (the default) — see run_scenario.
 SCENARIOS="
 full-cone            | full-cone          | full-cone          | all   | -                                                | native
 port-restricted      | port-restricted    | port-restricted    | all   | -                                                | native
@@ -99,9 +100,18 @@ mixed-sym-port       | symmetric          | port-restricted    | all   | -      
 relay-only           | port-restricted    | port-restricted    | relay | -                                                | native
 impaired-loss-delay  | port-restricted    | port-restricted    | all   | loss 5% delay 20ms 5ms distribution normal      | native
 pion-interop         | port-restricted    | port-restricted    | all   | -                                                | pion
+chrome-interop       | port-restricted    | port-restricted    | all   | -                                                | chrome
+firefox-interop      | port-restricted    | port-restricted    | all   | -                                                | firefox
 "
 
-only="${1:-}"
+# Scenario selection:
+#   * positional args = an ALLOWLIST of scenario names to run (e.g. `run-interop.sh chrome-interop`, or a
+#     space-separated set). No args → the whole matrix.
+#   * $HARNESS_SKIP = a space-separated SKIPLIST of scenario names (e.g. the CI native lane runs the full
+#     matrix minus the browser lanes, which run as their own parallel per-browser jobs).
+# Padded with spaces so a `case` glob matches a whole word, never a substring.
+only=" $* "
+skip=" ${HARNESS_SKIP:-} "
 pass=0; fail=0; failed_names=""
 
 run_scenario() {
@@ -111,15 +121,17 @@ run_scenario() {
 
     export NAT_A_PROFILE="$nat_a" NAT_B_PROFILE="$nat_b" ICE_POLICY="$policy" SESSION="$name"
 
-    # Choose the "b side": the native answerer peer_b, or the Pion (Go) interop echo-peer. The Pion lane
-    # is gated behind the `pion` compose profile (COMPOSE_PROFILES) and pins DTLS 1.2 on BOTH peers
-    # (PEER_DTLS13=false) — Pion v3 is DTLS-1.2-only, and our peer_a would otherwise negotiate up to 1.3.
+    # Choose the "b side": the native answerer peer_b, the Pion (Go) echo-peer, or the headless-Chrome
+    # echo-peer. Each interop lane is gated behind its own compose profile (COMPOSE_PROFILES). The Pion
+    # lane pins DTLS 1.2 on BOTH peers (PEER_DTLS13=false) — Pion v3 is DTLS-1.2-only, and our peer_a would
+    # otherwise negotiate up to 1.3. Chrome speaks DTLS 1.3, so its lane leaves peer_a at the 1.3 default.
     local b_service
-    if [ "$b_impl" = "pion" ]; then
-        b_service="pion"; export COMPOSE_PROFILES="pion" PEER_DTLS13="false"
-    else
-        b_service="peer_b"; unset COMPOSE_PROFILES; export PEER_DTLS13="true"
-    fi
+    case "$b_impl" in
+        pion)    b_service="pion";    export COMPOSE_PROFILES="pion";    export PEER_DTLS13="false" ;;
+        chrome)  b_service="chrome";  export COMPOSE_PROFILES="chrome";  export PEER_DTLS13="true" ;;
+        firefox) b_service="firefox"; export COMPOSE_PROFILES="firefox"; export PEER_DTLS13="true" ;;
+        *)       b_service="peer_b";  unset COMPOSE_PROFILES;            export PEER_DTLS13="true" ;;
+    esac
 
     # Fresh stack per scenario for isolation (NAT rules + conntrack state must not bleed across profiles).
     # stack_down ONLY — the host bridge-nf sysctl stays as set for the whole run (restored once on EXIT).
@@ -157,14 +169,21 @@ run_scenario() {
     fi
 }
 
-# Here-string (not a pipe) so the loop runs in THIS shell and the tallies persist.
-while IFS='|' read -r name a b policy netem b_impl; do
+# Here-string (not a pipe) so the loop runs in THIS shell and the tallies persist. Read the scenario list
+# on a DEDICATED fd (3), NOT stdin: `docker compose exec` (used by the netem `impaired` lane) attaches and
+# drains its stdin, which — if the loop read from stdin — would swallow every remaining scenario line, so
+# the matrix would silently stop after the first netem lane (it ran 7/9, skipping pion-interop +
+# chrome-interop). Reading from fd 3 keeps the list out of reach of any inner command's stdin.
+while IFS='|' read -r name a b policy netem b_impl <&3; do
     name=$(echo "$name" | xargs); [ -z "$name" ] && continue
     a=$(echo "$a" | xargs); b=$(echo "$b" | xargs); policy=$(echo "$policy" | xargs); netem=$(echo "$netem" | xargs)
     b_impl=$(echo "$b_impl" | xargs); [ -z "$b_impl" ] && b_impl=native
-    if [ -n "$only" ] && [ "$only" != "$name" ]; then continue; fi
+    # Allowlist (positional args): if any were given, run only those names.
+    if [ -n "$*" ]; then case "$only" in *" $name "*) ;; *) continue ;; esac; fi
+    # Skiplist ($HARNESS_SKIP): never run a named-skipped scenario.
+    case "$skip" in *" $name "*) echo "── skip $name (HARNESS_SKIP)"; continue ;; esac
     run_scenario "$name" "$a" "$b" "$policy" "$netem" "$b_impl"
-done <<< "$SCENARIOS"
+done 3<<< "$SCENARIOS"
 
 echo ""
 echo "═══ summary: $pass passed, $fail failed${failed_names:+ (failed:$failed_names)} ═══"

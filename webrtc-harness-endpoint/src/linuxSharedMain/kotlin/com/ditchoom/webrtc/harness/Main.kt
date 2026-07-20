@@ -45,7 +45,7 @@ import kotlin.time.Instant
  */
 fun main() {
     val cfg = HarnessConfig.fromEnv()
-    println("[harness] role=${cfg.role} session=${cfg.session} policy=${cfg.icePolicy} local=${cfg.localIp}:${cfg.localPort}")
+    println("[harness] role=${cfg.role} session=${cfg.session} policy=${cfg.icePolicy} local=${cfg.localIp}:${cfg.localPort} dtls13=${cfg.enableDtls13}")
     val code = runBlocking { runPeer(cfg) }
     println("[harness] exit=$code")
     exitProcess(code)
@@ -70,7 +70,7 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
         // native allocation is acceptable here — pooled release is the W3/W5-deferred production refactor.)
         val net = BufferFactory.deterministic()
 
-        val dtls = BoringSslDtls(bg, clock, DtlsConfig(bufferFactory = net))
+        val dtls = BoringSslDtls(bg, clock, DtlsConfig(bufferFactory = net, enableDtls13 = cfg.enableDtls13))
         val stun = resolveAddress(cfg.stunHost, cfg.stunPort)
         val turn = resolveAddress(cfg.turnHost, cfg.turnPort)
 

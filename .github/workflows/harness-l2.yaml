@@ -4,6 +4,10 @@ name: "L2 Interop Harness"
 # → SCTP → data channel) across REAL Linux NAT kernels, over each RFC 4787 NAT profile + a relay-only and
 # an impaired lane. Separate from the fast deterministic PR lanes (review.yaml) — Docker + real kernels.
 #
+# W7 Phase 2(a) adds an INTEROP lane (the `pion-interop` scenario in run-interop.sh): our native offerer
+# establishes against a real Pion (Go) answerer over DTLS 1.2 — the differential oracle. The Pion image
+# builds natively inside the l2 job (pure Go, per-arch, no cross-compile), so it needs no build-peer step.
+#
 # Arch-matched RUNTIME without QEMU, working around the K/N toolchain: Kotlin/Native cannot host its
 # compiler on a linux/arm64 host (`Unknown host target: linux aarch64`), so the peer is CROSS-built for
 # BOTH arches on an x64 host (`build-peer`), then each arch's runner only RUNS its own binary in native

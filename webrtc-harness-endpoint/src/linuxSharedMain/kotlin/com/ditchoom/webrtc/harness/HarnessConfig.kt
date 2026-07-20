@@ -35,6 +35,12 @@ internal data class HarnessConfig(
     val icePolicy: IcePolicy,
     val timeout: Duration,
     val seed: Long,
+    /**
+     * Negotiate up to DTLS 1.3 (the production default). Set `WEBRTC_DTLS13=false` for the Pion interop
+     * lane: Pion's released v3 speaks DTLS 1.2 only, so our side must pin 1.2 to talk to it (the version
+     * would otherwise negotiate up to 1.3 with another of our peers). Our 1.2 fallback is W4-tested.
+     */
+    val enableDtls13: Boolean,
 ) {
     companion object {
         fun fromEnv(): HarnessConfig {
@@ -59,6 +65,9 @@ internal data class HarnessConfig(
                 // Distinct default seeds per role so the two peers never collide ufrag/tie-breaker; override
                 // with WEBRTC_SEED. This is entropy for a driver, not a core, so a fixed seed is fine.
                 seed = env("WEBRTC_SEED")?.toLongOrNull() ?: if (role == Role.Offerer) 1L else 2L,
+                // Default true (production); the Pion lane sets WEBRTC_DTLS13=false. Any value other than
+                // an explicit "false" keeps 1.3 on.
+                enableDtls13 = env("WEBRTC_DTLS13")?.equals("false", ignoreCase = true) != true,
             )
         }
 

@@ -1,7 +1,11 @@
+@file:OptIn(ExperimentalTime::class)
+
 package com.ditchoom.webrtc.dtls.handshake
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.webrtc.dtls.DtlsStep
+import kotlin.time.ExperimentalTime
+import kotlin.time.Instant
 
 /**
  * The sans-io surface shared by the per-version handshake state machines ([Dtls12Handshake],
@@ -9,33 +13,34 @@ import com.ditchoom.webrtc.dtls.DtlsStep
  * its configured max version, the server by peeking the ClientHello) and then drives it through this one
  * interface — so the engine holds no version-specific branching past the initial choice.
  *
- * Every method is caller-clocked (`nowMicros` epoch-microseconds); there is no coroutine, no wall clock,
- * and no I/O inside an implementation. Not thread-safe; confined to the one driver coroutine.
+ * Every method is caller-clocked ([now], the driver's injected [Instant]); there is no coroutine, no wall
+ * clock, and no I/O inside an implementation — the same clock model ICE and SCTP use ([nextDeadline]
+ * returns an absolute [Instant]). Not thread-safe; confined to the one driver coroutine.
  */
 internal interface DtlsHandshakeFsm {
     /** Begin the handshake (a client sends its first flight); returns the first records to put on the wire. */
-    fun start(nowMicros: Long): DtlsStep
+    fun start(now: Instant): DtlsStep
 
     /** Feed one inbound datagram; drives the handshake or decrypts application data. */
     fun onDatagram(
         datagram: ReadBuffer,
-        nowMicros: Long,
+        now: Instant,
     ): DtlsStep
 
     /** Fire an expired retransmission timer (re-sends the current flight). */
-    fun onTimeout(nowMicros: Long): DtlsStep
+    fun onTimeout(now: Instant): DtlsStep
 
     /** Encrypt and frame application data once established. */
     fun sealApplicationData(
         applicationData: ReadBuffer,
-        nowMicros: Long,
+        now: Instant,
     ): DtlsStep
 
     /** Begin an orderly close (queues an encrypted close_notify when keys exist). */
-    fun beginClose(nowMicros: Long): DtlsStep
+    fun beginClose(now: Instant): DtlsStep
 
-    /** Absolute epoch-micros at which [onTimeout] must next run, or null if no timer is armed. */
-    fun nextTimeoutMicros(nowMicros: Long): Long?
+    /** Absolute instant at which [onTimeout] must next run, or null if no timer is armed. */
+    fun nextDeadline(now: Instant): Instant?
 
     /** Free key material held by the handshake. Idempotent. */
     fun close()

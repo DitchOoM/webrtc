@@ -24,7 +24,6 @@ import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.microseconds
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 import com.ditchoom.webrtc.dtls.DtlsRole as EngineRole
@@ -118,11 +117,6 @@ public class BoringSslDtls(
         cause: Throwable? = null,
     ): WebRtcException = WebRtcException(PeerConnectionFailureReason.Dtls(reason), cause)
 
-    private fun nowMicros(): Long {
-        val instant = clock()
-        return instant.epochSeconds * 1_000_000L + instant.nanosecondsOfSecond / 1_000L
-    }
-
     /**
      * One secured session: the pump coroutine plus the [SctpDatagramTransport] face it presents to the
      * data-channel stack. Every field is touched only by the pump or by thread-safe channels.
@@ -202,9 +196,9 @@ public class BoringSslDtls(
             try {
                 // The engine reports state only through a step, so the pump carries it — it is the one
                 // coroutine that ever sees a step, so this cannot drift from the engine's own view.
-                var state = engine.start(role, nowMicros()).also { apply(it) }.state
+                var state = engine.start(role, clock()).also { apply(it) }.state
                 while (state !is DtlsState.Failed && state !is DtlsState.Closed) {
-                    val deadline = engine.nextTimeoutMicros(nowMicros())
+                    val deadline = engine.nextDeadline(clock())
                     val step =
                         if (deadline == null) {
                             selectWithoutTimer() ?: break
@@ -212,7 +206,7 @@ public class BoringSslDtls(
                             // select, not withTimeout: a timeout that cancels receive() *after* it was
                             // handed a record would drop that record on the floor and stall the
                             // handshake until the peer retransmits (the IceAgentDriver lesson).
-                            val wait = (deadline - nowMicros()).coerceAtLeast(0L).microseconds
+                            val wait = (deadline - clock()).coerceAtLeast(Duration.ZERO)
                             selectWithTimer(wait) ?: break
                         }
                     apply(step)
@@ -237,7 +231,7 @@ public class BoringSslDtls(
         private suspend fun selectWithoutTimer(): DtlsStep? =
             select {
                 inbound.onReceiveCatching { result ->
-                    result.getOrNull()?.let { engine.onDatagram(it, nowMicros()) }
+                    result.getOrNull()?.let { engine.onDatagram(it, clock()) }
                 }
                 outbound.onReceiveCatching { result ->
                     result.getOrNull()?.let { encrypt(it) }
@@ -247,16 +241,16 @@ public class BoringSslDtls(
         private suspend fun selectWithTimer(wait: Duration): DtlsStep? =
             select {
                 inbound.onReceiveCatching { result ->
-                    result.getOrNull()?.let { engine.onDatagram(it, nowMicros()) }
+                    result.getOrNull()?.let { engine.onDatagram(it, clock()) }
                 }
                 outbound.onReceiveCatching { result ->
                     result.getOrNull()?.let { encrypt(it) }
                 }
-                onTimeout(wait) { engine.onTimeout(nowMicros()) }
+                onTimeout(wait) { engine.onTimeout(clock()) }
             }
 
         private fun encrypt(request: SendRequest): DtlsStep {
-            val step = engine.send(request.payload, nowMicros())
+            val step = engine.send(request.payload, clock())
             if (step.state is DtlsState.Failed) {
                 request.ack.completeExceptionally(dtlsFailure((step.state as DtlsState.Failed).reason))
             } else {

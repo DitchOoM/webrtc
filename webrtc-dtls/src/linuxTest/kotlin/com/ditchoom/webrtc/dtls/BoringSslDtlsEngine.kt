@@ -29,6 +29,12 @@ import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.toCPointer
+import kotlin.time.Duration.Companion.microseconds
+import kotlin.time.ExperimentalTime
+import kotlin.time.Instant
+
+@OptIn(ExperimentalTime::class)
+private fun Instant.micros(): Long = epochSeconds * 1_000_000L + nanosecondsOfSecond / 1_000L
 
 // Return codes — mirror the #defines in boringsslssl.def. Byte-count wrappers (bd_read_app/bd_take)
 // report "nothing available" as BD_NO_DATA (0) and errors as negatives, so a count can never be
@@ -64,7 +70,7 @@ internal fun boringSslProbe(): Long = bd_smoke()
  * A green differential proves our engine interoperates with an independent, battle-tested stack — not
  * just a mirror of its own bugs (the self-loopback gap the owner called out).
  */
-@OptIn(ExperimentalForeignApi::class)
+@OptIn(ExperimentalForeignApi::class, ExperimentalTime::class)
 internal class BoringSslDtlsEngine(
     private val config: DtlsConfig,
 ) {
@@ -114,8 +120,9 @@ internal class BoringSslDtlsEngine(
 
     fun start(
         role: DtlsRole,
-        nowMicros: Long,
+        now: Instant,
     ): DtlsStep {
+        val nowMicros = now.micros()
         // Idempotent: a second start() must not re-enter SSL_set_connect_state on a live handshake.
         if (!started) {
             started = true
@@ -126,15 +133,17 @@ internal class BoringSslDtlsEngine(
 
     fun onDatagram(
         record: ReadBuffer,
-        nowMicros: Long,
+        now: Instant,
     ): DtlsStep {
+        val nowMicros = now.micros()
         requireStarted()
         terminal?.let { return DtlsStep(emptyList(), emptyList(), it) }
         feed(record)
         return pump(nowMicros)
     }
 
-    fun onTimeout(nowMicros: Long): DtlsStep {
+    fun onTimeout(now: Instant): DtlsStep {
+        val nowMicros = now.micros()
         requireStarted()
         terminal?.let { return DtlsStep(emptyList(), emptyList(), it) }
         bd_handle_timeout(engine, nowMicros)
@@ -143,8 +152,9 @@ internal class BoringSslDtlsEngine(
 
     fun send(
         applicationData: ReadBuffer,
-        nowMicros: Long,
+        now: Instant,
     ): DtlsStep {
+        val nowMicros = now.micros()
         requireStarted()
         terminal?.let { return DtlsStep(emptyList(), emptyList(), it) }
         val len = applicationData.limit() - applicationData.position()
@@ -154,20 +164,20 @@ internal class BoringSslDtlsEngine(
         return DtlsStep(collectRecords(), emptyList(), stateNow())
     }
 
-    fun beginClose(nowMicros: Long): DtlsStep {
+    fun beginClose(now: Instant): DtlsStep {
         if (closed || terminal is DtlsState.Closed) {
             return DtlsStep(emptyList(), emptyList(), DtlsState.Closed)
         }
-        bd_shutdown(engine, nowMicros)
+        bd_shutdown(engine, now.micros())
         val records = collectRecords()
         terminal = DtlsState.Closed
         return DtlsStep(records, emptyList(), DtlsState.Closed)
     }
 
-    fun nextTimeoutMicros(nowMicros: Long): Long? {
+    fun nextDeadline(now: Instant): Instant? {
         if (!started || terminal != null) return null
-        val us = bd_timeout_us(engine, nowMicros)
-        return if (us < 0) null else nowMicros + us
+        val us = bd_timeout_us(engine, now.micros())
+        return if (us < 0) null else now + us.microseconds
     }
 
     fun close() {

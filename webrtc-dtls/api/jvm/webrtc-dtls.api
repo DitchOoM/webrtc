@@ -35,14 +35,14 @@ public final class com/ditchoom/webrtc/dtls/DtlsConfig {
 
 public final class com/ditchoom/webrtc/dtls/DtlsEngine {
 	public fun <init> (Lcom/ditchoom/webrtc/dtls/DtlsConfig;)V
-	public final fun beginClose (J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
+	public final fun beginClose (Lkotlin/time/Instant;)Lcom/ditchoom/webrtc/dtls/DtlsStep;
 	public final fun close ()V
 	public final fun getLocalFingerprint-ZfS6PIY ()Ljava/lang/String;
-	public final fun nextTimeoutMicros (J)Ljava/lang/Long;
-	public final fun onDatagram (Lcom/ditchoom/buffer/ReadBuffer;J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
-	public final fun onTimeout (J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
-	public final fun send (Lcom/ditchoom/buffer/ReadBuffer;J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
-	public final fun start (Lcom/ditchoom/webrtc/dtls/DtlsRole;J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
+	public final fun nextDeadline (Lkotlin/time/Instant;)Lkotlin/time/Instant;
+	public final fun onDatagram (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/time/Instant;)Lcom/ditchoom/webrtc/dtls/DtlsStep;
+	public final fun onTimeout (Lkotlin/time/Instant;)Lcom/ditchoom/webrtc/dtls/DtlsStep;
+	public final fun send (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/time/Instant;)Lcom/ditchoom/webrtc/dtls/DtlsStep;
+	public final fun start (Lcom/ditchoom/webrtc/dtls/DtlsRole;Lkotlin/time/Instant;)Lcom/ditchoom/webrtc/dtls/DtlsStep;
 }
 
 public final class com/ditchoom/webrtc/dtls/DtlsException : java/lang/Exception {

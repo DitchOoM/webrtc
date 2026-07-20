@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalTime::class)
+
 package com.ditchoom.webrtc.dtls.handshake
 
 import com.ditchoom.buffer.BufferFactory
@@ -16,6 +18,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.microseconds
+import kotlin.time.ExperimentalTime
+import kotlin.time.Instant
 
 /**
  * The DTLS 1.3 (RFC 9147) counterpart of [Dtls12HandshakeTest]: two pure-Kotlin DTLS 1.3 handshakes
@@ -26,7 +31,7 @@ import kotlin.test.assertTrue
  * the BoringSSL differential (linuxTest) is what proves byte-level interop with an independent stack.
  */
 class Dtls13HandshakeTest {
-    private var now = 0L
+    private var now: Instant = Instant.fromEpochSeconds(0)
 
     private fun config() = DtlsConfig(bufferFactory = BufferFactory.managed(), random = Random(11))
 
@@ -127,9 +132,9 @@ class Dtls13HandshakeTest {
                         toServer.addAll(it.records)
                     }
                 else -> {
-                    val deadlines = listOfNotNull(client.nextTimeoutMicros(now), server.nextTimeoutMicros(now))
+                    val deadlines = listOfNotNull(client.nextDeadline(now), server.nextDeadline(now))
                     if (deadlines.isEmpty()) break
-                    now = maxOf(now + 1, deadlines.min())
+                    now = maxOf(now + 1.microseconds, deadlines.min())
                     client.onTimeout(now).let {
                         cState = it.state
                         toServer.addAll(it.records)

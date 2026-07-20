@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalTime::class)
+
 package com.ditchoom.webrtc.dtls.handshake
 
 import com.ditchoom.buffer.BufferFactory
@@ -44,11 +46,14 @@ import com.ditchoom.webrtc.dtls.wire.ProtocolVersion
 import com.ditchoom.webrtc.dtls.wire.ServerHello
 import com.ditchoom.webrtc.dtls.wire.ServerKeyExchange
 import com.ditchoom.webrtc.dtls.wire.SignatureSchemeId
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.ExperimentalTime
+import kotlin.time.Instant
 
 /**
  * The sans-io DTLS 1.2 handshake state machine for `TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256` (RFC 6347 +
  * RFC 5246 + RFC 8422) — the pure-Kotlin core the [com.ditchoom.webrtc.dtls.DtlsEngine] drives. Caller
- * clocked (`nowMicros`), no coroutine, no I/O, no wall clock; the driver feeds it inbound datagrams and
+ * clocked (`now`), no coroutine, no I/O, no wall clock; the driver feeds it inbound datagrams and
  * a virtual clock and puts the returned records on the wire.
  *
  * WebRTC is **mutually authenticated** (RFC 8827: each peer presents a certificate and both fingerprints
@@ -100,8 +105,8 @@ internal class Dtls12Handshake(
 
     // ── retransmission (RFC 6347 §4.2.4): last flight + a backoff timer ───────────────────────────
     private var lastFlight: List<FlightItem>? = null
-    private var retransmitDeadline: Long? = null
-    private var retransmitBackoffMicros = INITIAL_RETRANSMIT_MICROS
+    private var retransmitDeadline: Instant? = null
+    private var retransmitBackoff = INITIAL_RETRANSMIT
 
     private class FlightItem(
         val contentType: Int,
@@ -112,14 +117,14 @@ internal class Dtls12Handshake(
 
     // ── public sans-io surface (mirrors DtlsEngine) ──────────────────────────────────────────────
 
-    override fun start(nowMicros: Long): DtlsStep {
+    override fun start(now: Instant): DtlsStep {
         check(!started) { "start() called twice" }
         started = true
         localRandom = randomBytes(RANDOM_BYTES)
         if (role == DtlsRole.Client) {
             clientRandom = localRandom
             val out = mutableListOf<ReadBuffer>()
-            beginClientHelloFlight(out, nowMicros)
+            beginClientHelloFlight(out, now)
             return step(out, emptyList())
         }
         serverRandom = localRandom // set now; the server also uses it in flight 2
@@ -128,7 +133,7 @@ internal class Dtls12Handshake(
 
     override fun onDatagram(
         datagram: ReadBuffer,
-        nowMicros: Long,
+        now: Instant,
     ): DtlsStep {
         // A dead transport stops processing; an Established one keeps decrypting application data.
         (terminal as? DtlsState.Failed)?.let { return DtlsStep(emptyList(), emptyList(), it) }
@@ -138,7 +143,7 @@ internal class Dtls12Handshake(
         val appData = mutableListOf<ReadBuffer>()
         for (rec in records) {
             when (rec.contentType.value) {
-                ContentType.Handshake.value -> processHandshakeRecord(rec, out, nowMicros)
+                ContentType.Handshake.value -> processHandshakeRecord(rec, out, now)
                 ContentType.ChangeCipherSpec.value -> Unit // epoch is read from each record's own header
                 ContentType.ApplicationData.value -> decryptApplicationData(rec)?.let { appData += it }
                 ContentType.Alert.value -> fail(DtlsFailureReason.HandshakeFailure)
@@ -149,20 +154,20 @@ internal class Dtls12Handshake(
         return DtlsStep(out, appData, stateNow())
     }
 
-    override fun onTimeout(nowMicros: Long): DtlsStep {
+    override fun onTimeout(now: Instant): DtlsStep {
         terminal?.let { return DtlsStep(emptyList(), emptyList(), it) }
         val deadline = retransmitDeadline ?: return step(emptyList(), emptyList())
-        if (nowMicros < deadline) return step(emptyList(), emptyList())
+        if (now < deadline) return step(emptyList(), emptyList())
         val flight = lastFlight ?: return step(emptyList(), emptyList())
         val out = flight.map { emit(it) }.toMutableList()
-        retransmitBackoffMicros = minOf(retransmitBackoffMicros * 2, MAX_RETRANSMIT_MICROS)
-        retransmitDeadline = nowMicros + retransmitBackoffMicros
+        retransmitBackoff = minOf(retransmitBackoff * 2, MAX_RETRANSMIT)
+        retransmitDeadline = now + retransmitBackoff
         return step(out, emptyList())
     }
 
     override fun sealApplicationData(
         applicationData: ReadBuffer,
-        nowMicros: Long,
+        now: Instant,
     ): DtlsStep {
         val prot = protection
         if (terminal !is DtlsState.Established || prot == null) {
@@ -178,7 +183,7 @@ internal class Dtls12Handshake(
      * Begin an orderly close: queue a `close_notify` alert (encrypted once we have keys) and transition
      * to [DtlsState.Closed]. Best-effort per RFC 6347 §4.1 — DTLS does not wait for the peer's reply.
      */
-    override fun beginClose(nowMicros: Long): DtlsStep {
+    override fun beginClose(now: Instant): DtlsStep {
         if (terminal is DtlsState.Closed) return DtlsStep(emptyList(), emptyList(), DtlsState.Closed)
         val out = mutableListOf<ReadBuffer>()
         val prot = protection
@@ -197,7 +202,7 @@ internal class Dtls12Handshake(
         return DtlsStep(out, emptyList(), DtlsState.Closed)
     }
 
-    override fun nextTimeoutMicros(nowMicros: Long): Long? = if (terminal != null) null else retransmitDeadline
+    override fun nextDeadline(now: Instant): Instant? = if (terminal != null) null else retransmitDeadline
 
     override fun close() {
         ecdhe.close()
@@ -209,7 +214,7 @@ internal class Dtls12Handshake(
     private fun processHandshakeRecord(
         record: DtlsRecord,
         out: MutableList<ReadBuffer>,
-        now: Long,
+        now: Instant,
     ) {
         val handshakeBytes =
             if (record.epoch >= EPOCH_1) {
@@ -231,7 +236,7 @@ internal class Dtls12Handshake(
     private fun handleHandshakeMessage(
         message: HandshakeMessage,
         out: MutableList<ReadBuffer>,
-        now: Long,
+        now: Instant,
     ) {
         cancelRetransmit()
         when (role) {
@@ -245,7 +250,7 @@ internal class Dtls12Handshake(
     private fun handleAsClient(
         message: HandshakeMessage,
         out: MutableList<ReadBuffer>,
-        now: Long,
+        now: Instant,
     ) {
         when (message.msgType.value) {
             HandshakeType.ServerHello.value -> {
@@ -292,7 +297,7 @@ internal class Dtls12Handshake(
 
     private fun sendClientFinishFlight(
         out: MutableList<ReadBuffer>,
-        now: Long,
+        now: Instant,
     ) {
         val flight = mutableListOf<FlightItem>()
         // Certificate (our own — WebRTC mutual auth), then ClientKeyExchange.
@@ -325,7 +330,7 @@ internal class Dtls12Handshake(
     private fun handleAsServer(
         message: HandshakeMessage,
         out: MutableList<ReadBuffer>,
-        now: Long,
+        now: Instant,
     ) {
         when (message.msgType.value) {
             HandshakeType.ClientHello.value -> {
@@ -375,7 +380,7 @@ internal class Dtls12Handshake(
 
     private fun sendServerHelloFlight(
         out: MutableList<ReadBuffer>,
-        now: Long,
+        now: Instant,
     ) {
         val flight = mutableListOf<FlightItem>()
         val extensions = mutableListOf<Extension>()
@@ -410,7 +415,7 @@ internal class Dtls12Handshake(
 
     private fun sendServerFinishFlight(
         out: MutableList<ReadBuffer>,
-        now: Long,
+        now: Instant,
     ) {
         val flight = mutableListOf<FlightItem>()
         flight += FlightItem(ContentType.ChangeCipherSpec.value, singleByte(1), EPOCH_0, encrypted = false)
@@ -541,7 +546,7 @@ internal class Dtls12Handshake(
 
     private fun beginClientHelloFlight(
         out: MutableList<ReadBuffer>,
-        now: Long,
+        now: Instant,
     ) {
         val extensions =
             listOf(
@@ -585,12 +590,12 @@ internal class Dtls12Handshake(
     private fun emitFlight(
         flight: List<FlightItem>,
         out: MutableList<ReadBuffer>,
-        now: Long,
+        now: Instant,
     ) {
         for (item in flight) out += emit(item)
         lastFlight = flight
-        retransmitBackoffMicros = INITIAL_RETRANSMIT_MICROS
-        retransmitDeadline = now + retransmitBackoffMicros
+        retransmitBackoff = INITIAL_RETRANSMIT
+        retransmitDeadline = now + retransmitBackoff
     }
 
     private fun emit(item: FlightItem): ReadBuffer {
@@ -757,7 +762,7 @@ internal class Dtls12Handshake(
         const val DTLS12 = 0xFEFD
         const val RENEGOTIATION_SCSV = 0x00FF // TLS_EMPTY_RENEGOTIATION_INFO_SCSV (RFC 5746 §3.3)
         const val MAX_MESSAGE_BYTES = 4096
-        const val INITIAL_RETRANSMIT_MICROS = 1_000_000L // RFC 6347 §4.2.4.1 initial timer = 1s
-        const val MAX_RETRANSMIT_MICROS = 60_000_000L
+        val INITIAL_RETRANSMIT = 1.seconds // RFC 6347/9147 initial retransmit timer
+        val MAX_RETRANSMIT = 60.seconds
     }
 }

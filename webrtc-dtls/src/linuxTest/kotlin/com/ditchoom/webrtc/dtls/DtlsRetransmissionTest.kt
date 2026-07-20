@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalTime::class)
+
 package com.ditchoom.webrtc.dtls
 
 import com.ditchoom.buffer.BufferFactory
@@ -10,6 +12,8 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.time.ExperimentalTime
+import kotlin.time.Instant
 
 /**
  * The caller-clocked **timer** path (a W4 exit criterion, carried into W4b): DTLS is the one part of the
@@ -32,14 +36,14 @@ class DtlsRetransmissionTest {
         val ours = DtlsEngine(config())
         val oracle = BoringSslDtlsEngine(config())
         try {
-            var now = 0L
+            var now: Instant = Instant.fromEpochSeconds(0)
             val firstFlight = ours.start(DtlsRole.Client, now).records
             assertTrue(firstFlight.isNotEmpty(), "our client sent a ClientHello flight")
             oracle.start(DtlsRole.Server, now)
             // ...and the network eats it. Nothing reaches the server.
 
             // A timer must be armed — otherwise a lost flight would hang the handshake forever.
-            val deadline = ours.nextTimeoutMicros(now)
+            val deadline = ours.nextDeadline(now)
             assertNotNull(deadline, "our client armed a retransmission timer for the unacked flight")
             assertTrue(deadline > now, "the timer is in the future, was $deadline vs now=$now")
 
@@ -118,14 +122,14 @@ class DtlsRetransmissionTest {
     fun a_heap_datagram_larger_than_the_oracle_ffi_staging_buffer_is_rejected_not_over_read() {
         val oracle = BoringSslDtlsEngine(config())
         try {
-            oracle.start(DtlsRole.Client, 0L)
+            oracle.start(DtlsRole.Client, Instant.fromEpochSeconds(0))
             // One byte past the 64 KiB scratch, on a managed (GC-heap, no native address) buffer.
             val oversize = BufferFactory.managed().allocate((1 shl 16) + 1, ByteOrder.BIG_ENDIAN)
             oversize.position(0)
             oversize.setLimit((1 shl 16) + 1)
             // send() stages through inputPointer before it ever reaches SSL_write, so the bound fires
             // regardless of handshake state — the length alone is rejected, no bytes are read.
-            assertFailsWith<IllegalArgumentException> { oracle.send(oversize, 0L) }
+            assertFailsWith<IllegalArgumentException> { oracle.send(oversize, Instant.fromEpochSeconds(0)) }
         } finally {
             oracle.close()
         }

@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalTime::class)
+
 package com.ditchoom.webrtc.dtls
 
 import com.ditchoom.buffer.BufferFactory
@@ -16,6 +18,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import kotlin.time.Duration.Companion.nanoseconds
+import kotlin.time.ExperimentalTime
+import kotlin.time.Instant
 
 /**
  * The highest-value differential (owner's ask, 2026-07-20): our pure-Kotlin [DtlsEngine] as a DTLS
@@ -60,7 +65,7 @@ class DtlsOpensslDifferentialJvmTest {
                 val server = DtlsEngine(DtlsConfig(bufferFactory = factory, enableDtls13 = false))
                 val t0 = System.nanoTime()
 
-                fun nowUs() = (System.nanoTime() - t0) / 1000
+                fun now(): Instant = Instant.fromEpochSeconds(0) + (System.nanoTime() - t0).nanoseconds
 
                 // Launch openssl s_client as the DTLS client pointed at our socket.
                 val proc =
@@ -91,7 +96,7 @@ class DtlsOpensslDifferentialJvmTest {
                     }
 
                 try {
-                    server.start(DtlsRole.Server, nowUs()) // arms the server; no records until fed
+                    server.start(DtlsRole.Server, now()) // arms the server; no records until fed
                     var peer: SocketAddress? = null
                     var state: DtlsState = DtlsState.Handshaking
                     var rxCount = 0
@@ -104,7 +109,7 @@ class DtlsOpensslDifferentialJvmTest {
                         if (inbound != null) {
                             rxCount++
                             peer = inbound.socketAddress
-                            val step = server.onDatagram(toBuffer(inbound.data, inbound.length), nowUs())
+                            val step = server.onDatagram(toBuffer(inbound.data, inbound.length), now())
                             txCount += step.records.size
                             sendAll(socket, step.records, peer)
                             state = step.state
@@ -113,9 +118,9 @@ class DtlsOpensslDifferentialJvmTest {
                             }
                         } else {
                             // socket timed out — fire the DTLS timer if a flight is due for retransmit.
-                            val due = server.nextTimeoutMicros(nowUs())
-                            if (due != null && nowUs() >= due) {
-                                val step = server.onTimeout(nowUs())
+                            val due = server.nextDeadline(now())
+                            if (due != null && now() >= due) {
+                                val step = server.onTimeout(now())
                                 txCount += step.records.size
                                 sendAll(socket, step.records, peer)
                             }
@@ -142,7 +147,7 @@ class DtlsOpensslDifferentialJvmTest {
                     val appDeadline = System.nanoTime() + APPDATA_TIMEOUT_NANOS
                     while (!decrypted.contains(token) && System.nanoTime() < appDeadline) {
                         val inbound = receive(socket) ?: continue
-                        val step = server.onDatagram(toBuffer(inbound.data, inbound.length), nowUs())
+                        val step = server.onDatagram(toBuffer(inbound.data, inbound.length), now())
                         sendAll(socket, step.records, inbound.socketAddress)
                         step.applicationData.forEach { decrypted.append(fromBuffer(it)) }
                     }
@@ -150,7 +155,7 @@ class DtlsOpensslDifferentialJvmTest {
 
                     // ── ours → openssl: our server encrypts; openssl -quiet prints the plaintext to stdout ──
                     val reply = "pong-from-ours-9c3d"
-                    sendAll(socket, server.send(toBuffer("$reply\n".toByteArray()), nowUs()).records, peer)
+                    sendAll(socket, server.send(toBuffer("$reply\n".toByteArray()), now()).records, peer)
                     val echoDeadline = System.nanoTime() + APPDATA_TIMEOUT_NANOS
                     var sawReply = false
                     while (!sawReply && System.nanoTime() < echoDeadline) {

@@ -1,9 +1,14 @@
+@file:OptIn(ExperimentalTime::class)
+
 package com.ditchoom.webrtc.dtls
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.managed
+import kotlin.time.Duration.Companion.microseconds
+import kotlin.time.ExperimentalTime
+import kotlin.time.Instant
 
 /**
  * The seam that lets one conductor drive our pure-Kotlin [DtlsEngine] and the BoringSSL oracle
@@ -15,22 +20,22 @@ internal interface DtlsEndpoint {
 
     fun start(
         role: DtlsRole,
-        now: Long,
+        now: Instant,
     ): DtlsStep
 
     fun onDatagram(
         record: ReadBuffer,
-        now: Long,
+        now: Instant,
     ): DtlsStep
 
-    fun onTimeout(now: Long): DtlsStep
+    fun onTimeout(now: Instant): DtlsStep
 
     fun send(
         data: ReadBuffer,
-        now: Long,
+        now: Instant,
     ): DtlsStep
 
-    fun nextTimeoutMicros(now: Long): Long?
+    fun nextDeadline(now: Instant): Instant?
 
     fun close()
 }
@@ -42,22 +47,22 @@ internal fun DtlsEngine.endpoint(): DtlsEndpoint =
 
         override fun start(
             role: DtlsRole,
-            now: Long,
+            now: Instant,
         ) = this@endpoint.start(role, now)
 
         override fun onDatagram(
             record: ReadBuffer,
-            now: Long,
+            now: Instant,
         ) = this@endpoint.onDatagram(record, now)
 
-        override fun onTimeout(now: Long) = this@endpoint.onTimeout(now)
+        override fun onTimeout(now: Instant) = this@endpoint.onTimeout(now)
 
         override fun send(
             data: ReadBuffer,
-            now: Long,
+            now: Instant,
         ) = this@endpoint.send(data, now)
 
-        override fun nextTimeoutMicros(now: Long) = this@endpoint.nextTimeoutMicros(now)
+        override fun nextDeadline(now: Instant) = this@endpoint.nextDeadline(now)
 
         override fun close() = this@endpoint.close()
     }
@@ -69,22 +74,22 @@ internal fun BoringSslDtlsEngine.endpoint(): DtlsEndpoint =
 
         override fun start(
             role: DtlsRole,
-            now: Long,
+            now: Instant,
         ) = this@endpoint.start(role, now)
 
         override fun onDatagram(
             record: ReadBuffer,
-            now: Long,
+            now: Instant,
         ) = this@endpoint.onDatagram(record, now)
 
-        override fun onTimeout(now: Long) = this@endpoint.onTimeout(now)
+        override fun onTimeout(now: Instant) = this@endpoint.onTimeout(now)
 
         override fun send(
             data: ReadBuffer,
-            now: Long,
+            now: Instant,
         ) = this@endpoint.send(data, now)
 
-        override fun nextTimeoutMicros(now: Long) = this@endpoint.nextTimeoutMicros(now)
+        override fun nextDeadline(now: Instant) = this@endpoint.nextDeadline(now)
 
         override fun close() = this@endpoint.close()
     }
@@ -97,7 +102,7 @@ internal fun BoringSslDtlsEngine.endpoint(): DtlsEndpoint =
  * wall-clock. [now] is public so a test can seed junk / drop a flight and resume.
  */
 internal class DtlsConductor {
-    var now = 0L
+    var now: Instant = Instant.fromEpochSeconds(0)
 
     /**
      * Shuttle records between [client] and [server] until both settle. [seed], if non-null, is fed to
@@ -143,9 +148,9 @@ internal class DtlsConductor {
                     toServer.addAll(it.records)
                 }
             } else {
-                val deadlines = listOfNotNull(client.nextTimeoutMicros(now), server.nextTimeoutMicros(now))
+                val deadlines = listOfNotNull(client.nextDeadline(now), server.nextDeadline(now))
                 if (deadlines.isEmpty()) break
-                now = maxOf(now + 1, deadlines.min())
+                now = maxOf(now + 1.microseconds, deadlines.min())
                 client.onTimeout(now).let {
                     cState = it.state
                     toServer.addAll(it.records)

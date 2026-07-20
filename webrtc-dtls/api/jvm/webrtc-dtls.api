@@ -24,12 +24,13 @@ public final class com/ditchoom/webrtc/dtls/Dtls {
 }
 
 public final class com/ditchoom/webrtc/dtls/DtlsConfig {
-	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;ZIJILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;ZIJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;ZIJLkotlin/random/Random;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;ZIJLkotlin/random/Random;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun getBufferFactory ()Lcom/ditchoom/buffer/BufferFactory;
 	public final fun getEnableDtls13 ()Z
 	public final fun getHandshakeTimeout-UwyO8pc ()J
 	public final fun getMaxDatagramSize ()I
+	public final fun getRandom ()Lkotlin/random/Random;
 }
 
 public final class com/ditchoom/webrtc/dtls/DtlsEngine {

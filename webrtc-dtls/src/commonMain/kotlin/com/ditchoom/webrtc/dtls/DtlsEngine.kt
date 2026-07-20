@@ -3,6 +3,7 @@ package com.ditchoom.webrtc.dtls
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.managed
+import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -28,12 +29,18 @@ public enum class DtlsVersion { Dtls12, Dtls13, Unknown }
  *   backoff and never gives up, so without a budget a peer that goes silent mid-handshake would hang
  *   the session forever; this is the liveness bound (RFC §5.3 #5: reach a state or a typed failure,
  *   never hang). Unused by the sans-io engine, which has no clock of its own — the driver enforces it.
+ * @param random the injected entropy seam for the parts of the handshake the pure-Kotlin engine shapes
+ *   itself — the `ClientHello`/`ServerHello` 32-byte `Random`, the cert serial, DTLS cookies. Seedable,
+ *   so a fixture replays a handshake deterministically. (The ephemeral ECDHE keypair + the cert keypair
+ *   still come from buffer-crypto's own CSPRNG, which is not seedable — the documented ±1-datagram
+ *   Tier-B drift residue, not a `Random.Default`.)
  */
 public class DtlsConfig(
     public val bufferFactory: BufferFactory = BufferFactory.managed(),
     public val enableDtls13: Boolean = true,
     public val maxDatagramSize: Int = 1500,
     public val handshakeTimeout: Duration = 30.seconds,
+    @Suppress("UnseamedEntropy") public val random: Random = Random.Default,
 )
 
 /**

@@ -26,6 +26,10 @@ kotlin {
             // on K/N Linux; depending on it puts that one libcrypto on our final link line, which our
             // libssl.a resolves against. On JVM/Android it is pure JCA (no native lib), harmless here.
             api(libs.buffer.crypto)
+            // Used ONLY by the rawEcdhPremaster expect/actual bridge (jvm/android/linux/apple actuals
+            // `runBlocking` the one suspend-only primitive — deriveTlsPremasterSecret — so the sans-io
+            // engine stays synchronous). The engine itself is coroutine-free.
+            api(libs.kotlinx.coroutines.core)
         }
         commonTest.dependencies {
             implementation(libs.kotlinx.coroutines.test)

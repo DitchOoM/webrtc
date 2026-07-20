@@ -1,0 +1,10 @@
+{
+  "name": "webrtc-browser-interop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "W7 Phase 2(b) headless-browser interop answerer (Chromium / Firefox) — drives a real RTCPeerConnection against our native peer.",
+  "dependencies": {
+    "playwright": "1.48.2"
+  }
+}

@@ -22,10 +22,12 @@ public net *through its NAT* (exactly like the real internet), but **cannot reac
 directly** — that is what ICE establishes. All IPs/ports/creds are pinned in `harness.env`.
 
 - **coturn** — real STUN + TURN (short-term creds). Gives genuine `srflx` + `relay` candidates.
-- **rendezvous** — a stateless in-memory UDP keyed mailbox that relays the offer/answer/candidate blobs.
-  Signaling rides UDP (not TCP/HTTP) because the native peer can only link `socket-udp`; linking socket
-  core / socket-quic would duplicate-symbol its BoringSSL against buffer-crypto's (see
-  `~/git/cinterop-issues`). Its wire format is the peer's KSP-generated buffer-codec schema.
+- **rendezvous** — a stateless in-memory keyed mailbox that relays the offer/answer/candidate blobs,
+  reachable two ways onto the *same* mailbox: a **UDP** face for the native/Pion peers (they can only
+  link `socket-udp` — linking socket core / socket-quic would duplicate-symbol its BoringSSL against
+  buffer-crypto's, see `~/git/cinterop-issues` — so they speak raw UDP; wire format = the peer's
+  KSP-generated buffer-codec schema) and an **HTTP** face (`POST /put` + `GET /poll`) for the browser
+  (Chrome) lane, which has no raw UDP. A browser and a native peer therefore still meet in the same slot.
 - **nat_a / nat_b** — Alpine routers applying one RFC 4787 profile each (below).
 - **peer_a / peer_b** — the native binary; `peer_a` offers, `peer_b` answers.
 
@@ -52,10 +54,14 @@ cd test-harness
 ```
 
 Scenarios (in `run-interop.sh`): each NAT profile direct, `symmetric×symmetric` → relay, a mixed
-sym×port lane, an explicit `relay-only` lane, an `impaired` (netem) lane, and the **`pion-interop`**
-lane (below). A scenario **passes** iff both peers exit `0` — and each exits `0` only after it CONNECTED
-*and* the `ping`/`pong` crossed the encrypted data channel. Every run tears the whole stack down
-(containers + networks + volumes) on exit.
+sym×port lane, an explicit `relay-only` lane, an `impaired` (netem) lane, and the interop lanes —
+**`pion-interop`**, **`chrome-interop`**, **`firefox-interop`** (below). A scenario **passes** iff both
+peers exit `0` — and each exits `0` only after it CONNECTED *and* the `ping`/`pong` crossed the encrypted
+data channel. Every run tears the whole stack down (containers + networks + volumes) on exit.
+
+Selecting scenarios: positional args are an **allowlist** (`./run-interop.sh chrome-interop firefox-interop`
+runs just those); `HARNESS_SKIP="chrome-interop firefox-interop" ./run-interop.sh` is a **skiplist** (the CI
+`l2` job runs the full matrix minus the browser lanes, which run as their own parallel per-browser jobs).
 
 ## Interop: the Pion lane (W7 Phase 2a)
 
@@ -73,6 +79,40 @@ buffer-codec wire schema). Pion accepts the data channel and echoes `ping`→`po
 
 ```bash
 ./run-interop.sh pion-interop       # our native offerer ⇄ Pion answerer, DTLS 1.2, over port-restricted NAT
+```
+
+## Interop: the browser lanes — Chrome + Firefox (W7 Phase 2b)
+
+The `chrome-interop` and `firefox-interop` scenarios swap the native answerer `peer_b` for a real
+**headless browser** (`browser/`, driven by Playwright), so our native offerer establishes against a real
+*browser* WebRTC engine and echoes `ping`→`pong`. One image, two engines (selected by the `BROWSER`
+build-arg + env):
+
+- **Chrome** — Chromium's **libwebrtc** (BoringSSL DTLS, libwebrtc ICE, dcSCTP).
+- **Firefox** — a **fully independent** stack (**NSS** DTLS, **nICEr** ICE, **usrsctp**), sharing nothing
+  with Chrome — the highest-value second oracle.
+
+Same topology as the Pion lane (the browser behind `nat_b`, same coturn), accepting the data channel and
+echoing `ping`→`pong`.
+
+- **DTLS 1.3**: both browsers negotiate DTLS 1.3, so these lanes leave the native peer at its **default**
+  (`WEBRTC_DTLS13=true`) — the opposite of the Pion 1.2 lane. This exercises our real DTLS 1.3 handshake
+  against two production browser stacks.
+- **No raw UDP in a browser** → the browser signals over the rendezvous **HTTP face** (`rendezvous.py`
+  serves a `POST /put` + `GET /poll` JSON API onto the *same* in-memory mailbox the UDP peers use, so a
+  browser and a native peer meet in the same slot). ICE/DTLS/SRTP still run in the engine's native code
+  over real UDP through the NAT — the raw-UDP limit is signaling-only.
+- mDNS host-candidate obfuscation is disabled (Chrome `--disable-features=WebRtcHideLocalIpsWithMdns` /
+  Firefox `media.peerconnection.ice.obfuscate_host_addresses=false`) so our peer is fed real-IP
+  candidates, not `.local` names; srflx/relay carry connectivity across the NATs.
+- Each is gated behind its own compose profile (`chrome` / `firefox`); they, `peer_b`, and `pion` share
+  `PEER_B_IP` but never run at once. The image builds natively per-arch (Node + Playwright fetches the
+  per-arch engine — only the selected one), no QEMU. In CI these run as a parallel `{arch × browser}` job
+  matrix (`l2-browser`), separate from the fast native `l2` job.
+
+```bash
+./run-interop.sh chrome-interop     # our native offerer ⇄ headless-Chrome answerer, DTLS 1.3, over port-restricted NAT
+./run-interop.sh firefox-interop    # our native offerer ⇄ headless-Firefox answerer, DTLS 1.3, over port-restricted NAT
 ```
 
 ### Portability (arch-matched, no QEMU)
@@ -101,7 +141,8 @@ daemon is root even where you aren't); CI sets it with `sudo sysctl`. It's harml
 | `run-interop.sh` | orchestrator: scenario matrix, per-scenario stack, pass/fail, teardown |
 | `compose-up-retry.sh` | `up --wait` with transient-pull retries |
 | `coturn/` | `turnserver.conf` + entrypoint (subst from `harness.env`) |
-| `rendezvous/` | UDP keyed-mailbox relay (`rendezvous.py`) + image |
+| `rendezvous/` | keyed-mailbox relay (`rendezvous.py`) with UDP (native/Pion) + HTTP (browser) faces onto one mailbox, + image |
 | `nat/` | NAT gateway image + `nat-setup.sh` (the 4 profiles) + `netem.sh` |
 | `peer/` | `Dockerfile` (self-building, portable) + `Dockerfile.prebuilt` (fast) + entrypoint |
 | `pion/` | the Pion (Go) interop echo-peer: `main.go` + `signaling.go` (rendezvous client) + image |
+| `browser/` | the headless-browser interop echo-peer (Chrome + Firefox): `driver.mjs` (Playwright answerer, `BROWSER`-parameterized) + entrypoint + image |

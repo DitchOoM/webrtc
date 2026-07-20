@@ -191,6 +191,81 @@ services:
       rendezvous: { condition: service_healthy }
       nat_b: { condition: service_healthy }
 
+  # Headless-browser (Playwright) interop echo-peers — W7 Phase 2(b). Like `pion`, each is a DROP-IN for
+  # the native answerer peer_b (same LAN/IP/NAT gateway/WEBRTC_* env), so our native offerer peer_a
+  # establishes against a real BROWSER WebRTC engine and echoes ping/pong. Two engines, one image
+  # (test-harness/browser, selected by the BROWSER build-arg + env): `chrome` runs Chromium's libwebrtc,
+  # `firefox` runs Firefox's fully-independent stack (NSS DTLS, nICEr ICE, usrsctp) — a distinct oracle.
+  # Both negotiate DTLS 1.3, so these lanes leave PEER_DTLS13 at its true default (unlike the Pion 1.2
+  # lane). Each is gated behind its own compose profile (run-interop.sh sets COMPOSE_PROFILES); peer_b,
+  # pion, chrome, and firefox all share PEER_B_IP but never run together. A browser has no raw UDP, so it
+  # signals over the rendezvous HTTP face (WEBRTC_RENDEZVOUS_HTTP_PORT) — the same mailbox the UDP peers
+  # use. No io_uring (browser engine, not socket-udp), so no seccomp=unconfined; NET_ADMIN for the
+  # default-route rewrite; shm_size (+ Chromium's --disable-dev-shm-usage) for Docker's small /dev/shm.
+  chrome:
+    profiles: ["chrome"]
+    build:
+      context: ./browser
+      dockerfile: Dockerfile
+      args: { BROWSER: chromium }
+    cap_add: [NET_ADMIN]
+    security_opt: ["no-new-privileges:true"]
+    shm_size: "512m"
+    environment:
+      GATEWAY_IP: "${NAT_B_LAN_IP}"
+      BROWSER: chromium
+      WEBRTC_ROLE: answerer  # the browser peer is answerer-only; informational
+      WEBRTC_SESSION: "${SESSION:-l2}"
+      WEBRTC_LOCAL_IP: "${PEER_B_IP}"
+      WEBRTC_STUN_HOST: "${COTURN_IP}"
+      WEBRTC_STUN_PORT: "${STUN_PORT}"
+      WEBRTC_TURN_HOST: "${COTURN_IP}"
+      WEBRTC_TURN_PORT: "${STUN_PORT}"
+      WEBRTC_TURN_USER: "${TURN_USER}"
+      WEBRTC_TURN_PASS: "${TURN_PASS}"
+      WEBRTC_RENDEZVOUS_HOST: "${RENDEZVOUS_IP}"
+      WEBRTC_RENDEZVOUS_HTTP_PORT: "${RENDEZVOUS_HTTP_PORT}"
+      WEBRTC_ICE_POLICY: "${ICE_POLICY:-all}"
+      WEBRTC_TIMEOUT_MS: "${PEER_TIMEOUT_MS}"
+    networks:
+      lan_b: { ipv4_address: "${PEER_B_IP}" }
+    depends_on:
+      coturn: { condition: service_healthy }
+      rendezvous: { condition: service_healthy }
+      nat_b: { condition: service_healthy }
+
+  firefox:
+    profiles: ["firefox"]
+    build:
+      context: ./browser
+      dockerfile: Dockerfile
+      args: { BROWSER: firefox }
+    cap_add: [NET_ADMIN]
+    security_opt: ["no-new-privileges:true"]
+    shm_size: "512m"
+    environment:
+      GATEWAY_IP: "${NAT_B_LAN_IP}"
+      BROWSER: firefox
+      WEBRTC_ROLE: answerer  # the browser peer is answerer-only; informational
+      WEBRTC_SESSION: "${SESSION:-l2}"
+      WEBRTC_LOCAL_IP: "${PEER_B_IP}"
+      WEBRTC_STUN_HOST: "${COTURN_IP}"
+      WEBRTC_STUN_PORT: "${STUN_PORT}"
+      WEBRTC_TURN_HOST: "${COTURN_IP}"
+      WEBRTC_TURN_PORT: "${STUN_PORT}"
+      WEBRTC_TURN_USER: "${TURN_USER}"
+      WEBRTC_TURN_PASS: "${TURN_PASS}"
+      WEBRTC_RENDEZVOUS_HOST: "${RENDEZVOUS_IP}"
+      WEBRTC_RENDEZVOUS_HTTP_PORT: "${RENDEZVOUS_HTTP_PORT}"
+      WEBRTC_ICE_POLICY: "${ICE_POLICY:-all}"
+      WEBRTC_TIMEOUT_MS: "${PEER_TIMEOUT_MS}"
+    networks:
+      lan_b: { ipv4_address: "${PEER_B_IP}" }
+    depends_on:
+      coturn: { condition: service_healthy }
+      rendezvous: { condition: service_healthy }
+      nat_b: { condition: service_healthy }
+
   # netem impairment (loss/delay/jitter/reorder) is applied to each NAT's PUBLIC (WAN) interface — the
   # data path between the peers — on demand by run-interop.sh (`nat/netem.sh` via `docker exec` on
   # nat_a/nat_b), so it composes with any NAT profile without a separate service. See the `impaired` scenario.

@@ -92,8 +92,11 @@ internal class Dtls12Handshake(
     private var peerEcdhPoint: ReadBuffer? = null
     private var useExtendedMasterSecret = false
     private var peerAdvertisedRenegotiation = false
-    private var masterSecret: ReadBuffer? = null
-    private var protection: Dtls12RecordProtection? = null
+
+    // The master secret and its record protection are derived together and only make sense together
+    // (DESIGN §4: no nullable soup) — one sealed value, so "master set but protection null" is
+    // unrepresentable. Read-only accessors below keep the [masterSecret]/[protection] names.
+    private var keys: Keys = Keys.Pending
 
     // ── record send state: monotonic seq per epoch (retransmits reuse epochs, get fresh seqs) ─────
     private var epoch0Seq = 0L
@@ -107,6 +110,19 @@ internal class Dtls12Handshake(
     private var lastFlight: List<FlightItem>? = null
     private var retransmitDeadline: Instant? = null
     private var retransmitBackoff = INITIAL_RETRANSMIT
+
+    /** Master secret + record protection, derived together (a ChangeCipherSpec), so neither exists alone. */
+    private sealed interface Keys {
+        data object Pending : Keys
+
+        class Derived(
+            val master: ReadBuffer,
+            val protection: Dtls12RecordProtection,
+        ) : Keys
+    }
+
+    private val masterSecret: ReadBuffer? get() = (keys as? Keys.Derived)?.master
+    private val protection: Dtls12RecordProtection? get() = (keys as? Keys.Derived)?.protection
 
     private class FlightItem(
         val contentType: Int,
@@ -443,9 +459,8 @@ internal class Dtls12Handshake(
             } finally {
                 premaster.freeNativeMemory()
             }
-        masterSecret = master
         val keyBlock = keySchedule.keyBlock(master, sr, cr, Dtls12RecordProtection.KEY_BLOCK_BYTES)
-        protection = Dtls12RecordProtection.fromKeyBlock(keyBlock, client = client, factory)
+        keys = Keys.Derived(master, Dtls12RecordProtection.fromKeyBlock(keyBlock, client = client, factory))
     }
 
     private fun buildFinished(label: String): FlightItem {

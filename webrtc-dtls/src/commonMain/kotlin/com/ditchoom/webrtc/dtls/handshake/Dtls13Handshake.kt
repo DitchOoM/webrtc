@@ -83,19 +83,15 @@ internal class Dtls13Handshake(
     private var peerCertDer: ReadBuffer? = null
     private var peerPoint: ReadBuffer? = null
 
-    // Secret schedule material.
-    private var handshakeSecret: ReadBuffer? = null
-    private var masterSecret: ReadBuffer? = null
-    private var clientHsSecret: ReadBuffer? = null
-    private var serverHsSecret: ReadBuffer? = null
-    private var handshakeProtection: Dtls13RecordProtection? = null
-    private var appProtection: Dtls13RecordProtection? = null
+    // Key material as a phase progression (DESIGN §4: no nullable soup) — Pending → Handshake (epoch-2
+    // traffic keys) → Application (also epoch-3). A partially-derived combination is unrepresentable, so
+    // "master set but protection null" cannot occur. Read-only accessors below keep the material's names.
+    private var keys: Keys = Keys.Pending
 
     // Record send state: monotonic per epoch. Epoch 0 = plaintext, 2 = handshake keys, 3 = app keys.
     private var epoch0Seq = 0L
     private var epoch2Seq = 0L
     private var epoch3Seq = 0L
-    private var appSecretsReady = false
 
     private var sendMsgSeq = 0
     private var started = false
@@ -111,6 +107,40 @@ internal class Dtls13Handshake(
         val payload: ReadBuffer,
         val epoch: Int,
     )
+
+    /** Derived key material as a phase, so no partial/inconsistent combination is representable. */
+    private sealed interface Keys {
+        data object Pending : Keys
+
+        /** Epoch-2 handshake traffic keys; [master] is retained to derive the application secrets. */
+        class Handshake(
+            val master: ReadBuffer,
+            val clientHs: ReadBuffer,
+            val serverHs: ReadBuffer,
+            val protection: Dtls13RecordProtection,
+        ) : Keys
+
+        /** Epoch-3 application traffic keys, alongside the retained handshake keys. */
+        class Application(
+            val handshake: Handshake,
+            val protection: Dtls13RecordProtection,
+        ) : Keys
+    }
+
+    // Read-only views over [keys] so the handshake logic reads named material without any nullable soup.
+    private val handshakeKeys: Keys.Handshake?
+        get() =
+            when (val k = keys) {
+                is Keys.Handshake -> k
+                is Keys.Application -> k.handshake
+                Keys.Pending -> null
+            }
+
+    private val clientHsSecret: ReadBuffer? get() = handshakeKeys?.clientHs
+    private val serverHsSecret: ReadBuffer? get() = handshakeKeys?.serverHs
+    private val masterSecret: ReadBuffer? get() = handshakeKeys?.master
+    private val handshakeProtection: Dtls13RecordProtection? get() = handshakeKeys?.protection
+    private val appProtection: Dtls13RecordProtection? get() = (keys as? Keys.Application)?.protection
 
     // ── sans-io surface ──────────────────────────────────────────────────────────────────────────
 
@@ -426,29 +456,26 @@ internal class Dtls13Handshake(
             } finally {
                 ecdheSecret.freeNativeMemory()
             }
-        handshakeSecret = hs
         val thChSh = transcript.currentSha256()
         val cHs = schedule.deriveSecret(hs, Tls13KeySchedule.CLIENT_HANDSHAKE_LABEL, thChSh)
         val sHs = schedule.deriveSecret(hs, Tls13KeySchedule.SERVER_HANDSHAKE_LABEL, thChSh)
-        clientHsSecret = cHs
-        serverHsSecret = sHs
-        masterSecret = schedule.masterSecret(hs)
         val local = if (client) cHs else sHs
         val peer = if (client) sHs else cHs
-        handshakeProtection = Dtls13RecordProtection.fromTrafficSecrets(schedule, local, peer, factory)
+        val protection = Dtls13RecordProtection.fromTrafficSecrets(schedule, local, peer, factory)
+        keys = Keys.Handshake(schedule.masterSecret(hs), cHs, sHs, protection)
     }
 
     private fun deriveApplicationSecrets() {
-        if (appSecretsReady) return
-        val master = masterSecret!!
+        val hk = handshakeKeys ?: return
+        if (keys is Keys.Application) return
         val thChSFin = transcript.currentSha256()
-        val cAp = schedule.deriveSecret(master, Tls13KeySchedule.CLIENT_APPLICATION_LABEL, thChSFin)
-        val sAp = schedule.deriveSecret(master, Tls13KeySchedule.SERVER_APPLICATION_LABEL, thChSFin)
+        val cAp = schedule.deriveSecret(hk.master, Tls13KeySchedule.CLIENT_APPLICATION_LABEL, thChSFin)
+        val sAp = schedule.deriveSecret(hk.master, Tls13KeySchedule.SERVER_APPLICATION_LABEL, thChSFin)
         val client = role == DtlsRole.Client
         val local = if (client) cAp else sAp
         val peer = if (client) sAp else cAp
-        appProtection = Dtls13RecordProtection.fromTrafficSecrets(schedule, local, peer, factory)
-        appSecretsReady = true
+        val protection = Dtls13RecordProtection.fromTrafficSecrets(schedule, local, peer, factory)
+        keys = Keys.Application(hk, protection)
     }
 
     private fun buildFinished(baseSecret: ReadBuffer): FlightItem {

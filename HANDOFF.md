@@ -7,6 +7,50 @@ this file. Update it whenever you stop mid-wave.
 
 ## START HERE — W4b + W7 Phase 3 (fresh session). Branch `w4b-dtls-kotlin` off `main` @ `1518e8a`.
 
+### ⇢ LIVE PROGRESS (2026-07-20, session 3) — task #5 THE FLIP done + differential-tested; whole project green
+
+**Three commits on `w4b-dtls-kotlin` (`753747f`, `2212a21`, `fc338e8`). `./gradlew build` SUCCESSFUL — all
+modules, all host targets. The pure-Kotlin DTLS engine is now the ONLY DTLS on every non-browser target.**
+
+- **Task #5 (the flip) DONE ✅ (`753747f`).** `DtlsEngine` is now a concrete `commonMain` class delegating to
+  `Dtls12Handshake`, running on **JVM/Android/Apple/Linux** over buffer-crypto with **no native dependency**.
+  Deleted the 6 `expect`/`actual` `DtlsEngine.*.kt` + the `DtlsBackend` expect/actuals + the commonTest
+  link-smoke. The cert identity is hoisted to `DtlsEngine` (fingerprint readable pre-role) and threaded into
+  the handshake; added `beginClose` (close_notify). **BoringSSL demoted out of the published klib**: it moved
+  to `linuxTest` as `BoringSslDtlsEngine` (a plain class) and the `boringsslssl` cinterop is now scoped to the
+  **test** compilation (`build.gradle.kts`: `compilations.getByName("test").cinterops...`). `.api` unchanged
+  (same public surface). **JVM/Android/Apple now have real DTLS** — a capability unlock (W7 interop could now
+  run a JVM peer, not only linuxX64).
+- **Differential testing DONE ✅ (the owner's ask — close the self-loopback gap).**
+  - **linuxTest = our engine ⇄ BoringSSL oracle** (`DtlsHandshakeTest`/`DtlsRetransmissionTest` rewritten,
+    1.2-pinned): both roles, app data both ways, malformed-drop, timer retransmission, allocation bound. A
+    `DtlsConductor` + `DtlsEndpoint` adapter (`DifferentialDriver.kt`) drives either engine type. 9/9 green.
+  - **jvmTest = our engine ⇄ `openssl s_client -dtls1_2`** (`DtlsOpensslDifferentialJvmTest`, `2212a21`): our
+    server over a **real loopback UDP socket** vs OpenSSL 3.0.13 (a SECOND independent stack), full handshake +
+    both app-data directions + fingerprint cross-checked against the actual cert file. Skips if openssl absent.
+  - **⭐ It immediately caught a real interop bug the loopback structurally couldn't:** our ClientHello/ServerHello
+    omitted the **RFC 5746 `renegotiation_info`** extension → OpenSSL aborted (`unsafe legacy renegotiation
+    disabled`). BoringSSL tolerated it; OpenSSL (and browsers) enforce it. **Fixed** (advertise empty in
+    ClientHello; echo in ServerHello when the peer signals support via the extension or the SCSV) — ships with
+    its fixture (directive #5).
+  - **SRTP-exporter OUTPUT differential vs BoringSSL is still deferred to #7** (the `bd_export_srtp_keys`
+    wrapper exists but our engine has no exporter yet — 1.2 uses the TLS-1.2 PRF exporter).
+- **A latent pre-existing failure fixed (`fc338e8`):** the engine-crypto **commonTests** (`EcdheKeyExchangeTest`,
+  `Dtls12RecordProtectionTest`, `Dtls12HandshakeTest`) construct buffer-crypto's **blocking** primitives, which
+  don't exist on js/wasmJs (async WebCrypto) — they'd never been run under full-build `allTests` on browsers.
+  They now gate on `engineCryptoAvailable()` (`commonTest/TestEngineCrypto.kt`) and no-op on browser targets
+  (the engine is never constructed there). `:webrtc-dtls:allTests` green on jvm/android/linuxX64/js{Node,Browser}/
+  wasmJs{Node,Browser}.
+- **NEXT = task #6 (DTLS 1.3) then #7.** #7 = **(a)** rename the webrtc-root `BoringSslDtls` driver — it's now a
+  **misnomer** (drives the pure-Kotlin engine, not BoringSSL) and its class doc still says "throws
+  BackendUnavailable on a target with no backend" (stale — JVM/Apple now work); **(b)** PeerConnection interop
+  (Chrome/Firefox/Pion) as the real acceptance bar; **(c)** the SRTP-exporter output differential vs BoringSSL.
+- **Traps for the fresh session:** the K/Wasm `compileTestDevelopmentExecutableKotlinWasmJs` throws a
+  **flaky "Internal compiler error"** (hit `:webrtc-dtls` then `:webrtc-sctp` on consecutive `build` runs, both
+  passed on retry) — it is a toolchain flake, **re-run `build` before diagnosing**. Our client still stubs
+  inbound HelloVerifyRequest (server skips HVR); PMTU outbound fragmentation, anti-replay window still deferred
+  to interop. Our engine is **DTLS 1.2 only** until #6 — the BoringSSL/openssl differentials are 1.2-pinned.
+
 ### ⇢ LIVE PROGRESS (2026-07-20, session 2) — W4b crypto/wire foundation done + tested; W7 Phase 3 landed
 
 **Two commits on `w4b-dtls-kotlin` (after the buffer bump). All `commonMain`/`commonTest`, JVM-verified,

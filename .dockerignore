@@ -1,11 +1,13 @@
 # Docker build context is the repo root (the peer image's `context: ..`). Keep it lean: exclude build
 # outputs, caches, and VCS so a change to any of them doesn't bust the peer builder's cache — and so the
 # self-build path never ingests a host's foreign-arch/OS gradle state (macOS klibs, Konan outputs, etc.).
-# The prebuilt path's binary lives under webrtc-harness-endpoint/build/bin — re-included below.
+# The prebuilt paths' artifacts live under webrtc-harness-endpoint/build/{bin,libs} — re-included below
+# (bin = the native peer .kexe; libs = the JVM peer fat jar).
 .git
 .gradle
 **/build
 !webrtc-harness-endpoint/build/bin/**
+!webrtc-harness-endpoint/build/libs/**
 .kotlin
 **/.kotlin
 kotlin-js-store

@@ -1,0 +1,16 @@
+# Fast path: COPY a fat jar already built on the host / downloaded as a CI artifact. run-interop.sh uses
+# this by default on Linux/CI, where the host gradle build or the build-peer job has already produced the
+# jar. The jar is arch-INDEPENDENT (JVM bytecode), so the SAME jar image runs on both the x64 and arm64
+# runners — no per-arch build (the native peer's cross-compile dance does not apply here).
+#
+# PEER_JAR is the repo-relative path to the built jar (set by run-interop.sh). Build context is the REPO
+# ROOT (compose sets context: ..).
+
+FROM eclipse-temurin:21-jre
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 && \
+    rm -rf /var/lib/apt/lists/*
+ARG PEER_JAR
+COPY ${PEER_JAR} /usr/local/lib/peer.jar
+COPY test-harness/peer-jvm/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]

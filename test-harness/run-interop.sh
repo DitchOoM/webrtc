@@ -51,6 +51,24 @@ else
     fi
 fi
 
+# ── JVM peer jar (only used by a_impl=jvm scenarios; resolved up front, mirroring the native binary) ──
+#   1. HARNESS_SELF_BUILD=1        → build the jar inside the image (portable, any arch)
+#   2. PEER_JAR points at a file   → use it as-is (CI ships ONE arch-independent jar this way)
+#   3. otherwise                   → build the jar on the host (arch-independent, so no per-arch step)
+if [ "${HARNESS_SELF_BUILD:-0}" = "1" ]; then
+    export PEER_JVM_DOCKERFILE="Dockerfile"
+    echo "[run] jvm peer image: self-building inside the image"
+elif [ -n "${PEER_JAR:-}" ] && [ -f "../${PEER_JAR}" ]; then
+    export PEER_JVM_DOCKERFILE="Dockerfile.prebuilt"
+    echo "[run] jvm peer image: prebuilt (supplied) ${PEER_JAR}"
+else
+    echo "[run] building jvm peer jar on host…"
+    ( cd .. && ./gradlew --no-daemon --no-configuration-cache ":webrtc-harness-endpoint:peerJar" )
+    export PEER_JVM_DOCKERFILE="Dockerfile.prebuilt"
+    export PEER_JAR="webrtc-harness-endpoint/build/libs/webrtc-harness-peer-all.jar"
+    echo "[run] jvm peer image: prebuilt $PEER_JAR"
+fi
+
 INFRA="coturn rendezvous nat_a nat_b"
 
 # Docker-host setup: a container acting as a router BETWEEN two Docker bridge networks only forwards if
@@ -85,23 +103,31 @@ docker run --rm --privileged --network host alpine:3.20 \
     sysctl -w net.bridge.bridge-nf-call-iptables=0 net.bridge.bridge-nf-call-ip6tables=0 >/dev/null 2>&1 \
     || echo "::warning::could not set bridge-nf-call-iptables=0 — container routing across NATs may fail"
 
-# ── the scenario matrix — name | nat_a | nat_b | ice_policy | netem(args or "-") | b_impl(native|pion|chrome|firefox) ──
+# ── scenario matrix — name | nat_a | nat_b | ice_policy | netem(args or "-") | a_impl | b_impl ──
+#   a_impl (offerer / "our side") ∈ native | jvm
+#   b_impl (answerer)             ∈ native | pion | chrome | firefox
 # Covers each of the four NAT profiles, the symmetric→relay fallback, an explicit relay-only lane, an
-# impaired data path (all our-peer ⇄ our-peer), plus the W7 Phase-2 interop lanes where the answerer is a
-# real Pion (Go) peer [2(a)] or a real headless browser — Chrome / Firefox [2(b)]. Each expects BOTH peers
-# to exit 0. b_impl defaults to native when the column is omitted. The pion lane forces DTLS 1.2 (Pion v3 is
-# 1.2-only); the browser lanes run DTLS 1.3 (the default) — see run_scenario.
+# impaired data path (all native ⇄ native), the W7 Phase-2 interop lanes where the answerer is a real Pion
+# (Go) peer [2(a)] or a real headless browser — Chrome / Firefox [2(b)], PLUS the JVM-offerer lanes: the
+# pure-Kotlin engine on the JVM (socket-udp NIO datapath) ⇄ native / Pion / Chrome / Firefox — proving the
+# pure engine on the real wire from a managed runtime. Each expects BOTH peers to exit 0. Both impl columns
+# default to native when omitted. The pion lanes force DTLS 1.2 (Pion v3 is 1.2-only); every other lane runs
+# DTLS 1.3 (the default) — see run_scenario.
 SCENARIOS="
-full-cone            | full-cone          | full-cone          | all   | -                                                | native
-port-restricted      | port-restricted    | port-restricted    | all   | -                                                | native
-address-restricted   | address-restricted | address-restricted | all   | -                                                | native
-symmetric-relay      | symmetric          | symmetric          | all   | -                                                | native
-mixed-sym-port       | symmetric          | port-restricted    | all   | -                                                | native
-relay-only           | port-restricted    | port-restricted    | relay | -                                                | native
-impaired-loss-delay  | port-restricted    | port-restricted    | all   | loss 5% delay 20ms 5ms distribution normal      | native
-pion-interop         | port-restricted    | port-restricted    | all   | -                                                | pion
-chrome-interop       | port-restricted    | port-restricted    | all   | -                                                | chrome
-firefox-interop      | port-restricted    | port-restricted    | all   | -                                                | firefox
+full-cone            | full-cone          | full-cone          | all   | -                                                | native | native
+port-restricted      | port-restricted    | port-restricted    | all   | -                                                | native | native
+address-restricted   | address-restricted | address-restricted | all   | -                                                | native | native
+symmetric-relay      | symmetric          | symmetric          | all   | -                                                | native | native
+mixed-sym-port       | symmetric          | port-restricted    | all   | -                                                | native | native
+relay-only           | port-restricted    | port-restricted    | relay | -                                                | native | native
+impaired-loss-delay  | port-restricted    | port-restricted    | all   | loss 5% delay 20ms 5ms distribution normal      | native | native
+pion-interop         | port-restricted    | port-restricted    | all   | -                                                | native | pion
+chrome-interop       | port-restricted    | port-restricted    | all   | -                                                | native | chrome
+firefox-interop      | port-restricted    | port-restricted    | all   | -                                                | native | firefox
+jvm-native           | port-restricted    | port-restricted    | all   | -                                                | jvm    | native
+jvm-pion             | port-restricted    | port-restricted    | all   | -                                                | jvm    | pion
+jvm-chrome           | port-restricted    | port-restricted    | all   | -                                                | jvm    | chrome
+jvm-firefox          | port-restricted    | port-restricted    | all   | -                                                | jvm    | firefox
 "
 
 # Scenario selection:
@@ -115,23 +141,29 @@ skip=" ${HARNESS_SKIP:-} "
 pass=0; fail=0; failed_names=""
 
 run_scenario() {
-    local name="$1" nat_a="$2" nat_b="$3" policy="$4" netem="$5" b_impl="${6:-native}"
+    local name="$1" nat_a="$2" nat_b="$3" policy="$4" netem="$5" a_impl="${6:-native}" b_impl="${7:-native}"
     echo ""
-    echo "═══ scenario: $name  (nat_a=$nat_a nat_b=$nat_b policy=$policy netem=${netem} b=${b_impl}) ═══"
+    echo "═══ scenario: $name  (nat_a=$nat_a nat_b=$nat_b policy=$policy netem=${netem} a=${a_impl} b=${b_impl}) ═══"
 
     export NAT_A_PROFILE="$nat_a" NAT_B_PROFILE="$nat_b" ICE_POLICY="$policy" SESSION="$name"
 
-    # Choose the "b side": the native answerer peer_b, the Pion (Go) echo-peer, or the headless-Chrome
-    # echo-peer. Each interop lane is gated behind its own compose profile (COMPOSE_PROFILES). The Pion
-    # lane pins DTLS 1.2 on BOTH peers (PEER_DTLS13=false) — Pion v3 is DTLS-1.2-only, and our peer_a would
-    # otherwise negotiate up to 1.3. Chrome speaks DTLS 1.3, so its lane leaves peer_a at the 1.3 default.
-    local b_service
-    case "$b_impl" in
-        pion)    b_service="pion";    export COMPOSE_PROFILES="pion";    export PEER_DTLS13="false" ;;
-        chrome)  b_service="chrome";  export COMPOSE_PROFILES="chrome";  export PEER_DTLS13="true" ;;
-        firefox) b_service="firefox"; export COMPOSE_PROFILES="firefox"; export PEER_DTLS13="true" ;;
-        *)       b_service="peer_b";  unset COMPOSE_PROFILES;            export PEER_DTLS13="true" ;;
+    # Choose the offerer ("our side", a_service) and the answerer (b_service), and activate exactly the
+    # compose profiles for the non-default services this scenario needs. The Pion lane pins DTLS 1.2 on BOTH
+    # peers (PEER_DTLS13=false) — Pion v3 is 1.2-only, and our offerer (native OR jvm, both read
+    # ${PEER_DTLS13}) would otherwise negotiate up to 1.3; every other lane runs the 1.3 default.
+    local a_service b_service profiles=""
+    case "$a_impl" in
+        jvm) a_service="peer_a_jvm"; profiles="$profiles jvm" ;;
+        *)   a_service="peer_a" ;;
     esac
+    case "$b_impl" in
+        pion)    b_service="pion";    profiles="$profiles pion";    export PEER_DTLS13="false" ;;
+        chrome)  b_service="chrome";  profiles="$profiles chrome";  export PEER_DTLS13="true" ;;
+        firefox) b_service="firefox"; profiles="$profiles firefox"; export PEER_DTLS13="true" ;;
+        *)       b_service="peer_b";                                export PEER_DTLS13="true" ;;
+    esac
+    profiles=$(echo "$profiles" | xargs | tr ' ' ',')  # trim + COMMA-separate (COMPOSE_PROFILES format)
+    if [ -n "$profiles" ]; then export COMPOSE_PROFILES="$profiles"; else unset COMPOSE_PROFILES; fi
 
     # Fresh stack per scenario for isolation (NAT rules + conntrack state must not bleed across profiles).
     # stack_down ONLY — the host bridge-nf sysctl stays as set for the whole run (restored once on EXIT).
@@ -151,11 +183,11 @@ run_scenario() {
 
     # BUILD the peer images first, then start BOTH peers together in ONE `up` (offerer + answerer must come
     # up together — starting them in two separate `up` commands perturbs the offerer's offer-publish and it
-    # never PUTs the offer). peer_a's prebuilt image must reflect the freshly-built binary → always build it
-    # (see compose-up-retry.sh for the stale-image rationale). The browser images take minutes to build
-    # (engine download), so CI prebuilds them ONCE with a persistent buildx/gha layer cache and sets
-    # HARNESS_NO_BROWSER_BUILD=1 to reuse that cache-warmed image here; locally (unset) we build it too.
-    docker compose build peer_a
+    # never PUTs the offer). The offerer image (native peer_a or peer_a_jvm) must reflect the freshly-built
+    # binary/jar → always build it (see compose-up-retry.sh for the stale-image rationale). The browser
+    # images take minutes to build (engine download), so CI prebuilds them ONCE with a persistent buildx/gha
+    # layer cache and sets HARNESS_NO_BROWSER_BUILD=1 to reuse that cache-warmed image; locally we build it.
+    docker compose build "$a_service"
     if [ "${HARNESS_NO_BROWSER_BUILD:-0}" = "1" ] && { [ "$b_service" = "chrome" ] || [ "$b_service" = "firefox" ]; }; then
         : # browser image was prebuilt + gha-cached by CI — don't rebuild
     else
@@ -163,14 +195,14 @@ run_scenario() {
     fi
     # Now start both together with the already-built images (no build here → same ordering as before).
     # They run to completion (establish + echo, or watchdog timeout) and exit.
-    docker compose up -d --no-build peer_a "$b_service"
+    docker compose up -d --no-build "$a_service" "$b_service"
     # `docker compose wait` blocks until stop; its output form varies ("0" vs "container … status code 0"),
     # so extract the trailing exit code robustly.
     local rc_a rc_b
-    rc_a=$(docker compose wait peer_a 2>/dev/null | grep -oE '[0-9]+$' | tail -1)
+    rc_a=$(docker compose wait "$a_service" 2>/dev/null | grep -oE '[0-9]+$' | tail -1)
     rc_b=$(docker compose wait "$b_service" 2>/dev/null | grep -oE '[0-9]+$' | tail -1)
 
-    echo "── peer_a (offerer) ──"; docker compose logs --no-log-prefix peer_a
+    echo "── $a_service (offerer) ──"; docker compose logs --no-log-prefix "$a_service"
     echo "── $b_service (answerer) ──"; docker compose logs --no-log-prefix "$b_service"
 
     if [ "$rc_a" = "0" ] && [ "$rc_b" = "0" ]; then
@@ -186,15 +218,16 @@ run_scenario() {
 # drains its stdin, which — if the loop read from stdin — would swallow every remaining scenario line, so
 # the matrix would silently stop after the first netem lane (it ran 7/9, skipping pion-interop +
 # chrome-interop). Reading from fd 3 keeps the list out of reach of any inner command's stdin.
-while IFS='|' read -r name a b policy netem b_impl <&3; do
+while IFS='|' read -r name a b policy netem a_impl b_impl <&3; do
     name=$(echo "$name" | xargs); [ -z "$name" ] && continue
     a=$(echo "$a" | xargs); b=$(echo "$b" | xargs); policy=$(echo "$policy" | xargs); netem=$(echo "$netem" | xargs)
+    a_impl=$(echo "$a_impl" | xargs); [ -z "$a_impl" ] && a_impl=native
     b_impl=$(echo "$b_impl" | xargs); [ -z "$b_impl" ] && b_impl=native
     # Allowlist (positional args): if any were given, run only those names.
     if [ -n "$*" ]; then case "$only" in *" $name "*) ;; *) continue ;; esac; fi
     # Skiplist ($HARNESS_SKIP): never run a named-skipped scenario.
     case "$skip" in *" $name "*) echo "── skip $name (HARNESS_SKIP)"; continue ;; esac
-    run_scenario "$name" "$a" "$b" "$policy" "$netem" "$b_impl"
+    run_scenario "$name" "$a" "$b" "$policy" "$netem" "$a_impl" "$b_impl"
 done 3<<< "$SCENARIOS"
 
 echo ""

@@ -6,15 +6,18 @@ name: "L2 Interop Harness"
 #
 # W7 Phase 2 adds INTEROP lanes against real independent WebRTC engines — the differential oracles the
 # harness exists to provide, split across two jobs so a slow browser build never gates the fast lanes:
-#   * `l2` — the NAT-profile matrix + `pion-interop` (our native offerer ⇄ a real Pion (Go) answerer over
-#     DTLS 1.2 [Phase 2(a)]). HARNESS_SKIP drops the browser scenarios here.
-#   * `l2-browser` — a per-{arch × engine} matrix of parallel jobs [Phase 2(b)]: our native offerer ⇄ a
-#     real headless **Chrome** (Chromium libwebrtc) and **Firefox** (NSS/nICEr/usrsctp — a fully
-#     independent stack), each over DTLS 1.3 (our default). A browser has no raw UDP, so it signals over
-#     the rendezvous HTTP face.
-# Every interop image builds natively inside its job (Pion: pure Go; browsers: Node + Playwright fetches
-# the per-arch engine), no cross-compile, no QEMU, no build-peer step. The browser image's engine download
-# adds a few minutes to each browser job's first build.
+#   * `l2` — the NAT-profile matrix + `pion-interop` (native offerer ⇄ a real Pion (Go) answerer over
+#     DTLS 1.2 [Phase 2(a)]) + the fast JVM-offerer lanes (`jvm-native`, `jvm-pion`). HARNESS_SKIP drops
+#     the browser scenarios here.
+#   * `l2-browser` — a per-{arch × engine × offerer} matrix of parallel jobs [Phase 2(b) + JVM]: our
+#     offerer (native peer OR JVM peer) ⇄ a real headless **Chrome** (Chromium libwebrtc) and **Firefox**
+#     (NSS/nICEr/usrsctp — a fully independent stack), each over DTLS 1.3 (our default). A browser has no
+#     raw UDP, so it signals over the rendezvous HTTP face.
+# The JVM offerer runs the SAME pure-Kotlin engine on the JVM (socket-udp's NIO datapath), proving it on
+# the real wire from a managed runtime; its jar is arch-independent (built once in build-peer, run on both
+# arches). Every interop image builds natively inside its job (Pion: pure Go; browsers: Node + Playwright
+# fetches the per-arch engine), no cross-compile, no QEMU. The browser image's engine download adds a few
+# minutes to each browser job's first build.
 #
 # Arch-matched RUNTIME without QEMU, working around the K/N toolchain: Kotlin/Native cannot host its
 # compiler on a linux/arm64 host (`Unknown host target: linux aarch64`), so the peer is CROSS-built for
@@ -66,11 +69,14 @@ jobs:
           key: konan-harness-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-harness-${{ runner.os }}-
 
-      - name: Cross-build the release peer for both arches
+      # Cross-build the native peer for both arches, and assemble the arch-INDEPENDENT JVM fat jar once (the
+      # jvm-* interop lanes run the SAME peer program on the JVM; one jar serves both arch runners).
+      - name: Cross-build the release peer (native ×2 arch) + the JVM jar
         run: |
           ./gradlew --no-configuration-cache \
             :webrtc-harness-endpoint:linkPeerReleaseExecutableLinuxX64 \
-            :webrtc-harness-endpoint:linkPeerReleaseExecutableLinuxArm64
+            :webrtc-harness-endpoint:linkPeerReleaseExecutableLinuxArm64 \
+            :webrtc-harness-endpoint:peerJar
 
       # Common ancestor `…/build/bin` is stripped by upload-artifact@v4, so the artifact holds
       # linuxX64/… and linuxArm64/… — the l2 job downloads it back under …/build/bin.
@@ -81,6 +87,15 @@ jobs:
           path: |
             webrtc-harness-endpoint/build/bin/linuxX64/peerReleaseExecutable/peer.kexe
             webrtc-harness-endpoint/build/bin/linuxArm64/peerReleaseExecutable/peer.kexe
+          if-no-files-found: error
+          retention-days: 3
+
+      # The JVM peer jar — a separate artifact (arch-independent; every jvm-* lane on either arch uses it).
+      - name: Upload JVM peer jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: peer-jar
+          path: webrtc-harness-endpoint/build/libs/webrtc-harness-peer-all.jar
           if-no-files-found: error
           retention-days: 3
 
@@ -97,7 +112,9 @@ jobs:
           - { runner: ubuntu-24.04, arch: X64, konan: linuxX64 }
           - { runner: ubuntu-24.04-arm, arch: Arm64, konan: linuxArm64 }
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    # 10 scenarios now (the 7 NAT profiles + pion-interop + jvm-native + jvm-pion), each a fresh stack —
+    # a wider margin than the original 8-scenario budget, especially on the slower arm64 runner.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v6
 
@@ -109,6 +126,13 @@ jobs:
           name: peer-binaries
           path: webrtc-harness-endpoint/build/bin
 
+      # The arch-independent JVM jar (for the jvm-native / jvm-pion lanes).
+      - name: Download JVM peer jar
+        uses: actions/download-artifact@v4
+        with:
+          name: peer-jar
+          path: webrtc-harness-endpoint/build/libs
+
       - name: Restore exec bit
         run: chmod +x "webrtc-harness-endpoint/build/bin/${{ matrix.konan }}/peerReleaseExecutable/peer.kexe"
 
@@ -116,12 +140,13 @@ jobs:
       - name: Enable container-router forwarding
         run: sudo sysctl -w net.bridge.bridge-nf-call-iptables=0 net.bridge.bridge-nf-call-ip6tables=0 || true
 
-      # PEER_KEXE points at the downloaded binary → run-interop.sh uses it as-is (no build).
-      # HARNESS_SKIP drops the browser lanes (they run in l2-browser).
-      - name: L2 interop matrix (native + Pion)
+      # PEER_KEXE / PEER_JAR point at the downloaded artifacts → run-interop.sh uses them as-is (no build).
+      # HARNESS_SKIP drops the browser lanes (native ⇄ browser AND jvm ⇄ browser run in l2-browser).
+      - name: L2 interop matrix (native + Pion + JVM offerer)
         env:
           PEER_KEXE: "webrtc-harness-endpoint/build/bin/${{ matrix.konan }}/peerReleaseExecutable/peer.kexe"
-          HARNESS_SKIP: "chrome-interop firefox-interop"
+          PEER_JAR: "webrtc-harness-endpoint/build/libs/webrtc-harness-peer-all.jar"
+          HARNESS_SKIP: "chrome-interop firefox-interop jvm-chrome jvm-firefox"
         run: |
           set -o pipefail
           bash test-harness/run-interop.sh 2>&1 | tee l2-harness.log
@@ -144,7 +169,7 @@ jobs:
   # instead of a fresh multi-minute download. The image is loaded under compose's default name so
   # run-interop.sh (HARNESS_NO_BROWSER_BUILD=1) reuses it without rebuilding.
   l2-browser:
-    name: "interop: ${{ matrix.browser }} ⇄ native (${{ matrix.arch.name }})"
+    name: "interop: ${{ matrix.browser }} ⇄ ${{ matrix.peer }} (${{ matrix.arch.name }})"
     needs: build-peer
     strategy:
       fail-fast: false
@@ -153,6 +178,9 @@ jobs:
           - { runner: ubuntu-24.04, name: X64, konan: linuxX64 }
           - { runner: ubuntu-24.04-arm, name: Arm64, konan: linuxArm64 }
         browser: [chrome, firefox]
+        # The offerer against each browser: our native peer AND our JVM peer (the pure engine from a
+        # managed runtime). Same gha-cached browser image serves both — only the offerer differs.
+        peer: [native, jvm]
     runs-on: ${{ matrix.arch.runner }}
     timeout-minutes: 30
     steps:
@@ -163,6 +191,13 @@ jobs:
         with:
           name: peer-binaries
           path: webrtc-harness-endpoint/build/bin
+
+      # The arch-independent JVM jar (the jvm-<browser> lanes; harmless for the native lanes).
+      - name: Download JVM peer jar
+        uses: actions/download-artifact@v4
+        with:
+          name: peer-jar
+          path: webrtc-harness-endpoint/build/libs
 
       - name: Restore exec bit
         run: chmod +x "webrtc-harness-endpoint/build/bin/${{ matrix.arch.konan }}/peerReleaseExecutable/peer.kexe"
@@ -187,19 +222,22 @@ jobs:
           cache-from: type=gha,scope=browser-${{ matrix.browser }}-${{ matrix.arch.name }}
           cache-to: type=gha,mode=max,scope=browser-${{ matrix.browser }}-${{ matrix.arch.name }}
 
-      - name: "Interop: our native peer ⇄ ${{ matrix.browser }}"
+      # Scenario name selects the offerer: `<browser>-interop` (native) or `jvm-<browser>` (JVM peer).
+      - name: "Interop: our ${{ matrix.peer }} peer ⇄ ${{ matrix.browser }}"
         env:
           PEER_KEXE: "webrtc-harness-endpoint/build/bin/${{ matrix.arch.konan }}/peerReleaseExecutable/peer.kexe"
+          PEER_JAR: "webrtc-harness-endpoint/build/libs/webrtc-harness-peer-all.jar"
           HARNESS_NO_BROWSER_BUILD: "1"  # reuse the gha-cached image built above
+          SCENARIO: "${{ matrix.peer == 'jvm' && format('jvm-{0}', matrix.browser) || format('{0}-interop', matrix.browser) }}"
         run: |
           set -o pipefail
-          bash test-harness/run-interop.sh "${{ matrix.browser }}-interop" 2>&1 | tee l2-browser.log
+          bash test-harness/run-interop.sh "$SCENARIO" 2>&1 | tee l2-browser.log
 
       - name: Upload harness log (on failure)
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
-          name: l2-browser-log-${{ matrix.browser }}-${{ matrix.arch.name }}
+          name: l2-browser-log-${{ matrix.browser }}-${{ matrix.peer }}-${{ matrix.arch.name }}
           path: l2-browser.log
           retention-days: 14
           if-no-files-found: ignore

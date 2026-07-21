@@ -1,6 +1,6 @@
 name: "L2 Interop Harness"
 
-# W7 L2 (Integration): two native peers establish a full WebRTC data channel (ICE → real BoringSSL DTLS
+# W7 L2 (Integration): two native peers establish a full WebRTC data channel (ICE → pure-Kotlin DTLS 1.3
 # → SCTP → data channel) across REAL Linux NAT kernels, over each RFC 4787 NAT profile + a relay-only and
 # an impaired lane. Separate from the fast deterministic PR lanes (review.yaml) — Docker + real kernels.
 #

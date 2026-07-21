@@ -5,7 +5,7 @@ package com.ditchoom.webrtc.harness
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
-import com.ditchoom.webrtc.BoringSslDtls
+import com.ditchoom.webrtc.PureKotlinDtls
 import com.ditchoom.webrtc.IceGatheringPolicy
 import com.ditchoom.webrtc.NativePeerConnection
 import com.ditchoom.webrtc.PeerConnectionConfig
@@ -38,7 +38,7 @@ import kotlin.time.Instant
 /**
  * The L2/L3 interop **peer** — the "our side" endpoint the container harness runs behind real NAT kernels
  * (webrtc HANDOFF: the interop endpoint MUST be the native binary, the only one with a real DTLS
- * handshake). It composes the exact production stack — [NativePeerConnection] + [BoringSslDtls] over the
+ * handshake). It composes the exact production stack — [NativePeerConnection] + [PureKotlinDtls] over the
  * real-UDP [realUdpBinder] — gathers host/srflx(coturn)/relay(coturn TURN) candidates, exchanges
  * offer/answer/candidates over the UDP [UdpSignaling] rendezvous, and proves the data path with a
  * ping/pong over a data channel. Exit 0 = established + echoed; non-zero = a typed failure or timeout.
@@ -70,7 +70,7 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
         // native allocation is acceptable here — pooled release is the W3/W5-deferred production refactor.)
         val net = BufferFactory.deterministic()
 
-        val dtls = BoringSslDtls(bg, clock, DtlsConfig(bufferFactory = net, enableDtls13 = cfg.enableDtls13))
+        val dtls = PureKotlinDtls(bg, clock, DtlsConfig(bufferFactory = net, enableDtls13 = cfg.enableDtls13))
         val stun = resolveAddress(cfg.stunHost, cfg.stunPort)
         val turn = resolveAddress(cfg.turnHost, cfg.turnPort)
 

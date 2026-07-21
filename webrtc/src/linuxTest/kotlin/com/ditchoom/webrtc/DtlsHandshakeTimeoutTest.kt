@@ -23,7 +23,7 @@ import kotlin.time.Instant
  * Regression fixture for the adversarial-gate liveness criterion (RFC §5.3 #5, EXECUTION_PLAN W4 exit):
  * DTLS retransmits a lost flight with exponential backoff and **never gives up on its own**, so a peer
  * that vanishes mid-handshake would hang the session forever without a driver-enforced budget. The
- * sans-io engine has no clock; [BoringSslDtls] owns [DtlsConfig.handshakeTimeout] and must turn a silent
+ * sans-io engine has no clock; [PureKotlinDtls] owns [DtlsConfig.handshakeTimeout] and must turn a silent
  * peer into a typed [DtlsFailureReason.HandshakeTimeout], not a hang — proven here under virtual time.
  */
 class DtlsHandshakeTimeoutTest {
@@ -32,7 +32,7 @@ class DtlsHandshakeTimeoutTest {
         runTest {
             val epoch = Instant.fromEpochSeconds(0)
             val clock: () -> Instant = { epoch + testScheduler.currentTime.milliseconds }
-            val dtls = BoringSslDtls(backgroundScope, clock, DtlsConfig(handshakeTimeout = 5.seconds))
+            val dtls = PureKotlinDtls(backgroundScope, clock, DtlsConfig(handshakeTimeout = 5.seconds))
 
             // A transport that swallows every outbound record and never delivers an inbound one — a peer
             // that went silent after ICE nominated the pair. receive() suspends forever (an uncompleted

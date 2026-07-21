@@ -1,10 +1,3 @@
-public final class com/ditchoom/webrtc/BoringSslDtls : com/ditchoom/webrtc/DtlsTransportFactory {
-	public fun <init> (Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lcom/ditchoom/webrtc/dtls/DtlsConfig;)V
-	public synthetic fun <init> (Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lcom/ditchoom/webrtc/dtls/DtlsConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public fun getLocalFingerprint ()Lcom/ditchoom/webrtc/sdp/Fingerprint;
-	public fun secure (Lcom/ditchoom/webrtc/ice/IceDataTransport;Lcom/ditchoom/webrtc/DtlsRole;Lcom/ditchoom/webrtc/sdp/Fingerprint;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-}
-
 public final class com/ditchoom/webrtc/DtlsRole : java/lang/Enum {
 	public static final field Client Lcom/ditchoom/webrtc/DtlsRole;
 	public static final field Server Lcom/ditchoom/webrtc/DtlsRole;
@@ -181,6 +174,13 @@ public final class com/ditchoom/webrtc/PeerConnectionSupport_jvmMainKt {
 
 public final class com/ditchoom/webrtc/PlaintextDtls : com/ditchoom/webrtc/DtlsTransportFactory {
 	public static final field INSTANCE Lcom/ditchoom/webrtc/PlaintextDtls;
+	public fun getLocalFingerprint ()Lcom/ditchoom/webrtc/sdp/Fingerprint;
+	public fun secure (Lcom/ditchoom/webrtc/ice/IceDataTransport;Lcom/ditchoom/webrtc/DtlsRole;Lcom/ditchoom/webrtc/sdp/Fingerprint;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/webrtc/PureKotlinDtls : com/ditchoom/webrtc/DtlsTransportFactory {
+	public fun <init> (Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lcom/ditchoom/webrtc/dtls/DtlsConfig;)V
+	public synthetic fun <init> (Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lcom/ditchoom/webrtc/dtls/DtlsConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun getLocalFingerprint ()Lcom/ditchoom/webrtc/sdp/Fingerprint;
 	public fun secure (Lcom/ditchoom/webrtc/ice/IceDataTransport;Lcom/ditchoom/webrtc/DtlsRole;Lcom/ditchoom/webrtc/sdp/Fingerprint;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }

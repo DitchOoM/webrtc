@@ -2,10 +2,7 @@ package com.ditchoom.webrtc.dtls
 
 import kotlin.jvm.JvmInline
 
-/**
- * W4 placeholder. The real module drives BoringSSL through memory BIOs fed with `toNativeData()`
- * handles (no [ByteArray] at the FFI edge), caller-clocked via `DTLSv1_get_timeout`. Placeholder only.
- */
+/** Module marker. The DTLS surface is [DtlsEngine] — a pure-Kotlin, caller-clocked sans-io endpoint. */
 public object Dtls {
     public const val MODULE: String = "webrtc-dtls"
 }

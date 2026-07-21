@@ -24,24 +24,27 @@ public final class com/ditchoom/webrtc/dtls/Dtls {
 }
 
 public final class com/ditchoom/webrtc/dtls/DtlsConfig {
-	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;ZIJILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;ZIJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;ZLcom/ditchoom/webrtc/dtls/KeyExchangeGroup;IJLkotlin/random/Random;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;ZLcom/ditchoom/webrtc/dtls/KeyExchangeGroup;IJLkotlin/random/Random;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun getBufferFactory ()Lcom/ditchoom/buffer/BufferFactory;
 	public final fun getEnableDtls13 ()Z
 	public final fun getHandshakeTimeout-UwyO8pc ()J
+	public final fun getKeyExchangeGroup ()Lcom/ditchoom/webrtc/dtls/KeyExchangeGroup;
 	public final fun getMaxDatagramSize ()I
+	public final fun getRandom ()Lkotlin/random/Random;
 }
 
 public final class com/ditchoom/webrtc/dtls/DtlsEngine {
 	public fun <init> (Lcom/ditchoom/webrtc/dtls/DtlsConfig;)V
-	public final fun beginClose (J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
+	public final fun beginClose (Lkotlin/time/Instant;)Lcom/ditchoom/webrtc/dtls/DtlsStep;
 	public final fun close ()V
+	public final fun exportKeyingMaterial (Ljava/lang/String;Lcom/ditchoom/buffer/ReadBuffer;I)Lcom/ditchoom/buffer/ReadBuffer;
 	public final fun getLocalFingerprint-ZfS6PIY ()Ljava/lang/String;
-	public final fun nextTimeoutMicros (J)Ljava/lang/Long;
-	public final fun onDatagram (Lcom/ditchoom/buffer/ReadBuffer;J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
-	public final fun onTimeout (J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
-	public final fun send (Lcom/ditchoom/buffer/ReadBuffer;J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
-	public final fun start (Lcom/ditchoom/webrtc/dtls/DtlsRole;J)Lcom/ditchoom/webrtc/dtls/DtlsStep;
+	public final fun nextDeadline (Lkotlin/time/Instant;)Lkotlin/time/Instant;
+	public final fun onDatagram (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/time/Instant;)Lcom/ditchoom/webrtc/dtls/DtlsStep;
+	public final fun onTimeout (Lkotlin/time/Instant;)Lcom/ditchoom/webrtc/dtls/DtlsStep;
+	public final fun send (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/time/Instant;)Lcom/ditchoom/webrtc/dtls/DtlsStep;
+	public final fun start (Lcom/ditchoom/webrtc/dtls/DtlsRole;Lkotlin/time/Instant;)Lcom/ditchoom/webrtc/dtls/DtlsStep;
 }
 
 public final class com/ditchoom/webrtc/dtls/DtlsException : java/lang/Exception {
@@ -136,5 +139,13 @@ public final class com/ditchoom/webrtc/dtls/DtlsVersion : java/lang/Enum {
 	public static fun getEntries ()Lkotlin/enums/EnumEntries;
 	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/webrtc/dtls/DtlsVersion;
 	public static fun values ()[Lcom/ditchoom/webrtc/dtls/DtlsVersion;
+}
+
+public final class com/ditchoom/webrtc/dtls/KeyExchangeGroup : java/lang/Enum {
+	public static final field Secp256r1 Lcom/ditchoom/webrtc/dtls/KeyExchangeGroup;
+	public static final field X25519 Lcom/ditchoom/webrtc/dtls/KeyExchangeGroup;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/webrtc/dtls/KeyExchangeGroup;
+	public static fun values ()[Lcom/ditchoom/webrtc/dtls/KeyExchangeGroup;
 }
 

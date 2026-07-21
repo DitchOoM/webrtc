@@ -53,8 +53,8 @@ class PeerConnectionDtlsEndToEndTest {
             val binder = DatagramBinder { net.bind(it) }
             val clock: () -> Instant = { epoch + testScheduler.currentTime.milliseconds }
 
-            val aliceDtls = BoringSslDtls(backgroundScope, clock)
-            val bobDtls = BoringSslDtls(backgroundScope, clock)
+            val aliceDtls = PureKotlinDtls(backgroundScope, clock)
+            val bobDtls = PureKotlinDtls(backgroundScope, clock)
 
             // Two independently generated self-signed certificates — the peers are strangers, exactly as
             // in the field. Each verifies the other purely by the digest its SDP carried.
@@ -137,7 +137,7 @@ class PeerConnectionDtlsEndToEndTest {
                     random = Random(1),
                     binder = binder,
                     gathering = { it.gatherHost("10.0.0.1", 4000) },
-                    dtls = BoringSslDtls(backgroundScope, clock),
+                    dtls = PureKotlinDtls(backgroundScope, clock),
                 )
             val bob =
                 NativePeerConnection(
@@ -146,7 +146,7 @@ class PeerConnectionDtlsEndToEndTest {
                     random = Random(2),
                     binder = binder,
                     gathering = { it.gatherHost("10.0.0.2", 5000) },
-                    dtls = BoringSslDtls(backgroundScope, clock),
+                    dtls = PureKotlinDtls(backgroundScope, clock),
                 )
 
             trickle(backgroundScope, from = alice, to = bob)
@@ -190,7 +190,7 @@ class PeerConnectionDtlsEndToEndTest {
                     random = Random(1),
                     binder = binder,
                     gathering = { it.gatherHost("10.0.0.1", 4000) },
-                    dtls = BoringSslDtls(backgroundScope, clock),
+                    dtls = PureKotlinDtls(backgroundScope, clock),
                 )
             val bob =
                 NativePeerConnection(
@@ -199,7 +199,7 @@ class PeerConnectionDtlsEndToEndTest {
                     random = Random(2),
                     binder = binder,
                     gathering = { it.gatherHost("10.0.0.2", 5000) },
-                    dtls = BoringSslDtls(backgroundScope, clock),
+                    dtls = PureKotlinDtls(backgroundScope, clock),
                 )
 
             trickle(backgroundScope, from = alice, to = bob)

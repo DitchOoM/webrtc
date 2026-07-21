@@ -6,6 +6,23 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Added — W7 interop test-matrix expansion: a WebKit (Safari engine) browser lane
+- **`webkit-interop` + `jvm-webkit` scenarios** — our offerer (native and JVM) establishes a full WebRTC
+  data channel over real NAT kernels against a real headless **WebKit** (Safari's engine, via Playwright's
+  cross-platform build — Apple's libwebrtc fork + its own build), echoing `ping`→`pong`. A **third**
+  independent browser oracle beyond Chrome + Firefox, and the only way to exercise the Safari family in
+  Linux CI without a Mac.
+- WebKit exposes **no pref to disable mDNS host-candidate obfuscation** (unlike Chrome's flag / Firefox's
+  pref), so it emits `.local` host candidates our peer can't resolve — its lane connects via the coturn
+  **srflx/relay** path instead (our ICE agent skips the unresolvable hosts). This exercises the
+  relay-carried path against a real browser as a side benefit.
+- **Wiring:** the existing `BROWSER`-parameterized image already builds WebKit (`--build-arg BROWSER=webkit`
+  → `playwright install webkit`); `driver.mjs` gains a `webkit` launcher (the in-page answerer is
+  engine-agnostic W3C APIs); `docker-compose.yml` adds the profile-gated `webkit` service (drop-in for
+  `peer_b`); `run-interop.sh` gains the `webkit` `b_impl` case + the two scenarios; `harness-l2.yaml`'s
+  `l2-browser` matrix adds `webkit` to its `browser` axis (now `{arch × [chrome,firefox,webkit] × [native,jvm]}`),
+  and the `l2` job's `HARNESS_SKIP` drops the two new browser scenarios. `README.md` documents the lane.
+
 ### Fixed — DTLS post-Established handshake-record storm that starved the SCTP handshake under loss
 - **The bug (a regression the lost-final-flight fix introduced):** that fix has an `Established` endpoint
   re-send its last flight whenever a handshake-epoch record arrives afterwards (so a peer whose final flight

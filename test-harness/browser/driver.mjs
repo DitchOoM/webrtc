@@ -5,8 +5,10 @@
 //
 //   * `chromium` — Chromium's libwebrtc (BoringSSL DTLS, libwebrtc ICE, dcSCTP).
 //   * `firefox`  — Firefox's stack (NSS DTLS, nICEr ICE, usrsctp) — a *fully independent* second oracle.
+//   * `webkit`   — Safari's engine (Playwright's cross-platform WebKit) — a third oracle; emits `.local`
+//                  mDNS host candidates (no disable pref), so it connects via coturn srflx/relay.
 //
-// Both negotiate **DTLS 1.3**, so the native offerer runs this lane at its DEFAULT (WEBRTC_DTLS13 unset).
+// All negotiate **DTLS 1.3**, so the native offerer runs these lanes at its DEFAULT (WEBRTC_DTLS13 unset).
 //
 // It runs as the ANSWERER behind a NAT gateway (drop-in for the native answerer `peer_b`): the native
 // offerer creates the offer + the "harness" data channel and sends "ping"; this side answers, accepts
@@ -24,7 +26,7 @@
 // contract so run-interop.sh asserts BOTH sides exit 0.
 
 import http from 'node:http';
-import { chromium, firefox } from 'playwright';
+import { chromium, firefox, webkit } from 'playwright';
 
 function env(name, def) {
   const v = process.env[name];
@@ -199,6 +201,14 @@ function launcher() {
         },
       },
     };
+  }
+  if (cfg.browser === 'webkit') {
+    // WebKit is Safari's engine (via Playwright's cross-platform build) — a THIRD independent stack
+    // (libwebrtc-derived but Apple's fork + its own build). Unlike Chrome/Firefox it exposes NO pref to
+    // disable mDNS host-candidate obfuscation, so it emits `.local` host candidates our peer can't
+    // resolve — connectivity therefore rides the coturn **srflx/relay** candidates across the NATs (our
+    // ICE agent skips the unresolvable `.local` hosts; srflx/relay carry it, as the native lanes note).
+    return { type: webkit, options: { headless: true } };
   }
   // chromium (default)
   return {

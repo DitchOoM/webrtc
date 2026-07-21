@@ -1,8 +1,8 @@
 # The headless-browser interop echo-peer image (W7 Phase 2(b)). Node + a Playwright-managed browser,
-# selected at build time by `--build-arg BROWSER=chromium|firefox` (and driven at runtime by the same
-# BROWSER env — see driver.mjs). Only the chosen engine is installed, so each browser lane's image stays
-# lean. Multi-arch: `playwright install --with-deps` fetches the per-arch build (amd64 or arm64) — no
-# cross-compile, no QEMU. Build context is test-harness/browser (compose sets `context: ./browser`).
+# selected at build time by `--build-arg BROWSER=chromium|firefox|webkit` (and driven at runtime by the
+# same BROWSER env — see driver.mjs). Only the chosen engine is installed, so each browser lane's image
+# stays lean. Multi-arch: `playwright install --with-deps` fetches the per-arch build (amd64 or arm64) —
+# no cross-compile, no QEMU. Build context is test-harness/browser (compose sets `context: ./browser`).
 
 # Node 24 (current Active LTS; Node 20 is EOL). -slim over the full image saves ~700 MB of base tooling we
 # don't need — `playwright install --with-deps` below pulls the browser's actual runtime libs via apt.

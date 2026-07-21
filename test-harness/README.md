@@ -58,8 +58,9 @@ cd test-harness
 
 Scenarios (in `run-interop.sh`): each NAT profile direct, `symmetric×symmetric` → relay, a mixed
 sym×port lane, an explicit `relay-only` lane, an `impaired` (netem) lane, the native-offerer interop lanes
-— **`pion-interop`**, **`chrome-interop`**, **`firefox-interop`** — and the **JVM-offerer** lanes —
-**`jvm-native`**, **`jvm-pion`**, **`jvm-chrome`**, **`jvm-firefox`** (below). Each row is
+— **`pion-interop`**, **`chrome-interop`**, **`firefox-interop`**, **`webkit-interop`** — and the
+**JVM-offerer** lanes — **`jvm-native`**, **`jvm-pion`**, **`jvm-chrome`**, **`jvm-firefox`**,
+**`jvm-webkit`** (below). Each row is
 `name | nat_a | nat_b | policy | netem | a_impl | b_impl`, where `a_impl` (offerer) ∈ `native|jvm` and
 `b_impl` (answerer) ∈ `native|pion|chrome|firefox`. A scenario **passes** iff both peers exit `0` — and
 each exits `0` only after it CONNECTED *and* the `ping`/`pong` crossed the encrypted data channel. Every
@@ -87,38 +88,44 @@ buffer-codec wire schema). Pion accepts the data channel and echoes `ping`→`po
 ./run-interop.sh pion-interop       # our native offerer ⇄ Pion answerer, DTLS 1.2, over port-restricted NAT
 ```
 
-## Interop: the browser lanes — Chrome + Firefox (W7 Phase 2b)
+## Interop: the browser lanes — Chrome + Firefox + WebKit (W7 Phase 2b)
 
-The `chrome-interop` and `firefox-interop` scenarios swap the native answerer `peer_b` for a real
-**headless browser** (`browser/`, driven by Playwright), so our native offerer establishes against a real
-*browser* WebRTC engine and echoes `ping`→`pong`. One image, two engines (selected by the `BROWSER`
-build-arg + env):
+The `chrome-interop`, `firefox-interop`, and `webkit-interop` scenarios swap the native answerer `peer_b`
+for a real **headless browser** (`browser/`, driven by Playwright), so our native offerer establishes
+against a real *browser* WebRTC engine and echoes `ping`→`pong`. One image, three engines (selected by the
+`BROWSER` build-arg + env):
 
 - **Chrome** — Chromium's **libwebrtc** (BoringSSL DTLS, libwebrtc ICE, dcSCTP).
 - **Firefox** — a **fully independent** stack (**NSS** DTLS, **nICEr** ICE, **usrsctp**), sharing nothing
   with Chrome — the highest-value second oracle.
+- **WebKit** — **Safari's engine** (Playwright's cross-platform WebKit build; Apple's libwebrtc fork + its
+  own build) — a third oracle, and the only way to exercise the Safari family in Linux CI without a Mac.
 
 Same topology as the Pion lane (the browser behind `nat_b`, same coturn), accepting the data channel and
 echoing `ping`→`pong`.
 
-- **DTLS 1.3**: both browsers negotiate DTLS 1.3, so these lanes leave the native peer at its **default**
-  (`WEBRTC_DTLS13=true`) — the opposite of the Pion 1.2 lane. This exercises our real DTLS 1.3 handshake
-  against two production browser stacks.
+- **DTLS 1.3**: all three browsers negotiate DTLS 1.3, so these lanes leave the native peer at its
+  **default** (`WEBRTC_DTLS13=true`) — the opposite of the Pion 1.2 lane. This exercises our real DTLS 1.3
+  handshake against three production browser stacks.
 - **No raw UDP in a browser** → the browser signals over the rendezvous **HTTP face** (`rendezvous.py`
   serves a `POST /put` + `GET /poll` JSON API onto the *same* in-memory mailbox the UDP peers use, so a
   browser and a native peer meet in the same slot). ICE/DTLS/SRTP still run in the engine's native code
   over real UDP through the NAT — the raw-UDP limit is signaling-only.
-- mDNS host-candidate obfuscation is disabled (Chrome `--disable-features=WebRtcHideLocalIpsWithMdns` /
-  Firefox `media.peerconnection.ice.obfuscate_host_addresses=false`) so our peer is fed real-IP
-  candidates, not `.local` names; srflx/relay carry connectivity across the NATs.
-- Each is gated behind its own compose profile (`chrome` / `firefox`); they, `peer_b`, and `pion` share
-  `PEER_B_IP` but never run at once. The image builds natively per-arch (Node + Playwright fetches the
-  per-arch engine — only the selected one), no QEMU. In CI these run as a parallel `{arch × browser}` job
+- mDNS host-candidate obfuscation is disabled for **Chrome** (`--disable-features=WebRtcHideLocalIpsWithMdns`)
+  and **Firefox** (`media.peerconnection.ice.obfuscate_host_addresses=false`) so our peer is fed real-IP
+  host candidates. **WebKit exposes no such pref**, so it emits `.local` mDNS host candidates our peer
+  can't resolve — its lane connects via the coturn **srflx/relay** candidates instead (our ICE agent skips
+  the unresolvable hosts; srflx/relay carry connectivity across the NATs regardless).
+- Each is gated behind its own compose profile (`chrome` / `firefox` / `webkit`); they, `peer_b`, and
+  `pion` share `PEER_B_IP` but never run at once. The image builds natively per-arch (Node + Playwright
+  fetches the per-arch engine — only the selected one), no QEMU. In CI these run as a parallel
+  `{arch × browser × offerer}` job
   matrix (`l2-browser`), separate from the fast native `l2` job.
 
 ```bash
 ./run-interop.sh chrome-interop     # our native offerer ⇄ headless-Chrome answerer, DTLS 1.3, over port-restricted NAT
 ./run-interop.sh firefox-interop    # our native offerer ⇄ headless-Firefox answerer, DTLS 1.3, over port-restricted NAT
+./run-interop.sh webkit-interop     # our native offerer ⇄ headless-WebKit (Safari engine) answerer, DTLS 1.3
 ```
 
 ## Interop: the JVM-offerer lanes (W7 test-matrix expansion)
@@ -132,7 +139,7 @@ proves the pure engine on the real wire from a managed runtime (previously "we s
 tests + compile alone).
 
 - **`jvm-native`** ⇄ our native answerer · **`jvm-pion`** ⇄ Pion (DTLS 1.2) · **`jvm-chrome`** /
-  **`jvm-firefox`** ⇄ the real browser engines (DTLS 1.3).
+  **`jvm-firefox`** / **`jvm-webkit`** ⇄ the real browser engines (DTLS 1.3).
 - No io_uring (NIO, not socket-udp's native datapath), so — unlike `peer_a` — `peer_a_jvm` needs **no
   `seccomp=unconfined`**, only `NET_ADMIN` for the default-route rewrite.
 - The jar is **arch-independent** (JVM bytecode): one build (`:webrtc-harness-endpoint:peerJar`) runs on
@@ -140,7 +147,7 @@ tests + compile alone).
   the portable self-building image; `Dockerfile.prebuilt` copies a host/CI-built jar.
 - Gated behind the `jvm` compose profile (activated by `run-interop.sh` when `a_impl=jvm`); `peer_a` and
   `peer_a_jvm` share `PEER_A_IP` but never run at once. In CI the fast lanes (`jvm-native`, `jvm-pion`) run
-  in the `l2` job; the browser lanes (`jvm-chrome`, `jvm-firefox`) join the `l2-browser` matrix (its
+  in the `l2` job; the browser lanes (`jvm-chrome`, `jvm-firefox`, `jvm-webkit`) join the `l2-browser` matrix (its
   offerer axis is `{native, jvm}`).
 
 ```bash

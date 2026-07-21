@@ -112,7 +112,9 @@ jobs:
           - { runner: ubuntu-24.04, arch: X64, konan: linuxX64 }
           - { runner: ubuntu-24.04-arm, arch: Arm64, konan: linuxArm64 }
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    # 10 scenarios now (the 7 NAT profiles + pion-interop + jvm-native + jvm-pion), each a fresh stack —
+    # a wider margin than the original 8-scenario budget, especially on the slower arm64 runner.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v6
 

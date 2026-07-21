@@ -42,6 +42,18 @@ internal interface DtlsHandshakeFsm {
     /** Absolute instant at which [onTimeout] must next run, or null if no timer is armed. */
     fun nextDeadline(now: Instant): Instant?
 
+    /**
+     * Export keying material — the TLS exporter (RFC 5705 for DTLS 1.2, RFC 8446 §7.5 for DTLS 1.3) that
+     * DTLS-SRTP (RFC 5764) derives its keys from. Returns [length] pseudo-random bytes bound to [label] and
+     * optional [context] (null = no context, the DTLS-SRTP case), or null if the handshake is not yet
+     * established (no exportable secret exists). Both peers derive identical material from the shared secret.
+     */
+    fun exportKeyingMaterial(
+        label: String,
+        context: ReadBuffer?,
+        length: Int,
+    ): ReadBuffer?
+
     /** Free key material held by the handshake. Idempotent. */
     fun close()
 }

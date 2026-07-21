@@ -6,6 +6,7 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_do_handshake
+import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_export_srtp_keys
 import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_feed
 import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_free
 import com.ditchoom.webrtc.dtls.cinterop.boringssl.bd_handle_timeout
@@ -197,6 +198,24 @@ internal class BoringSslDtlsEngine(
         bd_free(engine)
         scratch.close()
     }
+
+    /**
+     * Export the DTLS-SRTP keying material (RFC 5764 label `"EXTRACTOR-dtls_srtp"`, no context) via
+     * `SSL_export_keying_material` — the oracle side of the exporter differential. Returns [length] bytes;
+     * throws on a BoringSSL failure. Both peers derive identical material, so this must byte-match our
+     * engine's `exportKeyingMaterial("EXTRACTOR-dtls_srtp", null, length)`.
+     */
+    fun exportSrtpKeys(length: Int): ReadBuffer =
+        memScoped {
+            val out = allocArray<UByteVar>(length)
+            if (bd_export_srtp_keys(engine, out, length) != BD_OK) {
+                throw DtlsException(DtlsFailureReason.Internal("bd_export_srtp_keys failed"))
+            }
+            val buf = config.bufferFactory.allocate(length)
+            for (i in 0 until length) buf.writeByte(out[i].toByte())
+            buf.resetForRead()
+            buf
+        }
 
     // ── internals ────────────────────────────────────────────────────────────────────────────────
 

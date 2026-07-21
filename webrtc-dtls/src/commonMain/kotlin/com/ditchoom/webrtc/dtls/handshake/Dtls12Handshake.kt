@@ -220,6 +220,18 @@ internal class Dtls12Handshake(
 
     override fun nextDeadline(now: Instant): Instant? = if (terminal != null) null else retransmitDeadline
 
+    override fun exportKeyingMaterial(
+        label: String,
+        context: ReadBuffer?,
+        length: Int,
+    ): ReadBuffer? {
+        if (terminal !is DtlsState.Established) return null
+        val master = masterSecret ?: return null
+        val cr = clientRandom ?: return null
+        val sr = serverRandom ?: return null
+        return keySchedule.exportKeyingMaterial(master, label, cr, sr, context, length)
+    }
+
     override fun close() {
         ecdhe.close()
         protection?.close()

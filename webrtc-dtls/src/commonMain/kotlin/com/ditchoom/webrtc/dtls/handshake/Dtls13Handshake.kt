@@ -132,10 +132,11 @@ internal class Dtls13Handshake(
             val protection: Dtls13RecordProtection,
         ) : Keys
 
-        /** Epoch-3 application traffic keys, alongside the retained handshake keys. */
+        /** Epoch-3 application traffic keys + the RFC 8446 §7.5 exporter_master_secret, over retained hs keys. */
         class Application(
             val handshake: Handshake,
             val protection: Dtls13RecordProtection,
+            val exporterMaster: ReadBuffer,
         ) : Keys
     }
 
@@ -493,11 +494,23 @@ internal class Dtls13Handshake(
         val thChSFin = transcript.currentSha256()
         val cAp = schedule.deriveSecret(hk.master, Tls13KeySchedule.CLIENT_APPLICATION_LABEL, thChSFin)
         val sAp = schedule.deriveSecret(hk.master, Tls13KeySchedule.SERVER_APPLICATION_LABEL, thChSFin)
+        // The exporter_master_secret is bound to the SAME transcript point (CH…server Finished, RFC 8446 §7.5).
+        val exporterMaster = schedule.exporterMasterSecret(hk.master, thChSFin)
         val client = role == DtlsRole.Client
         val local = if (client) cAp else sAp
         val peer = if (client) sAp else cAp
         val protection = Dtls13RecordProtection.fromTrafficSecrets(schedule, local, peer, factory)
-        keys = Keys.Application(hk, protection)
+        keys = Keys.Application(hk, protection, exporterMaster)
+    }
+
+    override fun exportKeyingMaterial(
+        label: String,
+        context: ReadBuffer?,
+        length: Int,
+    ): ReadBuffer? {
+        if (terminal !is DtlsState.Established) return null
+        val exporterMaster = (keys as? Keys.Application)?.exporterMaster ?: return null
+        return schedule.exportKeyingMaterial(exporterMaster, label, context, length)
     }
 
     private fun buildFinished(baseSecret: ReadBuffer): FlightItem {

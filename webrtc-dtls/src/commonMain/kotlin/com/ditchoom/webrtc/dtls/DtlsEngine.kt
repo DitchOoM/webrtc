@@ -217,6 +217,20 @@ public class DtlsEngine(
     /** Absolute epoch-micros at which [onTimeout] must next run, or null if no timer is armed. */
     public fun nextDeadline(now: Instant): Instant? = handshake?.nextDeadline(now)
 
+    /**
+     * Export keying material once [DtlsState.Established] — the TLS exporter (RFC 5705 for DTLS 1.2,
+     * RFC 8446 §7.5 for DTLS 1.3) that **DTLS-SRTP** (RFC 5764) derives its SRTP keys from. Returns [length]
+     * pseudo-random bytes bound to [label] and optional [context] (null = no context, the DTLS-SRTP case),
+     * or null before the handshake completes. Both peers derive identical material from the shared secret,
+     * so a caller can slice it into the SRTP client/server key+salt (Phase-2 media). The result is
+     * caller-owned. Mirrors BoringSSL's `SSL_export_keying_material`.
+     */
+    public fun exportKeyingMaterial(
+        label: String,
+        context: ReadBuffer?,
+        length: Int,
+    ): ReadBuffer? = handshake?.exportKeyingMaterial(label, context, length)
+
     /** Free the certificate identity and any handshake key material. Idempotent. */
     public fun close() {
         if (closed) return

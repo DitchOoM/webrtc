@@ -128,6 +128,48 @@ internal class Tls13KeySchedule(
         return out
     }
 
+    // ── exporter (RFC 8446 §7.5) — DTLS-SRTP keying material ───────────────────────────────────────
+
+    /**
+     * The `exporter_master_secret = Derive-Secret(masterSecret, "exp master", TranscriptHash(CH…server
+     * Finished))` (RFC 8446 §7.5). [transcriptHash] must be the running hash through the server Finished —
+     * the same point the application traffic secrets are derived at.
+     */
+    fun exporterMasterSecret(
+        masterSecret: ReadBuffer,
+        transcriptHash: ReadBuffer,
+    ): ReadBuffer = deriveSecret(masterSecret, EXPORTER_MASTER_LABEL, transcriptHash)
+
+    /**
+     * `TLS-Exporter(label, context, length)` (RFC 8446 §7.5): `HKDF-Expand-Label(Derive-Secret(EMS, label,
+     * ""), "exporter", Hash(context), length)`. This is DTLS-SRTP's key derivation (RFC 5764) — the DTLS
+     * 1.3 `"dtls13"`-prefixed HKDF makes it byte-exact with BoringSSL. A null [context] is the DTLS-SRTP
+     * case (no context): TLS 1.3 treats it as a zero-length one, so `Hash(context)` is `SHA-256("")`.
+     */
+    fun exportKeyingMaterial(
+        exporterMasterSecret: ReadBuffer,
+        label: String,
+        context: ReadBuffer?,
+        length: Int,
+    ): ReadBuffer {
+        val secret0 = expandLabel(exporterMasterSecret, label, emptyTranscriptHash, HASH_LEN) // Derive-Secret(EMS, label, "")
+        val contextHash = if (context == null || context.remaining() == 0) emptyTranscriptHash else sha256(context)
+        return expandLabel(secret0, "exporter", contextHash, length)
+    }
+
+    /** `SHA-256(data)` into a fresh 32-byte read buffer; [data]'s position is preserved. */
+    private fun sha256(data: ReadBuffer): ReadBuffer {
+        val digest = Sha256Digest()
+        val p = data.position()
+        digest.update(data)
+        data.position(p)
+        val out = factory.allocate(HASH_LEN, ByteOrder.BIG_ENDIAN)
+        digest.digestInto(out)
+        digest.close()
+        out.resetForRead()
+        return out
+    }
+
     // ── HKDF-Extract + the "derived" bridge ────────────────────────────────────────────────────────
 
     private fun derived(secret: ReadBuffer): ReadBuffer = expandLabel(secret, "derived", emptyTranscriptHash, HASH_LEN)
@@ -177,5 +219,6 @@ internal class Tls13KeySchedule(
         const val SERVER_HANDSHAKE_LABEL = "s hs traffic"
         const val CLIENT_APPLICATION_LABEL = "c ap traffic"
         const val SERVER_APPLICATION_LABEL = "s ap traffic"
+        private const val EXPORTER_MASTER_LABEL = "exp master"
     }
 }

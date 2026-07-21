@@ -38,6 +38,7 @@ public final class com/ditchoom/webrtc/dtls/DtlsEngine {
 	public fun <init> (Lcom/ditchoom/webrtc/dtls/DtlsConfig;)V
 	public final fun beginClose (Lkotlin/time/Instant;)Lcom/ditchoom/webrtc/dtls/DtlsStep;
 	public final fun close ()V
+	public final fun exportKeyingMaterial (Ljava/lang/String;Lcom/ditchoom/buffer/ReadBuffer;I)Lcom/ditchoom/buffer/ReadBuffer;
 	public final fun getLocalFingerprint-ZfS6PIY ()Ljava/lang/String;
 	public final fun nextDeadline (Lkotlin/time/Instant;)Lkotlin/time/Instant;
 	public final fun onDatagram (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/time/Instant;)Lcom/ditchoom/webrtc/dtls/DtlsStep;

@@ -76,6 +76,39 @@ internal class Tls12KeySchedule(
         transcriptHash: ReadBuffer,
     ): ReadBuffer = prf(masterSecret, finishedLabel, transcriptHash, VERIFY_DATA_BYTES)
 
+    /**
+     * `PRF(master_secret, label, client_random ‖ server_random [‖ uint16(context.len) ‖ context])`
+     * truncated to [length] — the RFC 5705 TLS 1.2 exporter, DTLS-SRTP's key derivation (RFC 5764). A null
+     * [context] is the DTLS-SRTP case (no context) — the seed is just the two randoms, with no length bytes
+     * (RFC 5705 §4 distinguishes "no context" from an empty one). Matches `SSL_export_keying_material`.
+     */
+    fun exportKeyingMaterial(
+        masterSecret: ReadBuffer,
+        label: String,
+        clientRandom: ReadBuffer,
+        serverRandom: ReadBuffer,
+        context: ReadBuffer?,
+        length: Int,
+    ): ReadBuffer {
+        val seed =
+            if (context == null) {
+                concat(clientRandom, serverRandom)
+            } else {
+                val out =
+                    factory.allocate(
+                        clientRandom.remaining() + serverRandom.remaining() + 2 + context.remaining(),
+                        ByteOrder.BIG_ENDIAN,
+                    )
+                writeView(out, clientRandom)
+                writeView(out, serverRandom)
+                out.writeShort(context.remaining().toShort()) // uint16 context length
+                writeView(out, context)
+                out.resetForRead()
+                out
+            }
+        return prf(masterSecret, label, seed, length)
+    }
+
     // ── P_SHA256 ─────────────────────────────────────────────────────────────────────────────────
 
     private fun pSha256(

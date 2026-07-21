@@ -74,8 +74,19 @@ internal fun boringSslProbe(): Long = bd_smoke()
 internal class BoringSslDtlsEngine(
     private val config: DtlsConfig,
 ) {
+    // Pin BoringSSL's (EC)DHE group list to the group under test so a 1.3 handshake needs no HRR: the 1.2
+    // lane stays P-256 (its only group), the 1.3 lane follows config.keyExchangeGroup — so BoringSSL as
+    // client offers exactly that key_share, and as server it is constrained to our client's single group.
+    private fun groupsList(): String =
+        when {
+            !config.enableDtls13 -> "P-256"
+            config.keyExchangeGroup == KeyExchangeGroup.X25519 -> "X25519"
+            else -> "P-256"
+        }
+
+    // cinterop maps the def's `const char *groups` to a Kotlin String? and marshals it, so pass it directly.
     private val engine =
-        bd_new(if (config.enableDtls13) 1 else 0)
+        bd_new(if (config.enableDtls13) 1 else 0, groupsList())
             ?: throw DtlsException(
                 DtlsFailureReason.Internal("bd_new failed — BoringSSL SSL_CTX/cert init"),
             )

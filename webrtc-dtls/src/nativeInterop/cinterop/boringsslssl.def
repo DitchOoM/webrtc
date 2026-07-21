@@ -117,7 +117,7 @@ static inline void bd_free(bd_engine *e) {
  * a=fingerprint can go in the offer), while client-vs-server is only known once a=setup is negotiated
  * (RFC 8842). BoringSSL is fine with this: the connect/accept state need only be set before the first
  * SSL_do_handshake. */
-static inline bd_engine *bd_new(int enable_dtls13) {
+static inline bd_engine *bd_new(int enable_dtls13, const char *groups) {
     bd_engine *e = (bd_engine *)calloc(1, sizeof(bd_engine));
     if (!e) return NULL;
     if (bd_make_cert(&e->pkey, &e->cert) != BD_OK) { free(e); return NULL; }
@@ -126,11 +126,12 @@ static inline bd_engine *bd_new(int enable_dtls13) {
     if (!e->ctx) { bd_free(e); return NULL; }
     SSL_CTX_set_min_proto_version(e->ctx, DTLS1_2_VERSION);
     SSL_CTX_set_max_proto_version(e->ctx, enable_dtls13 ? DTLS1_3_VERSION : DTLS1_2_VERSION);
-    /* Pin the WebRTC-common curve. BoringSSL's default DTLS 1.3 client offers only an X25519 key_share;
-     * restricting the group list to P-256 makes it send a P-256 key_share directly, so our P-256-only
-     * pure-Kotlin server negotiates 1.3 with no HelloRetryRequest. (X25519 + HRR are deferred to browser
-     * interop, W4b #7.) Harmless for the 1.2 lane, which already uses secp256r1 ECDHE. */
-    SSL_CTX_set1_groups_list(e->ctx, "P-256");
+    /* Pin the (EC)DHE group list to the group under differential test (e.g. "X25519" or "P-256"). This
+     * makes BoringSSL's DTLS 1.3 client send exactly that key_share directly, so our pure-Kotlin server
+     * negotiates 1.3 with no HelloRetryRequest, and constrains BoringSSL-as-server to our client's single
+     * offered group. A NULL/empty string leaves BoringSSL's default list (all groups). Harmless for the
+     * 1.2 lane, which uses secp256r1 ECDHE regardless. (HRR itself stays deferred to browser interop.) */
+    if (groups && groups[0]) SSL_CTX_set1_groups_list(e->ctx, groups);
     SSL_CTX_set_current_time_cb(e->ctx, bd_current_time_cb);
     SSL_CTX_set_verify(e->ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, bd_verify_cb);
     if (!SSL_CTX_use_certificate(e->ctx, e->cert)) { bd_free(e); return NULL; }

@@ -12,30 +12,38 @@ import com.ditchoom.buffer.crypto.KeyAgreementSupport
 import com.ditchoom.buffer.crypto.keyAgreement
 
 /**
- * The ephemeral ECDHE half of the DTLS 1.2 handshake over `secp256r1` (RFC 8422). Wraps one fresh
- * P-256 keypair: [localPublicPoint] is our 65-byte uncompressed point (`04 ‖ X ‖ Y`) for the
- * ServerKeyExchange / ClientKeyExchange, and [premasterSecret] computes the raw ECDH shared secret from
- * the peer's point — which becomes the TLS 1.2 pre-master secret directly.
+ * The ephemeral (EC)DHE half of the DTLS handshake over one [curve] (RFC 8422 / RFC 7748). Wraps one
+ * fresh keypair: [localPublicPoint] is our raw public point (65-byte uncompressed `04 ‖ X ‖ Y` for
+ * P-256, 32-byte u-coordinate for X25519) for the ServerKeyExchange / ClientKeyExchange (1.2) or the
+ * `key_share` (1.3), and [premasterSecret] computes the raw (EC)DH shared secret from the peer's point —
+ * the TLS 1.2 pre-master secret / the TLS 1.3 (EC)DHE input directly.
  *
- * Keypair generation is synchronous ([KeyAgreementBlockingOps.generateKeyPairBlocking]); the raw ECDH
+ * DTLS 1.2 always uses `secp256r1` ([KeyAgreementCurve.P256], the `generate()` default); only the DTLS
+ * 1.3 path picks the group from [com.ditchoom.webrtc.dtls.DtlsConfig.keyExchangeGroup] (X25519 by default,
+ * browser-matching). The buffer-crypto raw-secret path is curve-agnostic and enforces the RFC 7748 §6.1
+ * all-zero rejection internally for X25519, so both curves drop through unchanged.
+ *
+ * Keypair generation is synchronous ([KeyAgreementBlockingOps.generateKeyPairBlocking]); the raw (EC)DH
  * multiply is the **one** buffer-crypto primitive with no blocking variant ([deriveTlsPremasterSecret]
  * is `suspend`, to cover WebCrypto), so it is bridged to synchronous through [rawEcdhPremaster] — the
  * sole per-platform seam in the otherwise-`commonMain` engine (see `crypto/RawEcdh.*`).
  */
 internal class EcdheKeyExchange private constructor(
+    private val curve: KeyAgreementCurve,
     private val ops: KeyAgreementBlockingOps,
     private val keyPair: KeyAgreementKeyPair,
 ) : AutoCloseable {
-    /** Our ephemeral public point, 65-byte uncompressed SEC1 (`04 ‖ X ‖ Y`), read-ready. */
+    /** Our ephemeral public point, raw SEC1/RFC 7748 form (65 B P-256 `04‖X‖Y`, 32 B X25519), read-ready. */
     val localPublicPoint: ReadBuffer get() = keyPair.publicKey.encoded
 
     /**
-     * The raw ECDH shared secret from the peer's 65-byte uncompressed [peerPoint] — the TLS 1.2
-     * pre-master secret. The returned [PlatformBuffer] is caller-owned; free it after deriving the
-     * master secret. Throws if [peerPoint] is an invalid/rejected point.
+     * The raw (EC)DH shared secret from the peer's [peerPoint] (curve-sized: 65 B P-256, 32 B X25519) —
+     * the TLS 1.2 pre-master secret / TLS 1.3 (EC)DHE input. The returned [PlatformBuffer] is
+     * caller-owned; free it after deriving the master secret. Throws if [peerPoint] is invalid/rejected
+     * (including the RFC 7748 §6.1 all-zero X25519 secret).
      */
     fun premasterSecret(peerPoint: ReadBuffer): PlatformBuffer {
-        val peer = KeyAgreementPublicKey.of(KeyAgreementCurve.P256, peerPoint)
+        val peer = KeyAgreementPublicKey.of(curve, peerPoint)
         return rawEcdhPremaster(ops, keyPair.privateKey, peer)
     }
 
@@ -44,13 +52,16 @@ internal class EcdheKeyExchange private constructor(
     }
 
     companion object {
-        /** Generates a fresh ephemeral P-256 keypair (buffer-crypto's CSPRNG — the Tier-B unseeded residue). */
-        fun generate(): EcdheKeyExchange {
-            val support = CryptoCapabilities.keyAgreement(KeyAgreementCurve.P256)
+        /**
+         * Generates a fresh ephemeral keypair on [curve] (buffer-crypto's CSPRNG — the Tier-B unseeded
+         * residue). Defaults to P-256 for the DTLS 1.2 caller; the 1.3 caller passes its negotiated group.
+         */
+        fun generate(curve: KeyAgreementCurve = KeyAgreementCurve.P256): EcdheKeyExchange {
+            val support = CryptoCapabilities.keyAgreement(curve)
             check(support is KeyAgreementSupport.Blocking) {
-                "P-256 blocking key agreement unavailable on this target (browsers delegate; the engine never runs here)"
+                "${curve.curveName} blocking key agreement unavailable on this target (browsers delegate; the engine never runs here)"
             }
-            return EcdheKeyExchange(support.ops, support.ops.generateKeyPairBlocking())
+            return EcdheKeyExchange(curve, support.ops, support.ops.generateKeyPairBlocking())
         }
     }
 }

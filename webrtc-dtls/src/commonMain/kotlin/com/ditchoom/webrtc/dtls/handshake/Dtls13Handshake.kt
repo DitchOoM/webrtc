@@ -23,6 +23,7 @@ import com.ditchoom.webrtc.dtls.DtlsRole
 import com.ditchoom.webrtc.dtls.DtlsState
 import com.ditchoom.webrtc.dtls.DtlsStep
 import com.ditchoom.webrtc.dtls.DtlsVersion
+import com.ditchoom.webrtc.dtls.KeyExchangeGroup
 import com.ditchoom.webrtc.dtls.crypto.DerReader
 import com.ditchoom.webrtc.dtls.crypto.Dtls13RecordProtection
 import com.ditchoom.webrtc.dtls.crypto.EcdheKeyExchange
@@ -39,6 +40,7 @@ import com.ditchoom.webrtc.dtls.wire.HandshakeFragment
 import com.ditchoom.webrtc.dtls.wire.HandshakeMessage
 import com.ditchoom.webrtc.dtls.wire.HandshakeReassembler
 import com.ditchoom.webrtc.dtls.wire.HandshakeType
+import com.ditchoom.webrtc.dtls.wire.NamedGroup
 import com.ditchoom.webrtc.dtls.wire.ProtocolVersion
 import com.ditchoom.webrtc.dtls.wire.ServerHello
 import com.ditchoom.webrtc.dtls.wire.SignatureSchemeId
@@ -54,8 +56,13 @@ import kotlin.time.Instant
  * the pure-Kotlin core the [com.ditchoom.webrtc.dtls.DtlsEngine] drives when 1.3 is negotiated. Caller
  * clocked (`now`), no coroutine, no wall clock. Byte-matched against the BoringSSL oracle.
  *
+ * The (EC)DHE group is negotiable: a client offers exactly one group — X25519 (default, browser-matching)
+ * or P-256 — in both `supported_groups` and its single `key_share`, so the server can only ever select it
+ * and a HelloRetryRequest is structurally impossible. A server adopts whichever supported group the peer
+ * key-shared. (ECDSA-P256 identity/signatures are unchanged; only the ephemeral key exchange varies.)
+ *
  * WebRTC is **mutually authenticated** (RFC 8827), so both peers send Certificate + CertificateVerify.
- * The flights (no HelloRetryRequest in the happy P-256 path; deferred to interop):
+ * The flights (no HelloRetryRequest — see above):
  * ```
  *   client → ClientHello                                                        (epoch 0, plaintext)
  *   server → ServerHello                                                        (epoch 0, plaintext)
@@ -77,7 +84,12 @@ internal class Dtls13Handshake(
     private val schedule = Tls13KeySchedule(factory)
     private val reassembler = HandshakeReassembler(factory)
     private val transcript = TranscriptHash(factory, dtls13 = true)
-    private val ecdhe: EcdheKeyExchange = EcdheKeyExchange.generate()
+
+    // The (EC)DHE group is negotiated: a client uses its configured group; a server adopts whichever
+    // supported group the peer key-shared (set in handleAsServer). The ephemeral keypair is therefore
+    // deferred to that point — its curve isn't known until the group is (client: at start; server: on CH).
+    private var negotiatedGroup: KeyExchangeGroup = config.keyExchangeGroup
+    private var ecdhe: EcdheKeyExchange? = null
 
     private lateinit var localRandom: ReadBuffer
     private var peerCertDer: ReadBuffer? = null
@@ -149,11 +161,13 @@ internal class Dtls13Handshake(
         started = true
         localRandom = randomBytes(RANDOM_BYTES)
         if (role == DtlsRole.Client) {
+            // Offer exactly one group (its curve is now fixed), so the server can never HelloRetryRequest.
+            ecdhe = EcdheKeyExchange.generate(negotiatedGroup.agreementCurve)
             val out = mutableListOf<ReadBuffer>()
             sendClientHelloFlight(out, now)
             return step(out, emptyList())
         }
-        return step(emptyList(), emptyList()) // server waits for ClientHello
+        return step(emptyList(), emptyList()) // server waits for ClientHello (its group + curve chosen then)
     }
 
     override fun onDatagram(
@@ -212,7 +226,7 @@ internal class Dtls13Handshake(
     override fun nextDeadline(now: Instant): Instant? = if (terminal != null) null else retransmitDeadline
 
     override fun close() {
-        ecdhe.close()
+        ecdhe?.close()
         handshakeProtection?.close()
         appProtection?.close()
     }
@@ -308,8 +322,10 @@ internal class Dtls13Handshake(
                 val ksExt =
                     sh.extensions.firstOrNull { it.type.value == ExtensionType.KeyShare.value }
                         ?: return fail(DtlsFailureReason.HandshakeFailure)
-                peerPoint = Tls13Bodies.parseKeyShareServerHello(ksExt.body)?.let { copyOf(it) }
-                    ?: return fail(DtlsFailureReason.HandshakeFailure)
+                val serverShare = Tls13Bodies.parseKeyShareServerHello(ksExt.body) ?: return fail(DtlsFailureReason.HandshakeFailure)
+                // We offered exactly one group, so a conforming server must echo it (never HRRs). Reject otherwise.
+                if (serverShare.group.value != negotiatedGroup.namedGroup.value) return fail(DtlsFailureReason.HandshakeFailure)
+                peerPoint = copyOf(serverShare.point)
                 transcript.append(message)
                 deriveHandshakeSecrets(client = true)
             }
@@ -339,12 +355,15 @@ internal class Dtls13Handshake(
         out: MutableList<ReadBuffer>,
         now: Instant,
     ) {
+        val offeredGroup = negotiatedGroup.namedGroup
         val extensions =
             listOf(
-                supportedGroupsExtension(),
+                // List ONLY our single offered group — in both supported_groups and the one key_share below —
+                // so the server can only ever select it and never has cause to HelloRetryRequest.
+                supportedGroupsExtension(offeredGroup),
                 signatureAlgorithmsExtension(),
                 Tls13Bodies.supportedVersionsClientHello(factory),
-                Tls13Bodies.keyShareClientHello(ecdhe.localPublicPoint, factory),
+                Tls13Bodies.keyShareClientHello(offeredGroup, ecdhe!!.localPublicPoint, factory),
             )
         val ch =
             buildBody {
@@ -390,8 +409,11 @@ internal class Dtls13Handshake(
                 val ksExt =
                     ch.extensions.firstOrNull { it.type.value == ExtensionType.KeyShare.value }
                         ?: return fail(DtlsFailureReason.HandshakeFailure)
-                peerPoint = Tls13Bodies.parseKeyShareClientHello(ksExt.body)?.let { copyOf(it) }
-                    ?: return fail(DtlsFailureReason.HandshakeFailure)
+                // Adopt whichever supported group the client key-shared (X25519 or P-256) and match its curve.
+                val clientShare = Tls13Bodies.parseKeyShareClientHello(ksExt.body) ?: return fail(DtlsFailureReason.HandshakeFailure)
+                negotiatedGroup = clientShare.group.toKeyExchangeGroupOrNull() ?: return fail(DtlsFailureReason.HandshakeFailure)
+                peerPoint = copyOf(clientShare.point)
+                ecdhe = EcdheKeyExchange.generate(negotiatedGroup.agreementCurve)
                 transcript.append(message)
                 sendServerFlight(out, now)
             }
@@ -427,7 +449,7 @@ internal class Dtls13Handshake(
                     CipherSuiteId.TlsAes128GcmSha256,
                     listOf(
                         Tls13Bodies.supportedVersionsServerHello(factory),
-                        Tls13Bodies.keyShareServerHello(ecdhe.localPublicPoint, factory),
+                        Tls13Bodies.keyShareServerHello(negotiatedGroup.namedGroup, ecdhe!!.localPublicPoint, factory),
                     ),
                 ).bodyInto(it)
             }
@@ -448,7 +470,7 @@ internal class Dtls13Handshake(
     // ── key schedule ─────────────────────────────────────────────────────────────────────────────
 
     private fun deriveHandshakeSecrets(client: Boolean) {
-        val ecdheSecret = ecdhe.premasterSecret(peerPoint!!)
+        val ecdheSecret = ecdhe!!.premasterSecret(peerPoint!!)
         val hs =
             try {
                 val early = schedule.earlySecret()
@@ -630,16 +652,37 @@ internal class Dtls13Handshake(
 
     // ── extension builders (shared shape with the 1.2 FSM) ─────────────────────────────────────────
 
-    private fun supportedGroupsExtension(): Extension {
+    private fun supportedGroupsExtension(group: NamedGroup): Extension {
         val body = factory.allocate(4, ByteOrder.BIG_ENDIAN)
         body.writeShort(2)
-        body.writeShort(
-            com.ditchoom.webrtc.dtls.wire.NamedGroup.Secp256r1.value
-                .toShort(),
-        )
+        body.writeShort(group.value.toShort())
         body.resetForRead()
         return Extension(ExtensionType.SupportedGroups, body)
     }
+
+    // ── (EC)DHE group ⇄ wire NamedGroup / buffer-crypto curve mapping ──────────────────────────────
+
+    private val KeyExchangeGroup.namedGroup: NamedGroup
+        get() =
+            when (this) {
+                KeyExchangeGroup.X25519 -> NamedGroup.X25519
+                KeyExchangeGroup.Secp256r1 -> NamedGroup.Secp256r1
+            }
+
+    private val KeyExchangeGroup.agreementCurve: KeyAgreementCurve
+        get() =
+            when (this) {
+                KeyExchangeGroup.X25519 -> KeyAgreementCurve.X25519
+                KeyExchangeGroup.Secp256r1 -> KeyAgreementCurve.P256
+            }
+
+    /** The negotiable group for a supported wire [NamedGroup] (used by the server on the ClientHello), or null. */
+    private fun NamedGroup.toKeyExchangeGroupOrNull(): KeyExchangeGroup? =
+        when (value) {
+            NamedGroup.X25519.value -> KeyExchangeGroup.X25519
+            NamedGroup.Secp256r1.value -> KeyExchangeGroup.Secp256r1
+            else -> null
+        }
 
     private fun signatureAlgorithmsExtension(): Extension {
         val body = factory.allocate(4, ByteOrder.BIG_ENDIAN)

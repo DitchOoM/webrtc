@@ -10,6 +10,7 @@ import com.ditchoom.webrtc.dtls.DtlsConfig
 import com.ditchoom.webrtc.dtls.DtlsRole
 import com.ditchoom.webrtc.dtls.DtlsState
 import com.ditchoom.webrtc.dtls.DtlsVersion
+import com.ditchoom.webrtc.dtls.KeyExchangeGroup
 import com.ditchoom.webrtc.dtls.crypto.SelfSignedCertificate
 import com.ditchoom.webrtc.dtls.engineCryptoAvailable
 import kotlin.random.Random
@@ -27,27 +28,40 @@ import kotlin.time.Instant
  * complete over an in-memory datagram pipe under a virtual clock — exercising the TLS 1.3 key schedule,
  * the unified-header record layer with record-number encryption, and the mutually-authenticated flights.
  * Each side ends [DtlsState.Established] with the peer's real fingerprint and negotiated version 1.3, and
- * application data flows encrypted (epoch-3 traffic keys) both ways. This is the fast self-loopback check;
+ * application data flows encrypted (epoch-3 traffic keys) both ways. Both negotiable (EC)DHE groups are
+ * exercised — X25519 (the browser-matching default) and P-256. This is the fast self-loopback check;
  * the BoringSSL differential (linuxTest) is what proves byte-level interop with an independent stack.
  */
 class Dtls13HandshakeTest {
     private var now: Instant = Instant.fromEpochSeconds(0)
 
-    private fun config() = DtlsConfig(bufferFactory = BufferFactory.managed(), random = Random(11))
+    private fun config(group: KeyExchangeGroup) =
+        DtlsConfig(bufferFactory = BufferFactory.managed(), keyExchangeGroup = group, random = Random(11))
 
     private fun cert() = SelfSignedCertificate.generate(BufferFactory.managed(), Random(11))
 
     @Test
-    fun two_pure_kotlin_stacks_complete_a_dtls13_handshake() {
+    fun two_pure_kotlin_stacks_complete_a_dtls13_handshake_x25519() = handshakeCompletes(KeyExchangeGroup.X25519)
+
+    @Test
+    fun two_pure_kotlin_stacks_complete_a_dtls13_handshake_p256() = handshakeCompletes(KeyExchangeGroup.Secp256r1)
+
+    @Test
+    fun application_data_flows_encrypted_after_the_handshake_x25519() = appDataFlows(KeyExchangeGroup.X25519)
+
+    @Test
+    fun application_data_flows_encrypted_after_the_handshake_p256() = appDataFlows(KeyExchangeGroup.Secp256r1)
+
+    private fun handshakeCompletes(group: KeyExchangeGroup) {
         if (!engineCryptoAvailable()) return // browsers delegate; the engine's blocking crypto isn't here
         val clientCert = cert()
         val serverCert = cert()
-        val client = Dtls13Handshake(config(), DtlsRole.Client, clientCert)
-        val server = Dtls13Handshake(config(), DtlsRole.Server, serverCert)
+        val client = Dtls13Handshake(config(group), DtlsRole.Client, clientCert)
+        val server = Dtls13Handshake(config(group), DtlsRole.Server, serverCert)
         try {
             val (c, s) = drive(client, server)
-            assertIs<DtlsState.Established>(c, "client established, was $c")
-            assertIs<DtlsState.Established>(s, "server established, was $s")
+            assertIs<DtlsState.Established>(c, "client established ($group), was $c")
+            assertIs<DtlsState.Established>(s, "server established ($group), was $s")
 
             assertEquals(serverCert.fingerprint, c.peerFingerprint)
             assertEquals(clientCert.fingerprint, s.peerFingerprint)
@@ -61,13 +75,12 @@ class Dtls13HandshakeTest {
         }
     }
 
-    @Test
-    fun application_data_flows_encrypted_after_the_handshake() {
+    private fun appDataFlows(group: KeyExchangeGroup) {
         if (!engineCryptoAvailable()) return
         val clientCert = cert()
         val serverCert = cert()
-        val client = Dtls13Handshake(config(), DtlsRole.Client, clientCert)
-        val server = Dtls13Handshake(config(), DtlsRole.Server, serverCert)
+        val client = Dtls13Handshake(config(group), DtlsRole.Client, clientCert)
+        val server = Dtls13Handshake(config(group), DtlsRole.Server, serverCert)
         try {
             drive(client, server)
 

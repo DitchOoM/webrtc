@@ -8,30 +8,56 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * The W4b #6 **DTLS 1.3 differential** exit fixture: our pure-Kotlin [DtlsEngine] completes a real DTLS
+ * The W4b #6/#7b **DTLS 1.3 differential** exit fixture: our pure-Kotlin [DtlsEngine] completes a real DTLS
  * 1.3 handshake (RFC 9147) against the independent BoringSSL oracle ([BoringSslDtlsEngine]) under a virtual
- * clock, in **both** role directions. Unlike the self-loopback ([com.ditchoom.webrtc.dtls.handshake.Dtls13HandshakeTest]),
+ * clock, in **both** role directions and over **both** negotiable (EC)DHE groups — X25519 (the browser-matching
+ * default) and P-256. Unlike the self-loopback ([com.ditchoom.webrtc.dtls.handshake.Dtls13HandshakeTest]),
  * BoringSSL only establishes if every byte we emit is correct: the ClientHello/ServerHello with
  * `supported_versions` + `key_share`, the TLS 1.3 key schedule (`"dtls13"`-prefixed HKDF-Expand-Label),
  * the unified-header record layer with record-number encryption, the CertificateVerify over the RFC 8446
- * signed content, and the Finished HMAC. Both engines run at their **default** config (1.3 on) — the oracle
- * negotiates DTLS 1.3, not the 1.2 the sibling [DtlsHandshakeTest] pins.
+ * signed content, and the Finished HMAC.
+ *
+ * Each group pins the oracle's group list to the matching curve (`BoringSslDtlsEngine.groupsList` → the def's
+ * `SSL_CTX_set1_groups_list`), so BoringSSL-as-client offers exactly that key_share and BoringSSL-as-server is
+ * constrained to our client's single offered group — a HelloRetryRequest never arises on either side.
  *
  * The 1.3 openssl-`s_client` lane is intentionally absent: OpenSSL 3.0.13 (the box's version) predates
  * DTLS 1.3 in `s_client`; that second-stack cross-check needs OpenSSL ≥ 3.2 and is deferred to interop (#7).
  */
 class Dtls13DifferentialTest {
-    // Default config → enableDtls13 = true → both sides negotiate DTLS 1.3.
-    private fun config() = DtlsConfig()
+    private fun config(group: KeyExchangeGroup) = DtlsConfig(keyExchangeGroup = group)
+
+    // ── X25519 (the default, browser-matching group) ────────────────────────────────────────────────
 
     @Test
-    fun our_client_completes_a_dtls13_handshake_against_the_boringssl_oracle() {
-        val ours = DtlsEngine(config())
-        val oracle = BoringSslDtlsEngine(config())
+    fun our_client_completes_a_dtls13_handshake_against_boringssl_x25519() = ourClientDifferential(KeyExchangeGroup.X25519)
+
+    @Test
+    fun our_server_completes_a_dtls13_handshake_against_boringssl_x25519() = ourServerDifferential(KeyExchangeGroup.X25519)
+
+    @Test
+    fun application_data_flows_both_ways_over_dtls13_x25519() = appDataDifferential(KeyExchangeGroup.X25519)
+
+    // ── P-256 (the interop breadth fallback) ────────────────────────────────────────────────────────
+
+    @Test
+    fun our_client_completes_a_dtls13_handshake_against_boringssl_p256() = ourClientDifferential(KeyExchangeGroup.Secp256r1)
+
+    @Test
+    fun our_server_completes_a_dtls13_handshake_against_boringssl_p256() = ourServerDifferential(KeyExchangeGroup.Secp256r1)
+
+    @Test
+    fun application_data_flows_both_ways_over_dtls13_p256() = appDataDifferential(KeyExchangeGroup.Secp256r1)
+
+    // ── shared drivers (one per role direction + app-data), parameterized by group ──────────────────
+
+    private fun ourClientDifferential(group: KeyExchangeGroup) {
+        val ours = DtlsEngine(config(group))
+        val oracle = BoringSslDtlsEngine(config(group))
         try {
             val (c, s) = DtlsConductor().drive(ours.endpoint(), oracle.endpoint())
-            assertIs<DtlsState.Established>(c, "our client established against BoringSSL 1.3, was $c")
-            assertIs<DtlsState.Established>(s, "BoringSSL server established against ours, was $s")
+            assertIs<DtlsState.Established>(c, "our client established against BoringSSL 1.3 ($group), was $c")
+            assertIs<DtlsState.Established>(s, "BoringSSL server established against ours ($group), was $s")
 
             assertEquals(oracle.localFingerprint, c.peerFingerprint, "our client saw the oracle's cert")
             assertEquals(ours.localFingerprint, s.peerFingerprint, "the oracle saw our cert")
@@ -43,15 +69,15 @@ class Dtls13DifferentialTest {
         }
     }
 
-    @Test
-    fun our_server_completes_a_dtls13_handshake_against_the_boringssl_oracle() {
-        val oracle = BoringSslDtlsEngine(config())
-        val ours = DtlsEngine(config())
+    private fun ourServerDifferential(group: KeyExchangeGroup) {
+        val oracle = BoringSslDtlsEngine(config(group))
+        val ours = DtlsEngine(config(group))
         try {
-            // Oracle is the client here (sends ClientHello); our engine peeks it and answers as a 1.3 server.
+            // Oracle is the client here (sends ClientHello); our engine peeks it and answers as a 1.3 server,
+            // adopting whichever group the oracle key-shared.
             val (c, s) = DtlsConductor().drive(oracle.endpoint(), ours.endpoint())
-            assertIs<DtlsState.Established>(c, "BoringSSL client established against our 1.3 server, was $c")
-            assertIs<DtlsState.Established>(s, "our server established against BoringSSL 1.3, was $s")
+            assertIs<DtlsState.Established>(c, "BoringSSL client established against our 1.3 server ($group), was $c")
+            assertIs<DtlsState.Established>(s, "our server established against BoringSSL 1.3 ($group), was $s")
 
             assertEquals(ours.localFingerprint, c.peerFingerprint, "the oracle saw our cert")
             assertEquals(oracle.localFingerprint, s.peerFingerprint, "our server saw the oracle's cert")
@@ -62,10 +88,9 @@ class Dtls13DifferentialTest {
         }
     }
 
-    @Test
-    fun application_data_flows_both_ways_over_dtls13() {
-        val ours = DtlsEngine(config())
-        val oracle = BoringSslDtlsEngine(config())
+    private fun appDataDifferential(group: KeyExchangeGroup) {
+        val ours = DtlsEngine(config(group))
+        val oracle = BoringSslDtlsEngine(config(group))
         try {
             val conductor = DtlsConductor()
             val (c, s) = conductor.drive(ours.endpoint(), oracle.endpoint())

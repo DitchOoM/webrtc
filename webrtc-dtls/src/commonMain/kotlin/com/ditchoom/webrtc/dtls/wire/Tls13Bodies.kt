@@ -10,47 +10,61 @@ import com.ditchoom.buffer.WriteBuffer
  * RFC 9147). These sit alongside the 1.2 bodies in [HandshakeBodies]; the ClientHello/ServerHello wire
  * frames themselves are reused from there (a 1.3 hello is a 1.2-shaped hello with 1.3 extensions).
  *
- * Only `secp256r1` (P-256) key exchange and `ecdsa_secp256r1_sha256` signatures are modelled — the WebRTC
- * common profile. X25519 and HelloRetryRequest are deferred to browser interop (W4b #7).
+ * The `secp256r1` (P-256) and `x25519` key-exchange groups and `ecdsa_secp256r1_sha256` signatures are
+ * modelled — the WebRTC common profile. HelloRetryRequest is unnecessary here: the client offers exactly
+ * one group in both `supported_groups` and `key_share`, so the server can only select it (see
+ * [com.ditchoom.webrtc.dtls.KeyExchangeGroup]).
  */
 internal object Tls13Bodies {
+    /** The (EC)DHE groups this DTLS 1.3 stack can key-share, by wire code point (RFC 8446 §4.2.7). */
+    val supportedGroups: Set<Int> = setOf(NamedGroup.X25519.value, NamedGroup.Secp256r1.value)
+
+    /** A parsed `key_share` entry: its [group] and raw public [point] (a zero-copy view into the body). */
+    class KeyShareEntry(
+        val group: NamedGroup,
+        val point: ReadBuffer,
+    )
+
     // ── key_share (RFC 8446 §4.2.8) ────────────────────────────────────────────────────────────────
 
-    /** ClientHello `key_share`: a `client_shares` list with our single P-256 [point] (`04‖X‖Y`, 65 B). */
+    /** ClientHello `key_share`: a `client_shares` list with our single [group] [point] (raw SEC1/RFC 7748). */
     fun keyShareClientHello(
+        group: NamedGroup,
         point: ReadBuffer,
         factory: BufferFactory,
     ): Extension {
         val entryLen = 2 + 2 + point.remaining()
         val body = factory.allocate(2 + entryLen, ByteOrder.BIG_ENDIAN)
         body.writeShort(entryLen.toShort()) // client_shares list length
-        writeKeyShareEntry(body, point)
+        writeKeyShareEntry(body, group, point)
         body.resetForRead()
         return Extension(ExtensionType.KeyShare, body)
     }
 
-    /** ServerHello `key_share`: exactly one `server_share` KeyShareEntry (no list wrapper). */
+    /** ServerHello `key_share`: exactly one `server_share` KeyShareEntry for [group] (no list wrapper). */
     fun keyShareServerHello(
+        group: NamedGroup,
         point: ReadBuffer,
         factory: BufferFactory,
     ): Extension {
         val body = factory.allocate(2 + 2 + point.remaining(), ByteOrder.BIG_ENDIAN)
-        writeKeyShareEntry(body, point)
+        writeKeyShareEntry(body, group, point)
         body.resetForRead()
         return Extension(ExtensionType.KeyShare, body)
     }
 
     private fun writeKeyShareEntry(
         dest: WriteBuffer,
+        group: NamedGroup,
         point: ReadBuffer,
     ) {
-        dest.writeShort(NamedGroup.Secp256r1.value.toShort())
+        dest.writeShort(group.value.toShort())
         dest.writeShort(point.remaining().toShort())
         dest.writeView(point)
     }
 
-    /** The P-256 key-exchange point from a ClientHello `key_share` body, or null if none is offered. */
-    fun parseKeyShareClientHello(body: ReadBuffer): ReadBuffer? {
+    /** The first **supported** key-exchange entry from a ClientHello `key_share` body, or null if none. */
+    fun parseKeyShareClientHello(body: ReadBuffer): KeyShareEntry? {
         val n = body.remaining()
         if (n < 2) return null
         val listLen = body.u16(0)
@@ -62,20 +76,20 @@ internal object Tls13Bodies {
             val keyStart = off + 4
             val keyEnd = keyStart + keyLen
             if (keyEnd > end) return null
-            if (group == NamedGroup.Secp256r1.value) return body.sliceOf(keyStart, keyEnd)
+            if (group in supportedGroups) return KeyShareEntry(NamedGroup(group), body.sliceOf(keyStart, keyEnd))
             off = keyEnd
         }
         return null
     }
 
-    /** The P-256 key-exchange point from a ServerHello `key_share` body, or null if it is a different group. */
-    fun parseKeyShareServerHello(body: ReadBuffer): ReadBuffer? {
+    /** The key-exchange entry from a ServerHello `key_share` body, or null if the group is unsupported. */
+    fun parseKeyShareServerHello(body: ReadBuffer): KeyShareEntry? {
         val n = body.remaining()
         if (n < 4) return null
         val group = body.u16(0)
         val keyLen = body.u16(2)
-        if (group != NamedGroup.Secp256r1.value || 4 + keyLen > n) return null
-        return body.sliceOf(4, 4 + keyLen)
+        if (group !in supportedGroups || 4 + keyLen > n) return null
+        return KeyShareEntry(NamedGroup(group), body.sliceOf(4, 4 + keyLen))
     }
 
     // ── supported_versions (RFC 8446 §4.2.1) ───────────────────────────────────────────────────────

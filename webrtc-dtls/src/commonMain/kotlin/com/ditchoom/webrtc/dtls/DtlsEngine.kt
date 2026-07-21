@@ -26,6 +26,19 @@ import kotlin.time.Instant
 public enum class DtlsVersion { Dtls12, Dtls13, Unknown }
 
 /**
+ * The (EC)DHE key-exchange group a **DTLS 1.3** client offers (RFC 8446 §4.2.7 / RFC 7748 / 8422).
+ * [X25519] is the default because it is what both browser engines offer first for WebRTC — matching it
+ * keeps the common path a single round trip. [Secp256r1] (NIST P-256) is the interop breadth fallback.
+ *
+ * The client offers **exactly one** group — this same value in both `supported_groups` and its single
+ * `key_share` — so a 1.3 server can only ever select it and never needs a HelloRetryRequest. A 1.3
+ * **server** ignores this field entirely: it adopts whichever supported group the peer key-shared. This
+ * affects **only** the DTLS 1.3 path; DTLS 1.2 is P-256-only (its `ServerKeyExchange` is fixed to
+ * secp256r1, which is what browsers use for 1.2).
+ */
+public enum class KeyExchangeGroup { X25519, Secp256r1 }
+
+/**
  * Construction parameters for a [DtlsEngine], all seams with production defaults (directive #2/#6).
  * The one un-seamed source of entropy is BoringSSL's internal RNG shaping the ClientHello / keys —
  * the documented ±1-datagram Tier-B drift residue (RFC §5.1), not a Kotlin `Random.Default`.
@@ -38,6 +51,10 @@ public enum class DtlsVersion { Dtls12, Dtls13, Unknown }
  *   default since the libwebrtc flip in 2025), and BoringSSL itself defaults to it. Version negotiation
  *   falls back to 1.2 for peers that lack 1.3 — notably Pion, whose released v3 is still 1.2-only. Set
  *   this false to pin 1.2 (e.g. to reproduce a 1.2-only interop lane).
+ * @param keyExchangeGroup the (EC)DHE group a **DTLS 1.3 client** offers — [KeyExchangeGroup.X25519] by
+ *   default, matching what browsers offer first. The client lists only this group (in both
+ *   `supported_groups` and its single `key_share`), so the server never HelloRetryRequests. A 1.3 server
+ *   ignores it and follows the peer's key_share; the 1.2 path is P-256-only regardless. See [KeyExchangeGroup].
  * @param maxDatagramSize the largest record datagram we read out of the backend in one step.
  * @param handshakeTimeout how long a driver waits for the handshake before failing it with
  *   [DtlsFailureReason.HandshakeTimeout]. DTLS itself retransmits a lost flight with exponential
@@ -53,6 +70,7 @@ public enum class DtlsVersion { Dtls12, Dtls13, Unknown }
 public class DtlsConfig(
     public val bufferFactory: BufferFactory = BufferFactory.managed(),
     public val enableDtls13: Boolean = true,
+    public val keyExchangeGroup: KeyExchangeGroup = KeyExchangeGroup.X25519,
     public val maxDatagramSize: Int = 1500,
     public val handshakeTimeout: Duration = 30.seconds,
     @Suppress("UnseamedEntropy") public val random: Random = Random.Default,

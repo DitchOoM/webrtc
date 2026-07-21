@@ -15,6 +15,24 @@ public abstract interface class com/ditchoom/webrtc/IceGatheringPolicy {
 	public abstract fun gather (Lcom/ditchoom/webrtc/ice/IceAgentDriver;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
+public final class com/ditchoom/webrtc/IceServer {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Ljava/util/List;Ljava/lang/String;Ljava/lang/String;)V
+	public synthetic fun <init> (Ljava/util/List;Ljava/lang/String;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Ljava/util/List;
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Ljava/lang/String;
+	public final fun copy (Ljava/util/List;Ljava/lang/String;Ljava/lang/String;)Lcom/ditchoom/webrtc/IceServer;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/IceServer;Ljava/util/List;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/IceServer;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCredential ()Ljava/lang/String;
+	public final fun getUrls ()Ljava/util/List;
+	public final fun getUsername ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/JsepStateException : java/lang/IllegalStateException {
 	public fun <init> (Lcom/ditchoom/webrtc/sdp/JsepError;)V
 	public final fun getError ()Lcom/ditchoom/webrtc/sdp/JsepError;
@@ -104,14 +122,6 @@ public final class com/ditchoom/webrtc/PeerConnectionFailureReason$Unknown : com
 	public fun toString ()Ljava/lang/String;
 }
 
-public final class com/ditchoom/webrtc/PeerConnectionKind : java/lang/Enum {
-	public static final field BrowserDelegated Lcom/ditchoom/webrtc/PeerConnectionKind;
-	public static final field Native Lcom/ditchoom/webrtc/PeerConnectionKind;
-	public static fun getEntries ()Lkotlin/enums/EnumEntries;
-	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/webrtc/PeerConnectionKind;
-	public static fun values ()[Lcom/ditchoom/webrtc/PeerConnectionKind;
-}
-
 public abstract interface class com/ditchoom/webrtc/PeerConnectionState {
 }
 
@@ -159,13 +169,19 @@ public final class com/ditchoom/webrtc/PeerConnectionState$New : com/ditchoom/we
 }
 
 public abstract interface class com/ditchoom/webrtc/PeerConnectionSupport {
-	public abstract fun createDelegated (Lkotlinx/coroutines/CoroutineScope;Ljava/util/List;)Lcom/ditchoom/webrtc/RtcPeerConnection;
-	public static synthetic fun createDelegated$default (Lcom/ditchoom/webrtc/PeerConnectionSupport;Lkotlinx/coroutines/CoroutineScope;Ljava/util/List;ILjava/lang/Object;)Lcom/ditchoom/webrtc/RtcPeerConnection;
-	public abstract fun getKind ()Lcom/ditchoom/webrtc/PeerConnectionKind;
 }
 
-public final class com/ditchoom/webrtc/PeerConnectionSupport$DefaultImpls {
-	public static synthetic fun createDelegated$default (Lcom/ditchoom/webrtc/PeerConnectionSupport;Lkotlinx/coroutines/CoroutineScope;Ljava/util/List;ILjava/lang/Object;)Lcom/ditchoom/webrtc/RtcPeerConnection;
+public abstract interface class com/ditchoom/webrtc/PeerConnectionSupport$BrowserDelegated : com/ditchoom/webrtc/PeerConnectionSupport {
+	public abstract fun create (Lkotlinx/coroutines/CoroutineScope;Ljava/util/List;)Lcom/ditchoom/webrtc/RtcPeerConnection;
+	public static synthetic fun create$default (Lcom/ditchoom/webrtc/PeerConnectionSupport$BrowserDelegated;Lkotlinx/coroutines/CoroutineScope;Ljava/util/List;ILjava/lang/Object;)Lcom/ditchoom/webrtc/RtcPeerConnection;
+}
+
+public final class com/ditchoom/webrtc/PeerConnectionSupport$BrowserDelegated$DefaultImpls {
+	public static synthetic fun create$default (Lcom/ditchoom/webrtc/PeerConnectionSupport$BrowserDelegated;Lkotlinx/coroutines/CoroutineScope;Ljava/util/List;ILjava/lang/Object;)Lcom/ditchoom/webrtc/RtcPeerConnection;
+}
+
+public final class com/ditchoom/webrtc/PeerConnectionSupport$Native : com/ditchoom/webrtc/PeerConnectionSupport {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/PeerConnectionSupport$Native;
 }
 
 public final class com/ditchoom/webrtc/PeerConnectionSupport_jvmMainKt {

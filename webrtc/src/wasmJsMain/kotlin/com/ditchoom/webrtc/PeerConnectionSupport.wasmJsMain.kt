@@ -40,19 +40,17 @@ import kotlin.js.toJsString
  * for real (Karma-tested via the loopback in `wasmJsTest`), not `NotImplementedError`.
  */
 public actual fun peerConnectionSupport(): PeerConnectionSupport =
-    if (jsRtcPeerConnectionAvailable()) WasmJsBrowserSupport else NativePeerConnectionSupport
+    if (jsRtcPeerConnectionAvailable()) WasmJsBrowserSupport else PeerConnectionSupport.Native
 
-private object WasmJsBrowserSupport : PeerConnectionSupport {
-    override val kind: PeerConnectionKind get() = PeerConnectionKind.BrowserDelegated
-
-    override fun createDelegated(
+private object WasmJsBrowserSupport : PeerConnectionSupport.BrowserDelegated {
+    override fun create(
         scope: CoroutineScope,
-        iceServers: List<String>,
+        iceServers: List<IceServer>,
     ): RtcPeerConnection = WasmBrowserPeerConnection(iceServers)
 }
 
 private class WasmBrowserPeerConnection(
-    iceServers: List<String>,
+    iceServers: List<IceServer>,
 ) : RtcPeerConnection {
     private val pc: JsRtcPeerConnection = jsNewRtcPeerConnection(iceServersJson(iceServers).toJsString())
 
@@ -165,13 +163,21 @@ private fun mapSignalingState(state: String): SignalingState? =
         else -> null
     }
 
-// RTCConfiguration { iceServers: [{ urls }] } as JSON (parsed in the bridge). URLs are stun:/turn: strings.
-private fun iceServersJson(iceServers: List<String>): String =
+// RTCConfiguration { iceServers: [{ urls, username?, credential? }] } as JSON (parsed in the bridge).
+private fun iceServersJson(iceServers: List<IceServer>): String =
     buildString {
         append("{\"iceServers\":[")
-        iceServers.forEachIndexed { i, url ->
+        iceServers.forEachIndexed { i, server ->
             if (i > 0) append(',')
-            append("{\"urls\":\"").append(jsonEscape(url)).append("\"}")
+            append("{\"urls\":[")
+            server.urls.forEachIndexed { j, url ->
+                if (j > 0) append(',')
+                append('"').append(jsonEscape(url)).append('"')
+            }
+            append(']')
+            server.username?.let { append(",\"username\":\"").append(jsonEscape(it)).append('"') }
+            server.credential?.let { append(",\"credential\":\"").append(jsonEscape(it)).append('"') }
+            append('}')
         }
         append("]}")
     }

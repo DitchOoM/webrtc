@@ -27,31 +27,33 @@ import kotlin.js.Promise
 
 /**
  * The browser [PeerConnectionSupport] (js): the one target where we **wrap, not reimplement** (RFC §1.1)
- * — [createDelegated] maps our [RtcPeerConnection] onto the browser's own `RTCPeerConnection`. Under Node
- * (no `RTCPeerConnection`) it reports [PeerConnectionKind.Native] so a caller isn't handed a delegator it
- * cannot back.
+ * — [PeerConnectionSupport.BrowserDelegated.create] maps our [RtcPeerConnection] onto the browser's own
+ * `RTCPeerConnection`. Under Node (no `RTCPeerConnection`) it returns [PeerConnectionSupport.Native], so a
+ * caller isn't handed a delegator it cannot back.
  */
 public actual fun peerConnectionSupport(): PeerConnectionSupport =
-    if (rtcPeerConnectionAvailable()) JsBrowserSupport else NativePeerConnectionSupport
+    if (rtcPeerConnectionAvailable()) JsBrowserSupport else PeerConnectionSupport.Native
 
 private fun rtcPeerConnectionAvailable(): Boolean = js("typeof RTCPeerConnection !== 'undefined'").unsafeCast<Boolean>()
 
-private object JsBrowserSupport : PeerConnectionSupport {
-    override val kind: PeerConnectionKind get() = PeerConnectionKind.BrowserDelegated
-
-    override fun createDelegated(
+private object JsBrowserSupport : PeerConnectionSupport.BrowserDelegated {
+    override fun create(
         scope: CoroutineScope,
-        iceServers: List<String>,
+        iceServers: List<IceServer>,
     ): RtcPeerConnection = BrowserPeerConnection(iceServers)
 }
 
-// Build the RTCConfiguration { iceServers: [{ urls }] } from a flat URL list, then the RTCPeerConnection.
-private fun newRtcPeerConnection(iceServers: List<String>): dynamic {
+// Build the RTCConfiguration { iceServers: [{ urls, username?, credential? }] }, then the RTCPeerConnection.
+private fun newRtcPeerConnection(iceServers: List<IceServer>): dynamic {
     val config: dynamic = js("({})")
     val servers = js("[]")
-    for (url in iceServers) {
+    for (server in iceServers) {
         val entry: dynamic = js("({})")
-        entry.urls = url
+        val urls = js("[]")
+        for (u in server.urls) urls.push(u)
+        entry.urls = urls
+        server.username?.let { entry.username = it }
+        server.credential?.let { entry.credential = it }
         servers.push(entry)
     }
     config.iceServers = servers
@@ -122,7 +124,7 @@ private fun mapSignalingState(state: String): SignalingState? =
     }
 
 private class BrowserPeerConnection(
-    iceServers: List<String>,
+    iceServers: List<IceServer>,
 ) : RtcPeerConnection {
     private val pc: dynamic = newRtcPeerConnection(iceServers)
 

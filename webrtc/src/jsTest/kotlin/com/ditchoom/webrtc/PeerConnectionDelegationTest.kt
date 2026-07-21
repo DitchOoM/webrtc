@@ -22,9 +22,9 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * The W6 browser-delegation Karma test: drives two real in-browser `RTCPeerConnection`s through our
  * [RtcPeerConnection] delegation (offer/answer, trickle, a data-channel message) over a localhost
- * loopback — proving `peerConnectionSupport().createDelegated(...)` maps our API onto the browser's own
+ * loopback — proving `peerConnectionSupport()` as a `BrowserDelegated.create(...)` maps our API onto the browser's own
  * `RTCPeerConnection` (RFC §1.1: the one target we wrap). Under Node (`RTCPeerConnection` absent) it
- * reports [PeerConnectionKind.Native] and the test no-ops, so the same suite is green on jsNodeTest.
+ * returns [PeerConnectionSupport.Native] and the test no-ops, so the same suite is green on jsNodeTest.
  */
 @OptIn(DelicateCoroutinesApi::class)
 class PeerConnectionDelegationTest {
@@ -32,11 +32,11 @@ class PeerConnectionDelegationTest {
     fun delegates_to_rtc_peer_connection_over_a_loopback(): Promise<Unit> =
         GlobalScope.promise {
             val support = peerConnectionSupport()
-            if (support.kind != PeerConnectionKind.BrowserDelegated) return@promise // Node: nothing to delegate to
+            if (support !is PeerConnectionSupport.BrowserDelegated) return@promise // Node: nothing to delegate to
 
             val scope = CoroutineScope(Dispatchers.Default)
-            val alice = support.createDelegated(scope)
-            val bob = support.createDelegated(scope)
+            val alice = support.create(scope)
+            val bob = support.create(scope)
 
             trickle(scope, from = alice, to = bob)
             trickle(scope, from = bob, to = alice)

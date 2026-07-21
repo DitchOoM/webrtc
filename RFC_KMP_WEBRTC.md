@@ -301,3 +301,45 @@ its Java 21 classes.
      BoringSSL backend permanently as the differential-testing oracle** — handshaking
      pure-Kotlin ↔ BoringSSL in both directions over the vnet under virtual time is the single best
      way to validate a from-scratch TLS stack. Gate the wave on the `buffer-crypto` AES-block PR.
+6. **Shared P2P connectivity substrate — one UDP socket for WebRTC *and* QUIC-P2P** (raised
+   2026-07-21, while designing a "batteries-included" `RtcPeerConnection(scope, iceServers)` one-liner).
+   The one-liner is tempting but load-bearing: the naive form has a native factory **open its own**
+   `socket-udp` socket. That single choice would quietly foreclose the most valuable future the sans-io
+   architecture buys us — so it must **not** be built that way.
+   - **The invariant (non-negotiable):** the protocol cores (ICE/DTLS/SCTP) are sans-io and take an
+     **injected** `DatagramBinder` → `buffer.flow.DatagramChannel`. They never open a socket and the
+     library **never depends on `socket` in `commonMain` or the root consumer module.** `socket-udp` is
+     one production *default* a driver may inject, not a coupling. (`webrtc-harness-endpoint` is the
+     reference: it injects `realUdpBinder()` and stays the only place `socket-udp` appears.)
+   - **The payoff that injection preserves — a *single* UDP socket, demultiplexed.** On one port you
+     split inbound datagrams by first byte (RFC 7983 already specifies this for STUN/DTLS/RTP; extend the
+     table with QUIC): `0x00–0x03` → STUN (ICE), `0x14–0x17` → DTLS (→ SCTP data channels), QUIC
+     long/short-header → QUIC. A consumer owns **one** `DatagramChannel`, hands WebRTC a `DatagramBinder`
+     whose channel yields only the STUN/DTLS packets and `socket-quic` the QUIC packets — **same socket,
+     same 5-tuple, same NAT binding, same gathered ICE candidate set.** Because webrtc only ever sees an
+     injected channel, this composes **today, with no change to webrtc** — the demux is a consumer/
+     substrate concern. The moment a webrtc factory *owns* a socket, this is dead: two sockets, two NAT
+     bindings, no shared path.
+   - **The concrete future it foreclosing would kill:** `draft-seemann-quic-nat-traversal` ("Using QUIC
+     to traverse NATs," implemented in **quic-go** / libp2p) does ICE-style address discovery + QUIC path
+     validation to hole-punch directly, no DTLS/SCTP. Running that **and** WebRTC data channels over one
+     shared socket + one candidate set needs a common connectivity substrate: gather once, punch once,
+     then demux the established path to WebRTC and/or QUIC. A socket-owning webrtc factory cannot
+     participate — it would prove the injected-channel architecture was the whole point and then discard
+     it for a convenience constructor.
+   - **Consequence for the one-liner:** a batteries-included helper, *if* it exists, must **accept an
+     externally-owned `DatagramChannel`/binder and never open its own**, so it can be handed the very
+     socket QUIC uses. It is a thin composition over injected transport, not a socket owner. (The
+     compile-safe construction work — sealed `PeerConnectionSupport` + the `IceServer` config type — is
+     pure API/config and transport-neutral, so it stands regardless.)
+   - **Where the substrate lives:** the shared layer — UDP mux (RFC 7983 + QUIC), ICE gathering, and
+     `NetworkMonitor` — is a *connectivity* concern common to WebRTC-ICE **and** QUIC-NAT-traversal.
+     Since `socket` already owns QUIC and ships `:network-monitor` (availability) + `enumerateNetworkInterfaces`
+     (addresses), the substrate most naturally lives **socket-side (or a shared module), consumed by
+     webrtc — not the reverse.** This also resolves the interface-enumeration question (Q from §11.4 /
+     the W7 "real-UDP default"): host-candidate enumeration should be a lean shared artifact both stacks
+     consume, never re-implemented in webrtc.
+   - **Recommendation:** keep the cores transport-agnostic (unchanged); **do not** build a socket-owning
+     native factory; design the demux-composition API (how a consumer splits one `DatagramChannel` into
+     WebRTC + QUIC views) and the shared substrate as their own effort. Ship the sealed-capability +
+     `IceServer` API now (transport-neutral); the one-liner waits on the substrate.

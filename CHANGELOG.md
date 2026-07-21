@@ -6,6 +6,32 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Added — W7 interop test-matrix expansion: a JVM interop peer (the pure engine on the real wire)
+- **`:webrtc-harness-endpoint` is now multiplatform** — it targets the **JVM** alongside Kotlin/Native
+  (linuxX64 + linuxArm64). Since the W4b flip DTLS is pure-Kotlin `commonMain` on every target, so the JVM
+  now composes the identical production stack (`NativePeerConnection` + `PureKotlinDtls`) over **socket-udp's
+  NIO datapath** — a first-class interop endpoint. The shared harness code compiles per-target (the
+  KSP-codec layout, now incl. the JVM); the ONLY per-platform code is `readEnv` (`System.getenv` vs posix
+  `getenv`). A `peerJar` task assembles an **arch-independent** fat jar (`java -jar` runnable) — one build
+  serves both arch runners, unlike the per-arch native `.kexe`.
+- **`jvm-native` / `jvm-pion` / `jvm-chrome` / `jvm-firefox` scenarios** — our **JVM** offerer (`peer_a_jvm`,
+  a drop-in for the native `peer_a`) establishes a full WebRTC data channel over real NAT kernels against
+  our native answerer, Pion (DTLS 1.2), and the real headless browsers Chrome + Firefox (DTLS 1.3), echoing
+  `ping`→`pong`. This proves the pure engine on the real wire from a managed runtime — before this, "we
+  support JVM" rested on unit tests + compile alone; no JVM peer had established against a real
+  browser/Pion.
+- **`JvmRealUdpLoopbackTest`** — the deterministic sibling that runs in the ordinary `./gradlew build` (no
+  Docker): two JVM peers establish ICE → **pure-Kotlin DTLS 1.3 (X25519)** → SCTP → data channel over real
+  **loopback UDP** and echo. Observable-state assertions under a watchdog (directive #4); settles in <1 s.
+- **Wiring:** `docker-compose.yml` adds the profile-gated `peer_a_jvm` service (offerer drop-in on
+  `lan_a`/`PEER_A_IP`; **no `seccomp=unconfined`** — NIO, not io_uring — only `NET_ADMIN`); `run-interop.sh`
+  gains an `a_impl` (offerer `native|jvm`) matrix column beside `b_impl`, resolving the jar the same three
+  ways as the native binary and comma-joining compose profiles; `harness-l2.yaml`'s single `build-peer` job
+  also assembles the jar once and uploads it (`peer-jar` artifact), the `l2` job runs `jvm-native` +
+  `jvm-pion`, and the `l2-browser` matrix gains a `{native, jvm}` offerer axis — every run-only lane reuses
+  the build-once artifacts (no per-platform recompile). `peer-jvm/` holds the JVM peer image
+  (self-building + prebuilt); `README.md` documents the lanes.
+
 ### Added — W7 Phase 2(b): headless-browser interop lanes (Chrome + Firefox) + wasmJs browser delegation
 - **`chrome-interop` + `firefox-interop` scenarios** — our native `linuxX64` offerer establishes a full
   WebRTC data channel against a real **headless browser** (Playwright, `test-harness/browser/` — one

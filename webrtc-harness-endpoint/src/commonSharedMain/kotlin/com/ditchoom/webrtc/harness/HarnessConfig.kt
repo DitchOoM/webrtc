@@ -1,10 +1,5 @@
-@file:OptIn(ExperimentalForeignApi::class)
-
 package com.ditchoom.webrtc.harness
 
-import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.toKString
-import platform.posix.getenv
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -71,7 +66,7 @@ internal data class HarnessConfig(
             )
         }
 
-        private fun env(name: String): String? = getenv(name)?.toKString()?.takeIf { it.isNotBlank() }
+        private fun env(name: String): String? = readEnv(name)?.takeIf { it.isNotBlank() }
 
         private fun envRequired(name: String): String = env(name) ?: error("missing required env var: $name")
     }

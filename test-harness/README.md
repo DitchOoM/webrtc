@@ -30,6 +30,9 @@ directly** — that is what ICE establishes. All IPs/ports/creds are pinned in `
   (Chrome) lane, which has no raw UDP. A browser and a native peer therefore still meet in the same slot.
 - **nat_a / nat_b** — Alpine routers applying one RFC 4787 profile each (below).
 - **peer_a / peer_b** — the native binary; `peer_a` offers, `peer_b` answers.
+- **peer_a_jvm** — the SAME peer program on the **JVM** (the pure-Kotlin engine over socket-udp's NIO
+  datapath), a drop-in offerer for `peer_a`. Used by the `jvm-*` lanes to prove the pure engine on the real
+  wire from a managed runtime (see the JVM-offerer section below).
 
 ## NAT profiles (RFC 4787) and their fidelity
 
@@ -54,10 +57,13 @@ cd test-harness
 ```
 
 Scenarios (in `run-interop.sh`): each NAT profile direct, `symmetric×symmetric` → relay, a mixed
-sym×port lane, an explicit `relay-only` lane, an `impaired` (netem) lane, and the interop lanes —
-**`pion-interop`**, **`chrome-interop`**, **`firefox-interop`** (below). A scenario **passes** iff both
-peers exit `0` — and each exits `0` only after it CONNECTED *and* the `ping`/`pong` crossed the encrypted
-data channel. Every run tears the whole stack down (containers + networks + volumes) on exit.
+sym×port lane, an explicit `relay-only` lane, an `impaired` (netem) lane, the native-offerer interop lanes
+— **`pion-interop`**, **`chrome-interop`**, **`firefox-interop`** — and the **JVM-offerer** lanes —
+**`jvm-native`**, **`jvm-pion`**, **`jvm-chrome`**, **`jvm-firefox`** (below). Each row is
+`name | nat_a | nat_b | policy | netem | a_impl | b_impl`, where `a_impl` (offerer) ∈ `native|jvm` and
+`b_impl` (answerer) ∈ `native|pion|chrome|firefox`. A scenario **passes** iff both peers exit `0` — and
+each exits `0` only after it CONNECTED *and* the `ping`/`pong` crossed the encrypted data channel. Every
+run tears the whole stack down (containers + networks + volumes) on exit.
 
 Selecting scenarios: positional args are an **allowlist** (`./run-interop.sh chrome-interop firefox-interop`
 runs just those); `HARNESS_SKIP="chrome-interop firefox-interop" ./run-interop.sh` is a **skiplist** (the CI
@@ -115,6 +121,37 @@ echoing `ping`→`pong`.
 ./run-interop.sh firefox-interop    # our native offerer ⇄ headless-Firefox answerer, DTLS 1.3, over port-restricted NAT
 ```
 
+## Interop: the JVM-offerer lanes (W7 test-matrix expansion)
+
+The `jvm-*` scenarios swap the native offerer `peer_a` for **`peer_a_jvm`** — the SAME peer program
+running on the **JVM**. Since the W4b flip, DTLS is pure-Kotlin `commonMain` on every target (BoringSSL
+demoted to a test oracle), so the JVM has a real handshake too: `peer_a_jvm` composes the identical
+production stack (`NativePeerConnection` + `PureKotlinDtls`) over **socket-udp's NIO datapath** and
+establishes over real NAT kernels against any answerer — our native peer, Pion, Chrome, or Firefox. This
+proves the pure engine on the real wire from a managed runtime (previously "we support JVM" rested on unit
+tests + compile alone).
+
+- **`jvm-native`** ⇄ our native answerer · **`jvm-pion`** ⇄ Pion (DTLS 1.2) · **`jvm-chrome`** /
+  **`jvm-firefox`** ⇄ the real browser engines (DTLS 1.3).
+- No io_uring (NIO, not socket-udp's native datapath), so — unlike `peer_a` — `peer_a_jvm` needs **no
+  `seccomp=unconfined`**, only `NET_ADMIN` for the default-route rewrite.
+- The jar is **arch-independent** (JVM bytecode): one build (`:webrtc-harness-endpoint:peerJar`) runs on
+  both x64 and arm64 — no per-arch cross-compile (contrast the native `.kexe`). `peer-jvm/Dockerfile` is
+  the portable self-building image; `Dockerfile.prebuilt` copies a host/CI-built jar.
+- Gated behind the `jvm` compose profile (activated by `run-interop.sh` when `a_impl=jvm`); `peer_a` and
+  `peer_a_jvm` share `PEER_A_IP` but never run at once. In CI the fast lanes (`jvm-native`, `jvm-pion`) run
+  in the `l2` job; the browser lanes (`jvm-chrome`, `jvm-firefox`) join the `l2-browser` matrix (its
+  offerer axis is `{native, jvm}`).
+
+```bash
+./run-interop.sh jvm-native         # our JVM offerer ⇄ native answerer, DTLS 1.3, over port-restricted NAT
+./run-interop.sh jvm-pion           # our JVM offerer ⇄ Pion answerer, DTLS 1.2
+./run-interop.sh jvm-chrome         # our JVM offerer ⇄ headless-Chrome answerer, DTLS 1.3
+```
+
+The deterministic sibling of these lanes is `:webrtc-harness-endpoint`'s `JvmRealUdpLoopbackTest` — two
+JVM peers establish over real loopback UDP and echo, in the ordinary `./gradlew build` (no Docker).
+
 ### Portability (arch-matched, no QEMU)
 
 - **linux/amd64 + linux/arm64** — the peer targets both; each arch builds and runs its own native peer
@@ -143,6 +180,7 @@ daemon is root even where you aren't); CI sets it with `sudo sysctl`. It's harml
 | `coturn/` | `turnserver.conf` + entrypoint (subst from `harness.env`) |
 | `rendezvous/` | keyed-mailbox relay (`rendezvous.py`) with UDP (native/Pion) + HTTP (browser) faces onto one mailbox, + image |
 | `nat/` | NAT gateway image + `nat-setup.sh` (the 4 profiles) + `netem.sh` |
-| `peer/` | `Dockerfile` (self-building, portable) + `Dockerfile.prebuilt` (fast) + entrypoint |
+| `peer/` | native peer image: `Dockerfile` (self-building, portable) + `Dockerfile.prebuilt` (fast) + entrypoint |
+| `peer-jvm/` | JVM peer image: `Dockerfile` (self-building) + `Dockerfile.prebuilt` (fast, arch-independent jar) + entrypoint |
 | `pion/` | the Pion (Go) interop echo-peer: `main.go` + `signaling.go` (rendezvous client) + image |
 | `browser/` | the headless-browser interop echo-peer (Chrome + Firefox): `driver.mjs` (Playwright answerer, `BROWSER`-parameterized) + entrypoint + image |

@@ -156,6 +156,50 @@ services:
       rendezvous: { condition: service_healthy }
       nat_b: { condition: service_healthy }
 
+  # JVM offerer — W7 interop test-matrix expansion. A DROP-IN for the native offerer peer_a (same LAN, same
+  # IP, same NAT gateway, same offerer WEBRTC_* env), so the "our side" endpoint is the SAME peer program
+  # running on the JVM instead of Kotlin/Native — the pure-Kotlin engine (NativePeerConnection +
+  # PureKotlinDtls) over socket-udp's NIO datapath. It establishes against ANY b-side (native peer_b, Pion,
+  # Chrome, Firefox), proving the pure engine on the real wire from a managed runtime. Gated behind the
+  # `jvm` compose profile (run-interop.sh activates it via COMPOSE_PROFILES when a_impl=jvm); peer_a and
+  # peer_a_jvm share PEER_A_IP but never run together. No io_uring (NIO, not socket-udp's native datapath),
+  # so — unlike peer_a — no seccomp=unconfined; only NET_ADMIN for the default-route rewrite. The jar is
+  # arch-independent, so the SAME image runs on x64 and arm64.
+  peer_a_jvm:
+    profiles: ["jvm"]
+    build:
+      context: ..
+      dockerfile: "test-harness/peer-jvm/${PEER_JVM_DOCKERFILE:-Dockerfile}"
+      args: { PEER_JAR: "${PEER_JAR:-}" }
+    cap_add: [NET_ADMIN]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      GATEWAY_IP: "${NAT_A_LAN_IP}"
+      WEBRTC_ROLE: offerer
+      WEBRTC_SESSION: "${SESSION:-l2}"
+      WEBRTC_LOCAL_IP: "${PEER_A_IP}"
+      WEBRTC_LOCAL_PORT: "${ICE_PORT}"
+      WEBRTC_RELAY_PORT: "${RELAY_BIND_PORT}"
+      WEBRTC_STUN_HOST: "${COTURN_IP}"
+      WEBRTC_STUN_PORT: "${STUN_PORT}"
+      WEBRTC_TURN_HOST: "${COTURN_IP}"
+      WEBRTC_TURN_PORT: "${STUN_PORT}"
+      WEBRTC_TURN_USER: "${TURN_USER}"
+      WEBRTC_TURN_PASS: "${TURN_PASS}"
+      WEBRTC_RENDEZVOUS_HOST: "${RENDEZVOUS_IP}"
+      WEBRTC_RENDEZVOUS_PORT: "${RENDEZVOUS_PORT}"
+      WEBRTC_ICE_POLICY: "${ICE_POLICY:-all}"
+      WEBRTC_TIMEOUT_MS: "${PEER_TIMEOUT_MS}"
+      # Default 1.3-on (production). The jvm-pion lane sets PEER_DTLS13=false (run-interop.sh) so this
+      # offerer pins DTLS 1.2 — Pion's released v3 is 1.2-only.
+      WEBRTC_DTLS13: "${PEER_DTLS13:-true}"
+    networks:
+      lan_a: { ipv4_address: "${PEER_A_IP}" }
+    depends_on:
+      coturn: { condition: service_healthy }
+      rendezvous: { condition: service_healthy }
+      nat_a: { condition: service_healthy }
+
   # Pion (Go) interop echo-peer — W7 Phase 2(a). A DROP-IN for the native answerer peer_b (same LAN, same
   # IP, same NAT gateway, same WEBRTC_* env), so our native offerer peer_a establishes against a real
   # independent WebRTC implementation and echoes ping/pong. Gated behind the `pion` compose profile so it

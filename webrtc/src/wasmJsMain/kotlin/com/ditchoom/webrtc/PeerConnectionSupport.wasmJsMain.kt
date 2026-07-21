@@ -40,12 +40,10 @@ import kotlin.js.toJsString
  * for real (Karma-tested via the loopback in `wasmJsTest`), not `NotImplementedError`.
  */
 public actual fun peerConnectionSupport(): PeerConnectionSupport =
-    if (jsRtcPeerConnectionAvailable()) WasmJsBrowserSupport else NativePeerConnectionSupport
+    if (jsRtcPeerConnectionAvailable()) WasmJsBrowserSupport else PeerConnectionSupport.Native
 
-private object WasmJsBrowserSupport : PeerConnectionSupport {
-    override val kind: PeerConnectionKind get() = PeerConnectionKind.BrowserDelegated
-
-    override fun createDelegated(
+private object WasmJsBrowserSupport : PeerConnectionSupport.BrowserDelegated {
+    override fun create(
         scope: CoroutineScope,
         iceServers: List<String>,
     ): RtcPeerConnection = WasmBrowserPeerConnection(iceServers)

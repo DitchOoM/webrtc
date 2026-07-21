@@ -26,10 +26,10 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * The wasmJs mirror of the js browser-delegation Karma test: two real in-browser `RTCPeerConnection`s
  * driven through our wasmJs [RtcPeerConnection] delegation (offer/answer, trickle, a data-channel
- * message) over a localhost loopback — proving `peerConnectionSupport().createDelegated(...)` maps our
+ * message) over a localhost loopback — proving `peerConnectionSupport()` as a `BrowserDelegated.create(...)` maps our
  * API onto the browser's own `RTCPeerConnection` through the `@JsFun`/`JsString` wasm-interop bridge
  * (RFC §1.1). This is the runtime validation of the W6 wasmJs follow-up. Under Node (`RTCPeerConnection`
- * absent) it reports [PeerConnectionKind.Native] and the test no-ops, so the suite is green on
+ * absent) it returns [PeerConnectionSupport.Native] and the test no-ops, so the suite is green on
  * wasmJsNodeTest too.
  */
 @OptIn(DelicateCoroutinesApi::class)
@@ -38,11 +38,11 @@ class PeerConnectionDelegationTest {
     fun delegates_to_rtc_peer_connection_over_a_loopback(): Promise<JsAny?> =
         GlobalScope.promise {
             val support = peerConnectionSupport()
-            if (support.kind != PeerConnectionKind.BrowserDelegated) return@promise null // Node: nothing to delegate to
+            if (support !is PeerConnectionSupport.BrowserDelegated) return@promise null // Node: nothing to delegate to
 
             val scope = CoroutineScope(Dispatchers.Default)
-            val alice = support.createDelegated(scope)
-            val bob = support.createDelegated(scope)
+            val alice = support.create(scope)
+            val bob = support.create(scope)
 
             trickle(scope, from = alice, to = bob)
             trickle(scope, from = bob, to = alice)

@@ -2,55 +2,52 @@ package com.ditchoom.webrtc
 
 import kotlinx.coroutines.CoroutineScope
 
-/** Whether a platform runs our own protocol stack or delegates to a native `RTCPeerConnection`. */
-public enum class PeerConnectionKind {
-    /** Non-browser targets (JVM/Android/Native): the sans-io stack ([NativePeerConnection]). */
-    Native,
-
-    /** Browser / wasmJs: `peerConnectionSupport().createDelegated(...)` wraps `RTCPeerConnection`. */
-    BrowserDelegated,
-}
-
 /**
- * The per-platform WebRTC capability (RFC §3.1 last bullet: `peerConnectionSupport()` reports how this
- * target provides a `PeerConnection`). On every non-browser target we **own** the protocol
- * ([PeerConnectionKind.Native]) and the app constructs a [NativePeerConnection] directly with its seams.
- * In a **browser** (js/wasmJs) we are the one target that **wraps rather than reimplements** (RFC §1.1):
- * [createDelegated] returns an [RtcPeerConnection] backed by the browser's own `RTCPeerConnection`.
+ * The per-platform WebRTC capability (RFC §3.1 last bullet): how this target provides a
+ * [RtcPeerConnection]. A **sealed** hierarchy, so the two ways a platform can provide one are mutually
+ * exclusive *and* checked by the compiler — there is no runtime "unsupported operation" for asking a
+ * native target to delegate (DESIGN §4: make illegal states unrepresentable, never a runtime reject for a
+ * statically-known-impossible call).
+ *
+ *  - [BrowserDelegated] — a browser (js/wasmJs), the one place we **wrap rather than reimplement**
+ *    (RFC §1.1): [BrowserDelegated.create] returns an [RtcPeerConnection] backed by the browser's own
+ *    `RTCPeerConnection`, and is reachable **only** after narrowing to this type.
+ *  - [Native] — every non-browser target: we **own** the protocol, so there is nothing to delegate to and
+ *    — by construction — no delegation method exists. The app builds a [NativePeerConnection] directly
+ *    with its injected seams.
+ *
+ * Obtain this platform's value from [peerConnectionSupport] and branch with an exhaustive `when`:
+ * ```
+ * val pc = when (val s = peerConnectionSupport()) {
+ *     is PeerConnectionSupport.BrowserDelegated -> s.create(scope, iceServers)
+ *     PeerConnectionSupport.Native              -> NativePeerConnection(scope, clock, random, binder, gathering, dtls)
+ * }
+ * ```
  */
-public interface PeerConnectionSupport {
-    /** How this platform provides a peer connection. */
-    public val kind: PeerConnectionKind
+public sealed interface PeerConnectionSupport {
+    /** A browser target (js/wasmJs) that delegates to the platform `RTCPeerConnection`. */
+    public interface BrowserDelegated : PeerConnectionSupport {
+        /**
+         * Create an [RtcPeerConnection] wrapping the browser's own `RTCPeerConnection`. The flows
+         * ([RtcPeerConnection.localIceCandidates] etc.) are pumped on [scope]; [iceServers] are STUN/TURN
+         * URLs for the `RTCConfiguration`.
+         */
+        public fun create(
+            scope: CoroutineScope,
+            iceServers: List<String> = emptyList(),
+        ): RtcPeerConnection
+    }
 
     /**
-     * Create an [RtcPeerConnection] delegating to the platform `RTCPeerConnection` (browser only). The
-     * flows ([RtcPeerConnection.localIceCandidates] etc.) are pumped on [scope]; [iceServers] are STUN/TURN
-     * URLs for the `RTCConfiguration`. On a [PeerConnectionKind.Native] platform this throws
-     * [UnsupportedOperationException] — construct a [NativePeerConnection] with your seams instead.
+     * A non-browser target: this platform owns the WebRTC protocol, so there is nothing to delegate to —
+     * construct a [NativePeerConnection] with your seams. Shared by the JVM/Android/Native actuals (and
+     * returned by the js/wasmJs actuals under Node, where no `RTCPeerConnection` exists to wrap).
      */
-    public fun createDelegated(
-        scope: CoroutineScope,
-        iceServers: List<String> = emptyList(),
-    ): RtcPeerConnection
+    public object Native : PeerConnectionSupport
 }
-
-/** This platform's [PeerConnectionSupport] (`expect`/`actual`; browser targets return a delegating one). */
-public expect fun peerConnectionSupport(): PeerConnectionSupport
 
 /**
- * The non-browser [PeerConnectionSupport]: this target owns the protocol, so there is nothing to
- * delegate to — [createDelegated] throws and the app builds a [NativePeerConnection] with its seams.
- * Shared by the JVM/Android/Native actuals.
+ * This platform's [PeerConnectionSupport] (`expect`/`actual`). A browser with an `RTCPeerConnection`
+ * returns a [PeerConnectionSupport.BrowserDelegated]; every other target returns [PeerConnectionSupport.Native].
  */
-internal object NativePeerConnectionSupport : PeerConnectionSupport {
-    override val kind: PeerConnectionKind get() = PeerConnectionKind.Native
-
-    override fun createDelegated(
-        scope: CoroutineScope,
-        iceServers: List<String>,
-    ): RtcPeerConnection =
-        throw UnsupportedOperationException(
-            "This target runs the native WebRTC stack — construct a NativePeerConnection with your seams; " +
-                "RTCPeerConnection delegation exists only in a browser (js/wasmJs).",
-        )
-}
+public expect fun peerConnectionSupport(): PeerConnectionSupport

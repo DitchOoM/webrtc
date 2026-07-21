@@ -27,19 +27,17 @@ import kotlin.js.Promise
 
 /**
  * The browser [PeerConnectionSupport] (js): the one target where we **wrap, not reimplement** (RFC §1.1)
- * — [createDelegated] maps our [RtcPeerConnection] onto the browser's own `RTCPeerConnection`. Under Node
- * (no `RTCPeerConnection`) it reports [PeerConnectionKind.Native] so a caller isn't handed a delegator it
- * cannot back.
+ * — [PeerConnectionSupport.BrowserDelegated.create] maps our [RtcPeerConnection] onto the browser's own
+ * `RTCPeerConnection`. Under Node (no `RTCPeerConnection`) it returns [PeerConnectionSupport.Native], so a
+ * caller isn't handed a delegator it cannot back.
  */
 public actual fun peerConnectionSupport(): PeerConnectionSupport =
-    if (rtcPeerConnectionAvailable()) JsBrowserSupport else NativePeerConnectionSupport
+    if (rtcPeerConnectionAvailable()) JsBrowserSupport else PeerConnectionSupport.Native
 
 private fun rtcPeerConnectionAvailable(): Boolean = js("typeof RTCPeerConnection !== 'undefined'").unsafeCast<Boolean>()
 
-private object JsBrowserSupport : PeerConnectionSupport {
-    override val kind: PeerConnectionKind get() = PeerConnectionKind.BrowserDelegated
-
-    override fun createDelegated(
+private object JsBrowserSupport : PeerConnectionSupport.BrowserDelegated {
+    override fun create(
         scope: CoroutineScope,
         iceServers: List<String>,
     ): RtcPeerConnection = BrowserPeerConnection(iceServers)

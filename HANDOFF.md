@@ -7,6 +7,90 @@ this file. Update it whenever you stop mid-wave.
 
 ## START HERE — W4b + W7 Phase 3 (fresh session). Branch `w4b-dtls-kotlin` off `main` @ `1518e8a`.
 
+### ⇢ LIVE PROGRESS (2026-07-20, session 5) — task #7a DONE (rename); #7b (X25519) designed + owner-approved, NOT yet coded
+
+**One commit on `w4b-dtls-kotlin` (`a9082ce`) on top of session 4. `apiCheck` green; jvm + linuxX64 test +
+harness sources compile.**
+
+- **Task #7a (rename the misnomer driver) DONE ✅ (`a9082ce`).** The webrtc-root `DtlsTransportFactory`
+  driver `BoringSslDtls` → **`PureKotlinDtls`** (file + class, mirrors the `PlaintextDtls` sibling). It has
+  driven the pure-Kotlin `DtlsEngine` since the task-#5 flip, not BoringSSL (which is now only the
+  `linuxTest` oracle `BoringSslDtlsEngine` — left untouched, correctly named). Corrected the stale docs:
+  the class no longer claims "throws BackendUnavailable on a target with no backend (JVM/Android/Apple this
+  wave)"; body comments dropped BoringSSL-isms ("native memory", "memory BIO"); `DtlsTransport.kt` /
+  `PeerConnection.kt` "native only this wave" → "every non-browser target". Updated all refs
+  (`PeerConnectionDtlsEndToEndTest`, `DtlsHandshakeTimeoutTest`, `webrtc-harness-endpoint/Main.kt`,
+  `webrtc-testsuite/WebRtcHarness` doc) + re-dumped `webrtc.api` (BoringSslDtls → PureKotlinDtls, same shape).
+
+- **⭐ Task #7b OWNER DECISION (this session):** bar = **X25519 as a negotiable DTLS-1.3 group + BoringSSL
+  differential** (deterministic proof of the browser DTLS path — Chrome uses BoringSSL). **NO live Docker
+  matrix** (heavy/flaky here; documented as the remaining manual gate). **HRR stays deferred** — see the
+  key insight below that makes it unnecessary. Sequence: **7b first, then 7c** (SRTP exporter).
+
+- **Task #7b DESIGN (fully worked out + verified, ready to implement — no code written yet):**
+  - **Linchpin confirmed:** buffer-crypto's `deriveTlsPremasterSecret` returns the **raw** DH secret for
+    **both** X25519 (32 B) and P-256 (already used by our 1.3 path, byte-exact vs BoringSSL) and enforces
+    the RFC 7748 all-zero rejection internally — exactly the TLS-1.3 (EC)DHE input. The `rawEcdhPremaster`
+    seam already takes curve-typed keys, so **X25519 drops in unchanged**. `KeyAgreementCurve.X25519` +
+    `KeyAgreementPublicKey.of(X25519, 32-byte-point)` are all present.
+  - **THE KEY INSIGHT that keeps HRR deferred:** our client offers **exactly one group** — its configured
+    group in *both* `supported_groups` **and** the single `key_share`. A 1.3 server can then only select
+    that group ⇒ it can never HRR. (If we listed a group in `supported_groups` we didn't `key_share`, a
+    server preferring it — BoringSSL/browsers prefer X25519 — would HRR and we'd fail. So: list ONLY the
+    configured group.) Server accepts whichever group the client key_shared (X25519 **or** P-256).
+  - **Default `keyExchangeGroup = X25519`** (browser-matching — the whole point). DTLS **1.2 stays
+    P-256-only** (its `ServerKeyExchange` hardcodes secp256r1; browsers use P-256 for 1.2). Only the 1.3
+    path gains X25519.
+  - **Edit list (8 files) + apiDump:**
+    1. `commonMain/DtlsEngine.kt` — add `public enum class KeyExchangeGroup { X25519, Secp256r1 }` (after
+       `DtlsVersion`) + `public val keyExchangeGroup: KeyExchangeGroup = KeyExchangeGroup.X25519` to
+       `DtlsConfig`. Doc: client's 1.3 offered group; server ignores it; 1.2 unaffected.
+    2. `crypto/EcdheKeyExchange.kt` — carry `val curve: KeyAgreementCurve`; `generate(curve: KeyAgreementCurve
+       = KeyAgreementCurve.P256)` (1.2 caller `generate()` unchanged); `premasterSecret` uses
+       `KeyAgreementPublicKey.of(curve, peerPoint)` (was hardcoded P256). `localPublicPoint` already
+       length-agnostic (32 B X25519 / 65 B P-256).
+    3. `wire/Tls13Bodies.kt` — group-parameterize: `keyShareClientHello(group: NamedGroup, point, factory)`,
+       `keyShareServerHello(group, point, factory)`, `writeKeyShareEntry(dest, group, point)`;
+       `parseKeyShareClientHello(body)` → return the (NamedGroup, point) of the first **supported** key_share
+       (a small internal data class or Pair, prefer/accept X25519+Secp256r1); `parseKeyShareServerHello(body)`
+       → (NamedGroup, point). Drop the "X25519 … deferred" note in the file header.
+    4. `handshake/Dtls13Handshake.kt` — `ecdhe` becomes deferred (`lateinit`/nullable, was eager P-256 field):
+       CLIENT generates `EcdheKeyExchange.generate(config.keyExchangeGroup.agreementCurve)` in `start()`
+       before building CH; offers `keyShareClientHello(config.keyExchangeGroup.namedGroup, …)` +
+       `supportedGroupsExtension()` listing **only** `config.keyExchangeGroup.namedGroup`. On ServerHello,
+       parse (group, point); assert group == our offered group; set peerPoint; derive. SERVER: on ClientHello
+       parse (group, point) of a supported key_share; `ecdhe = generate(group.agreementCurve)`; echo
+       `keyShareServerHello(group, ecdhe.localPublicPoint)`; derive. Add internal maps `KeyExchangeGroup.
+       {namedGroup, agreementCurve}` + `NamedGroup.toKeyExchangeGroupOrNull()` (used by the server).
+    5. `nativeInterop/cinterop/boringsslssl.def` — `bd_new(int enable_dtls13, const char *groups)`; if
+       `groups` non-NULL/non-empty call `SSL_CTX_set1_groups_list(ctx, groups)` (replaces the hardcoded
+       `"P-256"` pin at line 133). Update the pin comment.
+    6. `linuxTest/BoringSslDtlsEngine.kt` — pass a groups C-string to `bd_new` from config:
+       `!enableDtls13 -> "P-256"` (our 1.2 engine is P-256-only, keep the 1.2 differential pinned);
+       `keyExchangeGroup == X25519 -> "X25519"`; else `"P-256"`. (Kotlin→C string via `.cstr` in a
+       `memScoped`.)
+    7. `linuxTest/Dtls13DifferentialTest.kt` — keep the 3 default(X25519) tests; ADD P-256 variants
+       (`config = DtlsConfig(keyExchangeGroup = KeyExchangeGroup.Secp256r1)`) via a shared helper. Both
+       role directions + app-data. (This is directive #5 — the fix ships its fixture; X25519 is the new path.)
+    8. `commonTest/handshake/Dtls13HandshakeTest.kt` — add an X25519 self-loopback (default) alongside the
+       existing (make sure the existing still passes; if it hardcoded P-256 assumptions, parameterize).
+    9. `./gradlew :webrtc-dtls:apiDump` (new public enum + config field) then build.
+  - **Verify:** `ulimit -v 8000000; timeout … test.kexe` memory cap (OOM trap). Run `:webrtc-dtls`
+    linuxX64 differential (X25519 + P-256 lanes, both roles) + the root `PeerConnectionDtlsEndToEndTest`
+    (default X25519 now). Commit 7b with its fixtures.
+
+- **THEN task #7c** (SRTP-exporter output differential vs BoringSSL — still deferred): our 1.3 engine has no
+  `SSL_export_keying_material`-equivalent exporter yet. Implement the RFC 8446 §7.5 / RFC 5705 exporter
+  (`exporter_master_secret` → HKDF-Expand-Label) and diff the DTLS-SRTP keying material (`bd_export_srtp_keys`
+  wrapper already exists in the oracle) byte-exact vs BoringSSL. Needed for Phase-2 SRTP anyway.
+
+- **Traps carried forward (unchanged from session 4):** HelloRetryRequest still deferred (the single-group
+  offer above means no real WebRTC peer needs it); openssl-1.3 lane needs openssl ≥ 3.2 (box has 3.0.13);
+  native tests under `ulimit -v 8000000` + `timeout`; K/Wasm `compileTest…WasmJs` ICE is a flaky toolchain
+  crash (re-run `build`). A concurrent buffer build in `~/git/buffer` intermittently holds the gradle cache
+  lock — retry / run in background if you hit "Timeout waiting to lock artifact cache". Byte-exact DTLS 1.3
+  facts live in scratchpad `w4b-decisions.md`.
+
 ### ⇢ LIVE PROGRESS (2026-07-20, session 4) — task #6 DTLS 1.3 DONE + differential-green both roles; engine on `Instant`; key material sealed-phased
 
 **Three commits on `w4b-dtls-kotlin` (`72a2cf7`, `dd53346`, `ee659e1`) on top of session 3. `./gradlew build`

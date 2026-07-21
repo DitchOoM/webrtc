@@ -29,12 +29,12 @@ public sealed interface PeerConnectionSupport {
     public interface BrowserDelegated : PeerConnectionSupport {
         /**
          * Create an [RtcPeerConnection] wrapping the browser's own `RTCPeerConnection`. The flows
-         * ([RtcPeerConnection.localIceCandidates] etc.) are pumped on [scope]; [iceServers] are STUN/TURN
-         * URLs for the `RTCConfiguration`.
+         * ([RtcPeerConnection.localIceCandidates] etc.) are pumped on [scope]; [iceServers] become the
+         * `RTCConfiguration.iceServers` (STUN/TURN, with TURN credentials — see [IceServer]).
          */
         public fun create(
             scope: CoroutineScope,
-            iceServers: List<String> = emptyList(),
+            iceServers: List<IceServer> = emptyList(),
         ): RtcPeerConnection
     }
 

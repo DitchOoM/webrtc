@@ -39,17 +39,21 @@ private fun rtcPeerConnectionAvailable(): Boolean = js("typeof RTCPeerConnection
 private object JsBrowserSupport : PeerConnectionSupport.BrowserDelegated {
     override fun create(
         scope: CoroutineScope,
-        iceServers: List<String>,
+        iceServers: List<IceServer>,
     ): RtcPeerConnection = BrowserPeerConnection(iceServers)
 }
 
-// Build the RTCConfiguration { iceServers: [{ urls }] } from a flat URL list, then the RTCPeerConnection.
-private fun newRtcPeerConnection(iceServers: List<String>): dynamic {
+// Build the RTCConfiguration { iceServers: [{ urls, username?, credential? }] }, then the RTCPeerConnection.
+private fun newRtcPeerConnection(iceServers: List<IceServer>): dynamic {
     val config: dynamic = js("({})")
     val servers = js("[]")
-    for (url in iceServers) {
+    for (server in iceServers) {
         val entry: dynamic = js("({})")
-        entry.urls = url
+        val urls = js("[]")
+        for (u in server.urls) urls.push(u)
+        entry.urls = urls
+        server.username?.let { entry.username = it }
+        server.credential?.let { entry.credential = it }
         servers.push(entry)
     }
     config.iceServers = servers
@@ -120,7 +124,7 @@ private fun mapSignalingState(state: String): SignalingState? =
     }
 
 private class BrowserPeerConnection(
-    iceServers: List<String>,
+    iceServers: List<IceServer>,
 ) : RtcPeerConnection {
     private val pc: dynamic = newRtcPeerConnection(iceServers)
 

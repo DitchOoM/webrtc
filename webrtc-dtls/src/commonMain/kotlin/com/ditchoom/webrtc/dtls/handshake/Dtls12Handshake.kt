@@ -46,6 +46,8 @@ import com.ditchoom.webrtc.dtls.wire.ProtocolVersion
 import com.ditchoom.webrtc.dtls.wire.ServerHello
 import com.ditchoom.webrtc.dtls.wire.ServerKeyExchange
 import com.ditchoom.webrtc.dtls.wire.SignatureSchemeId
+import com.ditchoom.webrtc.dtls.wire.SrtpProtectionProfile
+import com.ditchoom.webrtc.dtls.wire.u16
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
@@ -92,6 +94,7 @@ internal class Dtls12Handshake(
     private var peerEcdhPoint: ReadBuffer? = null
     private var useExtendedMasterSecret = false
     private var peerAdvertisedRenegotiation = false
+    private var negotiatedSrtpProfile: SrtpProtectionProfile? = null
 
     // The master secret and its record protection are derived together and only make sense together
     // (DESIGN §4: no nullable soup) — one sealed value, so "master set but protection null" is
@@ -374,6 +377,12 @@ internal class Dtls12Handshake(
                 peerAdvertisedRenegotiation =
                     ch.extensions.any { it.type.value == ExtensionType.RenegotiationInfo.value } ||
                     ch.cipherSuites.any { it.value == RENEGOTIATION_SCSV }
+                // RFC 5764 DTLS-SRTP: a WebRTC peer always offers `use_srtp`, and a strict client (pion/dtls)
+                // sends a fatal alert if the server does not echo it, even for a data-channel-only session
+                // (BoringSSL/OpenSSL tolerate the omission — the same lenient-vs-strict split as RFC 5746
+                // above). Select a mutually-supported profile to echo in the ServerHello. We negotiate the
+                // extension but don't derive SRTP keys until media (Phase 2, via the DTLS exporter).
+                negotiatedSrtpProfile = selectSrtpProfile(ch)
                 transcript.append(message)
                 sendServerHelloFlight(out, now)
             }
@@ -416,6 +425,9 @@ internal class Dtls12Handshake(
         // Echo an empty renegotiation_info when the client indicated RFC 5746 support (initial handshake:
         // renegotiated_connection is zero-length). Required by OpenSSL; browsers/BoringSSL send it too.
         if (peerAdvertisedRenegotiation) extensions += renegotiationInfoExtension()
+        // Echo the selected DTLS-SRTP profile (RFC 5764 §4.1.2) when the client offered use_srtp — required
+        // by pion/dtls, which fatally alerts a server that omits it. Server response = one selected profile.
+        negotiatedSrtpProfile?.let { extensions += useSrtpServerExtension(it) }
         val sh =
             buildBody {
                 ServerHello(
@@ -584,6 +596,9 @@ internal class Dtls12Handshake(
                 // RFC 5746: advertise secure-renegotiation support so servers that require it (OpenSSL)
                 // accept our initial handshake. Empty renegotiated_connection = initial handshake.
                 renegotiationInfoExtension(),
+                // RFC 5764: offer use_srtp — every WebRTC peer negotiates DTLS-SRTP, and a strict server
+                // expects it. Our server (below) echoes the selected profile back.
+                useSrtpClientExtension(),
             )
         val ch =
             buildBody {
@@ -704,6 +719,45 @@ internal class Dtls12Handshake(
         return Extension(ExtensionType.RenegotiationInfo, body)
     }
 
+    /** ClientHello `use_srtp` (RFC 5764 §4.1.2): our supported profiles, most-preferred first, empty MKI. */
+    private fun useSrtpClientExtension(): Extension {
+        val body = factory.allocate(2 + SUPPORTED_SRTP_PROFILES.size * 2 + 1, ByteOrder.BIG_ENDIAN)
+        body.writeShort((SUPPORTED_SRTP_PROFILES.size * 2).toShort()) // SRTPProtectionProfiles length
+        for (p in SUPPORTED_SRTP_PROFILES) body.writeShort(p.toShort())
+        body.writeByte(0) // srtp_mki<0..255> = empty
+        body.resetForRead()
+        return Extension(ExtensionType.UseSrtp, body)
+    }
+
+    /** ServerHello `use_srtp` (RFC 5764 §4.1.2): the single selected [profile], empty MKI. */
+    private fun useSrtpServerExtension(profile: SrtpProtectionProfile): Extension {
+        val body = factory.allocate(2 + 2 + 1, ByteOrder.BIG_ENDIAN)
+        body.writeShort(2) // one SRTPProtectionProfile (2 bytes)
+        body.writeShort(profile.value.toShort())
+        body.writeByte(0) // srtp_mki<0..255> = empty
+        body.resetForRead()
+        return Extension(ExtensionType.UseSrtp, body)
+    }
+
+    /**
+     * The first client-offered SRTP profile we support (RFC 5764 §4.1.2 `use_srtp`), or null if the client
+     * sent no `use_srtp` extension. Malformed bodies yield null (a lenient no-negotiation, never a throw).
+     */
+    private fun selectSrtpProfile(ch: ClientHello): SrtpProtectionProfile? {
+        val body = ch.extensions.firstOrNull { it.type.value == ExtensionType.UseSrtp.value }?.body ?: return null
+        val n = body.remaining()
+        if (n < 2) return null
+        val profilesLen = body.u16(0)
+        if (profilesLen % 2 != 0 || 2 + profilesLen > n) return null
+        var off = 2
+        while (off + 2 <= 2 + profilesLen) {
+            val id = body.u16(off)
+            if (id in SUPPORTED_SRTP_PROFILES) return SrtpProtectionProfile(id)
+            off += 2
+        }
+        return null
+    }
+
     // ── small buffer helpers ─────────────────────────────────────────────────────────────────────
 
     private inline fun buildBody(block: (WriteBuffer) -> Unit): ReadBuffer {
@@ -789,6 +843,15 @@ internal class Dtls12Handshake(
         const val DTLS12 = 0xFEFD
         const val RENEGOTIATION_SCSV = 0x00FF // TLS_EMPTY_RENEGOTIATION_INFO_SCSV (RFC 5746 §3.3)
         const val MAX_MESSAGE_BYTES = 4096
+
+        // DTLS-SRTP profiles we negotiate (RFC 5764), most-preferred first — mirrors the BoringSSL oracle's
+        // "SRTP_AEAD_AES_128_GCM:SRTP_AES128_CM_SHA1_80". We negotiate the extension for interop; SRTP key
+        // export is Phase-2 media.
+        val SUPPORTED_SRTP_PROFILES =
+            listOf(
+                SrtpProtectionProfile.AeadAes128Gcm.value,
+                SrtpProtectionProfile.Aes128CmHmacSha1_80.value,
+            )
         val INITIAL_RETRANSMIT = 1.seconds // RFC 6347/9147 initial retransmit timer
         val MAX_RETRANSMIT = 60.seconds
     }

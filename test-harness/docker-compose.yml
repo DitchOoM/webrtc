@@ -172,6 +172,10 @@ services:
     environment:
       GATEWAY_IP: "${NAT_B_LAN_IP}"
       WEBRTC_ROLE: answerer  # the Go peer is answerer-only; informational
+      # pion/webrtc's default logger honors these — set PION_LOG_TRACE=all (or PION_LOG_DEBUG=dtls) to make
+      # pion/dtls log the exact handshake flights + any alert, for interop debugging. Empty = pion default.
+      PION_LOG_TRACE: "${PION_LOG_TRACE:-}"
+      PION_LOG_DEBUG: "${PION_LOG_DEBUG:-}"
       WEBRTC_SESSION: "${SESSION:-l2}"
       WEBRTC_LOCAL_IP: "${PEER_B_IP}"
       WEBRTC_STUN_HOST: "${COTURN_IP}"

@@ -212,8 +212,16 @@ jobs:
       # Pre-build the browser image WITH a gha layer cache and load it into the daemon under compose's
       # default image name (webrtc-l2-harness-<service>), so the interop step reuses it (no rebuild). The
       # cache scope is per {engine × arch} so the arm64 and x64 caches never clobber each other.
+      #
+      # This build is bounded + retried because the `type=gha` cache backend intermittently STALLS on
+      # export under concurrent matrix load — a stall consumed the whole 30-min job budget and the job was
+      # cancelled BEFORE the interop step ever ran (see #29: `cancelled`, not a real interop failure). A
+      # per-step timeout turns that stall into a fast, retryable failure instead of a silent 30-min cancel.
       - name: Build browser image (gha-cached)
+        id: browser_build
         uses: docker/build-push-action@v6
+        timeout-minutes: 12
+        continue-on-error: true
         with:
           context: test-harness/browser
           # Playwright engine name: chrome→chromium; firefox/webkit are already the engine name.
@@ -223,6 +231,21 @@ jobs:
           load: true
           cache-from: type=gha,scope=browser-${{ matrix.browser }}-${{ matrix.arch.name }}
           cache-to: type=gha,mode=max,scope=browser-${{ matrix.browser }}-${{ matrix.arch.name }}
+
+      # Retry once if the first attempt stalled/failed. The retry drops cache-TO (the mode=max export is the
+      # heavy, stall-prone half) and keeps cache-FROM, so it fails fast or wins. No continue-on-error here:
+      # a second failure is a genuine build error and SHOULD fail the job (fast, not at the 30-min timeout).
+      - name: Build browser image (retry — no cache export)
+        if: steps.browser_build.outcome == 'failure'
+        uses: docker/build-push-action@v6
+        timeout-minutes: 12
+        with:
+          context: test-harness/browser
+          build-args: |
+            BROWSER=${{ matrix.browser == 'chrome' && 'chromium' || matrix.browser }}
+          tags: webrtc-l2-harness-${{ matrix.browser }}:latest
+          load: true
+          cache-from: type=gha,scope=browser-${{ matrix.browser }}-${{ matrix.arch.name }}
 
       # Scenario name selects the offerer: `<browser>-interop` (native) or `jvm-<browser>` (JVM peer).
       - name: "Interop: our ${{ matrix.peer }} peer ⇄ ${{ matrix.browser }}"

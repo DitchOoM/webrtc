@@ -176,9 +176,14 @@ SUCCESSFUL (724 tasks); `:webrtc-dtls` linuxX64 33/33; apiCheck green. Our pure-
   **(b)** PeerConnection interop (Chrome/Firefox/Pion) against the **pure engine** (today's harness still uses the
   BoringSSL native path); **(c)** the SRTP-exporter output differential vs BoringSSL (still deferred — our 1.3
   engine has no `SSL_export_keying_material` exporter yet).
-- **Traps carried forward:** **HelloRetryRequest, X25519, and the client-side 1.3→1.2 downgrade are deferred to
-  interop (#7)** — our 1.3 is P-256-only and commits the client to its configured max version (the oracle is
-  pinned to P-256 to avoid HRR). The **openssl 1.3 `s_client` lane needs openssl ≥ 3.2** (box has 3.0.13) — the
+- **Traps carried forward:** ~~HelloRetryRequest, X25519, and the client-side 1.3→1.2 downgrade are deferred to
+  interop (#7)~~ — **RESOLVED.** #32 landed DTLS 1.3 **HelloRetryRequest** (+ X25519 group retry) and the
+  **downgrade sentinel** (RFC 8446 §4.1.3), and **CO-4** proves the downgrade path end-to-end through two real
+  `DtlsEngine`s (`DtlsDowngradeE2ETest`). Note on the "downgrade" wording: the client-side **1.3→1.2 non-fallback
+  is deliberate and secure, not a gap** — a client that offered 1.3 treats *any* lower selected version as fatal
+  (see the §11.3 rationale below). A silent 1.3→1.2 fallback *is* the downgrade attack; refusing it, and detecting
+  the sentinel a 1.3-capable server stamps when an attacker strips the offer, is the security property. The
+  **openssl 1.3 `s_client` lane needs openssl ≥ 3.2** (box has 3.0.13) — the
   1.2 openssl differential still runs; 1.3-openssl is skipped/noted. Run native tests under a memory cap
   (`ulimit -v 8000000; timeout … test.kexe`) — the OOM-runaway trap. K/Wasm `compileTest…WasmJs` ICE is a flake
   (re-run `build`); it did **not** hit this session.
@@ -566,6 +571,19 @@ suspect is the documented `node:internal/timers` JS-node flake).
    Chrome/BoringSSL has it on by default (libwebrtc flipped in 2025), and BoringSSL itself now defaults
    to 1.3. Min stays 1.2 purely for breadth — **Pion's released v3 is still 1.2-only** — and negotiation
    falls back automatically. **Both paths are asserted by tests**, not assumed.
+   - **Non-fallback rationale (the client-side 1.3→1.2 refusal is deliberate + secure — CO-4).** "Falls back
+     automatically" is a **server-side, per-offer** property: a *server* picks 1.2 when a peer's ClientHello
+     offers only 1.2 (Pion), and a *client* that is configured 1.2-only (`enableDtls13 = false`) simply offers
+     1.2. What we do **not** do is silently *downshift a client that offered 1.3* to 1.2 mid-handshake — because
+     a silent 1.3→1.2 fallback **is the downgrade attack** (an on-path attacker strips the 1.3 offer to force
+     the weaker version). So a client that offered 1.3 treats *any* ServerHello selecting a lower version as
+     fatal (RFC 8446 §4.1.3): [DtlsFailureReason.DowngradeDetected] when the ServerHello.Random carries the
+     `DOWNGRD\x01` sentinel a genuine 1.3-capable server stamps when it negotiates down (⇒ the offer was
+     stripped), else a plain `HandshakeFailure`. This is why interop with a 1.2-only peer (Pion) still works —
+     that peer never offers 1.3, so there is no downgrade to detect — while a 1.3-capable peer that is
+     downshifted mid-flight is correctly rejected. Proven end-to-end by `DtlsDowngradeE2ETest` (two real
+     `DtlsEngine`s + a MITM that strips `supported_versions`+`key_share`); the sentinel halves are unit-tested
+     in `DtlsDowngradeSentinelTest`. See `PHASE1_CLOSEOUT.md` §CO-4.
 2. **W4 sequencing** → **native-Linux DTLS now, self-contained; JVM/Android/Apple deferred to
    `boringssl-kmp`.** This *inverted a plan premise* — see "the boringssl-kmp reality" below.
 
@@ -869,8 +887,9 @@ W5; resolve §11.3 (DTLS 1.2-vs-1.3) before it.
 permission re-install (RFC 8656 §8/§9 — fine within LIFETIME; a W7-interop concern); explicit
 pool-`release`/`use{}` of datagram buffers (entangled with the core's per-retransmit slice ownership) +
 webrtc-stun builder intermediates still on `BufferFactory.Default`; IPv6 host-string parsing in
-`IceAddress` (fixtures are v4). Mapping `IceFailureReason` into the `SocketException` hierarchy is the
-session layer's job (W6).
+`IceAddress` (fixtures are v4 — **IPv6 / dual-stack is a deliberate Phase 1.5 deferral, `PHASE1_CLOSEOUT.md`
+§1.5-A is the canonical ledger**; Phase 1 ICE is IPv4-only). Mapping `IceFailureReason` into the
+`SocketException` hierarchy is the session layer's job (W6).
 
 **Standing traps (unchanged):** `gh pr edit --add-label skip-release` fails silently — apply via
 `gh api repos/DitchOoM/webrtc/issues/<n>/labels -f 'labels[]=skip-release'` and verify. Apple lanes are
@@ -950,7 +969,8 @@ throw-safety, the impairment RNG stream, and the NAT profiles' RFC 4787 fidelity
 "lite" (highest-priority-first pacing rather than per-foundation unfreezing); srflx/relay **gathering
 has no STUN retransmit** yet (fine on the vnet; add before real-network W7); `IceFailureReason.NoCandidatePairs`
 is defined but reserved for the trickle end-of-candidates signal (W6 signaling); IPv6 host-string
-parsing in `IceAddress` is a follow-up (fixtures are v4); TURN auth is short-term-credential MI
+parsing in `IceAddress` is a follow-up (fixtures are v4 — **IPv6 / dual-stack is a Phase 1.5 workstream,
+see `PHASE1_CLOSEOUT.md` §1.5-A**); TURN auth is short-term-credential MI
 (MD5-free) — real-coturn long-term keys are a W7 concern.
 
 **Module structure (a question raised this session):** no client/server split is needed for the ICE

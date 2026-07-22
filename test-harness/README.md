@@ -62,6 +62,12 @@ NATs (`cgnat_a`/`cgnat_b`/`cgnat`) are the same `nat/` image, wired `car→pub` 
 | **cgnat** (NAT444) | per-side `cgnat_a` + `cgnat_b`, distinct public IPs, port-restricted cone | a genuine double NAT; the composed cone mapping stays consistent, so it traverses via `srflx` (relay is the `policy=all` safety net) |
 | **hairpin** | ONE shared `cgnat` both CPEs route through, symmetric | both peers share a single external identity; stock netfilter won't hairpin `car→car`, so — like `symmetric-relay` — traversal must ride the **coturn TURN relay**. To *prove* that (not just hope for it), this lane pins **`ice_policy=relay`** (like `relay-only`), so only relay candidates are gathered and a green run cannot have used a direct/srflx path; `run_scenario` additionally asserts the offerer's selected pair is a relay pair from its `Connected` trace |
 
+**IPv6 / dual-stack is out of scope for Phase 1 (a deliberate Phase 1.5 deferral).** Every topology above is
+IPv4-only; Phase 1 ICE is IPv4-only (`IceAddress` fences off `IpAddress.V6`). IPv6 / dual-stack gathering,
+v6 candidate priority (RFC 8445 §5.1.2), and a v6 / dual-stack harness topology are tracked as the first
+Phase 1.5 workstream — `PHASE1_CLOSEOUT.md` §1.5-A is the canonical ledger (note: real carrier NAT ships
+NAT444 *with* native IPv6 as the escape hatch, so the v6 topology rides with the CGNAT lanes there).
+
 ## Running
 
 ```bash
@@ -96,6 +102,16 @@ buffer-codec wire schema). Pion accepts the data channel and echoes `ping`→`po
 
 - **DTLS 1.2**: Pion's released v3 is DTLS-1.2-only, so this lane sets `PEER_DTLS13=false` (via
   `WEBRTC_DTLS13`) — our peer pins its tested 1.2 fallback and version negotiation meets at 1.2.
+  - **Why this is not a downgrade (the 1.3→1.2 non-fallback is deliberate + secure).** Meeting at 1.2 here
+    is *version negotiation*, not a *downgrade*: Pion never offers 1.3, so there is nothing to downgrade —
+    both sides simply agree on the highest common version. Our stack refuses a **silent** 1.3→1.2 downshift,
+    because that silent fallback *is* the downgrade attack (an on-path attacker strips a 1.3-capable peer's
+    offer to force the weaker version). A client that offered 1.3 treats any lower selected version as fatal:
+    it detects the RFC 8446 §4.1.3 `DOWNGRD\x01` sentinel a 1.3-capable server stamps when it negotiates down
+    (⇒ the offer was stripped) and fails `DtlsFailureReason.DowngradeDetected`. So interop with a 1.2-only
+    peer works *because that peer never offers 1.3*, whereas a 1.3-capable peer downshifted mid-flight is
+    correctly rejected. Proven end-to-end in `webrtc-dtls` by `DtlsDowngradeE2ETest`; see `PHASE1_CLOSEOUT.md`
+    §CO-4.
 - The Pion service is gated behind the `pion` compose profile (activated by `run-interop.sh` for this
   scenario only); it and `peer_b` share `PEER_B_IP` but never run at once.
 - Its image builds natively per-arch (pure Go, no cross-compile / QEMU), so CI needs no extra build step.

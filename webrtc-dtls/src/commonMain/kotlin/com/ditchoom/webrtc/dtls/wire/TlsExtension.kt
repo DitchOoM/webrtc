@@ -15,6 +15,7 @@ internal value class ExtensionType(
         val SignatureAlgorithms = ExtensionType(13) // RFC 8446 §4.2.3
         val UseSrtp = ExtensionType(14) // RFC 5764 — DTLS-SRTP profile negotiation
         val ExtendedMasterSecret = ExtensionType(23) // RFC 7627 (empty body)
+        val Cookie = ExtensionType(44) // RFC 8446 §4.2.2 — echoed from a HelloRetryRequest into ClientHello2
         val SupportedVersions = ExtensionType(43) // RFC 8446 §4.2.1 — carries DTLS 1.3
         val KeyShare = ExtensionType(51) // RFC 8446 §4.2.8 — DTLS 1.3 (EC)DHE shares
         val RenegotiationInfo = ExtensionType(0xFF01) // RFC 5746 (empty body for initial handshake)

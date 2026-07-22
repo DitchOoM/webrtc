@@ -60,6 +60,10 @@ public final class com/ditchoom/webrtc/dtls/DtlsFailureReason$BackendUnavailable
 	public static final field INSTANCE Lcom/ditchoom/webrtc/dtls/DtlsFailureReason$BackendUnavailable;
 }
 
+public final class com/ditchoom/webrtc/dtls/DtlsFailureReason$DowngradeDetected : com/ditchoom/webrtc/dtls/DtlsFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/dtls/DtlsFailureReason$DowngradeDetected;
+}
+
 public final class com/ditchoom/webrtc/dtls/DtlsFailureReason$FingerprintMismatch : com/ditchoom/webrtc/dtls/DtlsFailureReason {
 	public static final field INSTANCE Lcom/ditchoom/webrtc/dtls/DtlsFailureReason$FingerprintMismatch;
 }

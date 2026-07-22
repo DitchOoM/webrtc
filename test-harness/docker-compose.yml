@@ -7,6 +7,12 @@ name: webrtc-l2-harness
 # substituted from harness.env (run-interop.sh exports it); services also get it at runtime via env_file.
 #
 #   peer_a ─lan_a─ nat_a ═══pub═══ coturn / rendezvous ═══pub═══ nat_b ─lan_b─ peer_b
+#
+# The cgnat / hairpin lanes insert an EXTRA carrier-grade NAT between each CPE (nat_a/nat_b) and pub —
+# a NAT444 double translation (see the cgnat_* services + the `car` network):
+#   peer_a ─lan_a─ nat_a ─car─ cgnat_a ══pub══ coturn ══pub══ cgnat_b ─car─ nat_b ─lan_b─ peer_b   (cgnat)
+#   peer_a ─lan_a─ nat_a ─┐                                                ┌─ nat_b ─lan_b─ peer_b   (hairpin)
+#                         └───car── cgnat (shared) ══pub══ coturn ══pub═══┘   both CPEs, one carrier NAT
 
 networks:
   pub:
@@ -15,6 +21,11 @@ networks:
     ipam: { config: [{ subnet: "${LAN_A_SUBNET}" }] }
   lan_b:
     ipam: { config: [{ subnet: "${LAN_B_SUBNET}" }] }
+  # Carrier-grade shared space between the CPE NATs and the public net — the extra hop for the double-NAT
+  # (NAT444) / hairpin lanes. Always defined; only the cgnat_* carrier NATs (profile-gated) join it beyond
+  # the CPEs, so it sits idle in the single-NAT lanes.
+  car:
+    ipam: { config: [{ subnet: "${CAR_SUBNET}" }] }
 
 services:
   coturn:
@@ -55,9 +66,16 @@ services:
       NAT_LAN_IP: "${NAT_A_LAN_IP}"
       PEER_IP: "${PEER_A_IP}"
       ICE_PORT: "${ICE_PORT}"
+      # Carrier-grade (NAT444 / hairpin) upstream. Empty in the single-NAT lanes → nat-setup skips the
+      # behind-carrier block and nat_a reaches pub directly. run-interop.sh sets NAT_A_CARRIER_GW to a
+      # carrier NAT's inside IP for the cgnat/hairpin lanes; NAT_A_CAR_IP is nat_a's own carrier address.
+      NAT_CAR_IP: "${NAT_A_CAR_IP}"
+      NAT_CARRIER_GW: "${NAT_A_CARRIER_GW:-}"
+      CARRIER_ROUTES: "${CARRIER_ROUTES}"
     networks:
       pub: { ipv4_address: "${NAT_A_WAN_IP}" }
       lan_a: { ipv4_address: "${NAT_A_LAN_IP}" }
+      car: { ipv4_address: "${NAT_A_CAR_IP}" }
     healthcheck:
       test: ["CMD-SHELL", "iptables -t nat -S | grep -q MASQUERADE"]
       interval: 2s
@@ -75,9 +93,88 @@ services:
       NAT_LAN_IP: "${NAT_B_LAN_IP}"
       PEER_IP: "${PEER_B_IP}"
       ICE_PORT: "${ICE_PORT}"
+      NAT_CAR_IP: "${NAT_B_CAR_IP}"           # see nat_a — carrier-grade (NAT444 / hairpin) upstream
+      NAT_CARRIER_GW: "${NAT_B_CARRIER_GW:-}"
+      CARRIER_ROUTES: "${CARRIER_ROUTES}"
     networks:
       pub: { ipv4_address: "${NAT_B_WAN_IP}" }
       lan_b: { ipv4_address: "${NAT_B_LAN_IP}" }
+      car: { ipv4_address: "${NAT_B_CAR_IP}" }
+    healthcheck:
+      test: ["CMD-SHELL", "iptables -t nat -S | grep -q MASQUERADE"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 1s
+
+  # ── Carrier-grade NATs (NAT444 / hairpin) — the EXTRA hop the CPE NATs route through ────────────────
+  # Each is the SAME nat image as nat_a/nat_b, but wired car→pub (its LAN face is the carrier shared space,
+  # its WAN face the public net) and WITHOUT a NAT_CARRIER_GW — it IS the public-facing translation. It
+  # needs no PEER_IP (that only feeds the full-cone DNAT, which the cone/symmetric carrier profiles don't
+  # use), so a placeholder is passed. run-interop.sh points each CPE's NAT_*_CARRIER_GW at the right one.
+  #
+  # cgnat_a / cgnat_b (profile `cgnat`): per-side carrier NATs, distinct public IPs, port-restricted cone
+  # → the composed CPE+carrier mapping stays consistent, so the double NAT is traversable via srflx.
+  cgnat_a:
+    profiles: ["cgnat"]
+    build: { context: ., dockerfile: nat/Dockerfile }
+    cap_add: [NET_ADMIN]
+    sysctls: { net.ipv4.ip_forward: 1 }
+    environment:
+      NAT_PROFILE: "port-restricted"
+      NAT_WAN_IP: "${CGNAT_A_WAN_IP}"
+      NAT_LAN_IP: "${CGNAT_A_CAR_IP}"
+      PEER_IP: "0.0.0.0"      # unused (no full-cone DNAT on a carrier NAT); placeholder for nat-setup.sh
+      ICE_PORT: "${ICE_PORT}"
+    networks:
+      pub: { ipv4_address: "${CGNAT_A_WAN_IP}" }
+      car: { ipv4_address: "${CGNAT_A_CAR_IP}" }
+    healthcheck:
+      test: ["CMD-SHELL", "iptables -t nat -S | grep -q MASQUERADE"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 1s
+
+  cgnat_b:
+    profiles: ["cgnat"]
+    build: { context: ., dockerfile: nat/Dockerfile }
+    cap_add: [NET_ADMIN]
+    sysctls: { net.ipv4.ip_forward: 1 }
+    environment:
+      NAT_PROFILE: "port-restricted"
+      NAT_WAN_IP: "${CGNAT_B_WAN_IP}"
+      NAT_LAN_IP: "${CGNAT_B_CAR_IP}"
+      PEER_IP: "0.0.0.0"      # unused; see cgnat_a
+      ICE_PORT: "${ICE_PORT}"
+    networks:
+      pub: { ipv4_address: "${CGNAT_B_WAN_IP}" }
+      car: { ipv4_address: "${CGNAT_B_CAR_IP}" }
+    healthcheck:
+      test: ["CMD-SHELL", "iptables -t nat -S | grep -q MASQUERADE"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 1s
+
+  # cgnat (profile `hairpin`): ONE shared carrier NAT that BOTH CPEs route through, so both peers share a
+  # single external identity (its public IP) — the hairpin topology. Symmetric mapping (`--random-fully`)
+  # makes each peer's srflx useless to the other (as in the symmetric-relay lane), and stock netfilter does
+  # not hairpin car→car, so ICE falls back to the coturn TURN relay — the establishment path we assert.
+  cgnat:
+    profiles: ["hairpin"]
+    build: { context: ., dockerfile: nat/Dockerfile }
+    cap_add: [NET_ADMIN]
+    sysctls: { net.ipv4.ip_forward: 1 }
+    environment:
+      NAT_PROFILE: "symmetric"
+      NAT_WAN_IP: "${CGNAT_SHARED_WAN_IP}"
+      NAT_LAN_IP: "${CGNAT_SHARED_CAR_IP}"
+      PEER_IP: "0.0.0.0"      # unused; see cgnat_a
+      ICE_PORT: "${ICE_PORT}"
+    networks:
+      pub: { ipv4_address: "${CGNAT_SHARED_WAN_IP}" }
+      car: { ipv4_address: "${CGNAT_SHARED_CAR_IP}" }
     healthcheck:
       test: ["CMD-SHELL", "iptables -t nat -S | grep -q MASQUERADE"]
       interval: 2s

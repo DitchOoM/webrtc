@@ -103,33 +103,39 @@ docker run --rm --privileged --network host alpine:3.20 \
     sysctl -w net.bridge.bridge-nf-call-iptables=0 net.bridge.bridge-nf-call-ip6tables=0 >/dev/null 2>&1 \
     || echo "::warning::could not set bridge-nf-call-iptables=0 — container routing across NATs may fail"
 
-# ── scenario matrix — name | nat_a | nat_b | ice_policy | netem(args or "-") | a_impl | b_impl ──
+# ── scenario matrix — name | nat_a | nat_b | ice_policy | netem(args or "-") | a_impl | b_impl | topo ──
 #   a_impl (offerer / "our side") ∈ native | jvm
 #   b_impl (answerer)             ∈ native | pion | chrome | firefox | webkit
+#   topo (NAT layering)           ∈ single | cgnat | hairpin      (defaults to single when omitted)
 # Covers each of the four NAT profiles, the symmetric→relay fallback, an explicit relay-only lane, an
 # impaired data path (all native ⇄ native), the W7 Phase-2 interop lanes where the answerer is a real Pion
-# (Go) peer [2(a)] or a real headless browser — Chrome / Firefox / WebKit [2(b)], PLUS the JVM-offerer
-# lanes: the pure-Kotlin engine on the JVM (socket-udp NIO datapath) ⇄ native / Pion / Chrome / Firefox /
-# WebKit — proving the pure engine on the real wire from a managed runtime. Each expects BOTH peers to exit
-# 0. Both impl columns default to native when omitted. The pion lanes force DTLS 1.2 (Pion v3 is 1.2-only);
-# every other lane runs DTLS 1.3 (the default) — see run_scenario.
+# (Go) peer [2(a)] or a real headless browser — Chrome / Firefox / WebKit [2(b)], the JVM-offerer lanes:
+# the pure-Kotlin engine on the JVM (socket-udp NIO datapath) ⇄ native / Pion / Chrome / Firefox / WebKit
+# — proving the pure engine on the real wire from a managed runtime — PLUS two carrier-grade NAT (NAT444)
+# topologies: `cgnat` (each CPE behind its OWN carrier NAT — a genuine double NAT, traversed via srflx or
+# relay) and `hairpin` (both CPEs behind ONE shared carrier NAT — a single external identity, so ICE falls
+# back to the coturn relay). Each expects BOTH peers to exit 0. The impl + topo columns default to
+# native/native/single when omitted. The pion lanes force DTLS 1.2 (Pion v3 is 1.2-only); every other lane
+# runs DTLS 1.3 (the default) — see run_scenario.
 SCENARIOS="
-full-cone            | full-cone          | full-cone          | all   | -                                                | native | native
-port-restricted      | port-restricted    | port-restricted    | all   | -                                                | native | native
-address-restricted   | address-restricted | address-restricted | all   | -                                                | native | native
-symmetric-relay      | symmetric          | symmetric          | all   | -                                                | native | native
-mixed-sym-port       | symmetric          | port-restricted    | all   | -                                                | native | native
-relay-only           | port-restricted    | port-restricted    | relay | -                                                | native | native
-impaired-loss-delay  | port-restricted    | port-restricted    | all   | loss 5% delay 20ms 5ms distribution normal      | native | native
-pion-interop         | port-restricted    | port-restricted    | all   | -                                                | native | pion
-chrome-interop       | port-restricted    | port-restricted    | all   | -                                                | native | chrome
-firefox-interop      | port-restricted    | port-restricted    | all   | -                                                | native | firefox
-webkit-interop       | port-restricted    | port-restricted    | all   | -                                                | native | webkit
-jvm-native           | port-restricted    | port-restricted    | all   | -                                                | jvm    | native
-jvm-pion             | port-restricted    | port-restricted    | all   | -                                                | jvm    | pion
-jvm-chrome           | port-restricted    | port-restricted    | all   | -                                                | jvm    | chrome
-jvm-firefox          | port-restricted    | port-restricted    | all   | -                                                | jvm    | firefox
-jvm-webkit           | port-restricted    | port-restricted    | all   | -                                                | jvm    | webkit
+full-cone            | full-cone          | full-cone          | all   | -                                                | native | native  | single
+port-restricted      | port-restricted    | port-restricted    | all   | -                                                | native | native  | single
+address-restricted   | address-restricted | address-restricted | all   | -                                                | native | native  | single
+symmetric-relay      | symmetric          | symmetric          | all   | -                                                | native | native  | single
+mixed-sym-port       | symmetric          | port-restricted    | all   | -                                                | native | native  | single
+relay-only           | port-restricted    | port-restricted    | relay | -                                                | native | native  | single
+impaired-loss-delay  | port-restricted    | port-restricted    | all   | loss 5% delay 20ms 5ms distribution normal      | native | native  | single
+cgnat                | port-restricted    | port-restricted    | all   | -                                                | native | native  | cgnat
+hairpin              | port-restricted    | port-restricted    | all   | -                                                | native | native  | hairpin
+pion-interop         | port-restricted    | port-restricted    | all   | -                                                | native | pion    | single
+chrome-interop       | port-restricted    | port-restricted    | all   | -                                                | native | chrome  | single
+firefox-interop      | port-restricted    | port-restricted    | all   | -                                                | native | firefox | single
+webkit-interop       | port-restricted    | port-restricted    | all   | -                                                | native | webkit  | single
+jvm-native           | port-restricted    | port-restricted    | all   | -                                                | jvm    | native  | single
+jvm-pion             | port-restricted    | port-restricted    | all   | -                                                | jvm    | pion    | single
+jvm-chrome           | port-restricted    | port-restricted    | all   | -                                                | jvm    | chrome  | single
+jvm-firefox          | port-restricted    | port-restricted    | all   | -                                                | jvm    | firefox | single
+jvm-webkit           | port-restricted    | port-restricted    | all   | -                                                | jvm    | webkit  | single
 "
 
 # Scenario selection:
@@ -143,9 +149,9 @@ skip=" ${HARNESS_SKIP:-} "
 pass=0; fail=0; failed_names=""
 
 run_scenario() {
-    local name="$1" nat_a="$2" nat_b="$3" policy="$4" netem="$5" a_impl="${6:-native}" b_impl="${7:-native}"
+    local name="$1" nat_a="$2" nat_b="$3" policy="$4" netem="$5" a_impl="${6:-native}" b_impl="${7:-native}" topo="${8:-single}"
     echo ""
-    echo "═══ scenario: $name  (nat_a=$nat_a nat_b=$nat_b policy=$policy netem=${netem} a=${a_impl} b=${b_impl}) ═══"
+    echo "═══ scenario: $name  (nat_a=$nat_a nat_b=$nat_b policy=$policy netem=${netem} a=${a_impl} b=${b_impl} topo=${topo}) ═══"
 
     export NAT_A_PROFILE="$nat_a" NAT_B_PROFILE="$nat_b" ICE_POLICY="$policy" SESSION="$name"
 
@@ -165,13 +171,30 @@ run_scenario() {
         webkit)  b_service="webkit";  profiles="$profiles webkit";  export PEER_DTLS13="true" ;;
         *)       b_service="peer_b";                                export PEER_DTLS13="true" ;;
     esac
+
+    # NAT layering (carrier-grade / hairpin). Point each CPE's upstream at the right carrier NAT, activate
+    # that carrier NAT's compose profile, and add it to this scenario's infra so `up` starts it (a profiled
+    # service only starts when named or its profile is active). `single` leaves the CPEs on pub directly —
+    # the carrier gateways MUST be unset so nat-setup skips its behind-carrier block (they may be exported
+    # from a previous cgnat/hairpin scenario in the loop).
+    local infra="$INFRA"
+    case "$topo" in
+        cgnat)   # per-side carrier NATs → a genuine double NAT (distinct public IPs)
+            export NAT_A_CARRIER_GW="$CGNAT_A_CAR_IP" NAT_B_CARRIER_GW="$CGNAT_B_CAR_IP"
+            profiles="$profiles cgnat"; infra="$infra cgnat_a cgnat_b" ;;
+        hairpin) # ONE shared carrier NAT → both peers share a single external identity → relay
+            export NAT_A_CARRIER_GW="$CGNAT_SHARED_CAR_IP" NAT_B_CARRIER_GW="$CGNAT_SHARED_CAR_IP"
+            profiles="$profiles hairpin"; infra="$infra cgnat" ;;
+        *)       unset NAT_A_CARRIER_GW NAT_B_CARRIER_GW ;;
+    esac
+
     profiles=$(echo "$profiles" | xargs | tr ' ' ',')  # trim + COMMA-separate (COMPOSE_PROFILES format)
     if [ -n "$profiles" ]; then export COMPOSE_PROFILES="$profiles"; else unset COMPOSE_PROFILES; fi
 
     # Fresh stack per scenario for isolation (NAT rules + conntrack state must not bleed across profiles).
     # stack_down ONLY — the host bridge-nf sysctl stays as set for the whole run (restored once on EXIT).
     stack_down
-    if ! ./compose-up-retry.sh $INFRA; then
+    if ! ./compose-up-retry.sh $infra; then
         echo "::error::[$name] infra failed to come up"; fail=$((fail+1)); failed_names="$failed_names $name"; return
     fi
 
@@ -221,16 +244,17 @@ run_scenario() {
 # drains its stdin, which — if the loop read from stdin — would swallow every remaining scenario line, so
 # the matrix would silently stop after the first netem lane (it ran 7/9, skipping pion-interop +
 # chrome-interop). Reading from fd 3 keeps the list out of reach of any inner command's stdin.
-while IFS='|' read -r name a b policy netem a_impl b_impl <&3; do
+while IFS='|' read -r name a b policy netem a_impl b_impl topo <&3; do
     name=$(echo "$name" | xargs); [ -z "$name" ] && continue
     a=$(echo "$a" | xargs); b=$(echo "$b" | xargs); policy=$(echo "$policy" | xargs); netem=$(echo "$netem" | xargs)
     a_impl=$(echo "$a_impl" | xargs); [ -z "$a_impl" ] && a_impl=native
     b_impl=$(echo "$b_impl" | xargs); [ -z "$b_impl" ] && b_impl=native
+    topo=$(echo "$topo" | xargs); [ -z "$topo" ] && topo=single
     # Allowlist (positional args): if any were given, run only those names.
     if [ -n "$*" ]; then case "$only" in *" $name "*) ;; *) continue ;; esac; fi
     # Skiplist ($HARNESS_SKIP): never run a named-skipped scenario.
     case "$skip" in *" $name "*) echo "── skip $name (HARNESS_SKIP)"; continue ;; esac
-    run_scenario "$name" "$a" "$b" "$policy" "$netem" "$a_impl" "$b_impl"
+    run_scenario "$name" "$a" "$b" "$policy" "$netem" "$a_impl" "$b_impl" "$topo"
 done 3<<< "$SCENARIOS"
 
 echo ""

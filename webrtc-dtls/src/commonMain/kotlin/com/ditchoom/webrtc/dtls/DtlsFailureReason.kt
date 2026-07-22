@@ -40,6 +40,14 @@ public sealed interface DtlsFailureReason {
     public object RecordLayerError : DtlsFailureReason
 
     /**
+     * *(engine)* A TLS 1.3 downgrade was detected: our 1.3-capable client offered DTLS 1.3 but received a
+     * ServerHello selecting a lower version whose `Random` carries the RFC 8446 §4.1.3 downgrade sentinel
+     * (`DOWNGRD\x01` / `DOWNGRD\x00`). A conformant 1.3-capable server sets that sentinel when it negotiates
+     * down, so its presence after we offered 1.3 means an active attacker stripped our 1.3 offer — fatal.
+     */
+    public object DowngradeDetected : DtlsFailureReason
+
+    /**
      * *(engine)* No DTLS backend on this platform this wave — JVM/Android/Apple DTLS is deferred to
      * `boringssl-kmp` (see EXECUTION_PLAN "W4 sequencing"); browsers delegate to `RTCPeerConnection`.
      */

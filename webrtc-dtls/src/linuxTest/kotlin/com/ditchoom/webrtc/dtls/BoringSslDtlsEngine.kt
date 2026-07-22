@@ -74,12 +74,17 @@ internal fun boringSslProbe(): Long = bd_smoke()
 @OptIn(ExperimentalForeignApi::class, ExperimentalTime::class)
 internal class BoringSslDtlsEngine(
     private val config: DtlsConfig,
+    // Overrides the derived (EC)DHE group list (BoringSSL's `SSL_CTX_set1_groups_list`, most-preferred
+    // first). The default derivation pins the single group under test so no HRR arises; a differential that
+    // WANTS a HelloRetryRequest passes an override (e.g. "X25519" while our client key-shares P-256, or
+    // "P-256:X25519" for a BoringSSL client that key-shares P-256 but offers both), forcing the retry.
+    private val groupsListOverride: String? = null,
 ) {
     // Pin BoringSSL's (EC)DHE group list to the group under test so a 1.3 handshake needs no HRR: the 1.2
     // lane stays P-256 (its only group), the 1.3 lane follows config.keyExchangeGroup — so BoringSSL as
     // client offers exactly that key_share, and as server it is constrained to our client's single group.
     private fun groupsList(): String =
-        when {
+        groupsListOverride ?: when {
             !config.enableDtls13 -> "P-256"
             config.keyExchangeGroup == KeyExchangeGroup.X25519 -> "X25519"
             else -> "P-256"

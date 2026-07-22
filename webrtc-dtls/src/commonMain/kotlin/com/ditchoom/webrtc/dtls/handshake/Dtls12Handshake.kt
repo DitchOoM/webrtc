@@ -160,7 +160,10 @@ internal class Dtls12Handshake(
             beginClientHelloFlight(out, now)
             return step(out, emptyList())
         }
-        serverRandom = localRandom // set now; the server also uses it in flight 2
+        // RFC 8446 §4.1.3 downgrade protection: a server that CAN speak DTLS 1.3 (config.enableDtls13) but
+        // is negotiating 1.2 stamps the last 8 bytes of its ServerHello.Random with the "DOWNGRD\x01"
+        // sentinel, so a 1.3-capable client that offered 1.3 can detect an attacker who stripped that offer.
+        serverRandom = if (config.enableDtls13) stampDowngradeSentinel(localRandom) else localRandom
         return step(emptyList(), emptyList()) // server waits for ClientHello
     }
 
@@ -824,6 +827,21 @@ internal class Dtls12Handshake(
         return b
     }
 
+    /**
+     * A copy of [random] (32 bytes) with the RFC 8446 §4.1.3 downgrade sentinel `44 4F 57 4E 47 52 44 01`
+     * ("DOWNGRD\x01") written over its last 8 bytes — the signal a 1.3-capable server sends when it
+     * negotiates DTLS 1.2. The high 24 bytes stay random. Read-ready.
+     */
+    private fun stampDowngradeSentinel(random: ReadBuffer): ReadBuffer {
+        val b = factory.allocate(RANDOM_BYTES, ByteOrder.BIG_ENDIAN)
+        val p = random.position()
+        for (i in 0 until RANDOM_BYTES - DOWNGRADE_SENTINEL.size) b.writeByte(random.get(p + i))
+        for (v in DOWNGRADE_SENTINEL) b.writeByte(v.toByte())
+        random.position(p)
+        b.resetForRead()
+        return b
+    }
+
     private fun singleByte(v: Int): ReadBuffer {
         val b = factory.allocate(1, ByteOrder.BIG_ENDIAN)
         b.writeByte(v.toByte())
@@ -884,6 +902,10 @@ internal class Dtls12Handshake(
         const val DTLS12 = 0xFEFD
         const val RENEGOTIATION_SCSV = 0x00FF // TLS_EMPTY_RENEGOTIATION_INFO_SCSV (RFC 5746 §3.3)
         const val MAX_MESSAGE_BYTES = 4096
+
+        // "DOWNGRD\x01" — the RFC 8446 §4.1.3 sentinel a 1.3-capable server stamps into its ServerHello
+        // Random when negotiating DTLS 1.2 (List, not a primitive array — directive #1).
+        val DOWNGRADE_SENTINEL: List<Int> = listOf(0x44, 0x4F, 0x57, 0x4E, 0x47, 0x52, 0x44, 0x01)
 
         // DTLS-SRTP profiles we negotiate (RFC 5764), most-preferred first — mirrors the BoringSSL oracle's
         // "SRTP_AEAD_AES_128_GCM:SRTP_AES128_CM_SHA1_80". We negotiate the extension for interop; SRTP key

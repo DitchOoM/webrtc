@@ -56,15 +56,18 @@ import kotlin.time.Instant
  * the pure-Kotlin core the [com.ditchoom.webrtc.dtls.DtlsEngine] drives when 1.3 is negotiated. Caller
  * clocked (`now`), no coroutine, no wall clock. Byte-matched against the BoringSSL oracle.
  *
- * The (EC)DHE group is negotiable: a client offers exactly one group — X25519 (default, browser-matching)
- * or P-256 — in both `supported_groups` and its single `key_share`, so the server can only ever select it
- * and a HelloRetryRequest is structurally impossible. A server adopts whichever supported group the peer
- * key-shared. (ECDSA-P256 identity/signatures are unchanged; only the ephemeral key exchange varies.)
+ * The (EC)DHE group is negotiable: a client advertises **every** supported group — X25519 (default,
+ * browser-matching) and P-256 — in `supported_groups`, but key-shares only its preferred group. A server
+ * that accepts that group completes in one round trip (the common case); a server that prefers a different
+ * (but offered) group answers with a single HelloRetryRequest, and the client retries with a fresh
+ * `key_share` (RFC 8446 §4.1.4). A server adopts whichever supported group the peer ends up key-sharing.
+ * (ECDSA-P256 identity/signatures are unchanged; only the ephemeral key exchange varies.)
  *
  * WebRTC is **mutually authenticated** (RFC 8827), so both peers send Certificate + CertificateVerify.
- * The flights (no HelloRetryRequest — see above):
+ * The flights (the optional HelloRetryRequest exchange, if any, precedes the ServerHello):
  * ```
  *   client → ClientHello                                                        (epoch 0, plaintext)
+ *  [server → HelloRetryRequest ; client → ClientHello (retry)                   (epoch 0, plaintext)]
  *   server → ServerHello                                                        (epoch 0, plaintext)
  *            {EncryptedExtensions, CertificateRequest, Certificate,
  *             CertificateVerify, Finished}                                      (epoch 2, handshake keys)
@@ -90,6 +93,14 @@ internal class Dtls13Handshake(
     // deferred to that point — its curve isn't known until the group is (client: at start; server: on CH).
     private var negotiatedGroup: KeyExchangeGroup = config.keyExchangeGroup
     private var ecdhe: EcdheKeyExchange? = null
+
+    // HelloRetryRequest (RFC 8446 §4.1.4 / RFC 9147). A client offers every supported group in
+    // supported_groups but key-shares only [config.keyExchangeGroup]; a server that prefers a different
+    // (but client-offered) group answers with one HRR. Exactly one HRR is permitted per handshake.
+    private var receivedHrr = false // client: an HRR has been consumed (a second one is fatal)
+    private var sentHrr = false // server: an HRR has been emitted (never HRR twice)
+    private var hrrRequestedGroup: KeyExchangeGroup? = null // server: the group we asked the client to retry with
+    private var hrrCookie: ReadBuffer? = null // client: a cookie extension from the HRR, echoed verbatim in CH2
 
     private lateinit var localRandom: ReadBuffer
     private var peerCertDer: ReadBuffer? = null
@@ -365,11 +376,27 @@ internal class Dtls13Handshake(
         when (message.msgType.value) {
             HandshakeType.ServerHello.value -> {
                 val sh = ServerHello.parse(message.body) ?: return fail(DtlsFailureReason.HandshakeFailure)
-                if (sh.cipherSuite.value != CipherSuiteId.TlsAes128GcmSha256.value) return fail(DtlsFailureReason.HandshakeFailure)
+                // A ServerHello whose Random is the HelloRetryRequest sentinel is an HRR, not a real
+                // ServerHello — handle the group retry before any key-schedule work (RFC 8446 §4.1.4).
+                if (Tls13Bodies.isHelloRetryRandom(sh.random)) return handleHelloRetryRequest(message, sh, out, now)
                 val versionExt = sh.extensions.firstOrNull { it.type.value == ExtensionType.SupportedVersions.value }
                 if (versionExt == null || Tls13Bodies.selectedVersion(versionExt.body) != ProtocolVersion.Dtls13.value) {
-                    return fail(DtlsFailureReason.HandshakeFailure)
+                    // We offered DTLS 1.3 but the peer selected a lower version (checked BEFORE the cipher
+                    // suite, so a genuine 1.2 ServerHello is diagnosed as a downgrade, not a cipher mismatch).
+                    // RFC 8446 §4.1.3: a 1.3-capable server that negotiates down stamps its Random with the
+                    // downgrade sentinel, so its presence means our 1.3 offer was stripped by an attacker.
+                    return fail(
+                        if (carriesDowngradeSentinel(
+                                sh.random,
+                            )
+                        ) {
+                            DtlsFailureReason.DowngradeDetected
+                        } else {
+                            DtlsFailureReason.HandshakeFailure
+                        },
+                    )
                 }
+                if (sh.cipherSuite.value != CipherSuiteId.TlsAes128GcmSha256.value) return fail(DtlsFailureReason.HandshakeFailure)
                 val ksExt =
                     sh.extensions.firstOrNull { it.type.value == ExtensionType.KeyShare.value }
                         ?: return fail(DtlsFailureReason.HandshakeFailure)
@@ -406,28 +433,74 @@ internal class Dtls13Handshake(
         out: MutableList<ReadBuffer>,
         now: Instant,
     ) {
-        val offeredGroup = negotiatedGroup.namedGroup
-        val extensions =
-            listOf(
-                // List ONLY our single offered group — in both supported_groups and the one key_share below —
-                // so the server can only ever select it and never has cause to HelloRetryRequest.
-                supportedGroupsExtension(offeredGroup),
-                signatureAlgorithmsExtension(),
-                Tls13Bodies.supportedVersionsClientHello(factory),
-                Tls13Bodies.keyShareClientHello(offeredGroup, ecdhe!!.localPublicPoint, factory),
-            )
+        val keyShareGroup = negotiatedGroup.namedGroup
+        val extensions = mutableListOf<Extension>()
+        // Advertise EVERY supported group (the key-shared/preferred one first) but key_share only the
+        // preferred group — the browser-matching offer. A server that prefers a later group answers with a
+        // HelloRetryRequest for it (handled below); a server that accepts our key_share completes in 1-RTT.
+        extensions += Tls13Bodies.supportedGroupsClientHello(offeredGroups(), factory)
+        extensions += signatureAlgorithmsExtension()
+        extensions += Tls13Bodies.supportedVersionsClientHello(factory)
+        extensions += Tls13Bodies.keyShareClientHello(keyShareGroup, ecdhe!!.localPublicPoint, factory)
+        // RFC 8446 §4.2.2: the second ClientHello MUST echo any cookie the HelloRetryRequest carried.
+        hrrCookie?.let { extensions += Extension(ExtensionType.Cookie, it) }
         val ch =
             buildBody {
                 ClientHello(
                     ProtocolVersion.Dtls12, // legacy_version; the real version is in supported_versions
                     localRandom,
                     empty(),
-                    empty(), // no cookie
+                    empty(), // DTLS 1.3 carries no legacy cookie; return-routability is the cookie extension
                     listOf(CipherSuiteId.TlsAes128GcmSha256),
                     extensions,
                 ).bodyInto(it)
             }
         emitFlight(listOf(queueHandshake(HandshakeType.ClientHello, ch, EPOCH_0)), out, now)
+    }
+
+    /** Our offered `supported_groups`, preferred (key-shared) group first — the browser-matching order. */
+    private fun offeredGroups(): List<NamedGroup> {
+        val preferred = negotiatedGroup.namedGroup
+        val rest = ALL_GROUPS.filter { it.value != preferred.value }
+        return listOf(preferred) + rest
+    }
+
+    /**
+     * Consume a HelloRetryRequest (RFC 8446 §4.1.4): the server accepted DTLS 1.3 but wants a different
+     * (EC)DHE group than we key-shared. Collapse the transcript over ClientHello1 into the synthetic
+     * message_hash, adopt the requested group, regenerate our ephemeral key, and re-send a second
+     * ClientHello. Exactly one HRR is allowed, and the requested group must be one we offered but did not
+     * already key_share — otherwise it is fatal.
+     */
+    private fun handleHelloRetryRequest(
+        message: HandshakeMessage,
+        sh: ServerHello,
+        out: MutableList<ReadBuffer>,
+        now: Instant,
+    ) {
+        if (receivedHrr) return fail(DtlsFailureReason.HandshakeFailure) // a second HRR is illegal
+        val versionExt = sh.extensions.firstOrNull { it.type.value == ExtensionType.SupportedVersions.value }
+        if (versionExt == null || Tls13Bodies.selectedVersion(versionExt.body) != ProtocolVersion.Dtls13.value) {
+            return fail(DtlsFailureReason.HandshakeFailure)
+        }
+        val ksExt =
+            sh.extensions.firstOrNull { it.type.value == ExtensionType.KeyShare.value }
+                ?: return fail(DtlsFailureReason.HandshakeFailure)
+        val selected = Tls13Bodies.parseKeyShareSelectedGroup(ksExt.body) ?: return fail(DtlsFailureReason.HandshakeFailure)
+        val requested = selected.toKeyExchangeGroupOrNull() ?: return fail(DtlsFailureReason.HandshakeFailure)
+        // The requested group must be one we advertised, and MUST differ from the one we already key-shared
+        // (a HRR for a group we already offered a share for is a protocol error — RFC 8446 §4.1.4).
+        if (requested.namedGroup.value == negotiatedGroup.namedGroup.value) return fail(DtlsFailureReason.HandshakeFailure)
+        receivedHrr = true
+        hrrCookie = sh.extensions.firstOrNull { it.type.value == ExtensionType.Cookie.value }?.let { copyOf(it.body) }
+        // Transcript: message_hash(ClientHello1) ‖ HelloRetryRequest ‖ ClientHello2 ‖ … (RFC 8446 §4.4.1).
+        transcript.collapseToMessageHash()
+        transcript.append(message)
+        // Adopt the requested group and regenerate the ephemeral key for its curve.
+        ecdhe?.close()
+        negotiatedGroup = requested
+        ecdhe = EcdheKeyExchange.generate(negotiatedGroup.agreementCurve)
+        sendClientHelloFlight(out, now)
     }
 
     private fun sendClientAuthFlight(
@@ -460,8 +533,28 @@ internal class Dtls13Handshake(
                 val ksExt =
                     ch.extensions.firstOrNull { it.type.value == ExtensionType.KeyShare.value }
                         ?: return fail(DtlsFailureReason.HandshakeFailure)
-                // Adopt whichever supported group the client key-shared (X25519 or P-256) and match its curve.
                 val clientShare = Tls13Bodies.parseKeyShareClientHello(ksExt.body) ?: return fail(DtlsFailureReason.HandshakeFailure)
+                // We prefer config.keyExchangeGroup. If the client key-shared a different group but DID
+                // advertise our preferred one in supported_groups, ask it to retry with a HelloRetryRequest
+                // (RFC 8446 §4.1.4). Only once — a second ClientHello is answered with a real ServerHello.
+                if (!sentHrr) {
+                    val preferred = config.keyExchangeGroup
+                    val sgExt = ch.extensions.firstOrNull { it.type.value == ExtensionType.SupportedGroups.value }
+                    val clientOffersPreferred = sgExt != null && Tls13Bodies.supportedGroupsContains(sgExt.body, preferred.namedGroup)
+                    if (clientShare.group.value != preferred.namedGroup.value && clientOffersPreferred) {
+                        sentHrr = true
+                        hrrRequestedGroup = preferred
+                        // Transcript over CH1 collapses to message_hash before the HRR (RFC 8446 §4.4.1).
+                        transcript.append(message)
+                        transcript.collapseToMessageHash()
+                        sendHelloRetryRequest(preferred, out, now)
+                        return
+                    }
+                } else {
+                    // Second ClientHello after our HRR: it MUST key_share the group we requested.
+                    if (clientShare.group.value != hrrRequestedGroup?.namedGroup?.value) return fail(DtlsFailureReason.HandshakeFailure)
+                }
+                // Adopt whichever supported group the client key-shared (X25519 or P-256) and match its curve.
                 negotiatedGroup = clientShare.group.toKeyExchangeGroupOrNull() ?: return fail(DtlsFailureReason.HandshakeFailure)
                 peerPoint = copyOf(clientShare.point)
                 ecdhe = EcdheKeyExchange.generate(negotiatedGroup.agreementCurve)
@@ -484,6 +577,32 @@ internal class Dtls13Handshake(
             }
             else -> Unit
         }
+    }
+
+    /**
+     * Emit a HelloRetryRequest (RFC 8446 §4.1.4): a plaintext ServerHello (epoch 0) whose `Random` is the
+     * fixed HRR sentinel, carrying `supported_versions` (DTLS 1.3) and a `key_share` naming the group we
+     * want. No key schedule runs — the real ServerHello follows the client's retried ClientHello.
+     */
+    private fun sendHelloRetryRequest(
+        group: KeyExchangeGroup,
+        out: MutableList<ReadBuffer>,
+        now: Instant,
+    ) {
+        val hrr =
+            buildBody {
+                ServerHello(
+                    ProtocolVersion.Dtls12,
+                    Tls13Bodies.helloRetryRandom(factory),
+                    empty(),
+                    CipherSuiteId.TlsAes128GcmSha256,
+                    listOf(
+                        Tls13Bodies.supportedVersionsServerHello(factory),
+                        Tls13Bodies.keyShareHelloRetryRequest(group.namedGroup, factory),
+                    ),
+                ).bodyInto(it)
+            }
+        emitFlight(listOf(queueHandshake(HandshakeType.ServerHello, hrr, EPOCH_0)), out, now)
     }
 
     private fun sendServerFlight(
@@ -713,14 +832,17 @@ internal class Dtls13Handshake(
         retransmitDeadline = null
     }
 
-    // ── extension builders (shared shape with the 1.2 FSM) ─────────────────────────────────────────
+    // ── downgrade protection (RFC 8446 §4.1.3) ─────────────────────────────────────────────────────
 
-    private fun supportedGroupsExtension(group: NamedGroup): Extension {
-        val body = factory.allocate(4, ByteOrder.BIG_ENDIAN)
-        body.writeShort(2)
-        body.writeShort(group.value.toShort())
-        body.resetForRead()
-        return Extension(ExtensionType.SupportedGroups, body)
+    /** True if the last 8 bytes of a ServerHello [random] are a TLS-1.3 downgrade sentinel (`DOWNGRD\x01`/`\x00`). */
+    private fun carriesDowngradeSentinel(random: ReadBuffer): Boolean {
+        if (random.remaining() != RANDOM_BYTES) return false
+        val base = random.position() + RANDOM_BYTES - DOWNGRADE_SENTINEL_PREFIX.size - 1
+        for (i in DOWNGRADE_SENTINEL_PREFIX.indices) {
+            if (random.u8(base + i) != DOWNGRADE_SENTINEL_PREFIX[i]) return false
+        }
+        val last = random.u8(base + DOWNGRADE_SENTINEL_PREFIX.size)
+        return last == 0x01 || last == 0x00
     }
 
     // ── (EC)DHE group ⇄ wire NamedGroup / buffer-crypto curve mapping ──────────────────────────────
@@ -855,5 +977,13 @@ internal class Dtls13Handshake(
         val MAX_RETRANSMIT = 60.seconds
         const val SERVER_CONTEXT = "TLS 1.3, server CertificateVerify"
         const val CLIENT_CONTEXT = "TLS 1.3, client CertificateVerify"
+
+        // Every (EC)DHE group this stack offers, in preference order (X25519 first, browser-matching). The
+        // client lists all of these in supported_groups; the key_share carries only the configured group.
+        val ALL_GROUPS: List<NamedGroup> = listOf(NamedGroup.X25519, NamedGroup.Secp256r1)
+
+        // "DOWNGRD" — the fixed prefix of the RFC 8446 §4.1.3 downgrade sentinel; the final byte is 0x01
+        // (server negotiated TLS/DTLS 1.2) or 0x00 (≤ 1.1). Modelled as a List (no primitive array, directive #1).
+        val DOWNGRADE_SENTINEL_PREFIX: List<Int> = listOf(0x44, 0x4F, 0x57, 0x4E, 0x47, 0x52, 0x44)
     }
 }

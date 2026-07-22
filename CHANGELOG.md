@@ -23,6 +23,15 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
   `l2-browser` matrix adds `webkit` to its `browser` axis (now `{arch × [chrome,firefox,webkit] × [native,jvm]}`),
   and the `l2` job's `HARNESS_SKIP` drops the two new browser scenarios. `README.md` documents the lane.
 
+### Changed — harness peer dumps its full `PeerConnectionState` transition history on exit
+- The interop peer now records every `PeerConnectionState` transition (timestamped off the injected clock
+  seam) and prints the whole history on exit, not just the final state. The signal that pins a lossy-path
+  handshake stall is the **asymmetry** of the two peers' terminal states — one `Connected` while the other
+  never leaves `Connecting` (the lost-final-flight deadlock, PR #27). A single final-state line hid that;
+  the timestamped history makes it obvious in each side's log, which the L2 harness already captures and
+  uploads as an artifact on failure — so an intermittent CI failure is now diagnosable from that artifact
+  without a local reproduction (the exact trace that would have screamed "lost final flight" immediately).
+
 ### Fixed — DTLS post-Established handshake-record storm that starved the SCTP handshake under loss
 - **The bug (a regression the lost-final-flight fix introduced):** that fix has an `Established` endpoint
   re-send its last flight whenever a handshake-epoch record arrives afterwards (so a peer whose final flight

@@ -112,6 +112,19 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
         val sigOut = UdpSignaling.open(cfg.rendezvousHost, cfg.rendezvousPort, cfg.session, net)
         val sigIn = UdpSignaling.open(cfg.rendezvousHost, cfg.rendezvousPort, cfg.session, net)
 
+        // Per-side state-transition trace, dumped on exit (below). The one signal that pins a lossy-path
+        // handshake stall is the ASYMMETRY of the two peers' TERMINAL states — one peer sits `Connected`
+        // while the other never leaves `Connecting` (the lost-final-flight deadlock, PR #27). A single
+        // final-state line hides that; the full timestamped history makes it obvious in each peer's log,
+        // which the L2 harness already captures + uploads on failure — so a CI failure is diagnosable from
+        // the artifact, no local repro needed. Timestamps ride the injected clock seam (directive #2), and
+        // StateFlow collection already yields only distinct transitions.
+        val t0 = clock()
+        val trace = mutableListOf<Pair<Long, PeerConnectionState>>()
+        bg.launch {
+            pc.connectionState.collect { state -> trace += (clock() - t0).inWholeMilliseconds to state }
+        }
+
         val ok =
             withTimeoutOrNull(cfg.timeout) {
                 when (cfg.role) {
@@ -122,6 +135,13 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
                 println("[harness] TIMEOUT after ${cfg.timeout}; state=${pc.connectionState.value}")
                 false
             }
+
+        // Dump the transition history before bg.cancel() stops the collector. Ensure the final observed
+        // state is recorded even if a terminal transition raced the collector's last resumption.
+        val finalState = pc.connectionState.value
+        if (trace.lastOrNull()?.second != finalState) trace += (clock() - t0).inWholeMilliseconds to finalState
+        println("[harness] state-transition trace (${cfg.role}, ${trace.size} transitions):")
+        for ((ms, state) in trace) println("[harness]   +${ms}ms  $state")
 
         bg.cancel()
         sigOut.close()

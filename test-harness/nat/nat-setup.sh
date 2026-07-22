@@ -64,6 +64,26 @@ case "$NAT_PROFILE" in
     ;;
 esac
 
+# ── behind-carrier (NAT444 / hairpin) mode ─────────────────────────────────────────────────────────
+# When NAT_CARRIER_GW is set, this NAT is a customer CPE sitting BEHIND a carrier-grade NAT rather than
+# on the public net directly: its upstream is the carrier shared space (NAT_CAR_IP interface), and every
+# public destination is reached through the carrier NAT (NAT_CARRIER_GW). This is a SECOND translation on
+# top of the profile above, so a peer's reflexive candidate becomes the CARRIER's public IP (NAT444).
+# The carrier NAT itself runs this same script WITHOUT NAT_CARRIER_GW (it IS the public-facing hop).
+if [ -n "${NAT_CARRIER_GW:-}" ]; then
+    CAR=$(ip -o -4 addr show | awk -v ip="$NAT_CAR_IP" '$4 ~ "^"ip"/" {print $2; exit}')
+    [ -n "$CAR" ] || { echo "[nat] could not resolve carrier iface (car=$NAT_CAR_IP)" >&2; ip -o -4 addr show >&2; exit 1; }
+    # Masquerade the LAN onto the carrier link (the CPE→carrier translation) and forward LAN⇄carrier.
+    iptables -t nat -A POSTROUTING -o "$CAR" -j MASQUERADE
+    iptables -A FORWARD -i "$LAN" -o "$CAR" -j ACCEPT
+    iptables -A FORWARD -i "$CAR" -o "$LAN" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    # Pull the whole public net through the carrier NAT. CARRIER_ROUTES are the two /25 halves of the pub
+    # /24 — more specific than the pub interface's connected /24, so they win for EVERY public address
+    # (coturn, rendezvous, and the far peer's srflx alike), making the double-NAT faithful end to end.
+    for r in ${CARRIER_ROUTES:-}; do ip route replace "$r" via "$NAT_CARRIER_GW"; done
+    echo "[nat] behind carrier $NAT_CARRIER_GW via $CAR($NAT_CAR_IP); pub routed: ${CARRIER_ROUTES:-}"
+fi
+
 echo "[nat] nat table:"; iptables -t nat -S
 echo "[nat] filter table:"; iptables -S
 exec sleep infinity

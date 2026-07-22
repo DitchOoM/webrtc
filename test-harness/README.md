@@ -48,6 +48,20 @@ A profile is a *(mapping, filtering)* pair. What stock netfilter models (`nat/na
 **netem** (loss/delay/jitter/reorder) is applied to a NAT's public interface on demand (`nat/netem.sh`
 via `docker exec`), so it composes with any profile.
 
+### Carrier-grade NAT (NAT444) and hairpin — the `cgnat` / `hairpin` lanes
+
+The four profiles above are a single NAT layer. Two lanes add a **second** layer — an extra carrier-grade
+NAT between each CPE (`nat_a`/`nat_b`) and the public net, over a `car` network (RFC 6598 `100.64/24`
+shared space). In *behind-carrier* mode `nat-setup.sh` masquerades the LAN onto the carrier link too and
+pulls the whole public net through the carrier NAT (two `/25` routes beat the CPE's connected `/24`), so a
+peer's reflexive candidate is the **carrier's** public IP — a faithful double translation. The carrier
+NATs (`cgnat_a`/`cgnat_b`/`cgnat`) are the same `nat/` image, wired `car→pub` and profile-gated.
+
+| Lane | Carrier NATs | Result |
+|---|---|---|
+| **cgnat** (NAT444) | per-side `cgnat_a` + `cgnat_b`, distinct public IPs, port-restricted cone | a genuine double NAT; the composed cone mapping stays consistent, so it traverses via `srflx` (relay is the `policy=all` safety net) |
+| **hairpin** | ONE shared `cgnat` both CPEs route through, symmetric | both peers share a single external identity; stock netfilter won't hairpin `car→car`, so — like `symmetric-relay` — ICE falls back to the **coturn TURN relay**, which is what the lane asserts |
+
 ## Running
 
 ```bash
@@ -57,12 +71,14 @@ cd test-harness
 ```
 
 Scenarios (in `run-interop.sh`): each NAT profile direct, `symmetric×symmetric` → relay, a mixed
-sym×port lane, an explicit `relay-only` lane, an `impaired` (netem) lane, the native-offerer interop lanes
-— **`pion-interop`**, **`chrome-interop`**, **`firefox-interop`**, **`webkit-interop`** — and the
-**JVM-offerer** lanes — **`jvm-native`**, **`jvm-pion`**, **`jvm-chrome`**, **`jvm-firefox`**,
-**`jvm-webkit`** (below). Each row is
-`name | nat_a | nat_b | policy | netem | a_impl | b_impl`, where `a_impl` (offerer) ∈ `native|jvm` and
-`b_impl` (answerer) ∈ `native|pion|chrome|firefox`. A scenario **passes** iff both peers exit `0` — and
+sym×port lane, an explicit `relay-only` lane, an `impaired` (netem) lane, the two carrier-grade NAT
+(NAT444) lanes — **`cgnat`** (double NAT) and **`hairpin`** (shared carrier NAT → relay; above) — the
+native-offerer interop lanes — **`pion-interop`**, **`chrome-interop`**, **`firefox-interop`**,
+**`webkit-interop`** — and the **JVM-offerer** lanes — **`jvm-native`**, **`jvm-pion`**, **`jvm-chrome`**,
+**`jvm-firefox`**, **`jvm-webkit`** (below). Each row is
+`name | nat_a | nat_b | policy | netem | a_impl | b_impl | topo`, where `a_impl` (offerer) ∈ `native|jvm`,
+`b_impl` (answerer) ∈ `native|pion|chrome|firefox|webkit`, and `topo` (NAT layering) ∈
+`single|cgnat|hairpin` (defaults to `single`). A scenario **passes** iff both peers exit `0` — and
 each exits `0` only after it CONNECTED *and* the `ping`/`pong` crossed the encrypted data channel. Every
 run tears the whole stack down (containers + networks + volumes) on exit.
 
@@ -181,12 +197,12 @@ daemon is root even where you aren't); CI sets it with `sudo sysctl`. It's harml
 | Path | Purpose |
 |---|---|
 | `harness.env` | single source of truth: subnets, IPs, ports, TURN creds, timeouts |
-| `docker-compose.yml` | the topology (3 networks, coturn, rendezvous, 2 NATs, 2 peers) |
+| `docker-compose.yml` | the topology (4 networks, coturn, rendezvous, 2 CPE NATs, 3 profile-gated carrier NATs, 2 peers) |
 | `run-interop.sh` | orchestrator: scenario matrix, per-scenario stack, pass/fail, teardown |
 | `compose-up-retry.sh` | `up --wait` with transient-pull retries |
 | `coturn/` | `turnserver.conf` + entrypoint (subst from `harness.env`) |
 | `rendezvous/` | keyed-mailbox relay (`rendezvous.py`) with UDP (native/Pion) + HTTP (browser) faces onto one mailbox, + image |
-| `nat/` | NAT gateway image + `nat-setup.sh` (the 4 profiles) + `netem.sh` |
+| `nat/` | NAT gateway image + `nat-setup.sh` (the 4 profiles + behind-carrier NAT444 mode) + `netem.sh` |
 | `peer/` | native peer image: `Dockerfile` (self-building, portable) + `Dockerfile.prebuilt` (fast) + entrypoint |
 | `peer-jvm/` | JVM peer image: `Dockerfile` (self-building) + `Dockerfile.prebuilt` (fast, arch-independent jar) + entrypoint |
 | `pion/` | the Pion (Go) interop echo-peer: `main.go` + `signaling.go` (rendezvous client) + image |

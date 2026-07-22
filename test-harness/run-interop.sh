@@ -105,14 +105,14 @@ docker run --rm --privileged --network host alpine:3.20 \
 
 # ── scenario matrix — name | nat_a | nat_b | ice_policy | netem(args or "-") | a_impl | b_impl ──
 #   a_impl (offerer / "our side") ∈ native | jvm
-#   b_impl (answerer)             ∈ native | pion | chrome | firefox
+#   b_impl (answerer)             ∈ native | pion | chrome | firefox | webkit
 # Covers each of the four NAT profiles, the symmetric→relay fallback, an explicit relay-only lane, an
 # impaired data path (all native ⇄ native), the W7 Phase-2 interop lanes where the answerer is a real Pion
-# (Go) peer [2(a)] or a real headless browser — Chrome / Firefox [2(b)], PLUS the JVM-offerer lanes: the
-# pure-Kotlin engine on the JVM (socket-udp NIO datapath) ⇄ native / Pion / Chrome / Firefox — proving the
-# pure engine on the real wire from a managed runtime. Each expects BOTH peers to exit 0. Both impl columns
-# default to native when omitted. The pion lanes force DTLS 1.2 (Pion v3 is 1.2-only); every other lane runs
-# DTLS 1.3 (the default) — see run_scenario.
+# (Go) peer [2(a)] or a real headless browser — Chrome / Firefox / WebKit [2(b)], PLUS the JVM-offerer
+# lanes: the pure-Kotlin engine on the JVM (socket-udp NIO datapath) ⇄ native / Pion / Chrome / Firefox /
+# WebKit — proving the pure engine on the real wire from a managed runtime. Each expects BOTH peers to exit
+# 0. Both impl columns default to native when omitted. The pion lanes force DTLS 1.2 (Pion v3 is 1.2-only);
+# every other lane runs DTLS 1.3 (the default) — see run_scenario.
 SCENARIOS="
 full-cone            | full-cone          | full-cone          | all   | -                                                | native | native
 port-restricted      | port-restricted    | port-restricted    | all   | -                                                | native | native
@@ -124,10 +124,12 @@ impaired-loss-delay  | port-restricted    | port-restricted    | all   | loss 5%
 pion-interop         | port-restricted    | port-restricted    | all   | -                                                | native | pion
 chrome-interop       | port-restricted    | port-restricted    | all   | -                                                | native | chrome
 firefox-interop      | port-restricted    | port-restricted    | all   | -                                                | native | firefox
+webkit-interop       | port-restricted    | port-restricted    | all   | -                                                | native | webkit
 jvm-native           | port-restricted    | port-restricted    | all   | -                                                | jvm    | native
 jvm-pion             | port-restricted    | port-restricted    | all   | -                                                | jvm    | pion
 jvm-chrome           | port-restricted    | port-restricted    | all   | -                                                | jvm    | chrome
 jvm-firefox          | port-restricted    | port-restricted    | all   | -                                                | jvm    | firefox
+jvm-webkit           | port-restricted    | port-restricted    | all   | -                                                | jvm    | webkit
 "
 
 # Scenario selection:
@@ -160,6 +162,7 @@ run_scenario() {
         pion)    b_service="pion";    profiles="$profiles pion";    export PEER_DTLS13="false" ;;
         chrome)  b_service="chrome";  profiles="$profiles chrome";  export PEER_DTLS13="true" ;;
         firefox) b_service="firefox"; profiles="$profiles firefox"; export PEER_DTLS13="true" ;;
+        webkit)  b_service="webkit";  profiles="$profiles webkit";  export PEER_DTLS13="true" ;;
         *)       b_service="peer_b";                                export PEER_DTLS13="true" ;;
     esac
     profiles=$(echo "$profiles" | xargs | tr ' ' ',')  # trim + COMMA-separate (COMPOSE_PROFILES format)
@@ -188,7 +191,7 @@ run_scenario() {
     # images take minutes to build (engine download), so CI prebuilds them ONCE with a persistent buildx/gha
     # layer cache and sets HARNESS_NO_BROWSER_BUILD=1 to reuse that cache-warmed image; locally we build it.
     docker compose build "$a_service"
-    if [ "${HARNESS_NO_BROWSER_BUILD:-0}" = "1" ] && { [ "$b_service" = "chrome" ] || [ "$b_service" = "firefox" ]; }; then
+    if [ "${HARNESS_NO_BROWSER_BUILD:-0}" = "1" ] && { [ "$b_service" = "chrome" ] || [ "$b_service" = "firefox" ] || [ "$b_service" = "webkit" ]; }; then
         : # browser image was prebuilt + gha-cached by CI — don't rebuild
     else
         docker compose build "$b_service"

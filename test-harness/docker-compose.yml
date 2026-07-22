@@ -314,6 +314,42 @@ services:
       rendezvous: { condition: service_healthy }
       nat_b: { condition: service_healthy }
 
+  # WebKit (Safari's engine, via Playwright's cross-platform build) — a THIRD independent browser oracle
+  # (Apple's libwebrtc fork + its own build). Same drop-in-for-peer_b shape as chrome/firefox, `webkit`
+  # profile. Unlike them it emits `.local` mDNS host candidates (no disable pref), so it connects via the
+  # coturn srflx/relay path — our ICE agent skips the unresolvable hosts. DTLS 1.3 (peer stays at default).
+  webkit:
+    profiles: ["webkit"]
+    build:
+      context: ./browser
+      dockerfile: Dockerfile
+      args: { BROWSER: webkit }
+    cap_add: [NET_ADMIN]
+    security_opt: ["no-new-privileges:true"]
+    shm_size: "512m"
+    environment:
+      GATEWAY_IP: "${NAT_B_LAN_IP}"
+      BROWSER: webkit
+      WEBRTC_ROLE: answerer  # the browser peer is answerer-only; informational
+      WEBRTC_SESSION: "${SESSION:-l2}"
+      WEBRTC_LOCAL_IP: "${PEER_B_IP}"
+      WEBRTC_STUN_HOST: "${COTURN_IP}"
+      WEBRTC_STUN_PORT: "${STUN_PORT}"
+      WEBRTC_TURN_HOST: "${COTURN_IP}"
+      WEBRTC_TURN_PORT: "${STUN_PORT}"
+      WEBRTC_TURN_USER: "${TURN_USER}"
+      WEBRTC_TURN_PASS: "${TURN_PASS}"
+      WEBRTC_RENDEZVOUS_HOST: "${RENDEZVOUS_IP}"
+      WEBRTC_RENDEZVOUS_HTTP_PORT: "${RENDEZVOUS_HTTP_PORT}"
+      WEBRTC_ICE_POLICY: "${ICE_POLICY:-all}"
+      WEBRTC_TIMEOUT_MS: "${PEER_TIMEOUT_MS}"
+    networks:
+      lan_b: { ipv4_address: "${PEER_B_IP}" }
+    depends_on:
+      coturn: { condition: service_healthy }
+      rendezvous: { condition: service_healthy }
+      nat_b: { condition: service_healthy }
+
   # netem impairment (loss/delay/jitter/reorder) is applied to each NAT's PUBLIC (WAN) interface — the
   # data path between the peers — on demand by run-interop.sh (`nat/netem.sh` via `docker exec` on
   # nat_a/nat_b), so it composes with any NAT profile without a separate service. See the `impaired` scenario.

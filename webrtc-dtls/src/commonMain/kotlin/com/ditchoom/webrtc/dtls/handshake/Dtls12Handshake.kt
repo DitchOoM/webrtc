@@ -120,6 +120,14 @@ internal class Dtls12Handshake(
     // lost final flight deadlocks. onDatagram re-emits lastFlight when this is set.
     private var peerRetransmitAfterEstablished = false
 
+    // The clock instant of our most recent post-Established last-flight retransmit. Rate-limits that
+    // response (below) to at most once per INITIAL_RETRANSMIT so two finished peers cannot echo each other's
+    // re-sent flights forever: a genuinely lost final flight draws the peer's timer-spaced (≥ 1 s) retransmit
+    // — each still answered — but the peer's immediate echo of our own re-send (sub-RTT ≪ 1 s) is suppressed,
+    // so the mutual handshake-record storm dies after one exchange instead of starving the SCTP handshake
+    // riding above (the impaired-lane stall the DTLS+SCTP repro caught).
+    private var lastEstablishedResendAt: Instant? = null
+
     /** Master secret + record protection, derived together (a ChangeCipherSpec), so neither exists alone. */
     private sealed interface Keys {
         data object Pending : Keys
@@ -183,8 +191,17 @@ internal class Dtls12Handshake(
             // Stop on a terminal FAILURE/CLOSE, but not on Established — we still append any re-send below.
             if (terminal is DtlsState.Failed || terminal is DtlsState.Closed) return DtlsStep(out, appData, terminal!!)
         }
-        // Retransmit our last flight if the peer is still handshaking after we established (RFC 6347 §4.2.4).
-        if (peerRetransmitAfterEstablished) lastFlight?.let { flight -> for (item in flight) out += emit(item) }
+        // Retransmit our last flight if the peer is still handshaking after we established (RFC 6347 §4.2.4),
+        // rate-limited to once per INITIAL_RETRANSMIT so two finished peers don't echo forever (see the field).
+        if (peerRetransmitAfterEstablished) {
+            val last = lastEstablishedResendAt
+            if (last == null || now - last >= INITIAL_RETRANSMIT) {
+                lastFlight?.let { flight ->
+                    for (item in flight) out += emit(item)
+                    lastEstablishedResendAt = now
+                }
+            }
+        }
         // Keep our retransmit timer armed while still handshaking with an unacked flight: cancelRetransmit()
         // (after processing) drops it, so a PARTIAL peer flight would otherwise leave us with progress but no
         // timer — we would stop retransmitting and deadlock on a lost final message. Reset to the initial

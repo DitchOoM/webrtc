@@ -189,7 +189,10 @@ internal class Dtls13Handshake(
         started = true
         localRandom = randomBytes(RANDOM_BYTES)
         if (role == DtlsRole.Client) {
-            // Offer exactly one group (its curve is now fixed), so the server can never HelloRetryRequest.
+            // Generate the ephemeral keypair for our preferred (key-shared) group only. We still advertise
+            // EVERY supported group in supported_groups (sendClientHelloFlight), so a server that prefers a
+            // different offered group MAY answer with a HelloRetryRequest — handled by handleHelloRetryRequest,
+            // which regenerates this key for the requested curve.
             ecdhe = EcdheKeyExchange.generate(negotiatedGroup.agreementCurve)
             val out = mutableListOf<ReadBuffer>()
             sendClientHelloFlight(out, now)
@@ -401,7 +404,9 @@ internal class Dtls13Handshake(
                     sh.extensions.firstOrNull { it.type.value == ExtensionType.KeyShare.value }
                         ?: return fail(DtlsFailureReason.HandshakeFailure)
                 val serverShare = Tls13Bodies.parseKeyShareServerHello(ksExt.body) ?: return fail(DtlsFailureReason.HandshakeFailure)
-                // We offered exactly one group, so a conforming server must echo it (never HRRs). Reject otherwise.
+                // The real ServerHello MUST key_share the group we actually key-shared ([negotiatedGroup]) —
+                // our preferred group in the 1-RTT case, or the HRR-requested group after a retry. Any other
+                // group (even one we advertised but did not share a key for) is a protocol error. Reject it.
                 if (serverShare.group.value != negotiatedGroup.namedGroup.value) return fail(DtlsFailureReason.HandshakeFailure)
                 peerPoint = copyOf(serverShare.point)
                 transcript.append(message)

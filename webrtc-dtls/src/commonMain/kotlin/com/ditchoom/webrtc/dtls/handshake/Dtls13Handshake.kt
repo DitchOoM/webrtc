@@ -114,6 +114,13 @@ internal class Dtls13Handshake(
     private var retransmitDeadline: Instant? = null
     private var retransmitBackoff = INITIAL_RETRANSMIT
 
+    // Set within one onDatagram when, AFTER we reached Established, a handshake-epoch record arrives from
+    // the peer — meaning the peer is still handshaking and retransmitting its flight, i.e. our final flight
+    // was lost. RFC 6347 §4.2.4 / RFC 9147 §5.8.1: we must retain our last flight and retransmit it in
+    // response, or a single lost final flight deadlocks (we sit Established, the peer retransmits forever
+    // and times out). onDatagram re-emits lastFlight when this is set.
+    private var peerRetransmitAfterEstablished = false
+
     private class FlightItem(
         val realContentType: Int,
         val payload: ReadBuffer,
@@ -179,7 +186,24 @@ internal class Dtls13Handshake(
         (terminal as? DtlsState.Closed)?.let { return DtlsStep(emptyList(), emptyList(), it) }
         val out = mutableListOf<ReadBuffer>()
         val appData = mutableListOf<ReadBuffer>()
+        peerRetransmitAfterEstablished = false
         walkRecords(datagram, out, appData, now)
+        // The peer retransmitted its handshake flight after we finished → our final flight was lost.
+        // Retransmit it (RFC 6347 §4.2.4 / RFC 9147 §5.8.1) so the peer can complete, instead of sitting
+        // Established while it retransmits into the void until its handshake budget expires. handshake
+        // protection outlives the handshake (closed only in close()), so re-emitting our epoch-2 flight is
+        // sound; each retransmit gets fresh record sequence numbers via emit().
+        if (peerRetransmitAfterEstablished) lastFlight?.let { flight -> for (item in flight) out += emit(item) }
+        // Keep our retransmit timer armed while we are still handshaking with an unacked flight. Every
+        // reassembled message calls cancelRetransmit(), so receiving a PARTIAL peer flight (e.g. their
+        // Certificate but not yet their Finished — the Finished was lost) leaves us with progress but NO
+        // armed timer, and we stop retransmitting our own flight. Without this re-arm a lost final message
+        // deadlocks both sides: we go silent, the peer waits. Reset the backoff to the initial interval —
+        // receiving new handshake bytes is genuine progress, so retry promptly rather than at a grown delay.
+        if (terminal == null && lastFlight != null && retransmitDeadline == null) {
+            retransmitBackoff = INITIAL_RETRANSMIT
+            retransmitDeadline = now + retransmitBackoff
+        }
         terminal?.let { return DtlsStep(out, appData, it) }
         return DtlsStep(out, appData, stateNow())
     }
@@ -251,6 +275,13 @@ internal class Dtls13Handshake(
                 val recordEnd = pos + Dtls13RecordProtection.HEADER_BYTES + len
                 if (recordEnd > end) return
                 val epochBits = firstByte and 0x3
+                // A handshake-epoch record arriving after we're Established = the peer retransmitting its
+                // flight (it hasn't completed). Flag it (header-only, no decrypt needed) so onDatagram
+                // re-sends our lost final flight. Detect BEFORE dispatch: dispatch of an already-seen
+                // message dedups to nothing, which is exactly why the deadlock existed.
+                if (terminal is DtlsState.Established && epochBits == (EPOCH_HANDSHAKE and 0x3)) {
+                    peerRetransmitAfterEstablished = true
+                }
                 val prot = if (epochBits == (EPOCH_APP and 0x3)) appProtection else handshakeProtection
                 prot?.open(datagram, pos, recordEnd)?.let { opened ->
                     dispatchDecrypted(opened, out, appData, now)
@@ -263,6 +294,8 @@ internal class Dtls13Handshake(
                 val bodyEnd = bodyStart + len
                 if (bodyEnd > end) return
                 if (firstByte == ContentType.Handshake.value) {
+                    // Same as the epoch-2 case: a plaintext (epoch-0) handshake retransmit after we finished.
+                    if (terminal is DtlsState.Established) peerRetransmitAfterEstablished = true
                     processHandshakeBytes(datagram.let { sliceOf(it, bodyStart, bodyEnd) }, out, now)
                 }
                 // ChangeCipherSpec / Alert / ACK in cleartext are ignored (DTLS 1.3 sends none of these plaintext).

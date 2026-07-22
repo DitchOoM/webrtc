@@ -6,6 +6,28 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Fixed — DTLS lost-final-flight deadlock (a handshake could hang under packet loss)
+- **The bug:** on a lossy path, if the peer that sends the **last** handshake flight had a record of that
+  flight lost, the handshake **deadlocked** — the sender sat `Established` while the receiver stayed
+  `Handshaking`, retransmitting into a peer that ignored it, until the driver's 30 s `handshakeTimeout`
+  fired (`DtlsFailureReason.HandshakeTimeout`). Two causes, both fixed in `Dtls13Handshake` **and**
+  `Dtls12Handshake` (the last flight is the client's in 1.3, the server's in 1.2):
+  1. An `Established` endpoint **ignored** the peer's retransmitted flight (the reassembler deduped the
+     already-seen messages to nothing) instead of retransmitting its own last flight. Now, per **RFC 6347
+     §4.2.4 / RFC 9147 §5.8.1**, a handshake-epoch record arriving after we finished triggers a re-send of
+     our last flight (detected from the record header, no decrypt needed).
+  2. `cancelRetransmit()` on every reassembled message dropped our retransmit timer even on a **partial**
+     peer flight, so a lost final message could leave us making progress but with **no armed timer** — we
+     stopped retransmitting and stalled. The timer is now re-armed (at the initial interval) whenever we
+     are still handshaking with an unacked flight.
+- **Deterministic fixture (directive #5):** `DtlsLossReproductionTest` drives two pure engines over an
+  in-memory per-record-datagram lossy pipe under the engine's virtual clock — seeded, zero wall-clock,
+  flake-free. Before the fix, 5 % loss deadlocked ~16 % of seeds (all `Established/Handshaking`); after, a
+  full mutually-authenticated handshake **always** completes within budget at 5 %/10 % loss (both DTLS 1.2
+  and 1.3), with zero deadlocks at any rate. This is the deterministic sibling of the real-`netem`
+  `impaired-loss-delay` L2 lane (which surfaced the intermittent failure but, being kernel-random, could
+  not pin it down). Byte-exact BoringSSL interop is unchanged (the linuxTest differentials still pass).
+
 ### Added — W7 interop test-matrix expansion: a JVM interop peer (the pure engine on the real wire)
 - **`:webrtc-harness-endpoint` is now multiplatform** — it targets the **JVM** alongside Kotlin/Native
   (linuxX64 + linuxArm64). Since the W4b flip DTLS is pure-Kotlin `commonMain` on every target, so the JVM

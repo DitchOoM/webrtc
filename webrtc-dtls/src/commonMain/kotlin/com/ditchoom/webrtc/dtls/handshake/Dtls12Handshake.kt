@@ -114,6 +114,12 @@ internal class Dtls12Handshake(
     private var retransmitDeadline: Instant? = null
     private var retransmitBackoff = INITIAL_RETRANSMIT
 
+    // Set within one onDatagram when a handshake record arrives AFTER we reached Established — the peer is
+    // still handshaking and retransmitting, i.e. our final flight was lost (in DTLS 1.2 the SERVER sends the
+    // last flight, so this is the server side). RFC 6347 §4.2.4: retain + retransmit the last flight, else a
+    // lost final flight deadlocks. onDatagram re-emits lastFlight when this is set.
+    private var peerRetransmitAfterEstablished = false
+
     /** Master secret + record protection, derived together (a ChangeCipherSpec), so neither exists alone. */
     private sealed interface Keys {
         data object Pending : Keys
@@ -160,16 +166,34 @@ internal class Dtls12Handshake(
         val records = DtlsRecord.decodeAll(datagram) ?: return step(emptyList(), emptyList())
         val out = mutableListOf<ReadBuffer>()
         val appData = mutableListOf<ReadBuffer>()
+        peerRetransmitAfterEstablished = false
         for (rec in records) {
             when (rec.contentType.value) {
-                ContentType.Handshake.value -> processHandshakeRecord(rec, out, now)
+                ContentType.Handshake.value -> {
+                    // A handshake record after we finished = the peer retransmitting (our last flight was
+                    // lost). Flag it so we re-send below, instead of dedup-swallowing it and deadlocking.
+                    if (terminal is DtlsState.Established) peerRetransmitAfterEstablished = true
+                    processHandshakeRecord(rec, out, now)
+                }
                 ContentType.ChangeCipherSpec.value -> Unit // epoch is read from each record's own header
                 ContentType.ApplicationData.value -> decryptApplicationData(rec)?.let { appData += it }
                 ContentType.Alert.value -> fail(DtlsFailureReason.HandshakeFailure)
                 else -> Unit // unknown content type — drop (RFC 6347)
             }
-            terminal?.let { return DtlsStep(out, appData, it) }
+            // Stop on a terminal FAILURE/CLOSE, but not on Established — we still append any re-send below.
+            if (terminal is DtlsState.Failed || terminal is DtlsState.Closed) return DtlsStep(out, appData, terminal!!)
         }
+        // Retransmit our last flight if the peer is still handshaking after we established (RFC 6347 §4.2.4).
+        if (peerRetransmitAfterEstablished) lastFlight?.let { flight -> for (item in flight) out += emit(item) }
+        // Keep our retransmit timer armed while still handshaking with an unacked flight: cancelRetransmit()
+        // (after processing) drops it, so a PARTIAL peer flight would otherwise leave us with progress but no
+        // timer — we would stop retransmitting and deadlock on a lost final message. Reset to the initial
+        // interval since new handshake bytes are genuine progress.
+        if (terminal == null && lastFlight != null && retransmitDeadline == null) {
+            retransmitBackoff = INITIAL_RETRANSMIT
+            retransmitDeadline = now + retransmitBackoff
+        }
+        terminal?.let { return DtlsStep(out, appData, it) }
         return DtlsStep(out, appData, stateNow())
     }
 

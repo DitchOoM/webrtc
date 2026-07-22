@@ -121,8 +121,11 @@ docker run --rm --privileged --network host alpine:3.20 \
 # — proving the pure engine on the real wire from a managed runtime — PLUS two carrier-grade NAT (NAT444)
 # topologies: `cgnat` (each CPE behind its OWN carrier NAT — a genuine double NAT, traversed via srflx or
 # relay) and `hairpin` (both CPEs behind ONE shared carrier NAT — a single external identity, so ICE falls
-# back to the coturn relay). `impaired-loss-delay` is NON-GATING (informational — see $NON_GATING + the
-# header): its kernel-random loss can't be provably flake-free, so the deterministic
+# back to the coturn relay). `hairpin` PINS ice_policy=relay (like `relay-only`) so a green rc PROVES the
+# relay was traversed — under `all` a stray direct/srflx path (an accidentally-hairpinning NAT) would
+# establish and pass silently, deleting the lane's reason to exist; run_scenario also asserts the selected
+# pair is a relay pair from the offerer's Connected trace. `impaired-loss-delay` is NON-GATING (informational
+# — see $NON_GATING + the header): its kernel-random loss can't be provably flake-free, so the deterministic
 # DtlsSctpLossReproductionTest is the retained hard loss gate. Each expects BOTH peers to exit 0. The impl +
 # topo columns default to native/native/single when omitted. The pion lanes force DTLS 1.2 (Pion v3 is
 # 1.2-only); every other lane runs DTLS 1.3 (the default) — see run_scenario.
@@ -135,7 +138,7 @@ mixed-sym-port       | symmetric          | port-restricted    | all   | -      
 relay-only           | port-restricted    | port-restricted    | relay | -                                                | native | native  | single
 impaired-loss-delay  | port-restricted    | port-restricted    | all   | loss 5% delay 20ms 5ms distribution normal      | native | native  | single
 cgnat                | port-restricted    | port-restricted    | all   | -                                                | native | native  | cgnat
-hairpin              | port-restricted    | port-restricted    | all   | -                                                | native | native  | hairpin
+hairpin              | port-restricted    | port-restricted    | relay | -                                                | native | native  | hairpin
 pion-interop         | port-restricted    | port-restricted    | all   | -                                                | native | pion    | single
 chrome-interop       | port-restricted    | port-restricted    | all   | -                                                | native | chrome  | single
 firefox-interop      | port-restricted    | port-restricted    | all   | -                                                | native | firefox | single
@@ -261,6 +264,15 @@ run_scenario() {
     echo "── $b_service (answerer) ──"; docker compose logs --no-log-prefix "$b_service"
 
     if [ "$rc_a" = "0" ] && [ "$rc_b" = "0" ]; then
+        # Belt-and-suspenders for the hairpin lane: a green rc only proves the peers ESTABLISHED — it does
+        # NOT by itself prove the path was the coturn RELAY. ice_policy=relay (pinned above) already forces
+        # relay-only gathering, but assert it independently from the offerer's Connected-state trace
+        # (`selectedPair=CandidatePair(local=Relayed(…))`) so a future policy loosening — or an accidentally
+        # hairpinning NAT selecting a direct/srflx pair — fails here instead of passing silently.
+        if [ "$topo" = "hairpin" ] && ! docker compose logs --no-log-prefix "$a_service" 2>/dev/null \
+                | grep -q 'selectedPair=CandidatePair(local=Relayed'; then
+            record_fail "$name" "established but the selected ICE pair is NOT a relay pair (the hairpin lane must traverse the coturn TURN relay)"; return
+        fi
         echo "✅ [$name] PASS (offerer rc=$rc_a answerer rc=$rc_b)"; pass=$((pass+1))
     else
         record_fail "$name" "FAIL (offerer rc=$rc_a answerer rc=$rc_b)"

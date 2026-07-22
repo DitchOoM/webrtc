@@ -148,6 +148,14 @@ echoing `ping`→`pong`.
   host candidates. **WebKit exposes no such pref**, so it emits `.local` mDNS host candidates our peer
   can't resolve — its lane connects via the coturn **srflx/relay** candidates instead (our ICE agent skips
   the unresolvable hosts; srflx/relay carry connectivity across the NATs regardless).
+  - **mDNS end-to-end (obfuscation ON) is deferred to Phase 1.5.** Turning obfuscation ON — resolving the
+    browser's `<uuid>.local` host candidates instead of skipping them — is **gated on the socket library
+    gaining multicast support** (`socket-udp` today sets `multicast = false, // defer to Phase 5` and has no
+    `joinGroup` in its common seam), since resolving `.local` needs a real multicast mDNS resolver actual
+    (`224.0.0.251:5353`) on JVM **and** Kotlin/Native. This is a deliberate close-out deferral with **no
+    correctness impact** — lanes establish today with obfuscation OFF, and WebKit already proves the
+    srflx/relay path with `.local` present. The `MdnsResolver` seam stays un-wired, ready for 1.5. Canonical
+    ledger: `PHASE1_CLOSEOUT.md` §1.5-D. (Rahul's call, 2026-07-22.)
 - Each is gated behind its own compose profile (`chrome` / `firefox` / `webkit`); they, `peer_b`, and
   `pion` share `PEER_B_IP` but never run at once. The image builds natively per-arch (Node + Playwright
   fetches the per-arch engine — only the selected one), no QEMU. In CI these run as a parallel

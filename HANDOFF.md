@@ -1014,6 +1014,18 @@ common/core/wasm source set; the core targets buffer-flow's interface).
 **§11.4 (mDNS) resolved** in the EXECUTION_PLAN decision log: resolve-only in W3, responder deferred
 behind a flag; resolution rides an injected `MdnsResolver` seam (deterministic stub in tests).
 
+**mDNS end-to-end is DEFERRED to Phase 1.5 (Rahul's call, 2026-07-22 — `PHASE1_CLOSEOUT.md` §1.5-D is the
+canonical ledger).** Wiring the `<uuid>.local` resolve path so browser mDNS obfuscation can be turned **ON**
+is **gated on the socket library gaining multicast support** — today `socket-udp` ships `multicast = false,
+// defer to Phase 5` and exposes no `joinGroup` in its common seam. Resolving `.local` needs a real multicast
+mDNS resolver actual (DNS-over-multicast to `224.0.0.251:5353`), which we cannot build at the webrtc layer on
+both JVM **and** Kotlin/Native without pulling a socket Phase-5 deliverable into webrtc Phase 1 — out of scope
+for the close-out. **No correctness impact:** browser interop keeps obfuscation **OFF** (our peer is fed
+real-IP host candidates); establishment already works, and only the browser-default privacy path is deferred.
+WebKit already establishes with `.local` present via coturn srflx/relay, so that path is proven. The
+`MdnsResolver` seam stays in place, un-wired, ready for 1.5; the mDNS **responder** (advertising our own
+`.local`, RFC §11.4) also stays parked — resolve-only suffices since we are the offerer.
+
 **Next (Step 2 = W3 proper):** the sans-io ICE agent core + gathering drivers + trickle + NAT vnet
 fixtures + fuzz. Single session-chain, do **not** fan out the core. See the ORIGINAL recommendation
 below (still accurate) for the ICE scope.

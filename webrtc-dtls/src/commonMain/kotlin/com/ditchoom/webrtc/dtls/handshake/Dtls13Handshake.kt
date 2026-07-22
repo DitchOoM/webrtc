@@ -121,6 +121,15 @@ internal class Dtls13Handshake(
     // and times out). onDatagram re-emits lastFlight when this is set.
     private var peerRetransmitAfterEstablished = false
 
+    // The clock instant of our most recent post-Established last-flight retransmit. We rate-limit that
+    // response (below) to at most once per INITIAL_RETRANSMIT so two peers that BOTH finished cannot echo
+    // each other's re-sent flights forever: if our final flight was truly lost the peer retransmits on its
+    // own timer (spaced ≥ INITIAL_RETRANSMIT) and each retransmit still draws a response, but the peer's
+    // immediate echo of OUR re-send (arriving within the interval — sub-RTT ≪ 1 s) is suppressed, so the
+    // mutual handshake-record storm dies after one exchange instead of saturating the transport and
+    // starving the SCTP handshake that rides above it (the impaired-lane stall the DTLS+SCTP repro caught).
+    private var lastEstablishedResendAt: Instant? = null
+
     private class FlightItem(
         val realContentType: Int,
         val payload: ReadBuffer,
@@ -193,7 +202,15 @@ internal class Dtls13Handshake(
         // Established while it retransmits into the void until its handshake budget expires. handshake
         // protection outlives the handshake (closed only in close()), so re-emitting our epoch-2 flight is
         // sound; each retransmit gets fresh record sequence numbers via emit().
-        if (peerRetransmitAfterEstablished) lastFlight?.let { flight -> for (item in flight) out += emit(item) }
+        if (peerRetransmitAfterEstablished) {
+            val last = lastEstablishedResendAt
+            if (last == null || now - last >= INITIAL_RETRANSMIT) {
+                lastFlight?.let { flight ->
+                    for (item in flight) out += emit(item)
+                    lastEstablishedResendAt = now
+                }
+            }
+        }
         // Keep our retransmit timer armed while we are still handshaking with an unacked flight. Every
         // reassembled message calls cancelRetransmit(), so receiving a PARTIAL peer flight (e.g. their
         // Certificate but not yet their Finished — the Finished was lost) leaves us with progress but NO

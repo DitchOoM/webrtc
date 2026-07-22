@@ -6,6 +6,30 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Fixed — DTLS post-Established handshake-record storm that starved the SCTP handshake under loss
+- **The bug (a regression the lost-final-flight fix introduced):** that fix has an `Established` endpoint
+  re-send its last flight whenever a handshake-epoch record arrives afterwards (so a peer whose final flight
+  was lost can still complete). But the re-send is itself a handshake-epoch record, so **two peers that both
+  finished echo each other's re-sends forever** — an unbounded handshake-record storm. It didn't surface in
+  the DTLS-only gate (that returns the instant both establish) but wedges the **full stack**: SCTP's
+  four-way handshake rides over DTLS as application data, and the storm floods the transport so the SCTP
+  `INIT`/`INIT-ACK` never get through. Symptom: both peers `Established` at DTLS but one sits in SCTP
+  `CookieWait`/`Closed` — i.e. `PeerConnectionState` stuck at `Connecting` — until the watchdog. This is the
+  intermittent `impaired-loss-delay` L2 failure the harness's new per-side state trace localized.
+- **The fix (`Dtls13Handshake` **and** `Dtls12Handshake`):** rate-limit the post-Established re-send to at
+  most once per `INITIAL_RETRANSMIT` (1 s). A genuinely lost final flight draws the peer's **timer-spaced**
+  (≥ 1 s) retransmit and each still gets a response, but the peer's **immediate echo** of our own re-send
+  (sub-RTT ≪ 1 s) is suppressed — so the mutual storm dies after a single exchange. The lost-final-flight
+  deadlock fix is fully preserved.
+- **Deterministic fixtures (directive #5):** `DtlsSctpLossReproductionTest` (webrtc) drives the exact
+  `runEstablishment` composition **minus ICE** — a real `DtlsEngine` + `SctpAssociation` per peer, SCTP
+  packets tunneled as DTLS application data — over a seeded per-datagram lossy pipe under virtual time.
+  Before the fix, 5 % loss stormed **~20 % of seeds** (`dtls=Established sctp=CookieWait`); after, a full
+  DTLS→SCTP establishment **always** completes at 5 %/10 % loss (both 1.2 and 1.3) with zero storms and zero
+  deadlocks at any rate. `SctpLossReproductionTest` (webrtc-sctp) is the sibling that proves the SCTP
+  four-way handshake is loss-robust **in isolation** — pinning the fault to the DTLS↔SCTP boundary, not
+  either layer alone. Byte-exact BoringSSL interop is unchanged (the linuxTest differentials still pass).
+
 ### Fixed — DTLS lost-final-flight deadlock (a handshake could hang under packet loss)
 - **The bug:** on a lossy path, if the peer that sends the **last** handshake flight had a record of that
   flight lost, the handshake **deadlocked** — the sender sat `Established` while the receiver stayed

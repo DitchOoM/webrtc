@@ -204,21 +204,29 @@ family_skipped() {
     return 1
 }
 
+# v6/dual lanes land NON-GATING first: working assumption is every new v6/dual lane flakes at least once, so
+# a failure is captured + diagnosed (the diag bundle) but never reddens the required check — mirroring the
+# impaired-lane precedent. v4 stays gating, byte-unchanged. Flip a proven-green family to gating with
+# FAMILY_GATING=1 (a one-line follow-up per lane). Returns 0 when THIS run's family is informational.
+family_nongating() { [ "$IP_FAMILY" != "v4" ] && [ "${FAMILY_GATING:-0}" != "1" ]; }
+
 pass=0; fail=0; failed_names=""
 warn=0; warned_names=""
 
-# Record a scenario failure. GATING scenarios increment $fail (fail the run); NON_GATING scenarios are logged
-# as an informational ::warning:: and increment $warn only — the run can still pass. $2 is the reason string.
+# Record a scenario failure. GATING scenarios increment $fail (fail the run); NON_GATING scenarios (the
+# kernel-random impaired lane, OR any v6/dual lane while FAMILY_GATING is off) are logged as an informational
+# ::warning:: and increment $warn only — the run can still pass. $2 is the reason string.
 record_fail() {
-    local name="$1" reason="$2"
-    case "$NON_GATING" in
-        *" $name "*)
-            echo "::warning::⚠️ [$name] $reason — NON-GATING (informational); the deterministic DtlsSctpLossReproductionTest is the hard loss gate, so NOT failing the run"
-            warn=$((warn + 1)); warned_names="$warned_names $name" ;;
-        *)
-            echo "::error::❌ [$name] $reason"
-            fail=$((fail + 1)); failed_names="$failed_names $name" ;;
-    esac
+    local name="$1" reason="$2" why=""
+    case "$NON_GATING" in *" $name "*) why="the deterministic DtlsSctpLossReproductionTest is the hard loss gate" ;; esac
+    if [ -z "$why" ] && family_nongating; then why="$IP_FAMILY lanes land informational-first (set FAMILY_GATING=1 once green)"; fi
+    if [ -n "$why" ]; then
+        echo "::warning::⚠️ [$name] $reason — NON-GATING ($why), so NOT failing the run"
+        warn=$((warn + 1)); warned_names="$warned_names $name"
+    else
+        echo "::error::❌ [$name] $reason"
+        fail=$((fail + 1)); failed_names="$failed_names $name"
+    fi
 }
 
 # ── capture-on-failure diagnostics (design §B) ──────────────────────────────────────────────────────

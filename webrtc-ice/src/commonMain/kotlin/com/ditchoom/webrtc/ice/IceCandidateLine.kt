@@ -15,8 +15,8 @@ import com.ditchoom.webrtc.stun.TransportAddress
  * the value with or without it. Parsing is a **typed reject** — a malformed or unsupported line yields
  * `null`, never a throw (T0 discipline extended to the trickle boundary).
  *
- * Phase-1 scope (RFC §1.1): UDP transport, IPv4 literals. A non-UDP / non-v4 / TCP-`tcptype` line parses
- * to `null` rather than a lossy coercion.
+ * Transport scope: UDP only — a non-UDP / TCP-`tcptype` line parses to `null` rather than a lossy
+ * coercion. Both IPv4 and IPv6 connection-addresses (RFC 8839 §5.1, raw/unbracketed) are supported.
  */
 public object IceCandidateLine {
     private const val PREFIX = "candidate:"
@@ -98,11 +98,19 @@ public object IceCandidateLine {
 
     private fun typeOf(token: String): CandidateType? = CandidateType.entries.firstOrNull { it.token == token }
 
-    // An IPv4 literal + port → TransportAddress (phase-1). A non-v4 literal is a typed reject (null).
+    // An IPv4 or IPv6 connection-address literal + port → TransportAddress (RFC 8839 §5.1 — the address
+    // is raw/unbracketed for both families). A malformed literal is a typed reject (null), never a throw.
     private fun transportAddress(
         ip: String,
         port: String,
     ): TransportAddress? {
+        val p = port.toIntOrNull() ?: return null
+        if (p !in 0..MAX_PORT) return null
+        // A v6 connection-address is the only form carrying ':'; a v4 dotted-quad never does.
+        if (':' in ip) {
+            val v6 = IpAddress.V6.parse(ip) ?: return null
+            return TransportAddress(v6, p.toUShort())
+        }
         val octets = ip.split('.')
         if (octets.size != IPV4_OCTETS) return null
         var bits = 0u
@@ -111,8 +119,6 @@ public object IceCandidateLine {
             if (v > MAX_OCTET) return null
             bits = (bits shl Byte.SIZE_BITS) or v
         }
-        val p = port.toIntOrNull() ?: return null
-        if (p !in 0..MAX_PORT) return null
         return TransportAddress(IpAddress.V4(bits), p.toUShort())
     }
 

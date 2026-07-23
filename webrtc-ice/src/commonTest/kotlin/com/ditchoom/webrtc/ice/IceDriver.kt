@@ -10,6 +10,7 @@ import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.webrtc.ice.vnet.Vnet
 import com.ditchoom.webrtc.ice.vnet.vnetAddress
 import com.ditchoom.webrtc.sctp.datachannel.SctpDatagramTransport
+import com.ditchoom.webrtc.stun.IpAddress
 import com.ditchoom.webrtc.stun.StunDecodeResult
 import com.ditchoom.webrtc.stun.StunMessage
 import com.ditchoom.webrtc.stun.TransportAddress
@@ -54,6 +55,17 @@ internal class IceDriver(
     private val inbox = Channel<IceEvent>(Channel.UNLIMITED)
     private val channels = HashMap<TransportAddress, DatagramChannel>()
 
+    // Mirror the production IceAgentDriver's per-family gather ordinal so the harness ranks candidates
+    // exactly as production does (RFC 8445 §5.1.2.2 via CandidatePreferencePolicy) — the dual-stack
+    // "v6 preferred" fixture is only meaningful if the test driver applies the same priority policy.
+    private val interfaceIndexByFamily = HashMap<UByte, Int>()
+
+    private fun nextInterfaceIndex(ip: IpAddress): Int {
+        val index = interfaceIndexByFamily.getOrElse(ip.family) { 0 }
+        interfaceIndexByFamily[ip.family] = index + 1
+        return index
+    }
+
     // App-data (non-STUN) demux (RFC 7983): datagrams that are not STUN connectivity checks are DTLS/SCTP
     // and are routed here rather than into the agent, which ignores them. This is the seam SCTP rides.
     private val appInbound = Channel<ReadBuffer>(Channel.UNLIMITED)
@@ -84,7 +96,9 @@ internal class IceDriver(
         val socketAddress = vnetAddress(ip, port)
         val channel = vnet.bind(socketAddress)
         val hostAddress = socketAddress.toTransportAddress()
-        val host = IceCandidate.host(hostAddress)
+        val ifaceIndex = nextInterfaceIndex(hostAddress.ip)
+        val hostPreference = CandidatePreferencePolicy.Default.localPreference(hostAddress.ip, ifaceIndex)
+        val host = IceCandidate.host(hostAddress, localPreference = hostPreference)
         channels[host.base] = channel
         gather(host)
 
@@ -104,7 +118,7 @@ internal class IceDriver(
                                     stunServer.toTransportAddress().ip(),
                                     IceTransport.Udp,
                                 ),
-                            priority = IceCandidate.computePriority(CandidateType.ServerReflexive, ComponentId.Rtp),
+                            priority = IceCandidate.computePriority(CandidateType.ServerReflexive, ComponentId.Rtp, hostPreference),
                             relatedAddress = hostAddress,
                         ),
                     )
@@ -132,6 +146,8 @@ internal class IceDriver(
         val allocation = TurnAllocation(underlying, turnServer, username, password, random, scope)
         val relayedSocket = allocation.allocate() ?: return null
         val relayedAddress = relayedSocket.toTransportAddress()
+        val relayPreference =
+            CandidatePreferencePolicy.Default.localPreference(relayedAddress.ip, nextInterfaceIndex(relayedAddress.ip))
         val relay =
             IceCandidate.Relayed(
                 address = relayedAddress,
@@ -144,7 +160,7 @@ internal class IceDriver(
                         turnServer.toTransportAddress().ip(),
                         IceTransport.Udp,
                     ),
-                priority = IceCandidate.computePriority(CandidateType.Relayed, ComponentId.Rtp),
+                priority = IceCandidate.computePriority(CandidateType.Relayed, ComponentId.Rtp, relayPreference),
                 relatedAddress = socketAddress.toTransportAddress(),
             )
         channels[relay.base] = allocation

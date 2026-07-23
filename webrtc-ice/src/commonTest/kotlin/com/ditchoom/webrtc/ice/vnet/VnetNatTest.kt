@@ -13,6 +13,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -52,6 +53,31 @@ class VnetNatTest {
             // Endpoint-independent filtering: a reflector the host never contacted still reaches the mapping.
             r2.send(payload("unsolicited"), to = mappingViaR1)
             assertEquals("unsolicited", hostCh.receiveWithin(TIMEOUT)?.text(), "full cone admits any external sender")
+        }
+
+    @Test
+    fun ipv6_full_cone_mapping_and_ownership_is_family_agnostic() =
+        runTest {
+            // A ULA private segment (fd00:a::/…) behind a v6 public IP. NatBox.owns() is a textual
+            // startsWith, so a fixture must use one canonical spelling of a prefix.
+            val nat = Vnets.nat(publicIp = "2001:db8:ffff::1", privatePrefix = "fd00:a:", profile = NatProfile.FullCone)
+            assertTrue(nat.owns(vnetAddress("fd00:a::2", 5000)), "the ULA host is behind this NAT")
+            assertFalse(nat.owns(vnetAddress("2001:db8::9", 5000)), "a GUA address is public, not owned")
+
+            val vnet = Vnets.behindNats(listOf(nat))
+            val v6Host = vnetAddress("fd00:a::2", 5000)
+            val v6Reflector1 = vnetAddress("2001:db8:1::2", 3478)
+            val v6Reflector2 = vnetAddress("2001:db8:2::2", 3478)
+            val hostCh = vnet.bind(v6Host)
+            val r1 = vnet.bind(v6Reflector1)
+            val r2 = vnet.bind(v6Reflector2)
+
+            val mappingViaR1 = probeMapping(hostCh, r1, v6Reflector1)
+            val mappingViaR2 = probeMapping(hostCh, r2, v6Reflector2)
+            assertEquals(mappingViaR1, mappingViaR2, "endpoint-independent v6 mapping: one external port for all peers")
+
+            r2.send(payload("unsolicited v6"), to = mappingViaR1)
+            assertEquals("unsolicited v6", hostCh.receiveWithin(TIMEOUT)?.text(), "full cone admits any external sender over v6")
         }
 
     @Test

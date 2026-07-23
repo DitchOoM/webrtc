@@ -83,7 +83,42 @@ class IceCandidateLineTest {
         assertNull(IceCandidateLine.parse("candidate:f 1 tcp 100 10.0.0.1 4000 typ host tcptype passive")) // TCP: phase-1 UDP only
         assertNull(IceCandidateLine.parse("candidate:f 1 udp x 10.0.0.1 4000 typ host")) // non-numeric priority
         assertNull(IceCandidateLine.parse("candidate:f 9 udp 100 10.0.0.1 4000 typ host")) // unknown component
-        assertNull(IceCandidateLine.parse("candidate:f 1 udp 100 not.an.ip.addr 4000 typ host")) // non-v4 literal
+        assertNull(IceCandidateLine.parse("candidate:f 1 udp 100 not.an.ip.addr 4000 typ host")) // non-IP literal
+        assertNull(IceCandidateLine.parse("candidate:f 1 udp 100 2001:db8::1::2 4000 typ host")) // malformed v6 literal
         assertNull(IceCandidateLine.parse("candidate:f 1 udp 100 10.0.0.1 4000 typ srflx")) // srflx without raddr
+    }
+
+    private fun v6Addr(
+        ip: String,
+        port: Int,
+    ): TransportAddress = TransportAddress(IpAddress.V6.parse(ip)!!, port.toUShort())
+
+    @Test
+    fun ipv6_host_round_trips_unbracketed() {
+        val host = IceCandidate.host(v6Addr("2001:db8::1", 4000))
+        val line = IceCandidateLine.format(host)
+        // RFC 8839 §5.1: the connection-address is the raw literal — no brackets on the wire.
+        assertTrue(line.contains("2001:db8::1 4000"), "unbracketed v6 connection-address: $line")
+        assertTrue(host.address.ip is IpAddress.V6)
+        assertEquals(host, IceCandidateLine.parse(line))
+    }
+
+    @Test
+    fun ipv6_srflx_round_trips_with_v6_raddr() {
+        val srflx =
+            IceCandidate.ServerReflexive(
+                address = v6Addr("2001:db8:a::5", 50000),
+                base = v6Addr("2001:db8:a::1", 4000),
+                component = ComponentId.Rtp,
+                transport = IceTransport.Udp,
+                foundation = Foundation.of(CandidateType.ServerReflexive, "2001:db8:a::1", "2001:db8:ffff::1", IceTransport.Udp),
+                priority = IceCandidate.computePriority(CandidateType.ServerReflexive, ComponentId.Rtp),
+                relatedAddress = v6Addr("2001:db8:a::1", 4000),
+            )
+        val line = IceCandidateLine.format(srflx)
+        assertTrue(line.contains("raddr 2001:db8:a::1 rport 4000"), "v6 raddr tail: $line")
+        val parsed = IceCandidateLine.parse(line)
+        assertEquals(srflx, parsed)
+        assertTrue((parsed as IceCandidate.ServerReflexive).relatedAddress.ip is IpAddress.V6)
     }
 }

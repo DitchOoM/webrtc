@@ -72,6 +72,39 @@ class VnetDatagramSeamTest {
         }
 
     @Test
+    fun two_peer_echo_over_ipv6_vnet_under_virtual_time() =
+        runTest {
+            // The v6 seam gate: the vnet keying + copy-on-deliver path is family-agnostic (no production
+            // dependency beyond ofLiteral). Bare RFC 5952 literals, one canonical spelling per endpoint.
+            val factory = CountingBufferFactory(BufferFactory.Default)
+            val vnet = Vnet(bufferFactory = factory)
+            val aliceV6: SocketAddress = vnetAddress("2001:db8::1", 4000)
+            val bobV6: SocketAddress = vnetAddress("2001:db8::2", 5000)
+            val aliceCh = vnet.bind(aliceV6)
+            val bobCh = vnet.bind(bobV6)
+
+            val bobJob =
+                launch {
+                    when (val r = bobCh.receive()) {
+                        is DatagramReadResult.Received -> bobCh.send(r.datagram.payload, to = r.datagram.peer)
+                        is DatagramReadResult.Closed -> error("bob's channel closed before receiving")
+                    }
+                }
+
+            aliceCh.send(payloadOf("ping over the v6 vnet"), to = bobV6)
+
+            val echo = aliceCh.receive()
+            assertTrue(echo is DatagramReadResult.Received, "alice received no echo over v6")
+            assertEquals("ping over the v6 vnet", echo.datagram.payload.readUtf8(), "echoed v6 payload corrupted")
+            assertEquals(bobV6, echo.datagram.peer, "per-packet source is bob's v6 local address")
+
+            bobJob.join()
+            aliceCh.close()
+            bobCh.close()
+            assertEquals(2, factory.allocations, "family-independent copy path: one allocation per delivery")
+        }
+
+    @Test
     fun datagram_to_unbound_address_is_silently_dropped() =
         runTest {
             val vnet = Vnet()

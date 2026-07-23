@@ -93,8 +93,10 @@ class IceReviewRegressionTest {
     @Test
     fun zero_compatible_candidates_fails_with_NoCandidatePairs_not_a_hang() =
         runTest {
-            // Remote credentials + a remote candidate the agent can never pair with (IPv6 vs our IPv4):
-            // the checklist stays empty, so the agent must fail with the typed NoCandidatePairs, not hang.
+            // Remote credentials + a CROSS-family remote candidate (our v4 local vs a v6 remote): the two
+            // never pair (RFC 8445 §6.1.2.2 same-family rule), so the checklist stays empty and the agent
+            // must fail with the typed NoCandidatePairs, not hang. (The affirmative v6↔v6 pairing that DOES
+            // connect is proven in IceDualStackTest — v6 is supported; only the cross-family mix is rejected.)
             val vnet = Vnets.flat()
             val clock = IceDriver.clockOf { testScheduler.currentTime }
             val config = IceConfig(establishmentTimeout = 5.seconds)

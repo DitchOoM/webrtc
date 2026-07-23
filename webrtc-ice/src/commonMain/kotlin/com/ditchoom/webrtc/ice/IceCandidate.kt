@@ -1,5 +1,6 @@
 package com.ditchoom.webrtc.ice
 
+import com.ditchoom.webrtc.stun.IpAddress
 import com.ditchoom.webrtc.stun.TransportAddress
 import kotlin.jvm.JvmInline
 
@@ -180,3 +181,59 @@ public sealed interface IceCandidate {
 
 /** The IP literal of a [TransportAddress] (IPv4 dotted-quad or the IPv6 form) — used in foundations. */
 internal fun TransportAddress.ip(): String = ip.toString()
+
+/**
+ * The per-candidate `localPreference` policy (RFC 8445 §5.1.2.2) — the tie-break *within* a candidate
+ * type. §5.1.2.2 says this SHOULD prefer IPv6 and be unique per same-type candidate, deferring the
+ * family/scope ordering to RFC 8421 → RFC 6724's precedence table.
+ *
+ * This is a **seam by design** (injectable-ready, kept `internal` for now — see
+ * `docs/IPV6_DUAL_STACK_DESIGN.md`): a future `IceConfig` field can swap in family- or interface-steering
+ * without touching the gather sites, but no public candidate-priority knob is exposed today (browsers
+ * deliberately don't expose one). [Default] implements the RFC 6724 precedence ladder; the low byte
+ * carries an [interfaceIndex] so a multi-homed host's same-family candidates get **distinct** preferences.
+ */
+internal fun interface CandidatePreferencePolicy {
+    /** The 0..65535 local preference for a candidate whose base is [ip], gathered on interface [interfaceIndex]. */
+    fun localPreference(
+        ip: IpAddress,
+        interfaceIndex: Int,
+    ): Int
+
+    companion object {
+        /**
+         * RFC 6724 precedence ordering, IPv6-GUA > IPv4 > IPv6-ULA > IPv6-link-local, classified by pure
+         * [ULong] shifts on the address (no arrays — directive #1). The family rides the high byte
+         * (dominates); the low byte `0xFF − interfaceIndex` keeps same-family multi-homed candidates
+         * distinct and deterministic (first-gathered ranks highest).
+         */
+        val Default =
+            CandidatePreferencePolicy { ip, interfaceIndex ->
+                val familyPref =
+                    when (ip) {
+                        is IpAddress.V4 -> FAMILY_PREF_V4
+                        is IpAddress.V6 ->
+                            when {
+                                (ip.hi shr GUA_SHIFT) == GUA_PREFIX -> FAMILY_PREF_V6_GUA // 2000::/3
+                                (ip.hi shr ULA_SHIFT) == ULA_PREFIX -> FAMILY_PREF_V6_ULA // fc00::/7
+                                (ip.hi shr LINK_LOCAL_SHIFT) == LINK_LOCAL_PREFIX -> FAMILY_PREF_V6_LINK_LOCAL // fe80::/10
+                                else -> FAMILY_PREF_V6_GUA // loopback/unspecified/other → treat as globally routable
+                            }
+                    }
+                (familyPref shl INTERFACE_BITS) or (INTERFACE_MASK - (interfaceIndex and INTERFACE_MASK))
+            }
+
+        private const val FAMILY_PREF_V6_GUA = 40
+        private const val FAMILY_PREF_V4 = 35
+        private const val FAMILY_PREF_V6_ULA = 3
+        private const val FAMILY_PREF_V6_LINK_LOCAL = 1
+        private const val INTERFACE_BITS = 8
+        private const val INTERFACE_MASK = 0xFF
+        private const val GUA_SHIFT = 61
+        private const val GUA_PREFIX = 1uL // 2000::/3 → top 3 bits == 0b001
+        private const val ULA_SHIFT = 57
+        private const val ULA_PREFIX = 0x7EuL // fc00::/7 → top 7 bits == 0b1111110
+        private const val LINK_LOCAL_SHIFT = 54
+        private const val LINK_LOCAL_PREFIX = 0x3FAuL // fe80::/10 → top 10 bits == 0b1111111010
+    }
+}

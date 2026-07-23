@@ -13,6 +13,7 @@ import com.ditchoom.webrtc.sctp.datachannel.DataChannelConnection
 import com.ditchoom.webrtc.sctp.datachannel.SctpDataChannelStack
 import com.ditchoom.webrtc.sctp.datachannel.SctpDatagramTransport
 import com.ditchoom.webrtc.sctp.datachannel.SctpRole
+import com.ditchoom.webrtc.stun.IpAddress
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
@@ -24,6 +25,7 @@ import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
@@ -105,6 +107,33 @@ class IceAgentDriverTest {
 
             incoming.send(textBuffer("ack"))
             assertEquals("ack", withTimeoutOrNull(timeout) { channel.receive().first().text() })
+        }
+
+    @Test
+    fun production_driver_dual_stack_selects_the_ipv6_pair() =
+        runTest {
+            // Closes the coverage gap: exercise the PRODUCTION IceAgentDriver v6 gather + priority path
+            // (nextInterfaceIndex + CandidatePreferencePolicy at gatherHost), not just the test IceDriver.
+            val vnet = Vnets.flat()
+            val binder = DatagramBinder { vnet.bind(it) }
+            val clock: () -> Instant = { epoch + testScheduler.currentTime.milliseconds }
+            val alice = driver(IceRole.Controlling, seed = 301, binder, backgroundScope, clock)
+            val bob = driver(IceRole.Controlled, seed = 302, binder, backgroundScope, clock)
+            alice.start()
+            bob.start()
+            alice.gatherHost("10.0.0.1", 4000)
+            alice.gatherHost("2001:db8:a::1", 4000)
+            bob.gatherHost("10.0.0.2", 5000)
+            bob.gatherHost("2001:db8:a::2", 5000)
+            connect(alice, bob)
+            connect(bob, alice)
+            assertNotNull(withTimeoutOrNull(timeout) { alice.awaitConnected() }, "alice ICE connected")
+            assertNotNull(withTimeoutOrNull(timeout) { bob.awaitConnected() }, "bob ICE connected")
+            assertTrue(
+                alice.selectedPair!!
+                    .local.address.ip is IpAddress.V6,
+                "the production driver nominates the IPv6 pair, got ${alice.selectedPair!!.local.address.ip}",
+            )
         }
 
     private fun driver(

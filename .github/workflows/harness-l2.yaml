@@ -152,12 +152,18 @@ jobs:
           set -o pipefail
           bash test-harness/run-interop.sh 2>&1 | tee l2-harness.log
 
-      - name: Upload harness log (on failure)
+      # On failure, upload the tee'd log AND the capture-on-failure forensic bundle (design §B) — pcaps,
+      # per-container logs, conntrack/firewall state, the rendezvous mailbox, seeds + selected pair — so a
+      # red lane is deterministically root-causable from the artifact (no local repro). Ring-bounded pcaps +
+      # failure-only copy keep it small; the whole test-harness/diag/ tree is one bundle per failed scenario.
+      - name: Upload harness log + diagnostics (on failure)
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
-          name: l2-harness-log-${{ matrix.arch }}
-          path: l2-harness.log
+          name: l2-harness-diag-${{ matrix.arch }}
+          path: |
+            l2-harness.log
+            test-harness/diag/**
           retention-days: 14
           if-no-files-found: ignore
 
@@ -258,11 +264,15 @@ jobs:
           set -o pipefail
           bash test-harness/run-interop.sh "$SCENARIO" 2>&1 | tee l2-browser.log
 
-      - name: Upload harness log (on failure)
+      # On failure, upload the tee'd log AND the capture-on-failure forensic bundle (design §B) — see the l2
+      # job's upload step. The browser lane's bundle carries the same pcaps/state/mailbox for the one scenario.
+      - name: Upload harness log + diagnostics (on failure)
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
-          name: l2-browser-log-${{ matrix.browser }}-${{ matrix.peer }}-${{ matrix.arch.name }}
-          path: l2-browser.log
+          name: l2-browser-diag-${{ matrix.browser }}-${{ matrix.peer }}-${{ matrix.arch.name }}
+          path: |
+            l2-browser.log
+            test-harness/diag/**
           retention-days: 14
           if-no-files-found: ignore

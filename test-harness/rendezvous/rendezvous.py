@@ -30,6 +30,12 @@ HTTP face — same semantics as a PUT/GET, JSON in/out, CORS-open so a browser p
 
     POST /put   {"key": "<session>/<slot>", "id": <int>, "payload": "<utf8 text>"}  -> {"total": <int>}
     GET  /poll?key=<session>/<slot>&since=<int>                                     -> {"records": [...], "total": <int>}
+    GET  /dump                                                                     -> {"mailboxes": {...}}
+
+`/dump` is the FORENSIC face (design §B): it snapshots the WHOLE mailbox — every slot both sides wrote
+(offer, answer, cand/offerer, cand/answerer) — so a captured-on-failure bundle records the exact
+offer/answer/candidate set (host/srflx/relay, v4 vs v6) that was exchanged, alongside the seeds + pcaps.
+It is read-only and touched only by the harness on failure, never by a peer.
 
 `key` is "<session>/<slot>"; a slot is offer | answer | cand/offerer | cand/answerer. A PUT stores a
 record under (key, recordId) — id-keyed so a UDP retransmit / HTTP retry is idempotent. A GET/poll
@@ -180,6 +186,15 @@ class _HttpHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         url = urlparse(self.path)
+        if url.path == "/dump":  # forensic snapshot of the ENTIRE mailbox (all slots) — see the module docstring
+            with _lock:
+                snapshot = {
+                    key: {str(rid): payload.decode("utf-8", "replace") for rid, payload in box.items()}
+                    for key, box in mailboxes.items()
+                }
+            print(f"[rendezvous] http DUMP {len(snapshot)} key(s)", flush=True)
+            self._send_json(200, {"mailboxes": snapshot})
+            return
         if url.path != "/poll":
             self._send_json(404, {"error": "not found"})
             return

@@ -28,6 +28,11 @@ set -a
 . ./harness.env
 set +a
 
+# IP family for this run — v4 (default) | dual | v6. Step 4 wires it to COMPOSE_FILE overlays + a
+# family-skip; here it only names the diagnostics bundle dir (diag/<family>/…) so v4/v6/dual captures never
+# collide. On the untouched v4 matrix this stays "v4" and the harness is byte-identical to before.
+IP_FAMILY="${IP_FAMILY:-v4}"
+
 # ── peer image path: three ways to get the binary into the image ──
 #   1. HARNESS_SELF_BUILD=1        → build inside the image (portable: macOS/Apple, any arch)
 #   2. PEER_KEXE points at a file  → use it as-is, DON'T build (CI ships a cross-built artifact this way —
@@ -76,7 +81,7 @@ else
     echo "[run] jvm peer image: prebuilt $PEER_JAR"
 fi
 
-INFRA="coturn rendezvous nat_a nat_b"
+INFRA="coturn coturn_pcap rendezvous nat_a nat_b"
 
 # Docker-host setup: a container acting as a router BETWEEN two Docker bridge networks only forwards if
 # host bridge-netfilter is OFF — otherwise the bridged frames traverse the host's Docker FORWARD/ISOLATION
@@ -181,6 +186,89 @@ record_fail() {
     esac
 }
 
+# ── capture-on-failure diagnostics (design §B) ──────────────────────────────────────────────────────
+# The carrier NATs active in THIS scenario (cgnat_*), derived from run_scenario's $infra (visible here by
+# bash dynamic scope). Empty in the single-NAT lanes.
+compose_active_carriers() { echo "${infra:-}" | tr ' ' '\n' | grep -E '^cgnat' || true; }
+
+# Background a ring-buffered tcpdump on every NAT for the whole scenario — the pcap is the gold-standard
+# replay input (the real-wire packet + loss schedule that the seed alone can't reconstruct). Ring-bounded
+# (-C 20 -W 3 → ≤60 MB/container) + copied out ONLY on failure (collect_diagnostics) + destroyed with the
+# stack on pass, so a green lane pays only an idle capture. coturn is captured by the coturn_pcap sidecar
+# (its image has no tcpdump); a NAT's `any` capture already sees every peer↔coturn relay packet too.
+start_captures() {
+    for nat in nat_a nat_b $(compose_active_carriers); do
+        docker compose exec -d "$nat" sh -c 'mkdir -p /pcap && exec tcpdump -i any -w /pcap/cap.pcap -C 20 -W 3 -U' 2>/dev/null || true
+    done
+}
+
+# Write the forensic bundle to test-harness/diag/<family>/<name>/ WHILE the containers are still up: every
+# container's log, both-family firewall+conntrack state, the ring-buffered pcaps, the rendezvous mailbox
+# (the exact offer/answer/candidate set exchanged), and a resolved-env/MANIFEST snapshot. This is the bridge
+# from a real-UDP CI flake to a seeded virtual-time vnet fixture (standing directive #5). Called at every
+# failure site inside run_scenario (via fail_scenario). Best-effort throughout: a missing/partly-up
+# container degrades one file, never aborts the bundle. Reads run_scenario locals via dynamic scope.
+collect_diagnostics() {
+    local name="$1"
+    local dir="diag/${IP_FAMILY}/${name}"
+    local carriers; carriers=$(compose_active_carriers)
+    mkdir -p "$dir/pcap"
+    echo "[diag] collecting failure bundle → test-harness/$dir"
+
+    # Per-container logs — ALL infra + both peers, not just the tee'd peer stdout — one file each.
+    for svc in coturn rendezvous nat_a nat_b ${a_service:-peer_a} ${b_service:-peer_b} $carriers; do
+        docker compose logs --no-log-prefix "$svc" > "$dir/$svc.log" 2>/dev/null || true
+    done
+
+    # Firewall + conntrack, BOTH families, per NAT — the exact filter/mapping state at the moment of failure.
+    for nat in nat_a nat_b $carriers; do
+        {
+            echo "=== $nat: iptables -S ===";          docker compose exec -T "$nat" iptables -S
+            echo "=== $nat: iptables -t nat -S ===";    docker compose exec -T "$nat" iptables -t nat -S
+            echo "=== $nat: ip6tables -S ===";          docker compose exec -T "$nat" ip6tables -S
+            echo "=== $nat: conntrack -L (v4) ===";     docker compose exec -T "$nat" conntrack -L
+            echo "=== $nat: conntrack -L (v6) ===";     docker compose exec -T "$nat" conntrack -L -f ipv6
+            echo "=== $nat: ip -o addr ===";            docker compose exec -T "$nat" ip -o addr
+            echo "=== $nat: ip -6 route ===";           docker compose exec -T "$nat" ip -6 route
+        } > "$dir/$nat.state.txt" 2>&1 || true
+    done
+
+    # pcaps — copy each capturing container's ring-buffer dir into its OWN subdir (the rotated files share a
+    # basename across containers, so a flat copy would collide).
+    for nat in nat_a nat_b $carriers; do
+        mkdir -p "$dir/pcap/$nat"; docker compose cp "$nat:/pcap/." "$dir/pcap/$nat/" 2>/dev/null || true
+    done
+    mkdir -p "$dir/pcap/coturn"; docker compose cp "coturn_pcap:/cap/." "$dir/pcap/coturn/" 2>/dev/null || true
+
+    # Rendezvous mailbox — the exact offer/answer/candidate set both sides exchanged (all slots), read off
+    # the HTTP /dump face of the SAME in-memory mailbox. No curl needed: python3 is in the rendezvous image.
+    docker compose exec -T rendezvous python3 -c \
+        "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:${RENDEZVOUS_HTTP_PORT}/dump').read().decode())" \
+        > "$dir/rendezvous-mailbox.json" 2>/dev/null || true
+
+    # Resolved topology — the fully-substituted compose model + the harness-relevant env, pinning the ACTIVE
+    # family / addresses / overlays / profiles that produced this failure.
+    docker compose config > "$dir/compose.resolved.yml" 2>/dev/null || true
+    env | grep -E '^(IP_FAMILY|COMPOSE_|NAT_|PEER_|SEED_|SESSION|ICE_POLICY|WEBRTC_|.*_IP6?)=' | sort > "$dir/env.txt" 2>/dev/null || true
+
+    # MANIFEST — the human index + the replay coordinates (family, seeds, the offerer's selected pair).
+    {
+        echo "scenario=$name"
+        echo "family=${IP_FAMILY}"
+        echo "profiles=${COMPOSE_PROFILES:-<none>}"
+        echo "policy=${policy:-?}  topo=${topo:-?}  netem=${netem:-?}"
+        echo "offerer=${a_service:-peer_a}  rc_a=${rc_a:-n/a}"
+        echo "answerer=${b_service:-peer_b}  rc_b=${rc_b:-n/a}"
+        echo "SEED_A=${SEED_A:-<peer default>}  SEED_B=${SEED_B:-<peer default>}"
+        echo "--- offerer selected ICE pair ---"
+        docker compose logs --no-log-prefix "${a_service:-peer_a}" 2>/dev/null | grep -F 'selectedPair=' || echo "(none logged)"
+    } > "$dir/MANIFEST.txt" 2>&1
+}
+
+# Collect the forensic bundle FIRST (while containers are up), then record the failure. Every failure site
+# inside run_scenario goes through here so a red lane always leaves a replayable bundle behind.
+fail_scenario() { collect_diagnostics "$1"; record_fail "$1" "$2"; }
+
 run_scenario() {
     local name="$1" nat_a="$2" nat_b="$3" policy="$4" netem="$5" a_impl="${6:-native}" b_impl="${7:-native}" topo="${8:-single}"
     echo ""
@@ -228,16 +316,20 @@ run_scenario() {
     # stack_down ONLY — the host bridge-nf sysctl stays as set for the whole run (restored once on EXIT).
     stack_down
     if ! ./compose-up-retry.sh $infra; then
-        record_fail "$name" "infra failed to come up"; return
+        fail_scenario "$name" "infra failed to come up"; return
     fi
 
     if [ "$netem" != "-" ]; then
         # Fail-HARD if netem can't be applied — otherwise the impaired lane silently runs UNIMPAIRED and
         # passes, giving false confidence in the one scenario whose whole point is the degraded data path.
         if ! docker compose exec -T nat_a /netem.sh add $netem || ! docker compose exec -T nat_b /netem.sh add $netem; then
-            record_fail "$name" "netem failed to apply — impaired lane would run unimpaired"; return
+            fail_scenario "$name" "netem failed to apply — impaired lane would run unimpaired"; return
         fi
     fi
+
+    # Start the ring-buffered per-NAT packet capture now — infra + any netem are in place, and the peers are
+    # about to run, so the capture spans the whole ICE→DTLS→SCTP handshake. Failure-only copy-out below.
+    start_captures
 
     # BUILD the peer images first, then start BOTH peers together in ONE `up` (offerer + answerer must come
     # up together — starting them in two separate `up` commands perturbs the offerer's offer-publish and it
@@ -271,11 +363,11 @@ run_scenario() {
         # hairpinning NAT selecting a direct/srflx pair — fails here instead of passing silently.
         if [ "$topo" = "hairpin" ] && ! docker compose logs --no-log-prefix "$a_service" 2>/dev/null \
                 | grep -q 'selectedPair=CandidatePair(local=Relayed'; then
-            record_fail "$name" "established but the selected ICE pair is NOT a relay pair (the hairpin lane must traverse the coturn TURN relay)"; return
+            fail_scenario "$name" "established but the selected ICE pair is NOT a relay pair (the hairpin lane must traverse the coturn TURN relay)"; return
         fi
         echo "✅ [$name] PASS (offerer rc=$rc_a answerer rc=$rc_b)"; pass=$((pass+1))
     else
-        record_fail "$name" "FAIL (offerer rc=$rc_a answerer rc=$rc_b)"
+        fail_scenario "$name" "FAIL (offerer rc=$rc_a answerer rc=$rc_b)"
     fi
 }
 

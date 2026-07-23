@@ -10,6 +10,14 @@ if [ -n "${GATEWAY_IP:-}" ]; then
     ip route replace default via "$GATEWAY_IP"
     echo "[${BROWSER:-browser}] default route via NAT gateway $GATEWAY_IP"
 fi
+# Same for the v6 default route on the dual/v6 lanes (GATEWAY_IP6 = the NAT's LAN v6 address; compose.ipv6.yml
+# sets it on the browser services). Without this the browser has no route to the pub subnet and its fetch to
+# the rendezvous / STUN to coturn just fail ("Failed to fetch" → page hang). The peer entrypoints already do
+# this — the browser one was v4-only, which is why every v6 browser lane hung. Unset on v4.
+if [ -n "${GATEWAY_IP6:-}" ]; then
+    ip -6 route replace default via "$GATEWAY_IP6"
+    echo "[${BROWSER:-browser}] v6 default route via NAT gateway $GATEWAY_IP6"
+fi
 echo "[${BROWSER:-browser}] $(ip -o -4 addr show scope global | awk '{print $2, $4}')"
 
 exec node driver.mjs

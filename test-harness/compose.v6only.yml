@@ -1,0 +1,139 @@
+# v6-ONLY overlay — layered on top of docker-compose.yml + compose.ipv6.yml for the `v6` lanes (needs Docker
+# Engine 27+ for enable_ipv4:false; present on ubuntu-24.04 / the local 29.x). It strips v4 entirely so the
+# stack proves PURE IPv6 with no v4 fallback:
+#   * each network: enable_ipv4:false + its ipam.config narrowed to the v6 subnet only;
+#   * each service: ipv4_address overridden to "" (an empty override DROPS the key on merge — a null does
+#     not) so nothing requests a v4 address on a v4-disabled network;
+#   * env: the primary family becomes v6 (WEBRTC_LOCAL_IP := the v6 address; the extra WEBRTC_LOCAL_IP6 is
+#     cleared so the peer doesn't bind v6 twice), coturn/rendezvous hosts point at their v6 address, coturn
+#     drops its v4 listener (COTURN_IP4_DISABLED), and GATEWAY_IP is cleared so the entrypoint skips the v4
+#     default route (GATEWAY_IP6 from compose.ipv6.yml drives the v6 one);
+#   * the two CPE routers' healthcheck is narrowed to the v6 filter only (there is no v4 MASQUERADE now).
+# The carrier NATs are untouched: cgnat/hairpin/symmetric/mixed-sym are family-skipped on v6, so they never
+# start — their inherited v4 addresses are inert.
+
+networks:
+  pub:
+    enable_ipv4: false
+    ipam:
+      config:
+        - subnet: "${PUB_SUBNET6}"
+  lan_a:
+    enable_ipv4: false
+    ipam:
+      config:
+        - subnet: "${LAN_A_SUBNET6}"
+  lan_b:
+    enable_ipv4: false
+    ipam:
+      config:
+        - subnet: "${LAN_B_SUBNET6}"
+  car:
+    enable_ipv4: false
+    ipam:
+      config:
+        - subnet: "${CAR_SUBNET6}"
+
+services:
+  coturn:
+    environment:
+      COTURN_IP4_DISABLED: "1"   # entrypoint drops the v4 listening/relay/external lines (keeps v6)
+    networks:
+      pub: { ipv4_address: "" }
+
+  rendezvous:
+    networks:
+      pub: { ipv4_address: "" }   # the mailbox's dual bind still serves the v6 clients
+
+  nat_a:
+    # No v4 now → the dual-stack MASQUERADE assertion can't hold; check the v6 filter only.
+    healthcheck:
+      test: ["CMD-SHELL", "ip6tables -S FORWARD | grep -q ACCEPT"]
+    networks:
+      pub: { ipv4_address: "" }
+      lan_a: { ipv4_address: "" }
+      car: { ipv4_address: "" }
+
+  nat_b:
+    healthcheck:
+      test: ["CMD-SHELL", "ip6tables -S FORWARD | grep -q ACCEPT"]
+    networks:
+      pub: { ipv4_address: "" }
+      lan_b: { ipv4_address: "" }
+      car: { ipv4_address: "" }
+
+  peer_a:
+    environment:
+      GATEWAY_IP: ""                          # skip the v4 default route (GATEWAY_IP6 drives v6)
+      WEBRTC_LOCAL_IP: "${PEER_A_IP6}"        # primary family is v6 now
+      WEBRTC_LOCAL_IP6: ""                    # …so don't add it a 2nd time
+      WEBRTC_STUN_HOST: "${COTURN_IP6}"
+      WEBRTC_TURN_HOST: "${COTURN_IP6}"
+      WEBRTC_RENDEZVOUS_HOST: "${RENDEZVOUS_IP6}"
+    networks:
+      lan_a: { ipv4_address: "" }
+
+  peer_b:
+    environment:
+      GATEWAY_IP: ""
+      WEBRTC_LOCAL_IP: "${PEER_B_IP6}"
+      WEBRTC_LOCAL_IP6: ""
+      WEBRTC_STUN_HOST: "${COTURN_IP6}"
+      WEBRTC_TURN_HOST: "${COTURN_IP6}"
+      WEBRTC_RENDEZVOUS_HOST: "${RENDEZVOUS_IP6}"
+    networks:
+      lan_b: { ipv4_address: "" }
+
+  peer_a_jvm:
+    environment:
+      GATEWAY_IP: ""
+      WEBRTC_LOCAL_IP: "${PEER_A_IP6}"
+      WEBRTC_LOCAL_IP6: ""
+      WEBRTC_STUN_HOST: "${COTURN_IP6}"
+      WEBRTC_TURN_HOST: "${COTURN_IP6}"
+      WEBRTC_RENDEZVOUS_HOST: "${RENDEZVOUS_IP6}"
+    networks:
+      lan_a: { ipv4_address: "" }
+
+  # The independent-stack answerers enumerate interfaces themselves; on v6-only they just need their coturn +
+  # rendezvous (HTTP-signaling) hosts pointed at v6 and their v4 address dropped. (A browser building the
+  # rendezvous URL from a bare v6 literal must bracket it — a driver detail surfaced by the v6-only lanes.)
+  pion:
+    environment:
+      GATEWAY_IP: ""
+      WEBRTC_LOCAL_IP: "${PEER_B_IP6}"
+      WEBRTC_STUN_HOST: "${COTURN_IP6}"
+      WEBRTC_TURN_HOST: "${COTURN_IP6}"
+      WEBRTC_RENDEZVOUS_HOST: "${RENDEZVOUS_IP6}"
+    networks:
+      lan_b: { ipv4_address: "" }
+
+  chrome:
+    environment:
+      GATEWAY_IP: ""
+      WEBRTC_LOCAL_IP: "${PEER_B_IP6}"
+      WEBRTC_STUN_HOST: "${COTURN_IP6}"
+      WEBRTC_TURN_HOST: "${COTURN_IP6}"
+      WEBRTC_RENDEZVOUS_HOST: "${RENDEZVOUS_IP6}"
+    networks:
+      lan_b: { ipv4_address: "" }
+
+  firefox:
+    environment:
+      GATEWAY_IP: ""
+      WEBRTC_LOCAL_IP: "${PEER_B_IP6}"
+      WEBRTC_STUN_HOST: "${COTURN_IP6}"
+      WEBRTC_TURN_HOST: "${COTURN_IP6}"
+      WEBRTC_RENDEZVOUS_HOST: "${RENDEZVOUS_IP6}"
+    networks:
+      lan_b: { ipv4_address: "" }
+
+  webkit:
+    environment:
+      GATEWAY_IP: ""
+      WEBRTC_LOCAL_IP: "${PEER_B_IP6}"
+      WEBRTC_STUN_HOST: "${COTURN_IP6}"
+      WEBRTC_TURN_HOST: "${COTURN_IP6}"
+      WEBRTC_RENDEZVOUS_HOST: "${RENDEZVOUS_IP6}"
+    networks:
+      lan_b: { ipv4_address: "" }

@@ -450,7 +450,11 @@ done 3<<< "$SCENARIOS"
 
 echo ""
 echo "═══ summary: $pass passed, $fail failed${failed_names:+ (failed:$failed_names)}${warned_names:+, $warn non-gating failure(s):$warned_names (informational — deterministic DtlsSctpLossReproductionTest is the hard gate)} ═══"
-# Exit non-zero iff a GATING scenario failed (or nothing ran+passed). NON-GATING failures ($warn) never fail
-# the run — the deterministic DtlsSctpLossReproductionTest is the retained hard gate for loss behavior.
-[ "$fail" -eq 0 ] && [ "$pass" -gt 0 ]
+# Exit non-zero iff a GATING scenario failed, or NOTHING ran at all. NON-GATING failures ($warn) never fail
+# the run — the impaired lane's hard gate is the deterministic DtlsSctpLossReproductionTest, and v6/dual lanes
+# land informational-first (FAMILY_GATING). A non-gating-ONLY run still counts as a successful run: e.g. a
+# single-scenario browser job whose one v6 lane warns has pass=0 but MUST stay green (that is what
+# "non-gating first" means). So require no gating fail AND that at least one scenario actually ran (passed OR
+# warned) — the (pass+warn) term still guards the misconfigured "0 scenarios ran" case.
+[ "$fail" -eq 0 ] && [ $((pass + warn)) -gt 0 ]
 exit $?

@@ -304,14 +304,8 @@ private suspend fun awaitEstablished(pc: NativePeerConnection): Boolean {
     return true
 }
 
-/** A JSEP session description as its SDP text — wrapped so it can't be confused with a candidate line or a
- * raw log string at this diagnostic boundary (SDP is a serialized document, not an identifier). */
-@JvmInline
-private value class Sdp(val text: String)
-
-/** One trickled ICE candidate line (RFC 8839 §5.1), wrapped for the same reason. */
-@JvmInline
-private value class CandidateLine(val text: String)
+// [Sdp] + [CandidateLine] — the diagnostics-boundary text wrappers — live in commonMain (SignalingTypes.kt):
+// `@JvmInline` value classes are only legal in common sources, not this per-target-compiled shared srcDir.
 
 /** Which peer produced a captured artifact — the local side, or the remote observed over signaling. */
 private enum class Origin { Local, Remote }

@@ -55,14 +55,8 @@ internal enum class Slot(
     AnswererCandidate("cand/answerer"),
 }
 
-/**
- * A record's index within its [Slot] (monotonic per slot). Wraps the wire uint so a raw loop counter can
- * never be passed where a record id is meant, and vice-versa.
- */
-@JvmInline
-internal value class RecordId(
-    val value: Int,
-)
+// [RecordId] — the per-slot record index wrapper — lives in commonMain (SignalingTypes.kt): `@JvmInline`
+// value classes are only legal in common sources, not this per-target-compiled shared srcDir.
 
 internal class UdpSignaling internal constructor(
     private val channel: DatagramChannel,

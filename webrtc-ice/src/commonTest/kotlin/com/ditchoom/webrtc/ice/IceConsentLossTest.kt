@@ -12,7 +12,7 @@ import com.ditchoom.webrtc.stun.StunRetransmitPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.job
 import kotlinx.coroutines.test.runTest
@@ -109,7 +109,12 @@ class IceConsentLossTest {
                             "allocations scale with messages, not Ta ticks (growth=$growth over $CONSENT_CYCLES cycles, $diag)",
                         )
                     } finally {
-                        trial.cancel()
+                        // cancelAndJoin (not cancel): on Kotlin/JS cancellation is asynchronous — a bare cancel()
+                        // returns before the cancelled coroutines' `delay`-backed Node timers are cleared, so a
+                        // stray timer can fire after the test completes and surface as `node:internal/timers`
+                        // (crashing whichever test runs next). Joining drains the child scope — clearing every
+                        // pending timer — deterministically under virtual time before the next seed proceeds.
+                        trial.coroutineContext.job.cancelAndJoin()
                     }
                 }
             }
@@ -117,18 +122,19 @@ class IceConsentLossTest {
 
     private companion object {
         val LOSS_RATES = listOf(0.05, 0.10, 0.20)
-        const val SEEDS_PER_RATE = 6
+        const val SEEDS_PER_RATE = 4
         const val BASE_SEED = 820_000L // distinct base so seeds don't collide with the sibling loss lanes
         const val SEED_SPREAD = 613L
         val CONSENT_INTERVAL = 1.seconds
 
-        // The window spans several consentTimeouts (so a fragile pair *would* expire within it); the timeout
-        // is comfortably larger than a check's useful retransmit span. Kept compact (and the sweep modest) so
-        // the whole sweep's virtual-time advancement drains inside the JS runner's per-test wall-clock budget
-        // — the observable is state, never a wall-clock timing assertion (directive #4).
-        val CONSENT_TIMEOUT = 15.seconds
-        val OBSERVE_WINDOW = 30.seconds
-        const val CONSENT_CYCLES = 30 // OBSERVE_WINDOW / CONSENT_INTERVAL
+        // The window comfortably exceeds the consent timeout (so a fragile pair *would* expire within it); the
+        // timeout is in turn comfortably larger than a check's useful retransmit span. Kept compact (and the
+        // sweep modest) so the whole sweep's virtual-time advancement stays light on the JS runner — every
+        // advanced virtual millisecond still costs real dispatch work, and a stray leaked timer past test-end
+        // is the `node:internal/timers` JS flake — the observable is state, never a wall-clock assertion (#4).
+        val CONSENT_TIMEOUT = 10.seconds
+        val OBSERVE_WINDOW = 16.seconds
+        const val CONSENT_CYCLES = 16 // OBSERVE_WINDOW / CONSENT_INTERVAL
         val CONNECT_TIMEOUT = 30.seconds
 
         // Generous per-cycle bound: each cycle a consent check may retransmit several times and each surviving

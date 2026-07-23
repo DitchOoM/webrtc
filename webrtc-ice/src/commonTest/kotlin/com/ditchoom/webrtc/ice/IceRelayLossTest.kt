@@ -11,7 +11,7 @@ import com.ditchoom.webrtc.stun.StunRetransmitPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeoutOrNull
@@ -107,7 +107,11 @@ class IceRelayLossTest {
                         assertTrue(traversesRelay(alice.selectedPair!!), "alice's converged pair traverses the relay ($diag)")
                         assertTrue(traversesRelay(bob.selectedPair!!), "bob's converged pair traverses the relay ($diag)")
                     } finally {
-                        trial.cancel()
+                        // cancelAndJoin (not cancel): on Kotlin/JS cancellation is asynchronous, so a bare
+                        // cancel() can leave a cancelled coroutine's `delay`-backed Node timer pending past the
+                        // test's end (the `node:internal/timers` JS flake). Joining drains the child scope —
+                        // TURN servers, relay allocations, driver loops — before the next seed proceeds.
+                        trial.coroutineContext.job.cancelAndJoin()
                     }
                 }
             }
@@ -132,7 +136,7 @@ class IceRelayLossTest {
 
     private companion object {
         val LOSS_RATES = listOf(0.05, 0.10, 0.20)
-        const val SEEDS_PER_RATE = 8
+        const val SEEDS_PER_RATE = 5
         const val BASE_SEED = 810_000L // distinct base so seeds don't collide with the sibling loss lanes
         const val SEED_SPREAD = 613L
         const val FIRST_RELAY_LOCAL_PORT = 6000

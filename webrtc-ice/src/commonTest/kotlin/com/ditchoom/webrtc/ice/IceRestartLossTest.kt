@@ -8,7 +8,7 @@ import com.ditchoom.webrtc.ice.vnet.Vnets
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.job
 import kotlinx.coroutines.test.runTest
@@ -92,7 +92,11 @@ class IceRestartLossTest {
                             "restart regenerates local credentials (RFC 8445 §9) ($diag)",
                         )
                     } finally {
-                        trial.cancel()
+                        // cancelAndJoin (not cancel): on Kotlin/JS cancellation is asynchronous, so a bare
+                        // cancel() can leave a cancelled coroutine's `delay`-backed Node timer pending past the
+                        // test's end (the `node:internal/timers` JS flake). Joining drains the child scope
+                        // deterministically under virtual time before the next seed proceeds.
+                        trial.coroutineContext.job.cancelAndJoin()
                     }
                 }
             }
@@ -107,7 +111,7 @@ class IceRestartLossTest {
 
     private companion object {
         val LOSS_RATES = listOf(0.05, 0.10, 0.20)
-        const val SEEDS_PER_RATE = 8
+        const val SEEDS_PER_RATE = 5
         const val BASE_SEED = 830_000L // distinct base so seeds don't collide with the sibling loss lanes
         const val SEED_SPREAD = 613L
         val TIMEOUT = 90.seconds

@@ -8,6 +8,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.AddressFamily
 import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramCapabilities
 import com.ditchoom.buffer.flow.DatagramChannel
@@ -23,9 +24,11 @@ import com.ditchoom.webrtc.stun.StunDecodeResult
 import com.ditchoom.webrtc.stun.StunMessage
 import com.ditchoom.webrtc.stun.StunMessageBuilder
 import com.ditchoom.webrtc.stun.StunMethod
+import com.ditchoom.webrtc.stun.TURN_FAMILY_IPV6
 import com.ditchoom.webrtc.stun.TransactionId
 import com.ditchoom.webrtc.stun.asText
 import com.ditchoom.webrtc.stun.asXorMappedAddress
+import com.ditchoom.webrtc.stun.ofRequestedAddressFamily
 import com.ditchoom.webrtc.stun.ofRequestedTransport
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -185,8 +188,19 @@ public class TurnAllocation(
         return withTimeoutOrNull(timeout) { deferred.await() }.also { pending.remove(transactionId) }
     }
 
-    private fun allocateRequest(transactionId: TransactionId): StunMessageBuilder =
-        authed(StunMessageBuilder.of(StunClass.Request, StunMethod.Allocate, transactionId)).add(RawAttribute.ofRequestedTransport())
+    private fun allocateRequest(transactionId: TransactionId): StunMessageBuilder {
+        val builder =
+            authed(StunMessageBuilder.of(StunClass.Request, StunMethod.Allocate, transactionId))
+                .add(RawAttribute.ofRequestedTransport())
+        // RFC 8656 §7.2: without REQUESTED-ADDRESS-FAMILY the server allocates an IPv4 relay. A v6 TURN
+        // server has no usable v4 relay address (it falls back to loopback → an unreachable relay candidate
+        // → ICE AllPairsFailed), so ask for the family that matches the server we are allocating on. v4 is
+        // left to the default (attribute omitted), so the v4 path is wire-unchanged.
+        if (server.family == AddressFamily.IPv6) {
+            builder.add(RawAttribute.ofRequestedAddressFamily(TURN_FAMILY_IPV6))
+        }
+        return builder
+    }
 
     private fun builderFor(
         method: StunMethod,

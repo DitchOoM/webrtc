@@ -17,7 +17,10 @@ import com.ditchoom.webrtc.stun.StunErrorCode
 import com.ditchoom.webrtc.stun.StunMessage
 import com.ditchoom.webrtc.stun.StunMessageBuilder
 import com.ditchoom.webrtc.stun.StunMethod
+import com.ditchoom.webrtc.stun.TURN_FAMILY_IPV4
+import com.ditchoom.webrtc.stun.TURN_FAMILY_IPV6
 import com.ditchoom.webrtc.stun.TransactionId
+import com.ditchoom.webrtc.stun.asRequestedAddressFamily
 import com.ditchoom.webrtc.stun.asText
 import com.ditchoom.webrtc.stun.asXorMappedAddress
 import com.ditchoom.webrtc.stun.ofLifetime
@@ -113,6 +116,22 @@ internal class TurnServer(
         client: SocketAddress,
     ) {
         val user = authenticatedUser(request, client) ?: return
+        // coturn-faithful family selection (RFC 8656 §7.2 / §18.9): serve the requested relay family,
+        // defaulting to IPv4 when REQUESTED-ADDRESS-FAMILY is absent. This server relays only in its own
+        // relayIp family, so a request for a family it cannot serve is refused 440 — reproducing coturn
+        // handing a v6 client an unusable relay when the client forgets to ask for IPv6 (the AllPairsFailed bug).
+        val requestedFamily = request.firstOrNull(StunAttributeType.RequestedAddressFamily)?.asRequestedAddressFamily() ?: TURN_FAMILY_IPV4
+        val relayFamily = if (':' in relayIp) TURN_FAMILY_IPV6 else TURN_FAMILY_IPV4
+        if (requestedFamily != relayFamily) {
+            val refusal =
+                StunMessageBuilder
+                    .of(StunClass.ErrorResponse, StunMethod.Allocate, request.transactionId)
+                    .add(RawAttribute.ofErrorCode(StunErrorCode(ADDRESS_FAMILY_NOT_SUPPORTED, "Address Family not Supported")))
+                    .addMessageIntegrity(keyFor(user))
+                    .encode()
+            control.send(refusal, to = client)
+            return
+        }
         val allocation =
             allocations.getOrPut(client) {
                 val relayed = vnetAddress(relayIp, nextRelayPort++)
@@ -241,5 +260,6 @@ internal class TurnServer(
         const val FIRST_RELAY_PORT = 50000
         private const val DEFAULT_SEED = 0x7247_4E00L // "rGN\0"
         private const val UNAUTHORIZED = 401
+        private const val ADDRESS_FAMILY_NOT_SUPPORTED = 440 // RFC 8656 §18
     }
 }

@@ -27,8 +27,9 @@ fi
 # gateway / coturn / rendezvous on this lane, the next hop 192.0.2.1 does not exist, so the v4 host candidate
 # is unreachable and never selected — ICE still establishes over PURE v6 (verified: selected pair is the
 # fd00:32::100 v6 host). An IPv4 address ALONE does not fix it; the default ROUTE is the operative part.
-# v6-only ⇔ GATEWAY_IP unset (compose.v6only.yml clears it) while GATEWAY_IP6 is set.
-if [ "${BROWSER:-}" = "firefox" ] && [ -z "${GATEWAY_IP:-}" ] && [ -n "${GATEWAY_IP6:-}" ]; then
+# v6-only ⇔ GATEWAY_IP unset (compose.v6only.yml clears it) while GATEWAY_IP6 is set. FIREFOX_V4_SHIM is the
+# caller-side kill switch (default 1 = on; set 0 to disable and observe the raw Firefox v6-only failure).
+if [ "${FIREFOX_V4_SHIM:-1}" = "1" ] && [ "${BROWSER:-}" = "firefox" ] && [ -z "${GATEWAY_IP:-}" ] && [ -n "${GATEWAY_IP6:-}" ]; then
     if ip addr add 192.0.2.99/24 dev eth0 2>/dev/null; then
         ip route add default via 192.0.2.1 dev eth0 metric 4096 2>/dev/null || true
         echo "[firefox] added non-routable dummy IPv4 192.0.2.99/24 + v4 default (v6-only ICE-gather bootstrap; no v4 data path)"

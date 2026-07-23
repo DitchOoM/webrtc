@@ -9,6 +9,13 @@ if [ -n "${GATEWAY_IP:-}" ]; then
     ip route replace default via "$GATEWAY_IP"
     echo "[pion] default route via NAT gateway $GATEWAY_IP"
 fi
+# Same for the v6 default route on the dual/v6 lanes (GATEWAY_IP6 = the NAT's LAN v6 address; compose.ipv6.yml
+# sets it on pion). Without it pion can't reach coturn/rendezvous over v6 — like the browser lanes, this was
+# a v4-only entrypoint (the native + jvm peers already do this). Unset on v4.
+if [ -n "${GATEWAY_IP6:-}" ]; then
+    ip -6 route replace default via "$GATEWAY_IP6"
+    echo "[pion] v6 default route via NAT gateway $GATEWAY_IP6"
+fi
 echo "[pion] $(ip -o -4 addr show scope global | awk '{print $2, $4}')"
 
 exec pion-echo

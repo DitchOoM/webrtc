@@ -411,6 +411,12 @@ services:
     environment:
       GATEWAY_IP: "${NAT_B_LAN_IP}"
       BROWSER: firefox
+      # CLAT-shim toggle (caller-side kill switch, default ON): on the v6-only lane the entrypoint gives the
+      # firefox container a non-routable dummy IPv4 + v4 default route so Firefox's ICE-gather bootstrap
+      # succeeds (nICEr aborts ALL gathering without a v4 default route — see entrypoint.sh). It approximates
+      # 464XLAT/CLAT and needs NO other config. Set FIREFOX_V4_SHIM=0 to disable it and observe the raw
+      # Firefox v6-only failure. No effect off the v6-only lane (the entrypoint guards on GATEWAY_IP unset).
+      FIREFOX_V4_SHIM: "${FIREFOX_V4_SHIM:-1}"
       WEBRTC_ROLE: answerer  # the browser peer is answerer-only; informational
       WEBRTC_SESSION: "${SESSION:-l2}"
       WEBRTC_LOCAL_IP: "${PEER_B_IP}"

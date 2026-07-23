@@ -51,15 +51,59 @@ services:
     networks:
       pub: { ipv6_address: "${RENDEZVOUS_IP6}" }   # the mailbox already dual-binds :: (rendezvous.py)
 
+  # Routed-v6 has NO NAT66 (nat-setup.sh install_v6 is a pure filtering router), so a peer keeps its ULA LAN
+  # source address end to end. A pub-side service (coturn, rendezvous) therefore needs an explicit route BACK
+  # to each peer LAN subnet via that LAN's NAT router (its WAN address), or every STUN/TURN/signaling reply
+  # to a peer is silently undeliverable — the v6 reply-path black hole that leaves the answerer stuck at `New`
+  # (descriptions=0) and hangs the whole lane (nat_b conntrack shows the flow [UNREPLIED]). v4 uses MASQUERADE,
+  # so the return is implicit there and these are absent. Each one-shot sidecar shares its target's network
+  # namespace — coturn's own image has no `ip` — installs the routes with the nat image's iproute2, then idles
+  # so `compose up --wait` sees it running. run-interop.sh adds them to $INFRA only for the v6/dual stacks.
+  # `entrypoint:` (NOT `command:`) is REQUIRED: the nat image's Dockerfile sets ENTRYPOINT ["/nat-setup.sh"],
+  # so a bare `command:` would be passed as ARGS to nat-setup.sh and the route commands would never run
+  # (coturn_pcap overrides entrypoint for the same reason). `exec tail -f /dev/null` keeps the container
+  # running so `compose up --wait` sees it healthy after the routes are in.
+  coturn_route6:
+    build: { context: ., dockerfile: nat/Dockerfile }
+    network_mode: "service:coturn"
+    cap_add: [NET_ADMIN]
+    restart: on-failure
+    depends_on:
+      coturn: { condition: service_started }
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        ip -6 route replace ${LAN_A_SUBNET6} via ${NAT_A_WAN_IP6} &&
+        ip -6 route replace ${LAN_B_SUBNET6} via ${NAT_B_WAN_IP6} &&
+        echo '[route6] coturn return routes installed' && exec tail -f /dev/null
+
+  rendezvous_route6:
+    build: { context: ., dockerfile: nat/Dockerfile }
+    network_mode: "service:rendezvous"
+    cap_add: [NET_ADMIN]
+    restart: on-failure
+    depends_on:
+      rendezvous: { condition: service_started }
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        ip -6 route replace ${LAN_A_SUBNET6} via ${NAT_A_WAN_IP6} &&
+        ip -6 route replace ${LAN_B_SUBNET6} via ${NAT_B_WAN_IP6} &&
+        echo '[route6] rendezvous return routes installed' && exec tail -f /dev/null
+
   nat_a:
     sysctls: { net.ipv6.conf.all.forwarding: 1 }
     environment:
       NAT_WAN_IP6: "${NAT_A_WAN_IP6}"
       NAT_LAN_IP6: "${NAT_A_LAN_IP6}"
       PEER_IP6: "${PEER_A_IP6}"
-      # firewall-relay6 lane: drop WAN→LAN except the return from coturn (nat-setup.sh). Empty otherwise.
+      # firewall-relay6 lane: drop WAN→LAN except the return from coturn + rendezvous (nat-setup.sh). Empty
+      # otherwise. RENDEZVOUS_IP6 keeps the signaling channel open so the answerer still gets the offer.
       V6_FORCE_RELAY: "${V6_FORCE_RELAY:-}"
       COTURN_IP6: "${COTURN_IP6}"
+      RENDEZVOUS_IP6: "${RENDEZVOUS_IP6}"
     healthcheck:
       # Assert BOTH the v4 mapping (MASQUERADE) and the v6 filter (a FORWARD ACCEPT) are installed, so a v6
       # router bring-up failure fails fast pre-flight instead of as a 40-min ICE timeout.
@@ -77,6 +121,7 @@ services:
       PEER_IP6: "${PEER_B_IP6}"
       V6_FORCE_RELAY: "${V6_FORCE_RELAY:-}"   # see nat_a — firewall-relay6 lane
       COTURN_IP6: "${COTURN_IP6}"
+      RENDEZVOUS_IP6: "${RENDEZVOUS_IP6}"
     healthcheck:
       test: ["CMD-SHELL", "iptables -t nat -S | grep -q MASQUERADE && ip6tables -S FORWARD | grep -q ACCEPT"]
     networks:

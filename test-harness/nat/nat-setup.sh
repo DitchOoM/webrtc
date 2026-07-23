@@ -123,8 +123,16 @@ install_v6() {
         # and server-reflexive v6 hole-punching both fail and ICE must DISCOVER the TURN relay (network-forced
         # fallback, ice_policy=all — distinct from relay-only's policy-forced gathering). ~3 lines, as designed.
         [ -n "${COTURN_IP6:-}" ] || { echo "[nat] V6_FORCE_RELAY set but COTURN_IP6 empty" >&2; exit 1; }
+        [ -n "${RENDEZVOUS_IP6:-}" ] || { echo "[nat] V6_FORCE_RELAY set but RENDEZVOUS_IP6 empty" >&2; exit 1; }
         ip6tables -A FORWARD -i "$WAN6" -o "$LAN6" -s "$COTURN_IP6" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-        echo "[nat] v6 FORCE-RELAY: WAN→LAN dropped except the return from coturn ($COTURN_IP6)"
+        # The rendezvous SIGNALING channel must stay reachable — this lane forces the MEDIA path onto the TURN
+        # relay by blocking direct/srflx peer hole-punching, NOT by severing signaling. Without this the
+        # answerer never receives the offer (return from rendezvous dropped → descriptions=0) and ICE never
+        # even starts, so nothing reaches the relay to prove. The rendezvous is infra, not a peer address, so
+        # allowing its return leaves the peer↔peer path (the far NAT's WAN / the far peer's ULA) still blocked
+        # → relay is still network-forced.
+        ip6tables -A FORWARD -i "$WAN6" -o "$LAN6" -s "$RENDEZVOUS_IP6" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+        echo "[nat] v6 FORCE-RELAY: WAN→LAN dropped except returns from coturn ($COTURN_IP6) + rendezvous ($RENDEZVOUS_IP6)"
     else
         # Stateful firewall baseline (== v4 port-restricted filtering): conntrack allows the return only.
         ip6tables -A FORWARD -i "$WAN6" -o "$LAN6" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT

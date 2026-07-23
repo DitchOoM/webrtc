@@ -218,14 +218,26 @@ func trySignal(ch chan<- struct{}) {
 	}
 }
 
+// brk brackets a bare IPv6 literal so it's a legal host in a STUN/TURN URI (RFC 7064 → RFC 3986):
+// `2001:db8:30::10` must become `[2001:db8:30::10]`, else Pion's URL parser reads the colons as extra
+// port separators ("too many colons in address") and NewPeerConnection fails before ICE even starts. On
+// the v6/dual lanes compose passes coturn's bare v6 literal as WEBRTC_STUN/TURN_HOST; a hostname or v4
+// literal (no colon) passes through untouched, so v4 is unaffected.
+func brk(host string) string {
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		return "[" + host + "]"
+	}
+	return host
+}
+
 // newPeerConnection builds a Pion PeerConnection pointed at the harness coturn for STUN + TURN, honoring
 // the relay-only policy when requested.
 func newPeerConnection(cfg config) (*webrtc.PeerConnection, error) {
 	rtcCfg := webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
-			{URLs: []string{fmt.Sprintf("stun:%s:%d", cfg.stunHost, cfg.stunPort)}},
+			{URLs: []string{fmt.Sprintf("stun:%s:%d", brk(cfg.stunHost), cfg.stunPort)}},
 			{
-				URLs:       []string{fmt.Sprintf("turn:%s:%d?transport=udp", cfg.turnHost, cfg.turnPort)},
+				URLs:       []string{fmt.Sprintf("turn:%s:%d?transport=udp", brk(cfg.turnHost), cfg.turnPort)},
 				Username:   cfg.turnUser,
 				Credential: cfg.turnPass,
 			},

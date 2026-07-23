@@ -406,7 +406,18 @@ run_scenario() {
     fi
     # Now start both together with the already-built images (no build here → same ordering as before).
     # They run to completion (establish + echo, or watchdog timeout) and exit.
-    docker compose up -d --no-build "$a_service" "$b_service"
+    #
+    # --no-recreate is LOAD-BEARING on the routed-v6 (dual/v6) lanes: without it, `compose up peer_a peer_b`
+    # re-converges the whole project and RECREATES the peers' depends_on infra (rendezvous, nat_a, nat_b) —
+    # giving rendezvous a fresh network namespace. That silently DROPS the return routes the rendezvous_route6
+    # sidecar installed into the OLD namespace at infra-up (fd00:3x::/64 via the NAT WAN — the no-NAT66 return
+    # path), and the sidecar does NOT re-run (it's still tail -f'ing, restart:on-failure never fires). The
+    # rendezvous then has no route back to either peer LAN, so its offer/answer replies vanish (answerer stuck
+    # descriptions=0; the browser's TCP SYN to :9998 goes UNREPLIED) and every routed-v6 lane fails at
+    # SIGNALING before ICE even starts. The infra is already fully + correctly built for THIS scenario at
+    # infra-up (profiles/seed/netem all set before compose-up-retry above), so there is nothing to recreate
+    # here anyway — we only need the two peers created + started. v4 is unaffected (no return-route sidecars).
+    docker compose up -d --no-build --no-recreate "$a_service" "$b_service"
     # `docker compose wait` blocks until stop; its output form varies ("0" vs "container … status code 0"),
     # so extract the trailing exit code robustly.
     local rc_a rc_b

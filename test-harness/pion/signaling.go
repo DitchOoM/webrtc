@@ -3,8 +3,8 @@ package main
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"net"
+	"strconv"
 	"time"
 )
 
@@ -44,11 +44,14 @@ type signaling struct {
 // openSignaling dials the rendezvous relay from a fresh ephemeral UDP socket (its own single-consumer
 // socket, matching the native peer's sigOut/sigIn split).
 func openSignaling(host string, port int, session string) (*signaling, error) {
-	raddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", host, port))
+	// network "udp" (not "udp4") + JoinHostPort so this dials a v6 rendezvous too: on the v6/dual lanes the
+	// host is a bare v6 literal (e.g. 2001:db8:30::20) that JoinHostPort brackets, and "udp4" would refuse
+	// the AAAA. v4 lanes are unaffected (a v4 literal/host resolves to v4 under "udp").
+	raddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return nil, err
 	}
-	conn, err := net.DialUDP("udp4", nil, raddr)
+	conn, err := net.DialUDP("udp", nil, raddr)
 	if err != nil {
 		return nil, err
 	}

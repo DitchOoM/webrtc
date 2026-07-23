@@ -39,13 +39,19 @@ function envInt(name, def) {
 
 const BROWSER = env('BROWSER', 'chromium').toLowerCase();
 
+// A bare IPv6 literal must be bracketed inside a URL authority (RFC 3986) — `stun:[fd00::10]:3478`,
+// `http://[fd00::11]:9998`. On v6-only lanes the harness passes coturn / rendezvous as bare v6 literals;
+// unbracketed, the browser reads the address' own colons as the port and `new RTCPeerConnection` throws
+// `ICE server parsing failed: Invalid port`. Hostnames ("coturn") and v4 literals have no ':' → passthrough.
+const brk = (h) => (h.includes(':') ? `[${h}]` : h);
+
 const cfg = {
   session: env('WEBRTC_SESSION', 'harness'),
   localIP: env('WEBRTC_LOCAL_IP', ''),
-  base: `http://${env('WEBRTC_RENDEZVOUS_HOST', 'rendezvous')}:${envInt('WEBRTC_RENDEZVOUS_HTTP_PORT', 9998)}`,
-  stunHost: env('WEBRTC_STUN_HOST', 'coturn'),
+  base: `http://${brk(env('WEBRTC_RENDEZVOUS_HOST', 'rendezvous'))}:${envInt('WEBRTC_RENDEZVOUS_HTTP_PORT', 9998)}`,
+  stunHost: brk(env('WEBRTC_STUN_HOST', 'coturn')),
   stunPort: envInt('WEBRTC_STUN_PORT', 3478),
-  turnHost: env('WEBRTC_TURN_HOST', 'coturn'),
+  turnHost: brk(env('WEBRTC_TURN_HOST', 'coturn')),
   turnPort: envInt('WEBRTC_TURN_PORT', 3478),
   turnUser: env('WEBRTC_TURN_USER', 'webrtc'),
   turnPass: env('WEBRTC_TURN_PASS', 'webrtc'),

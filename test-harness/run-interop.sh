@@ -95,6 +95,9 @@ else
 fi
 
 INFRA="coturn coturn_pcap rendezvous nat_a nat_b"
+# Routed-v6 (dual + v6) has no NAT66, so the pub-side services need explicit return routes to the peer ULA
+# LAN subnets — two netns-sharing sidecars install them (see compose.ipv6.yml). Absent on the v4-only stack.
+[ "$IP_FAMILY" != "v4" ] && INFRA="$INFRA coturn_route6 rendezvous_route6"
 
 # Docker-host setup: a container acting as a router BETWEEN two Docker bridge networks only forwards if
 # host bridge-netfilter is OFF — otherwise the bridged frames traverse the host's Docker FORWARD/ISOLATION

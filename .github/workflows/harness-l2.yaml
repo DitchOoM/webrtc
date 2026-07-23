@@ -109,8 +109,8 @@ jobs:
     strategy:
       fail-fast: false
       # arch × ipfamily = 2 × 3 = 6 jobs. ipfamily is ORTHOGONAL to the NAT-profile SCENARIOS matrix inside
-      # run-interop (a family-skip drops the family-degenerate lanes). v6/dual are now GATING (FAMILY_GATING=1
-      # in the interop step) — promoted after the whole matrix went green; they landed non-gating first.
+      # run-interop (a family-skip drops the family-degenerate lanes). v4 + **dual** are GATING
+      # (FAMILY_GATING in the interop step); v6 stays non-gating until its remaining fixes prove green.
       matrix:
         arch:
           - { runner: ubuntu-24.04, name: X64, konan: linuxX64 }
@@ -165,16 +165,17 @@ jobs:
 
       # PEER_KEXE / PEER_JAR point at the downloaded artifacts → run-interop.sh uses them as-is (no build).
       # HARNESS_SKIP drops the browser lanes (native ⇄ browser AND jvm ⇄ browser run in l2-browser).
-      # IP_FAMILY selects the compose overlays + family-skip. FAMILY_GATING=1 makes v6/dual GATING (promoted
-      # after the whole matrix went green in run 30033318658 — the v6 signaling family-bind fix in #39). The
-      # impaired-loss-delay lane stays informational regardless (it's gated by $NON_GATING, not by family).
+      # IP_FAMILY selects the compose overlays + family-skip. FAMILY_GATING=1 makes a family GATING; only
+      # **dual** is promoted here (v4 was always gating). v6 stays non-gating (informational) until its
+      # routed-v6 return-route + browser-bracketing fixes prove green via the SCENARIO summaries — not the
+      # masked job status. impaired-loss-delay stays informational regardless (gated by $NON_GATING).
       - name: L2 interop matrix (native + Pion + JVM offerer)
         env:
           PEER_KEXE: "webrtc-harness-endpoint/build/bin/${{ matrix.arch.konan }}/peerReleaseExecutable/peer.kexe"
           PEER_JAR: "webrtc-harness-endpoint/build/libs/webrtc-harness-peer-all.jar"
           HARNESS_SKIP: "chrome-interop firefox-interop webkit-interop jvm-chrome jvm-firefox jvm-webkit"
           IP_FAMILY: "${{ matrix.ipfamily }}"
-          FAMILY_GATING: "1"
+          FAMILY_GATING: "${{ matrix.ipfamily == 'dual' && '1' || '' }}"
         run: |
           set -o pipefail
           bash test-harness/run-interop.sh 2>&1 | tee l2-harness.log
@@ -212,8 +213,8 @@ jobs:
     needs: build-peer
     strategy:
       fail-fast: false
-      # arch(2) × browser(3) × peer(2) × ipfamily(3) = 36 jobs. ipfamily is orthogonal; v6/dual are now GATING
-      # (FAMILY_GATING=1 in the interop step), promoted after the matrix went green. The browser image is
+      # arch(2) × browser(3) × peer(2) × ipfamily(3) = 36 jobs. ipfamily is orthogonal; v4 + **dual** are
+      # GATING (FAMILY_GATING in the interop step), v6 stays non-gating for now. The browser image is
       # family-INDEPENDENT, so ipfamily is deliberately kept OUT of the buildx cache scope (below) — all three
       # families share one cache per {engine × arch}.
       matrix:
@@ -317,7 +318,7 @@ jobs:
           HARNESS_NO_BROWSER_BUILD: "1"  # reuse the gha-cached image built above
           SCENARIO: "${{ matrix.peer == 'jvm' && format('jvm-{0}', matrix.browser) || format('{0}-interop', matrix.browser) }}"
           IP_FAMILY: "${{ matrix.ipfamily }}"
-          FAMILY_GATING: "1"  # v6/dual promoted to GATING (green in run 30033318658); see the l2 job's note
+          FAMILY_GATING: "${{ matrix.ipfamily == 'dual' && '1' || '' }}"  # dual gating; v6 non-gating (see l2 note)
         run: |
           set -o pipefail
           bash test-harness/run-interop.sh "$SCENARIO" 2>&1 | tee l2-browser.log

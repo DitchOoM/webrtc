@@ -41,6 +41,23 @@ import kotlin.time.Duration.Companion.seconds
  * datagram payload is freed as it is drained — the native factory ([BufferFactory.deterministic]) is
  * malloc-backed and caller-owned.
  */
+/**
+ * A signaling mailbox slot — the closed set of blobs the two peers exchange over the rendezvous relay.
+ * An enum, not a bare string, so a `when` over it is exhaustive and a typo can't invent a dead slot.
+ * [wire] is the on-relay key (namespaced by session inside [UdpSignaling.put]/[UdpSignaling.poll]).
+ */
+internal enum class Slot(
+    val wire: String,
+) {
+    Offer("offer"),
+    Answer("answer"),
+    OffererCandidate("cand/offerer"),
+    AnswererCandidate("cand/answerer"),
+}
+
+// [RecordId] — the per-slot record index wrapper — lives in commonMain (SignalingTypes.kt): `@JvmInline`
+// value classes are only legal in common sources, not this per-target-compiled shared srcDir.
+
 internal class UdpSignaling internal constructor(
     private val channel: DatagramChannel,
     private val rendezvous: SocketAddress,
@@ -57,13 +74,14 @@ internal class UdpSignaling internal constructor(
 
     /** PUT [payload] as record [recordId] into [slot]; retransmit until a matching ack or [timeout]. */
     suspend fun put(
-        slot: String,
-        recordId: Int,
+        slot: Slot,
+        recordId: RecordId,
         payload: String,
         timeout: Duration = PUT_TIMEOUT,
     ): Boolean {
         val nonce = nextNonce()
-        val request = PutRequestCodec.encodeToPlatformBuffer(PutRequest(OP_PUT, nonce, "$session/$slot", recordId.toUInt(), payload), factory)
+        val request =
+            PutRequestCodec.encodeToPlatformBuffer(PutRequest(OP_PUT, nonce, "$session/${slot.wire}", recordId.value.toUInt(), payload), factory)
         try {
             val acked =
                 withTimeoutOrNull(timeout) {
@@ -87,12 +105,12 @@ internal class UdpSignaling internal constructor(
      * by the returned count.
      */
     suspend fun poll(
-        slot: String,
-        since: Int,
+        slot: Slot,
+        since: RecordId,
         timeout: Duration = GET_TIMEOUT,
     ): List<String> {
         val nonce = nextNonce()
-        val request = GetRequestCodec.encodeToPlatformBuffer(GetRequest(OP_GET, nonce, "$session/$slot", since.toUInt()), factory)
+        val request = GetRequestCodec.encodeToPlatformBuffer(GetRequest(OP_GET, nonce, "$session/${slot.wire}", since.value.toUInt()), factory)
         try {
             val records =
                 withTimeoutOrNull(timeout) {

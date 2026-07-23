@@ -44,6 +44,19 @@ services:
       retries: 20
       start_period: 2s
 
+  # Packet-capture sidecar for coturn (design §B). coturn's image has no tcpdump, so a tiny sidecar SHARES
+  # coturn's network namespace (network_mode: service:coturn) and ring-buffers the relay path to /cap. It
+  # reuses the nat image (which ships tcpdump); collect_diagnostics docker-cp's /cap out on failure and the
+  # stack teardown discards it on pass, so a green lane pays only an idle capture. NET_RAW for tcpdump; no
+  # `networks:` of its own (it lives in coturn's netns). Started for every scenario (run-interop INFRA).
+  coturn_pcap:
+    build: { context: ., dockerfile: nat/Dockerfile }
+    entrypoint: ["sh", "-c", "mkdir -p /cap && exec tcpdump -i any -w /cap/cap.pcap -C 20 -W 3 -U"]
+    network_mode: "service:coturn"
+    cap_add: [NET_RAW]
+    depends_on:
+      coturn: { condition: service_healthy }
+
   rendezvous:
     build: { context: ., dockerfile: rendezvous/Dockerfile }
     env_file: ./harness.env
@@ -58,7 +71,7 @@ services:
 
   nat_a:
     build: { context: ., dockerfile: nat/Dockerfile }
-    cap_add: [NET_ADMIN]
+    cap_add: [NET_ADMIN, NET_RAW]   # NET_RAW: the ring-buffered tcpdump forensic capture (design §B)
     sysctls: { net.ipv4.ip_forward: 1 }
     environment:
       NAT_PROFILE: "${NAT_A_PROFILE:-port-restricted}"
@@ -85,7 +98,7 @@ services:
 
   nat_b:
     build: { context: ., dockerfile: nat/Dockerfile }
-    cap_add: [NET_ADMIN]
+    cap_add: [NET_ADMIN, NET_RAW]   # NET_RAW: the ring-buffered tcpdump forensic capture (design §B)
     sysctls: { net.ipv4.ip_forward: 1 }
     environment:
       NAT_PROFILE: "${NAT_B_PROFILE:-port-restricted}"
@@ -118,7 +131,7 @@ services:
   cgnat_a:
     profiles: ["cgnat"]
     build: { context: ., dockerfile: nat/Dockerfile }
-    cap_add: [NET_ADMIN]
+    cap_add: [NET_ADMIN, NET_RAW]   # NET_RAW: the ring-buffered tcpdump forensic capture (design §B)
     sysctls: { net.ipv4.ip_forward: 1 }
     environment:
       NAT_PROFILE: "port-restricted"
@@ -139,7 +152,7 @@ services:
   cgnat_b:
     profiles: ["cgnat"]
     build: { context: ., dockerfile: nat/Dockerfile }
-    cap_add: [NET_ADMIN]
+    cap_add: [NET_ADMIN, NET_RAW]   # NET_RAW: the ring-buffered tcpdump forensic capture (design §B)
     sysctls: { net.ipv4.ip_forward: 1 }
     environment:
       NAT_PROFILE: "port-restricted"
@@ -164,7 +177,7 @@ services:
   cgnat:
     profiles: ["hairpin"]
     build: { context: ., dockerfile: nat/Dockerfile }
-    cap_add: [NET_ADMIN]
+    cap_add: [NET_ADMIN, NET_RAW]   # NET_RAW: the ring-buffered tcpdump forensic capture (design §B)
     sysctls: { net.ipv4.ip_forward: 1 }
     environment:
       NAT_PROFILE: "symmetric"
@@ -214,6 +227,9 @@ services:
       # Default 1.3-on (production). The Pion interop lane sets PEER_DTLS13=false (run-interop.sh) so this
       # offerer pins DTLS 1.2 — Pion's released v3 is 1.2-only.
       WEBRTC_DTLS13: "${PEER_DTLS13:-true}"
+      # Distinct per-lane, per-role seed (run-interop.sh derives SEED_A/SEED_B per scenario+family). Drives
+      # EVERY entropy source, so the logged seed reproduces this lane as a seeded vnet fixture. Offerer=SEED_A.
+      WEBRTC_SEED: "${SEED_A:-}"
     networks:
       lan_a: { ipv4_address: "${PEER_A_IP}" }
     depends_on:
@@ -246,6 +262,7 @@ services:
       WEBRTC_ICE_POLICY: "${ICE_POLICY:-all}"
       WEBRTC_TIMEOUT_MS: "${PEER_TIMEOUT_MS}"
       WEBRTC_DTLS13: "${PEER_DTLS13:-true}"  # see peer_a
+      WEBRTC_SEED: "${SEED_B:-}"             # answerer=SEED_B (see peer_a)
     networks:
       lan_b: { ipv4_address: "${PEER_B_IP}" }
     depends_on:
@@ -290,6 +307,9 @@ services:
       # Default 1.3-on (production). The jvm-pion lane sets PEER_DTLS13=false (run-interop.sh) so this
       # offerer pins DTLS 1.2 — Pion's released v3 is 1.2-only.
       WEBRTC_DTLS13: "${PEER_DTLS13:-true}"
+      # Distinct per-lane, per-role seed (run-interop.sh derives SEED_A/SEED_B per scenario+family). Drives
+      # EVERY entropy source, so the logged seed reproduces this lane as a seeded vnet fixture. Offerer=SEED_A.
+      WEBRTC_SEED: "${SEED_A:-}"
     networks:
       lan_a: { ipv4_address: "${PEER_A_IP}" }
     depends_on:

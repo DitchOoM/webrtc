@@ -1,0 +1,136 @@
+# Dual-stack (v4 + v6) overlay — layered over the untouched v4 base by run-interop.sh (COMPOSE_FILE) on the
+# `dual` and `v6` lanes. `enable_ipv6` is a boolean and `ipam.config` is a list — neither is env-interpolatable
+# — so the IP family is carried by this overlay, not by variables. It:
+#   * turns on enable_ipv6 per network + gives each a 2nd (v6) ipam subnet (the full config list REPLACES the
+#     base's single-entry one, so there is no duplicate v4 subnet);
+#   * deep-merges an ipv6_address into each service's networks block (the base ipv4_address is preserved);
+#   * adds the v6 forwarding sysctl + broadens the healthcheck on the two CPE routers (nat_a/nat_b) so a v6
+#     firewall bring-up failure is caught pre-flight, and hands them NAT_WAN_IP6/NAT_LAN_IP6/PEER_IP6 so
+#     nat-setup.sh installs its routed-v6 stateful-firewall block (NOT NAT66);
+#   * enables coturn's 2nd (v6) listening/relay/external address and injects GATEWAY_IP6 + the v6 coturn/local
+#     addresses into our peers so they gather a host+relay candidate PER FAMILY.
+#
+# The carrier NATs (cgnat_*) are deliberately NOT touched: symmetric/cgnat/hairpin/mixed-sym are v4
+# address-exhaustion artifacts with no v6 analog and are family-skipped on v6/dual (run-interop.sh), so they
+# never start here. The v6-only lane layers compose.v6only.yml on top of this to drop the v4 half.
+
+networks:
+  pub:
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: "${PUB_SUBNET}"
+        - subnet: "${PUB_SUBNET6}"
+  lan_a:
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: "${LAN_A_SUBNET}"
+        - subnet: "${LAN_A_SUBNET6}"
+  lan_b:
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: "${LAN_B_SUBNET}"
+        - subnet: "${LAN_B_SUBNET6}"
+  car:
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: "${CAR_SUBNET}"
+        - subnet: "${CAR_SUBNET6}"
+
+services:
+  coturn:
+    environment:
+      COTURN_IP6_ENABLED: "1"   # entrypoint appends the v6 listening/relay/external address
+    networks:
+      pub: { ipv6_address: "${COTURN_IP6}" }
+
+  rendezvous:
+    networks:
+      pub: { ipv6_address: "${RENDEZVOUS_IP6}" }   # the mailbox already dual-binds :: (rendezvous.py)
+
+  nat_a:
+    sysctls: { net.ipv6.conf.all.forwarding: 1 }
+    environment:
+      NAT_WAN_IP6: "${NAT_A_WAN_IP6}"
+      NAT_LAN_IP6: "${NAT_A_LAN_IP6}"
+      PEER_IP6: "${PEER_A_IP6}"
+      # firewall-relay6 lane: drop WAN→LAN except the return from coturn (nat-setup.sh). Empty otherwise.
+      V6_FORCE_RELAY: "${V6_FORCE_RELAY:-}"
+      COTURN_IP6: "${COTURN_IP6}"
+    healthcheck:
+      # Assert BOTH the v4 mapping (MASQUERADE) and the v6 filter (a FORWARD ACCEPT) are installed, so a v6
+      # router bring-up failure fails fast pre-flight instead of as a 40-min ICE timeout.
+      test: ["CMD-SHELL", "iptables -t nat -S | grep -q MASQUERADE && ip6tables -S FORWARD | grep -q ACCEPT"]
+    networks:
+      pub: { ipv6_address: "${NAT_A_WAN_IP6}" }
+      lan_a: { ipv6_address: "${NAT_A_LAN_IP6}" }
+      car: { ipv6_address: "${NAT_A_CAR_IP6}" }
+
+  nat_b:
+    sysctls: { net.ipv6.conf.all.forwarding: 1 }
+    environment:
+      NAT_WAN_IP6: "${NAT_B_WAN_IP6}"
+      NAT_LAN_IP6: "${NAT_B_LAN_IP6}"
+      PEER_IP6: "${PEER_B_IP6}"
+      V6_FORCE_RELAY: "${V6_FORCE_RELAY:-}"   # see nat_a — firewall-relay6 lane
+      COTURN_IP6: "${COTURN_IP6}"
+    healthcheck:
+      test: ["CMD-SHELL", "iptables -t nat -S | grep -q MASQUERADE && ip6tables -S FORWARD | grep -q ACCEPT"]
+    networks:
+      pub: { ipv6_address: "${NAT_B_WAN_IP6}" }
+      lan_b: { ipv6_address: "${NAT_B_LAN_IP6}" }
+      car: { ipv6_address: "${NAT_B_CAR_IP6}" }
+
+  peer_a:
+    environment:
+      GATEWAY_IP6: "${NAT_A_LAN_IP6}"
+      WEBRTC_LOCAL_IP6: "${PEER_A_IP6}"
+      WEBRTC_STUN_HOST6: "${COTURN_IP6}"
+      WEBRTC_TURN_HOST6: "${COTURN_IP6}"
+    networks:
+      lan_a: { ipv6_address: "${PEER_A_IP6}" }
+
+  peer_b:
+    environment:
+      GATEWAY_IP6: "${NAT_B_LAN_IP6}"
+      WEBRTC_LOCAL_IP6: "${PEER_B_IP6}"
+      WEBRTC_STUN_HOST6: "${COTURN_IP6}"
+      WEBRTC_TURN_HOST6: "${COTURN_IP6}"
+    networks:
+      lan_b: { ipv6_address: "${PEER_B_IP6}" }
+
+  # JVM offerer — same v6 bindings as peer_a (it runs the same peer program).
+  peer_a_jvm:
+    environment:
+      GATEWAY_IP6: "${NAT_A_LAN_IP6}"
+      WEBRTC_LOCAL_IP6: "${PEER_A_IP6}"
+      WEBRTC_STUN_HOST6: "${COTURN_IP6}"
+      WEBRTC_TURN_HOST6: "${COTURN_IP6}"
+    networks:
+      lan_a: { ipv6_address: "${PEER_A_IP6}" }
+
+  # The independent-stack answerers (pion, the browsers) enumerate interfaces themselves, so they gather v6
+  # candidates automatically given a v6 address + a v6 default route — no WEBRTC_*6 injection needed. On dual
+  # they keep the v4 coturn/rendezvous (reachable v4-mapped); compose.v6only.yml swaps those to v6.
+  pion:
+    environment: { GATEWAY_IP6: "${NAT_B_LAN_IP6}" }
+    networks:
+      lan_b: { ipv6_address: "${PEER_B_IP6}" }
+
+  chrome:
+    environment: { GATEWAY_IP6: "${NAT_B_LAN_IP6}" }
+    networks:
+      lan_b: { ipv6_address: "${PEER_B_IP6}" }
+
+  firefox:
+    environment: { GATEWAY_IP6: "${NAT_B_LAN_IP6}" }
+    networks:
+      lan_b: { ipv6_address: "${PEER_B_IP6}" }
+
+  webkit:
+    environment: { GATEWAY_IP6: "${NAT_B_LAN_IP6}" }
+    networks:
+      lan_b: { ipv6_address: "${PEER_B_IP6}" }

@@ -10,6 +10,11 @@ if [ -n "${GATEWAY_IP:-}" ]; then
     ip route replace default via "$GATEWAY_IP"
     echo "[peer-jvm] default route via NAT gateway $GATEWAY_IP"
 fi
-echo "[peer-jvm] $(ip -o -4 addr show scope global | awk '{print $2, $4}')"
+# Same for the v6 default route on the dual/v6 lanes (GATEWAY_IP6 = the NAT's LAN v6 address). Unset on v4.
+if [ -n "${GATEWAY_IP6:-}" ]; then
+    ip -6 route replace default via "$GATEWAY_IP6"
+    echo "[peer-jvm] v6 default route via NAT gateway $GATEWAY_IP6"
+fi
+echo "[peer-jvm] $(ip -o addr show scope global | awk '{print $2, $4}')"
 
 exec java -jar /usr/local/lib/peer.jar

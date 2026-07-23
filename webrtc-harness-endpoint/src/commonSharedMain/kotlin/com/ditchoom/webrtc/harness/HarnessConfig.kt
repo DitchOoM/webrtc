@@ -9,6 +9,30 @@ internal enum class Role { Offerer, Answerer }
 /** Candidate policy: gather everything, or force the TURN relay path only (`relayOnly()`). */
 internal enum class IcePolicy { All, RelayOnly }
 
+/** An IP family. Derived from a bind address literal ([of]) — the harness only ever passes literals. */
+internal enum class IpFamily {
+    V4,
+    V6,
+    ;
+
+    companion object {
+        fun of(ip: String): IpFamily = if (':' in ip) V6 else V4
+    }
+}
+
+/**
+ * One IP family's local bind address plus the coturn (STUN/TURN) host reachable over it. The peer gathers a
+ * host(+srflx)+relay candidate for EACH binding, so a dual-stack lane advertises both families (exercising
+ * the RFC 6724 candidate-priority ordering) and a single-stack lane exactly one. [HarnessConfig.bindings] is
+ * always non-empty — the primary family is the address in `WEBRTC_LOCAL_IP`.
+ */
+internal data class FamilyBinding(
+    val family: IpFamily,
+    val localIp: String,
+    val stunHost: String,
+    val turnHost: String,
+)
+
 /**
  * The peer's whole configuration, read from `WEBRTC_*` environment variables the compose harness sets.
  * Pure data; no seams here — the seams (clock/random/binder) are constructed in [runPeer] from this.
@@ -16,12 +40,11 @@ internal enum class IcePolicy { All, RelayOnly }
 internal data class HarnessConfig(
     val role: Role,
     val session: String,
-    val localIp: String,
+    /** The per-family local binds (≥1); the peer gathers host+relay for each. See [FamilyBinding]. */
+    val bindings: List<FamilyBinding>,
     val localPort: Int,
     val relayPort: Int,
-    val stunHost: String,
     val stunPort: Int,
-    val turnHost: String,
     val turnPort: Int,
     val turnUser: String,
     val turnPass: String,
@@ -41,15 +64,26 @@ internal data class HarnessConfig(
         fun fromEnv(): HarnessConfig {
             val role = if (envRequired("WEBRTC_ROLE").equals("offerer", ignoreCase = true)) Role.Offerer else Role.Answerer
             val localPort = env("WEBRTC_LOCAL_PORT")?.toIntOrNull() ?: 40000
+            val stunHost = env("WEBRTC_STUN_HOST") ?: "coturn"
+            val turnHost = env("WEBRTC_TURN_HOST") ?: "coturn"
+            // The primary family = the address in WEBRTC_LOCAL_IP (v4 on a v4/dual lane, v6 on a v6-only
+            // lane). A dual-stack lane injects WEBRTC_LOCAL_IP6 (+ the v6 coturn) for a SECOND binding, so
+            // the peer gathers both families; a single-stack lane leaves it unset and gathers exactly one.
+            val bindings =
+                buildList {
+                    val primaryIp = envRequired("WEBRTC_LOCAL_IP")
+                    add(FamilyBinding(IpFamily.of(primaryIp), primaryIp, stunHost, turnHost))
+                    env("WEBRTC_LOCAL_IP6")?.let { ip6 ->
+                        add(FamilyBinding(IpFamily.V6, ip6, env("WEBRTC_STUN_HOST6") ?: stunHost, env("WEBRTC_TURN_HOST6") ?: turnHost))
+                    }
+                }
             return HarnessConfig(
                 role = role,
                 session = env("WEBRTC_SESSION") ?: "harness",
-                localIp = envRequired("WEBRTC_LOCAL_IP"),
+                bindings = bindings,
                 localPort = localPort,
                 relayPort = env("WEBRTC_RELAY_PORT")?.toIntOrNull() ?: (localPort + 1),
-                stunHost = env("WEBRTC_STUN_HOST") ?: "coturn",
                 stunPort = env("WEBRTC_STUN_PORT")?.toIntOrNull() ?: 3478,
-                turnHost = env("WEBRTC_TURN_HOST") ?: "coturn",
                 turnPort = env("WEBRTC_TURN_PORT")?.toIntOrNull() ?: 3478,
                 turnUser = env("WEBRTC_TURN_USER") ?: "webrtc",
                 turnPass = env("WEBRTC_TURN_PASS") ?: "webrtc",

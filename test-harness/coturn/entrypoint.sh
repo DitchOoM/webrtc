@@ -11,8 +11,20 @@ sed \
   -e "s/__TURN_REALM__/${TURN_REALM}/g" \
   -e "s/__TURN_MIN_PORT__/${TURN_MIN_PORT}/g" \
   -e "s/__TURN_MAX_PORT__/${TURN_MAX_PORT}/g" \
-  -e "s/__COTURN_IP__/${COTURN_IP}/g" \
   /etc/coturn/turnserver.conf > "$CONF"
 
-echo "[coturn] starting STUN/TURN on ${COTURN_IP}:${STUN_PORT} realm=${TURN_REALM} user=${TURN_USER}"
+# Append the listening/relay/external addresses per family (see turnserver.conf). coturn aborts if asked to
+# listen on an address that isn't assigned, so each family's lines are added ONLY when that family is live:
+# v4 unless COTURN_IP4_DISABLED=1 (v6-only lane), v6 when COTURN_IP6_ENABLED=1 (dual/v6 lane).
+listen=""
+if [ "${COTURN_IP4_DISABLED:-0}" != "1" ]; then
+    { echo "listening-ip=${COTURN_IP}"; echo "relay-ip=${COTURN_IP}"; echo "external-ip=${COTURN_IP}"; } >> "$CONF"
+    listen="${COTURN_IP}:${STUN_PORT}"
+fi
+if [ "${COTURN_IP6_ENABLED:-0}" = "1" ]; then
+    { echo "listening-ip=${COTURN_IP6}"; echo "relay-ip=${COTURN_IP6}"; echo "external-ip=${COTURN_IP6}"; } >> "$CONF"
+    listen="${listen:+$listen + }[${COTURN_IP6}]:${STUN_PORT}"
+fi
+
+echo "[coturn] starting STUN/TURN on ${listen} realm=${TURN_REALM} user=${TURN_USER}"
 exec turnserver -c "$CONF" -n

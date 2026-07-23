@@ -104,16 +104,19 @@ jobs:
   # `l2-browser` job (below) so a slow Chromium/Firefox image build never gates the fast native lanes and
   # each engine gets isolated logs. HARNESS_SKIP drops the browser scenarios from run-interop.sh's matrix.
   l2:
-    name: "establish over NAT profiles + Pion (${{ matrix.arch }})"
+    name: "establish over NAT profiles + Pion (${{ matrix.arch.name }}, ${{ matrix.ipfamily }})"
     needs: build-peer
     strategy:
       fail-fast: false
+      # arch × ipfamily = 2 × 3 = 6 jobs. ipfamily is ORTHOGONAL to the NAT-profile SCENARIOS matrix inside
+      # run-interop (a family-skip drops the family-degenerate lanes); v6/dual land NON-GATING first.
       matrix:
-        include:
-          - { runner: ubuntu-24.04, arch: X64, konan: linuxX64 }
-          - { runner: ubuntu-24.04-arm, arch: Arm64, konan: linuxArm64 }
-    runs-on: ${{ matrix.runner }}
-    # 10 scenarios now (the 7 NAT profiles + pion-interop + jvm-native + jvm-pion), each a fresh stack —
+        arch:
+          - { runner: ubuntu-24.04, name: X64, konan: linuxX64 }
+          - { runner: ubuntu-24.04-arm, name: Arm64, konan: linuxArm64 }
+        ipfamily: [v4, v6, dual]
+    runs-on: ${{ matrix.arch.runner }}
+    # 11 scenarios now (7 NAT profiles + pion + jvm-native + jvm-pion + firewall-relay6), each a fresh stack —
     # a wider margin than the original 8-scenario budget, especially on the slower arm64 runner.
     timeout-minutes: 40
     steps:
@@ -135,29 +138,55 @@ jobs:
           path: webrtc-harness-endpoint/build/libs
 
       - name: Restore exec bit
-        run: chmod +x "webrtc-harness-endpoint/build/bin/${{ matrix.konan }}/peerReleaseExecutable/peer.kexe"
+        run: chmod +x "webrtc-harness-endpoint/build/bin/${{ matrix.arch.konan }}/peerReleaseExecutable/peer.kexe"
 
       # Container-as-router between two Docker bridge networks only forwards with bridge netfilter OFF.
       - name: Enable container-router forwarding
         run: sudo sysctl -w net.bridge.bridge-nf-call-iptables=0 net.bridge.bridge-nf-call-ip6tables=0 || true
 
+      # IPv6 on the runner's Docker daemon (v6/dual lanes only) — see the shared rationale below (l2-browser
+      # has an identical step). Stock ubuntu-24.04 dockerd has IPv6 OFF; enable it + DETERMINISTICALLY validate
+      # bring-up so a silently v6-disabled daemon fails fast + clearly instead of as a 40-min ICE timeout.
+      - name: Enable + validate IPv6 on the Docker daemon
+        if: ${{ matrix.ipfamily != 'v4' }}
+        run: |
+          set -euo pipefail
+          echo '{"ipv6": true, "fixed-cidr-v6": "fd00:d0c::/48", "ip6tables": true}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+          sudo sysctl -w net.ipv6.conf.all.forwarding=1
+          docker network create --ipv6 --subnet fd00:cafe::/64 v6probe
+          if docker run --rm --network v6probe alpine:3.20 ip -6 addr | grep -q 'inet6 .*scope global'; then
+            echo "[v6probe] OK — daemon assigns global IPv6 addresses"
+          else
+            echo "::error::[v6probe] Docker daemon did NOT bring IPv6 up (no global inet6 on a --ipv6 network)"; exit 1
+          fi
+          docker network rm v6probe
+
       # PEER_KEXE / PEER_JAR point at the downloaded artifacts → run-interop.sh uses them as-is (no build).
       # HARNESS_SKIP drops the browser lanes (native ⇄ browser AND jvm ⇄ browser run in l2-browser).
+      # IP_FAMILY selects the compose overlays + family-skip; v6/dual are non-gating (FAMILY_GATING unset).
       - name: L2 interop matrix (native + Pion + JVM offerer)
         env:
-          PEER_KEXE: "webrtc-harness-endpoint/build/bin/${{ matrix.konan }}/peerReleaseExecutable/peer.kexe"
+          PEER_KEXE: "webrtc-harness-endpoint/build/bin/${{ matrix.arch.konan }}/peerReleaseExecutable/peer.kexe"
           PEER_JAR: "webrtc-harness-endpoint/build/libs/webrtc-harness-peer-all.jar"
           HARNESS_SKIP: "chrome-interop firefox-interop webkit-interop jvm-chrome jvm-firefox jvm-webkit"
+          IP_FAMILY: "${{ matrix.ipfamily }}"
         run: |
           set -o pipefail
           bash test-harness/run-interop.sh 2>&1 | tee l2-harness.log
 
-      - name: Upload harness log (on failure)
+      # On failure, upload the tee'd log AND the capture-on-failure forensic bundle (design §B) — pcaps,
+      # per-container logs, conntrack/firewall state, the rendezvous mailbox, seeds + selected pair — so a
+      # red lane is deterministically root-causable from the artifact (no local repro). Ring-bounded pcaps +
+      # failure-only copy keep it small; the whole test-harness/diag/ tree is one bundle per failed scenario.
+      - name: Upload harness log + diagnostics (on failure)
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
-          name: l2-harness-log-${{ matrix.arch }}
-          path: l2-harness.log
+          name: l2-harness-diag-${{ matrix.arch.name }}-${{ matrix.ipfamily }}
+          path: |
+            l2-harness.log
+            test-harness/diag/**
           retention-days: 14
           if-no-files-found: ignore
 
@@ -170,10 +199,13 @@ jobs:
   # instead of a fresh multi-minute download. The image is loaded under compose's default name so
   # run-interop.sh (HARNESS_NO_BROWSER_BUILD=1) reuses it without rebuilding.
   l2-browser:
-    name: "interop: ${{ matrix.browser }} ⇄ ${{ matrix.peer }} (${{ matrix.arch.name }})"
+    name: "interop: ${{ matrix.browser }} ⇄ ${{ matrix.peer }} (${{ matrix.arch.name }}, ${{ matrix.ipfamily }})"
     needs: build-peer
     strategy:
       fail-fast: false
+      # arch(2) × browser(3) × peer(2) × ipfamily(3) = 36 jobs. ipfamily is orthogonal; v6/dual are
+      # non-gating first. The browser image is family-INDEPENDENT, so ipfamily is deliberately kept OUT of the
+      # buildx cache scope (below) — all three families share one cache per {engine × arch}.
       matrix:
         arch:
           - { runner: ubuntu-24.04, name: X64, konan: linuxX64 }
@@ -182,6 +214,7 @@ jobs:
         # The offerer against each browser: our native peer AND our JVM peer (the pure engine from a
         # managed runtime). Same gha-cached browser image serves both — only the offerer differs.
         peer: [native, jvm]
+        ipfamily: [v4, v6, dual]
     runs-on: ${{ matrix.arch.runner }}
     timeout-minutes: 30
     steps:
@@ -205,6 +238,25 @@ jobs:
 
       - name: Enable container-router forwarding
         run: sudo sysctl -w net.bridge.bridge-nf-call-iptables=0 net.bridge.bridge-nf-call-ip6tables=0 || true
+
+      # IPv6 on the runner's Docker daemon (v6/dual lanes only) — enable + deterministically validate. It runs
+      # BEFORE buildx setup + the browser image build, so the daemon restart precedes (and cannot wipe) the
+      # loaded image. ip6tables installs the v6 chains for user networks; fixed-cidr-v6 governs only the
+      # default bridge (disjoint from the compose v6 subnets). v6probe fails fast if IPv6 didn't come up.
+      - name: Enable + validate IPv6 on the Docker daemon
+        if: ${{ matrix.ipfamily != 'v4' }}
+        run: |
+          set -euo pipefail
+          echo '{"ipv6": true, "fixed-cidr-v6": "fd00:d0c::/48", "ip6tables": true}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+          sudo sysctl -w net.ipv6.conf.all.forwarding=1
+          docker network create --ipv6 --subnet fd00:cafe::/64 v6probe
+          if docker run --rm --network v6probe alpine:3.20 ip -6 addr | grep -q 'inet6 .*scope global'; then
+            echo "[v6probe] OK — daemon assigns global IPv6 addresses"
+          else
+            echo "::error::[v6probe] Docker daemon did NOT bring IPv6 up (no global inet6 on a --ipv6 network)"; exit 1
+          fi
+          docker network rm v6probe
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -254,15 +306,20 @@ jobs:
           PEER_JAR: "webrtc-harness-endpoint/build/libs/webrtc-harness-peer-all.jar"
           HARNESS_NO_BROWSER_BUILD: "1"  # reuse the gha-cached image built above
           SCENARIO: "${{ matrix.peer == 'jvm' && format('jvm-{0}', matrix.browser) || format('{0}-interop', matrix.browser) }}"
+          IP_FAMILY: "${{ matrix.ipfamily }}"
         run: |
           set -o pipefail
           bash test-harness/run-interop.sh "$SCENARIO" 2>&1 | tee l2-browser.log
 
-      - name: Upload harness log (on failure)
+      # On failure, upload the tee'd log AND the capture-on-failure forensic bundle (design §B) — see the l2
+      # job's upload step. The browser lane's bundle carries the same pcaps/state/mailbox for the one scenario.
+      - name: Upload harness log + diagnostics (on failure)
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
-          name: l2-browser-log-${{ matrix.browser }}-${{ matrix.peer }}-${{ matrix.arch.name }}
-          path: l2-browser.log
+          name: l2-browser-diag-${{ matrix.browser }}-${{ matrix.peer }}-${{ matrix.arch.name }}-${{ matrix.ipfamily }}
+          path: |
+            l2-browser.log
+            test-harness/diag/**
           retention-days: 14
           if-no-files-found: ignore

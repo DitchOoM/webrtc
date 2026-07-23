@@ -1,0 +1,7 @@
+# Capture-on-failure forensic bundles (design §B) — pcaps, per-container logs, conntrack/firewall state,
+# rendezvous mailbox, resolved-env snapshots. Written by run-interop.sh under diag/<family>/<scenario>/ on
+# a failure; a local footprint only (CI uploads it as an artifact). Never checked in.
+diag/
+
+# Local tee'd harness logs.
+*.log

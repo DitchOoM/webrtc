@@ -49,7 +49,7 @@ class SignalingCorrelationTest {
                     factory = factory,
                 )
 
-            val records = signaling.poll("offer", 0)
+            val records = signaling.poll(Slot.Offer, RecordId(0))
 
             assertEquals(listOf(StaleThenCorrectChannel.RECORD), records, "returned the nonce-matching reply, not the stale one")
         }

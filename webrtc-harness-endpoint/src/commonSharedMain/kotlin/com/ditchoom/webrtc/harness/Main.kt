@@ -30,6 +30,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.random.Random
 import kotlin.system.exitProcess
 import kotlin.time.Clock
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
@@ -45,7 +46,13 @@ import kotlin.time.Instant
  */
 fun main() {
     val cfg = HarnessConfig.fromEnv()
-    println("[harness] role=${cfg.role} session=${cfg.session} policy=${cfg.icePolicy} local=${cfg.localIp}:${cfg.localPort} dtls13=${cfg.enableDtls13}")
+    // `seed=` is load-bearing for deterministic replay: cfg.seed drives EVERY entropy source (ICE ufrag /
+    // tie-breaker / STUN txn-ids / SCTP init-tag via Random(cfg.seed) below, AND the DTLS handshake randoms
+    // + ephemeral keys via the derived DtlsConfig.random). Logging it is what lets a real-UDP CI flake be
+    // reconstructed as a seeded virtual-time vnet fixture (standing directive #5) — see
+    // docs/HARNESS_IPV6_DIAGNOSTICS_DESIGN.md. Without this line the seed that drove a failure is in no artifact.
+    val binds = cfg.bindings.joinToString(", ") { "${it.family}=${it.localIp}" }
+    println("[harness] role=${cfg.role} session=${cfg.session} policy=${cfg.icePolicy} local=[$binds]:${cfg.localPort} dtls13=${cfg.enableDtls13} seed=${cfg.seed}")
     val code = runBlocking { runPeer(cfg) }
     println("[harness] exit=$code")
     exitProcess(code)
@@ -70,17 +77,30 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
         // native allocation is acceptable here — pooled release is the W3/W5-deferred production refactor.)
         val net = BufferFactory.deterministic()
 
-        val dtls = PureKotlinDtls(bg, clock, DtlsConfig(bufferFactory = net, enableDtls13 = cfg.enableDtls13))
-        val stun = resolveAddress(cfg.stunHost, cfg.stunPort)
-        val turn = resolveAddress(cfg.turnHost, cfg.turnPort)
+        // Seed the DTLS entropy off the SAME cfg.seed (a fixed derivation, xor 0xD715) so the handshake
+        // randoms + ephemeral X25519 keys are byte-reproducible from the one logged seed — otherwise
+        // DtlsConfig.random defaults to CryptoRandom and a DTLS-layer flake (e.g. the post-Established
+        // handshake-record storm) can't be replayed even given the seed. This is a driver, not a core, so a
+        // seeded default is correct (the whole peer is deterministic-by-seed for replay).
+        @Suppress("UnseamedEntropy") val dtlsRandom = Random(cfg.seed xor 0xD715L)
+        val dtls = PureKotlinDtls(bg, clock, DtlsConfig(bufferFactory = net, enableDtls13 = cfg.enableDtls13, random = dtlsRandom))
 
         val gathering =
             IceGatheringPolicy { driver ->
-                if (cfg.icePolicy != IcePolicy.RelayOnly) {
-                    driver.gatherHost(cfg.localIp, cfg.localPort, stunServer = stun)
+                // One host(+srflx)+relay per configured family. A dual-stack lane advertises BOTH v4 and v6
+                // candidates, exercising the RFC 6724 candidate-priority ordering (webrtc-ice, PR #37); a
+                // single-stack lane advertises exactly one. Real WebRTC stacks (pion, the browsers) gather
+                // per family by enumerating interfaces — our explicit-bind peer mirrors that by looping the
+                // injected per-family [FamilyBinding]s, each with its own coturn address for that family.
+                for (b in cfg.bindings) {
+                    val stun = resolveAddress(b.stunHost, cfg.stunPort)
+                    val turn = resolveAddress(b.turnHost, cfg.turnPort)
+                    if (cfg.icePolicy != IcePolicy.RelayOnly) {
+                        driver.gatherHost(b.localIp, cfg.localPort, stunServer = stun)
+                    }
+                    // Relay is always gathered — the fallback path, and the only path under relayOnly.
+                    driver.gatherRelay(turn, cfg.turnUser, cfg.turnPass, b.localIp, cfg.relayPort)
                 }
-                // Relay is always gathered — it's the fallback path, and the only path under relayOnly.
-                driver.gatherRelay(turn, cfg.turnUser, cfg.turnPass, cfg.localIp, cfg.relayPort)
             }
 
         val pc =
@@ -120,16 +140,21 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
         // the artifact, no local repro needed. Timestamps ride the injected clock seam (directive #2), and
         // StateFlow collection already yields only distinct transitions.
         val t0 = clock()
-        val trace = mutableListOf<Pair<Long, PeerConnectionState>>()
+        val trace = mutableListOf<StateTransition>()
         bg.launch {
-            pc.connectionState.collect { state -> trace += (clock() - t0).inWholeMilliseconds to state }
+            pc.connectionState.collect { state -> trace += StateTransition(clock() - t0, state) }
         }
+
+        // The replay inputs the seed alone can't reconstruct: the exact SDP this side offered/answered and
+        // the candidate set it gathered + received. Captured here, dumped on exit (below), so a diag bundle
+        // carries the peer's own view of the exchange to seed a virtual-time vnet fixture from.
+        val forensics = Forensics()
 
         val ok =
             withTimeoutOrNull(cfg.timeout) {
                 when (cfg.role) {
-                    Role.Offerer -> runOfferer(bg, pc, cfg, sigOut, sigIn)
-                    Role.Answerer -> runAnswerer(bg, pc, cfg, sigOut, sigIn)
+                    Role.Offerer -> runOfferer(bg, pc, cfg, sigOut, sigIn, forensics)
+                    Role.Answerer -> runAnswerer(bg, pc, cfg, sigOut, sigIn, forensics)
                 }
             } ?: run {
                 println("[harness] TIMEOUT after ${cfg.timeout}; state=${pc.connectionState.value}")
@@ -139,9 +164,10 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
         // Dump the transition history before bg.cancel() stops the collector. Ensure the final observed
         // state is recorded even if a terminal transition raced the collector's last resumption.
         val finalState = pc.connectionState.value
-        if (trace.lastOrNull()?.second != finalState) trace += (clock() - t0).inWholeMilliseconds to finalState
+        if (trace.lastOrNull()?.state != finalState) trace += StateTransition(clock() - t0, finalState)
         println("[harness] state-transition trace (${cfg.role}, ${trace.size} transitions):")
-        for ((ms, state) in trace) println("[harness]   +${ms}ms  $state")
+        for (t in trace) println("[harness]   +${t.at.inWholeMilliseconds}ms  ${t.state}")
+        forensics.dump(cfg.role)
 
         bg.cancel()
         sigOut.close()
@@ -156,18 +182,23 @@ private suspend fun runOfferer(
     cfg: HarnessConfig,
     sigOut: UdpSignaling,
     sigIn: UdpSignaling,
+    forensics: Forensics,
 ): Boolean {
     val channel = pc.createDataChannel(DataChannelConfig(label = "harness"))
     val offer = pc.createOffer()
+    forensics.recordSdp(Origin.Local, Sdp(offer))
     pc.setLocalDescription(SdpType.Offer, offer)
 
     // One PUT socket, single-consumer: the offer first (record 0), then trickled candidates in order.
-    val outbox = Channel<Triple<String, Int, String>>(Channel.UNLIMITED)
-    outbox.trySend(Triple("offer", 0, offer))
-    bg.launch { for ((slot, id, payload) in outbox) sigOut.put(slot, id, payload) }
+    val outbox = Channel<OutboundRecord>(Channel.UNLIMITED)
+    outbox.trySend(OutboundRecord(Slot.Offer, RecordId(0), offer))
+    bg.launch { for (r in outbox) sigOut.put(r.slot, r.recordId, r.payload) }
     bg.launch {
         var i = 0
-        pc.localIceCandidates.collect { outbox.trySend(Triple("cand/offerer", i++, it)) }
+        pc.localIceCandidates.collect {
+            forensics.recordCandidate(Origin.Local, CandidateLine(it))
+            outbox.trySend(OutboundRecord(Slot.OffererCandidate, RecordId(i++), it))
+        }
     }
 
     // One poll socket, single-consumer: the answer, then the answerer's trickled candidates.
@@ -176,15 +207,19 @@ private suspend fun runOfferer(
         var seen = 0
         while (isActive) {
             if (!answered) {
-                val a = sigIn.poll("answer", 0)
+                val a = sigIn.poll(Slot.Answer, RecordId(0))
                 if (a.isNotEmpty()) {
+                    forensics.recordSdp(Origin.Remote, Sdp(a.first()))
                     pc.setRemoteDescription(SdpType.Answer, a.first())
                     answered = true
                 }
             } else {
-                val cands = sigIn.poll("cand/answerer", seen)
+                val cands = sigIn.poll(Slot.AnswererCandidate, RecordId(seen))
                 seen += cands.size
-                for (c in cands) pc.addIceCandidate(c)
+                for (c in cands) {
+                    forensics.recordCandidate(Origin.Remote, CandidateLine(c))
+                    pc.addIceCandidate(c)
+                }
             }
             delay(POLL_INTERVAL)
         }
@@ -203,32 +238,41 @@ private suspend fun runAnswerer(
     cfg: HarnessConfig,
     sigOut: UdpSignaling,
     sigIn: UdpSignaling,
+    forensics: Forensics,
 ): Boolean {
     // Await the offer (bounded by the outer watchdog), then answer.
     var offer: String? = null
     while (offer == null) {
-        val o = sigIn.poll("offer", 0)
+        val o = sigIn.poll(Slot.Offer, RecordId(0))
         if (o.isNotEmpty()) offer = o.first() else delay(POLL_INTERVAL)
     }
+    forensics.recordSdp(Origin.Remote, Sdp(offer))
     pc.setRemoteDescription(SdpType.Offer, offer)
     val answer = pc.createAnswer()
+    forensics.recordSdp(Origin.Local, Sdp(answer))
     pc.setLocalDescription(SdpType.Answer, answer)
 
-    val outbox = Channel<Triple<String, Int, String>>(Channel.UNLIMITED)
-    outbox.trySend(Triple("answer", 0, answer))
-    bg.launch { for ((slot, id, payload) in outbox) sigOut.put(slot, id, payload) }
+    val outbox = Channel<OutboundRecord>(Channel.UNLIMITED)
+    outbox.trySend(OutboundRecord(Slot.Answer, RecordId(0), answer))
+    bg.launch { for (r in outbox) sigOut.put(r.slot, r.recordId, r.payload) }
     bg.launch {
         var i = 0
-        pc.localIceCandidates.collect { outbox.trySend(Triple("cand/answerer", i++, it)) }
+        pc.localIceCandidates.collect {
+            forensics.recordCandidate(Origin.Local, CandidateLine(it))
+            outbox.trySend(OutboundRecord(Slot.AnswererCandidate, RecordId(i++), it))
+        }
     }
 
     // The offer poll above is done, so this launched loop is the only consumer of sigIn (no receive race).
     bg.launch {
         var seen = 0
         while (isActive) {
-            val cands = sigIn.poll("cand/offerer", seen)
+            val cands = sigIn.poll(Slot.OffererCandidate, RecordId(seen))
             seen += cands.size
-            for (c in cands) pc.addIceCandidate(c)
+            for (c in cands) {
+                forensics.recordCandidate(Origin.Remote, CandidateLine(c))
+                pc.addIceCandidate(c)
+            }
             delay(POLL_INTERVAL)
         }
     }
@@ -259,6 +303,56 @@ private suspend fun awaitEstablished(pc: NativePeerConnection): Boolean {
     println("[harness] CONNECTED")
     return true
 }
+
+// [Sdp] + [CandidateLine] — the diagnostics-boundary text wrappers — live in commonMain (SignalingTypes.kt):
+// `@JvmInline` value classes are only legal in common sources, not this per-target-compiled shared srcDir.
+
+/** Which peer produced a captured artifact — the local side, or the remote observed over signaling. */
+private enum class Origin { Local, Remote }
+
+/** A session description captured during the exchange, tagged with which side produced it. */
+private data class RecordedSdp(val origin: Origin, val sdp: Sdp)
+
+/** An ICE candidate line captured during the exchange, tagged with which side produced it. */
+private data class RecordedCandidate(val origin: Origin, val line: CandidateLine)
+
+/**
+ * The replay inputs a seed alone can't reconstruct: this side's own view of the SDP exchange and the
+ * candidate set. Artifacts are recorded **as they are observed** (each tagged with its [Origin]), so there
+ * is no "not yet set" state to model with a null — the recorder holds exactly what happened, like the
+ * state-transition `trace`. [dump]ed to stdout on exit (the L2 harness captures + uploads it on failure),
+ * so a `collect_diagnostics` bundle carries everything a seeded virtual-time vnet fixture needs — the SDPs
+ * (fingerprint / ufrag / pwd / setup / mid) and the exact candidate lines — alongside the logged seed and
+ * the NAT-WAN pcap. See docs/HARNESS_IPV6_DIAGNOSTICS_DESIGN.md (standing directive #5).
+ */
+private class Forensics {
+    private val descriptions = mutableListOf<RecordedSdp>()
+    private val candidates = mutableListOf<RecordedCandidate>()
+
+    fun recordSdp(origin: Origin, sdp: Sdp) {
+        descriptions += RecordedSdp(origin, sdp)
+    }
+
+    fun recordCandidate(origin: Origin, line: CandidateLine) {
+        candidates += RecordedCandidate(origin, line)
+    }
+
+    fun dump(role: Role) {
+        val local = candidates.count { it.origin == Origin.Local }
+        println("[harness] forensics ($role): descriptions=${descriptions.size} localCandidates=$local remoteCandidates=${candidates.size - local}")
+        for (d in descriptions) {
+            val tag = d.origin.name.lowercase()
+            for (line in d.sdp.text.lines()) if (line.isNotBlank()) println("[harness]   $tag-sdp| $line")
+        }
+        for (c in candidates) println("[harness]   ${c.origin.name.lowercase()}-cand| ${c.line.text}")
+    }
+}
+
+/** One record queued for the PUT socket — a named type over the old `Triple<slot, id, payload>`. */
+private data class OutboundRecord(val slot: Slot, val recordId: RecordId, val payload: String)
+
+/** One observed [PeerConnectionState] transition and [at] how long after the session started it happened. */
+private data class StateTransition(val at: Duration, val state: PeerConnectionState)
 
 private val POLL_INTERVAL = 200.milliseconds
 

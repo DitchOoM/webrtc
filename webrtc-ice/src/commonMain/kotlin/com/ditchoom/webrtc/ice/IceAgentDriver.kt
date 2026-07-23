@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.webrtc.stun.IpAddress
 import com.ditchoom.webrtc.stun.StunDecodeResult
 import com.ditchoom.webrtc.stun.StunMessage
 import com.ditchoom.webrtc.stun.TransportAddress
@@ -96,6 +97,18 @@ public class IceAgentDriver(
     private val inbox = Channel<IceEvent>(Channel.UNLIMITED)
     private val channels = HashMap<TransportAddress, DatagramChannel>()
 
+    // Per-family gather ordinal → the [CandidatePreferencePolicy] interfaceIndex, so a multi-homed host's
+    // same-family candidates get distinct local preferences (RFC 8445 §5.1.2.2 "SHOULD be unique"). Gathering
+    // is serialized by the caller, so this needs no synchronization. (No NetworkMonitor interface identity
+    // yet — a documented follow-up the policy seam already fits.)
+    private val interfaceIndexByFamily = HashMap<UByte, Int>()
+
+    private fun nextInterfaceIndex(ip: IpAddress): Int {
+        val index = interfaceIndexByFamily.getOrElse(ip.family) { 0 }
+        interfaceIndexByFamily[ip.family] = index + 1
+        return index
+    }
+
     // App-data (non-STUN) demux (RFC 7983): datagrams that are not STUN connectivity checks are DTLS/SCTP
     // and are routed here rather than into the agent, which ignores them. This is the seam SCTP rides.
     private val appInbound = Channel<ReadBuffer>(Channel.UNLIMITED)
@@ -138,7 +151,10 @@ public class IceAgentDriver(
         val socketAddress = SocketAddress.ofLiteral(ip, port)
         val channel = binder.bind(socketAddress)
         val hostAddress = socketAddress.toTransportAddress()
-        val host = IceCandidate.host(hostAddress)
+        // Host + its server-reflexive share one interface index (same socket): family-preferred, tie-unique.
+        val ifaceIndex = nextInterfaceIndex(hostAddress.ip)
+        val hostPreference = CandidatePreferencePolicy.Default.localPreference(hostAddress.ip, ifaceIndex)
+        val host = IceCandidate.host(hostAddress, localPreference = hostPreference)
         channels[host.base] = channel
         gather(host)
 
@@ -158,7 +174,8 @@ public class IceAgentDriver(
                                     stunServer.toTransportAddress().ip(),
                                     IceTransport.Udp,
                                 ),
-                            priority = IceCandidate.computePriority(CandidateType.ServerReflexive, ComponentId.Rtp),
+                            // srflx local preference derives from its base (the host socket), RFC 8445 §5.1.2.2.
+                            priority = IceCandidate.computePriority(CandidateType.ServerReflexive, ComponentId.Rtp, hostPreference),
                             relatedAddress = hostAddress,
                         ),
                     )
@@ -186,6 +203,9 @@ public class IceAgentDriver(
         val allocation = TurnAllocation(underlying, turnServer, username, password, gatheringRandom, scope, config.bufferFactory)
         val relayedSocket = allocation.allocate() ?: return null
         val relayedAddress = relayedSocket.toTransportAddress()
+        // The relay binds its own socket → its own interface index; preference derives from the relayed base.
+        val relayPreference =
+            CandidatePreferencePolicy.Default.localPreference(relayedAddress.ip, nextInterfaceIndex(relayedAddress.ip))
         val relay =
             IceCandidate.Relayed(
                 address = relayedAddress,
@@ -198,7 +218,7 @@ public class IceAgentDriver(
                         turnServer.toTransportAddress().ip(),
                         IceTransport.Udp,
                     ),
-                priority = IceCandidate.computePriority(CandidateType.Relayed, ComponentId.Rtp),
+                priority = IceCandidate.computePriority(CandidateType.Relayed, ComponentId.Rtp, relayPreference),
                 relatedAddress = socketAddress.toTransportAddress(),
             )
         channels[relay.base] = allocation

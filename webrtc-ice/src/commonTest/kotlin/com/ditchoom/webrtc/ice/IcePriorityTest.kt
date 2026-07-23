@@ -60,6 +60,53 @@ class IcePriorityTest {
     }
 
     @Test
+    fun local_preference_follows_rfc6724_family_precedence() {
+        val policy = CandidatePreferencePolicy.Default
+        val gua = policy.localPreference(IpAddress.V6.parse("2001:db8::1")!!, interfaceIndex = 0)
+        val v4 = policy.localPreference(IpAddress.V4(0x0A000001u), interfaceIndex = 0) // 10.0.0.1
+        val ula = policy.localPreference(IpAddress.V6.parse("fd00::1")!!, interfaceIndex = 0)
+        val linkLocal = policy.localPreference(IpAddress.V6.parse("fe80::1")!!, interfaceIndex = 0)
+
+        // RFC 8445 §5.1.2.2 → RFC 6724 precedence: IPv6-GUA > IPv4 > IPv6-ULA > IPv6-link-local.
+        assertEquals(10495, gua, "v6 GUA local preference")
+        assertEquals(9215, v4, "v4 local preference")
+        assertEquals(1023, ula, "v6 ULA local preference")
+        assertEquals(511, linkLocal, "v6 link-local local preference")
+        assertTrue(gua > v4 && v4 > ula && ula > linkLocal, "GUA > v4 > ULA > link-local")
+    }
+
+    @Test
+    fun ipv6_gua_host_outranks_ipv4_host_but_type_still_dominates() {
+        val policy = CandidatePreferencePolicy.Default
+        val v6Host =
+            IceCandidate.computePriority(
+                CandidateType.Host,
+                ComponentId.Rtp,
+                policy.localPreference(IpAddress.V6.parse("2001:db8::1")!!, 0),
+            )
+        val v4Host =
+            IceCandidate.computePriority(CandidateType.Host, ComponentId.Rtp, policy.localPreference(IpAddress.V4(0x0A000001u), 0))
+        val v4Srflx =
+            IceCandidate.computePriority(
+                CandidateType.ServerReflexive,
+                ComponentId.Rtp,
+                policy.localPreference(IpAddress.V4(0x0A000001u), 0),
+            )
+        assertTrue(v6Host > v4Host, "a v6 GUA host out-prioritizes a v4 host (same type)")
+        assertTrue(v4Host > v4Srflx, "type preference still dominates: any host beats any srflx")
+    }
+
+    @Test
+    fun interface_index_keeps_same_family_candidates_distinct() {
+        val policy = CandidatePreferencePolicy.Default
+        val first = policy.localPreference(IpAddress.V4(0x0A000001u), interfaceIndex = 0)
+        val second = policy.localPreference(IpAddress.V4(0x0A000002u), interfaceIndex = 1)
+        assertEquals(9215, first, "first same-family interface")
+        assertEquals(9214, second, "second same-family interface is strictly lower (RFC 8445 §5.1.2.2 uniqueness)")
+        assertTrue(first > second, "first-gathered interface ranks highest")
+    }
+
+    @Test
     fun foundations_are_equal_iff_type_base_and_server_match() {
         val a = Foundation.of(CandidateType.ServerReflexive, "10.0.0.1", serverIp = "203.0.113.2", transport = IceTransport.Udp)
         val sameServer = Foundation.of(CandidateType.ServerReflexive, "10.0.0.1", serverIp = "203.0.113.2", transport = IceTransport.Udp)

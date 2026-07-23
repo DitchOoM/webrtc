@@ -38,6 +38,7 @@ public final class com/ditchoom/webrtc/stun/IpAddress$V6 : com/ditchoom/webrtc/s
 }
 
 public final class com/ditchoom/webrtc/stun/IpAddress$V6$Companion {
+	public final fun parse (Ljava/lang/String;)Lcom/ditchoom/webrtc/stun/IpAddress$V6;
 }
 
 public final class com/ditchoom/webrtc/stun/RawAttribute {

@@ -12,12 +12,35 @@ import com.ditchoom.buffer.Default
  */
 
 private const val REQUESTED_TRANSPORT_BYTES = 4 // protocol(1) + RFFU(3)
+private const val REQUESTED_ADDRESS_FAMILY_BYTES = 4 // family(1) + RFFU(3)
 private const val CHANNEL_NUMBER_BYTES = 4 // channel(2) + RFFU(2)
 private const val U32_BYTES = 4
 private const val U16_BYTES = 2
 
 /** IANA protocol number for UDP, the only REQUESTED-TRANSPORT value TURN defines (RFC 8656 §18.6). */
 public const val TURN_TRANSPORT_UDP: UByte = 17u
+
+/** REQUESTED-ADDRESS-FAMILY family octets (RFC 8656 §18.9): the relay address family an Allocate asks for. */
+public const val TURN_FAMILY_IPV4: UByte = 0x01u
+public const val TURN_FAMILY_IPV6: UByte = 0x02u
+
+/**
+ * REQUESTED-ADDRESS-FAMILY (RFC 8656 §18.9): a 1-byte address family then 3 reserved bytes. An Allocate
+ * MUST carry this to obtain an **IPv6** relay — absent it, the server allocates an IPv4 relay (RFC 8656
+ * §7.2's default), which against a v6-only TURN server has no usable address (it falls back to loopback,
+ * yielding a relay candidate no peer can reach → ICE `AllPairsFailed`).
+ */
+public fun RawAttribute.Companion.ofRequestedAddressFamily(family: UByte): RawAttribute {
+    val v = BufferFactory.Default.allocate(REQUESTED_ADDRESS_FAMILY_BYTES, ByteOrder.BIG_ENDIAN)
+    v.writeUByte(family)
+    v.writeByte(0)
+    v.writeShort(0)
+    v.resetForRead()
+    return ofValue(StunAttributeType.RequestedAddressFamily, v)
+}
+
+/** REQUESTED-ADDRESS-FAMILY family octet, or null if the value is malformed. */
+public fun RawAttribute.asRequestedAddressFamily(): UByte? = if (length == REQUESTED_ADDRESS_FAMILY_BYTES) value.get(0).toUByte() else null
 
 /** LIFETIME (RFC 8656 §18.4): a u32 duration in seconds (Allocate/Refresh). */
 public fun RawAttribute.Companion.ofLifetime(seconds: UInt): RawAttribute {

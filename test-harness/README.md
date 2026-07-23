@@ -62,11 +62,16 @@ NATs (`cgnat_a`/`cgnat_b`/`cgnat`) are the same `nat/` image, wired `car→pub` 
 | **cgnat** (NAT444) | per-side `cgnat_a` + `cgnat_b`, distinct public IPs, port-restricted cone | a genuine double NAT; the composed cone mapping stays consistent, so it traverses via `srflx` (relay is the `policy=all` safety net) |
 | **hairpin** | ONE shared `cgnat` both CPEs route through, symmetric | both peers share a single external identity; stock netfilter won't hairpin `car→car`, so — like `symmetric-relay` — traversal must ride the **coturn TURN relay**. To *prove* that (not just hope for it), this lane pins **`ice_policy=relay`** (like `relay-only`), so only relay candidates are gathered and a green run cannot have used a direct/srflx path; `run_scenario` additionally asserts the offerer's selected pair is a relay pair from its `Connected` trace |
 
-**IPv6 / dual-stack is out of scope for Phase 1 (a deliberate Phase 1.5 deferral).** Every topology above is
-IPv4-only; Phase 1 ICE is IPv4-only (`IceAddress` fences off `IpAddress.V6`). IPv6 / dual-stack gathering,
-v6 candidate priority (RFC 8445 §5.1.2), and a v6 / dual-stack harness topology are tracked as the first
-Phase 1.5 workstream — `PHASE1_CLOSEOUT.md` §1.5-A is the canonical ledger (note: real carrier NAT ships
-NAT444 *with* native IPv6 as the escape hatch, so the v6 topology rides with the CGNAT lanes there).
+**IPv6 / dual-stack: the *stack* now supports it; the *real-network harness lanes* are still IPv4-only.**
+As of Phase 1.5-A (PR #37), webrtc-ice does full IPv6 / dual-stack gathering, un-fenced address conversion,
+and RFC 8445 §5.1.2 → RFC 6724 v6 candidate priority — **exercised in CI** by the deterministic
+`commonTest` fixtures (`allTests` on every platform: the RFC 5952 parser corpus, `IceDualStackTest`, the
+production-driver dual-stack test, the v6 vnet echo + NAT). What is **not yet** in CI is a **real-network**
+(Docker) v6 / dual-stack interop topology: every lane above is IPv4-only, and the `harness-l2` matrix has
+no IP-family dimension. Adding v6-only + dual-stack lanes (and enabling IPv6 in dockerd on the runners) is
+the remaining follow-up — `docs/IPV6_DUAL_STACK_DESIGN.md` + `PHASE1_CLOSEOUT.md` §1.5-A are the ledger
+(note: real carrier NAT ships NAT444 *with* native IPv6 as the escape hatch, so the v6 topology rides with
+the CGNAT lanes there).
 
 ## Running
 

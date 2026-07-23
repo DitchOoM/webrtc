@@ -5,6 +5,7 @@ package com.ditchoom.webrtc.harness
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.encodeToPlatformBuffer
+import com.ditchoom.buffer.flow.AddressFamily
 import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
@@ -160,7 +161,17 @@ internal class UdpSignaling internal constructor(
             factory: BufferFactory,
         ): UdpSignaling {
             val rendezvous = UdpSocket.resolve(host, port)
-            val channel = UdpSocket.bind(localHost = null, localPort = 0)
+            // Bind the ephemeral socket in the SAME family as the resolved rendezvous. A `null` localHost
+            // binds the v4 wildcard (0.0.0.0), so on a v6-only lane — where `resolve` returns the rendezvous'
+            // only (AAAA) address — a v4 socket silently drops every send to that v6 target and no signaling
+            // ever completes (offer/answer never exchanged). v4 + dual are unaffected: `resolve` yields a v4
+            // address there, so this picks "0.0.0.0" exactly as before.
+            val localWildcard =
+                when (rendezvous.family) {
+                    AddressFamily.IPv6 -> "::"
+                    AddressFamily.IPv4 -> "0.0.0.0"
+                }
+            val channel = UdpSocket.bind(localHost = localWildcard, localPort = 0)
             return UdpSignaling(channel, rendezvous, session, factory)
         }
     }

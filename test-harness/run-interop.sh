@@ -415,11 +415,17 @@ run_scenario() {
         # Belt-and-suspenders for the RELAY-PROVING lanes (hairpin, firewall-relay6): a green rc only proves
         # the peers ESTABLISHED — NOT that the path was the coturn RELAY. hairpin pins ice_policy=relay and
         # firewall-relay6 blocks direct/srflx at the network (policy=all), but assert it independently from
-        # the offerer's Connected-state trace (`selectedPair=CandidatePair(local=Relayed(…))`) so a future
-        # policy loosening — or an accidentally direct/srflx pair — fails here instead of passing silently.
+        # the offerer's Connected-state trace so a future policy loosening — or an accidentally direct/srflx
+        # pair — fails here instead of passing silently.
+        #
+        # Match a `Relayed` endpoint on EITHER side of the selected pair, not just `local=Relayed`: a relay
+        # PAIR traverses the TURN relay iff either end is Relayed, and with policy=all (firewall-relay6) the
+        # OFFERER can legitimately win the host side while the answerer holds the relay allocation — so the
+        # offerer's trace reads `remote=Relayed(…)`. The old `local=Relayed` grep only held for hairpin, where
+        # policy=relay forces BOTH sides onto relay candidates so the offerer's local is always Relayed.
         if { [ "$topo" = "hairpin" ] || [ "$name" = "firewall-relay6" ]; } \
                 && ! docker compose logs --no-log-prefix "$a_service" 2>/dev/null \
-                    | grep -q 'selectedPair=CandidatePair(local=Relayed'; then
+                    | grep -qE 'Connected\(selectedPair=CandidatePair\(.*Relayed'; then
             fail_scenario "$name" "established but the selected ICE pair is NOT a relay pair (this lane must traverse the coturn TURN relay)"; return
         fi
         echo "✅ [$name] PASS (offerer rc=$rc_a answerer rc=$rc_b)"; pass=$((pass+1))

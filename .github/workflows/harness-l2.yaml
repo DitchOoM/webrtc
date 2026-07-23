@@ -179,8 +179,13 @@ jobs:
       # per-container logs, conntrack/firewall state, the rendezvous mailbox, seeds + selected pair — so a
       # red lane is deterministically root-causable from the artifact (no local repro). Ring-bounded pcaps +
       # failure-only copy keep it small; the whole test-harness/diag/ tree is one bundle per failed scenario.
-      - name: Upload harness log + diagnostics (on failure)
-        if: ${{ failure() }}
+      - name: Upload harness log + diagnostics (on any scenario failure)
+        # NOT just `failure()`: a v6/dual lane is NON-GATING (the job exits 0 even when its scenarios
+        # fail), so `failure()` is false and the forensic bundle — the whole point of capture-on-failure —
+        # would never upload for exactly the informational-first lanes we need to root-cause. `collect_diagnostics`
+        # writes test-harness/diag/** ONLY on a scenario failure (gating OR non-gating), so its presence is the
+        # true "something failed" signal; a fully-green run leaves no diag dir and uploads nothing.
+        if: ${{ failure() || hashFiles('test-harness/diag/**') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: l2-harness-diag-${{ matrix.arch.name }}-${{ matrix.ipfamily }}
@@ -313,8 +318,10 @@ jobs:
 
       # On failure, upload the tee'd log AND the capture-on-failure forensic bundle (design §B) — see the l2
       # job's upload step. The browser lane's bundle carries the same pcaps/state/mailbox for the one scenario.
-      - name: Upload harness log + diagnostics (on failure)
-        if: ${{ failure() }}
+      - name: Upload harness log + diagnostics (on any scenario failure)
+        # See the l2 job's upload step: non-gating v6/dual lanes exit 0, so gate on the presence of the
+        # diag bundle (written only on a scenario failure), not just `failure()`, or the bundle never uploads.
+        if: ${{ failure() || hashFiles('test-harness/diag/**') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: l2-browser-diag-${{ matrix.browser }}-${{ matrix.peer }}-${{ matrix.arch.name }}-${{ matrix.ipfamily }}

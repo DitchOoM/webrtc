@@ -114,27 +114,37 @@ install_v6() {
     ip6tables -F
     ip6tables -P FORWARD DROP
 
-    # Stateful firewall baseline (== v4 port-restricted filtering): LAN initiates outbound, conntrack allows
-    # the return. No MASQUERADE — v6 hosts are globally/ULA-routable, the router just forwards + filters.
+    # No MASQUERADE — v6 hosts are globally/ULA-routable, the router just forwards + filters. LAN always
+    # initiates outbound.
     ip6tables -A FORWARD -i "$LAN6" -o "$WAN6" -j ACCEPT
-    ip6tables -A FORWARD -i "$WAN6" -o "$LAN6" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-    case "$NAT_PROFILE" in
-      address-restricted)
-        # Address-dependent filtering: record dest IPs on egress, allow return from those IPs on any port.
-        # Same head-insert ordering rationale as the v4 block (the baseline ACCEPT is terminating).
-        ip6tables -I FORWARD 1 -i "$LAN6" -o "$WAN6" -m recent --name seen6 --rdest --set
-        ip6tables -A FORWARD -i "$WAN6" -o "$LAN6" -p udp -m recent --name seen6 --rsource --rcheck --seconds 120 -j ACCEPT
-        ;;
-      full-cone)
-        # Endpoint-independent filtering: allow inbound UDP on the ICE port to the peer from ANY source. No
-        # DNAT — the peer's own global/ULA address is the destination (no translation on v6).
-        ip6tables -A FORWARD -i "$WAN6" -o "$LAN6" -p udp -d "$PEER_IP6" --dport "$ICE_PORT" -j ACCEPT
-        ;;
-      *)
-        : # port-restricted (and any non-v6 profile that slips through) = the stateful baseline above.
-        ;;
-    esac
+    if [ "${V6_FORCE_RELAY:-0}" = "1" ]; then
+        # firewall-relay6 lane: drop ALL inbound v6 to the LAN EXCEPT the return path from coturn, so direct
+        # and server-reflexive v6 hole-punching both fail and ICE must DISCOVER the TURN relay (network-forced
+        # fallback, ice_policy=all — distinct from relay-only's policy-forced gathering). ~3 lines, as designed.
+        [ -n "${COTURN_IP6:-}" ] || { echo "[nat] V6_FORCE_RELAY set but COTURN_IP6 empty" >&2; exit 1; }
+        ip6tables -A FORWARD -i "$WAN6" -o "$LAN6" -s "$COTURN_IP6" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+        echo "[nat] v6 FORCE-RELAY: WAN→LAN dropped except the return from coturn ($COTURN_IP6)"
+    else
+        # Stateful firewall baseline (== v4 port-restricted filtering): conntrack allows the return only.
+        ip6tables -A FORWARD -i "$WAN6" -o "$LAN6" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+        case "$NAT_PROFILE" in
+          address-restricted)
+            # Address-dependent filtering: record dest IPs on egress, allow return from those IPs on any port.
+            # Same head-insert ordering rationale as the v4 block (the baseline ACCEPT is terminating).
+            ip6tables -I FORWARD 1 -i "$LAN6" -o "$WAN6" -m recent --name seen6 --rdest --set
+            ip6tables -A FORWARD -i "$WAN6" -o "$LAN6" -p udp -m recent --name seen6 --rsource --rcheck --seconds 120 -j ACCEPT
+            ;;
+          full-cone)
+            # Endpoint-independent filtering: allow inbound UDP on the ICE port to the peer from ANY source.
+            # No DNAT — the peer's own global/ULA address is the destination (no translation on v6).
+            ip6tables -A FORWARD -i "$WAN6" -o "$LAN6" -p udp -d "$PEER_IP6" --dport "$ICE_PORT" -j ACCEPT
+            ;;
+          *)
+            : # port-restricted (and any non-v6 profile that slips through) = the stateful baseline above.
+            ;;
+        esac
+    fi
 
     echo "[nat] v6 filter table:"; ip6tables -S
     return 0

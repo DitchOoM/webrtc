@@ -57,6 +57,9 @@ services:
       NAT_WAN_IP6: "${NAT_A_WAN_IP6}"
       NAT_LAN_IP6: "${NAT_A_LAN_IP6}"
       PEER_IP6: "${PEER_A_IP6}"
+      # firewall-relay6 lane: drop WAN→LAN except the return from coturn (nat-setup.sh). Empty otherwise.
+      V6_FORCE_RELAY: "${V6_FORCE_RELAY:-}"
+      COTURN_IP6: "${COTURN_IP6}"
     healthcheck:
       # Assert BOTH the v4 mapping (MASQUERADE) and the v6 filter (a FORWARD ACCEPT) are installed, so a v6
       # router bring-up failure fails fast pre-flight instead of as a 40-min ICE timeout.
@@ -72,6 +75,8 @@ services:
       NAT_WAN_IP6: "${NAT_B_WAN_IP6}"
       NAT_LAN_IP6: "${NAT_B_LAN_IP6}"
       PEER_IP6: "${PEER_B_IP6}"
+      V6_FORCE_RELAY: "${V6_FORCE_RELAY:-}"   # see nat_a — firewall-relay6 lane
+      COTURN_IP6: "${COTURN_IP6}"
     healthcheck:
       test: ["CMD-SHELL", "iptables -t nat -S | grep -q MASQUERADE && ip6tables -S FORWARD | grep -q ACCEPT"]
     networks:

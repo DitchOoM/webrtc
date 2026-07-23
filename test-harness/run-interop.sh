@@ -28,10 +28,23 @@ set -a
 . ./harness.env
 set +a
 
-# IP family for this run — v4 (default) | dual | v6. Step 4 wires it to COMPOSE_FILE overlays + a
-# family-skip; here it only names the diagnostics bundle dir (diag/<family>/…) so v4/v6/dual captures never
-# collide. On the untouched v4 matrix this stays "v4" and the harness is byte-identical to before.
+# IP family for this run — v4 (default) | dual | v6. Selects the compose overlays (below) + a family-skip
+# (family_skipped) + the diagnostics bundle dir (diag/<family>/…) so v4/v6/dual captures never collide. On
+# the untouched v4 matrix this stays "v4" and the harness is byte-identical to before.
 IP_FAMILY="${IP_FAMILY:-v4}"
+
+# Compose overlays for the family — EXPORTED so every `docker compose` call (compose-up-retry.sh, stack_down,
+# exec, logs, cp) inherits it for free, no call-site edits. v4 = the untouched base; dual = base + the
+# dual-stack overlay; v6 = base + dual-stack + the v4-disabling overlay. Colon-separated, resolved from this
+# dir (both this script and compose-up-retry.sh cd here).
+case "$IP_FAMILY" in
+    v4)   COMPOSE_FILE="docker-compose.yml" ;;
+    dual) COMPOSE_FILE="docker-compose.yml:compose.ipv6.yml" ;;
+    v6)   COMPOSE_FILE="docker-compose.yml:compose.ipv6.yml:compose.v6only.yml" ;;
+    *)    echo "::error::unknown IP_FAMILY='$IP_FAMILY' (want: v4|dual|v6)"; exit 2 ;;
+esac
+export COMPOSE_FILE
+echo "[run] IP_FAMILY=$IP_FAMILY  COMPOSE_FILE=$COMPOSE_FILE"
 
 # ── peer image path: three ways to get the binary into the image ──
 #   1. HARNESS_SELF_BUILD=1        → build inside the image (portable: macOS/Apple, any arch)
@@ -129,7 +142,12 @@ docker run --rm --privileged --network host alpine:3.20 \
 # back to the coturn relay). `hairpin` PINS ice_policy=relay (like `relay-only`) so a green rc PROVES the
 # relay was traversed — under `all` a stray direct/srflx path (an accidentally-hairpinning NAT) would
 # establish and pass silently, deleting the lane's reason to exist; run_scenario also asserts the selected
-# pair is a relay pair from the offerer's Connected trace. `impaired-loss-delay` is NON-GATING (informational
+# pair is a relay pair from the offerer's Connected trace. `firewall-relay6` is the v6-native analog: NOT
+# policy-forced (ice_policy=all) but NETWORK-forced — the routed-v6 firewall drops WAN→LAN except from
+# coturn (nat-setup.sh V6_FORCE_RELAY), so ICE must DISCOVER it has to fall back to the relay when direct/
+# srflx v6 is blocked; it reuses the same selected-pair=Relayed assertion. It runs on v6/dual only (there is
+# no v6 firewall on a v4 lane), while symmetric/mixed-sym/cgnat/hairpin run on v4 only (mapping artifacts —
+# see family_skipped). `impaired-loss-delay` is NON-GATING (informational
 # — see $NON_GATING + the header): its kernel-random loss can't be provably flake-free, so the deterministic
 # DtlsSctpLossReproductionTest is the retained hard loss gate. Each expects BOTH peers to exit 0. The impl +
 # topo columns default to native/native/single when omitted. The pion lanes force DTLS 1.2 (Pion v3 is
@@ -141,6 +159,7 @@ address-restricted   | address-restricted | address-restricted | all   | -      
 symmetric-relay      | symmetric          | symmetric          | all   | -                                                | native | native  | single
 mixed-sym-port       | symmetric          | port-restricted    | all   | -                                                | native | native  | single
 relay-only           | port-restricted    | port-restricted    | relay | -                                                | native | native  | single
+firewall-relay6      | port-restricted    | port-restricted    | all   | -                                                | native | native  | single
 impaired-loss-delay  | port-restricted    | port-restricted    | all   | loss 5% delay 20ms 5ms distribution normal      | native | native  | single
 cgnat                | port-restricted    | port-restricted    | all   | -                                                | native | native  | cgnat
 hairpin              | port-restricted    | port-restricted    | relay | -                                                | native | native  | hairpin
@@ -168,6 +187,22 @@ skip=" ${HARNESS_SKIP:-} "
 # netem impaired lane can never be provably flake-free; the deterministic DtlsSctpLossReproductionTest is the
 # HARD loss gate (see the header). Keep this list minimal and space-padded so `case` matches whole words.
 NON_GATING=" impaired-loss-delay "
+
+# Family-degenerate scenarios (space-padded, whole-word `case` match). The v4 mapping-artifacts (symmetric
+# endpoint-dependent mapping, carrier double-NAT, hairpin) have NO v6 analog — over routed v6 the "NAT" is a
+# pure filtering router, so they are v4-only. `firewall-relay6` is the inverse: it needs the routed-v6
+# firewall to force relay-discovery, so it is v6/dual-only. family_skipped drops each outside its family.
+V4_ONLY_SCENARIOS=" symmetric-relay mixed-sym-port cgnat hairpin "
+V6_ONLY_SCENARIOS=" firewall-relay6 "
+family_skipped() {
+    local name=" $1 "
+    if [ "$IP_FAMILY" = "v4" ]; then
+        case "$V6_ONLY_SCENARIOS" in *"$name"*) return 0 ;; esac
+    else
+        case "$V4_ONLY_SCENARIOS" in *"$name"*) return 0 ;; esac
+    fi
+    return 1
+}
 
 pass=0; fail=0; failed_names=""
 warn=0; warned_names=""
@@ -276,6 +311,19 @@ run_scenario() {
 
     export NAT_A_PROFILE="$nat_a" NAT_B_PROFILE="$nat_b" ICE_POLICY="$policy" SESSION="$name"
 
+    # DISTINCT per-lane, per-role seeds (scenario+family+role → a stable u32 via cksum) so no two lanes and
+    # neither peer share entropy. Our peers read WEBRTC_SEED (=SEED_A offerer / SEED_B answerer, wired in
+    # compose); it drives EVERY entropy source (ICE/DTLS/SCTP), so a logged seed reproduces exactly this
+    # lane's flow as a seeded vnet fixture. The independent-stack answerers (pion/browsers) ignore it.
+    export SEED_A SEED_B
+    SEED_A=$(printf '%s' "${name}-${IP_FAMILY}-a" | cksum | cut -d' ' -f1)
+    SEED_B=$(printf '%s' "${name}-${IP_FAMILY}-b" | cksum | cut -d' ' -f1)
+
+    # firewall-relay6 (v6/dual only): the routed-v6 firewall — not policy — forces relay DISCOVERY. Tell the
+    # NATs to drop WAN→LAN except from coturn (nat-setup.sh V6_FORCE_RELAY), and assert the selected pair is
+    # a relay pair (like hairpin). V6_FORCE_RELAY MUST be reset each scenario (it may leak from this loop).
+    if [ "$name" = "firewall-relay6" ]; then export V6_FORCE_RELAY=1; else unset V6_FORCE_RELAY; fi
+
     # Choose the offerer ("our side", a_service) and the answerer (b_service), and activate exactly the
     # compose profiles for the non-default services this scenario needs. The Pion lane pins DTLS 1.2 on BOTH
     # peers (PEER_DTLS13=false) — Pion v3 is 1.2-only, and our offerer (native OR jvm, both read
@@ -356,14 +404,15 @@ run_scenario() {
     echo "── $b_service (answerer) ──"; docker compose logs --no-log-prefix "$b_service"
 
     if [ "$rc_a" = "0" ] && [ "$rc_b" = "0" ]; then
-        # Belt-and-suspenders for the hairpin lane: a green rc only proves the peers ESTABLISHED — it does
-        # NOT by itself prove the path was the coturn RELAY. ice_policy=relay (pinned above) already forces
-        # relay-only gathering, but assert it independently from the offerer's Connected-state trace
-        # (`selectedPair=CandidatePair(local=Relayed(…))`) so a future policy loosening — or an accidentally
-        # hairpinning NAT selecting a direct/srflx pair — fails here instead of passing silently.
-        if [ "$topo" = "hairpin" ] && ! docker compose logs --no-log-prefix "$a_service" 2>/dev/null \
-                | grep -q 'selectedPair=CandidatePair(local=Relayed'; then
-            fail_scenario "$name" "established but the selected ICE pair is NOT a relay pair (the hairpin lane must traverse the coturn TURN relay)"; return
+        # Belt-and-suspenders for the RELAY-PROVING lanes (hairpin, firewall-relay6): a green rc only proves
+        # the peers ESTABLISHED — NOT that the path was the coturn RELAY. hairpin pins ice_policy=relay and
+        # firewall-relay6 blocks direct/srflx at the network (policy=all), but assert it independently from
+        # the offerer's Connected-state trace (`selectedPair=CandidatePair(local=Relayed(…))`) so a future
+        # policy loosening — or an accidentally direct/srflx pair — fails here instead of passing silently.
+        if { [ "$topo" = "hairpin" ] || [ "$name" = "firewall-relay6" ]; } \
+                && ! docker compose logs --no-log-prefix "$a_service" 2>/dev/null \
+                    | grep -q 'selectedPair=CandidatePair(local=Relayed'; then
+            fail_scenario "$name" "established but the selected ICE pair is NOT a relay pair (this lane must traverse the coturn TURN relay)"; return
         fi
         echo "✅ [$name] PASS (offerer rc=$rc_a answerer rc=$rc_b)"; pass=$((pass+1))
     else
@@ -386,6 +435,8 @@ while IFS='|' read -r name a b policy netem a_impl b_impl topo <&3; do
     if [ -n "$*" ]; then case "$only" in *" $name "*) ;; *) continue ;; esac; fi
     # Skiplist ($HARNESS_SKIP): never run a named-skipped scenario.
     case "$skip" in *" $name "*) echo "── skip $name (HARNESS_SKIP)"; continue ;; esac
+    # Family-skip: a v4-only mapping-artifact on v6/dual, or the v6-native firewall-relay6 on v4.
+    if family_skipped "$name"; then echo "── skip $name (family $IP_FAMILY)"; continue; fi
     run_scenario "$name" "$a" "$b" "$policy" "$netem" "$a_impl" "$b_impl" "$topo"
 done 3<<< "$SCENARIOS"
 

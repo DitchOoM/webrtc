@@ -59,6 +59,10 @@ services:
   # so the return is implicit there and these are absent. Each one-shot sidecar shares its target's network
   # namespace — coturn's own image has no `ip` — installs the routes with the nat image's iproute2, then idles
   # so `compose up --wait` sees it running. run-interop.sh adds them to $INFRA only for the v6/dual stacks.
+  # `entrypoint:` (NOT `command:`) is REQUIRED: the nat image's Dockerfile sets ENTRYPOINT ["/nat-setup.sh"],
+  # so a bare `command:` would be passed as ARGS to nat-setup.sh and the route commands would never run
+  # (coturn_pcap overrides entrypoint for the same reason). `exec tail -f /dev/null` keeps the container
+  # running so `compose up --wait` sees it healthy after the routes are in.
   coturn_route6:
     build: { context: ., dockerfile: nat/Dockerfile }
     network_mode: "service:coturn"
@@ -66,7 +70,7 @@ services:
     restart: on-failure
     depends_on:
       coturn: { condition: service_started }
-    command:
+    entrypoint:
       - sh
       - -c
       - >-
@@ -81,7 +85,7 @@ services:
     restart: on-failure
     depends_on:
       rendezvous: { condition: service_started }
-    command:
+    entrypoint:
       - sh
       - -c
       - >-

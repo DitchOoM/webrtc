@@ -261,8 +261,10 @@ collect_diagnostics() {
     mkdir -p "$dir/pcap"
     echo "[diag] collecting failure bundle → test-harness/$dir"
 
-    # Per-container logs — ALL infra + both peers, not just the tee'd peer stdout — one file each.
-    for svc in coturn rendezvous nat_a nat_b ${a_service:-peer_a} ${b_service:-peer_b} $carriers; do
+    # Per-container logs — ALL infra + both peers, not just the tee'd peer stdout — one file each. The
+    # *_route6 sidecars are v6/dual-only (their `[route6] … routes installed` line is the proof the routed-v6
+    # return routes actually landed); absent on v4, `docker compose logs` just yields an empty file there.
+    for svc in coturn rendezvous nat_a nat_b coturn_route6 rendezvous_route6 ${a_service:-peer_a} ${b_service:-peer_b} $carriers; do
         docker compose logs --no-log-prefix "$svc" > "$dir/$svc.log" 2>/dev/null || true
     done
 

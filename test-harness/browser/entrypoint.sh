@@ -18,6 +18,23 @@ if [ -n "${GATEWAY_IP6:-}" ]; then
     ip -6 route replace default via "$GATEWAY_IP6"
     echo "[${BROWSER:-browser}] v6 default route via NAT gateway $GATEWAY_IP6"
 fi
+# Firefox aborts ALL ICE gathering (nICEr "Couldn't gather ICE candidates", error=10 — reproduced) on a
+# host with no IPv4 DEFAULT ROUTE, even for its IPv6 candidates: its gather bootstrap does a default-address
+# route lookup that fails when there is no v4 route at all. So on the v6-only lane Firefox gathers nothing
+# and every firefox⇄peer connection fails — while Chrome/WebKit and our native peer gather + connect fine.
+# Give ONLY the Firefox container a non-routable dummy IPv4 (TEST-NET-1, RFC 5737) AND a v4 default route via
+# a blackhole next hop, purely to satisfy that route lookup. It adds NO v4 to the data path: there is no v4
+# gateway / coturn / rendezvous on this lane, the next hop 192.0.2.1 does not exist, so the v4 host candidate
+# is unreachable and never selected — ICE still establishes over PURE v6 (verified: selected pair is the
+# fd00:32::100 v6 host). An IPv4 address ALONE does not fix it; the default ROUTE is the operative part.
+# v6-only ⇔ GATEWAY_IP unset (compose.v6only.yml clears it) while GATEWAY_IP6 is set.
+if [ "${BROWSER:-}" = "firefox" ] && [ -z "${GATEWAY_IP:-}" ] && [ -n "${GATEWAY_IP6:-}" ]; then
+    if ip addr add 192.0.2.99/24 dev eth0 2>/dev/null; then
+        ip route add default via 192.0.2.1 dev eth0 metric 4096 2>/dev/null || true
+        echo "[firefox] added non-routable dummy IPv4 192.0.2.99/24 + v4 default (v6-only ICE-gather bootstrap; no v4 data path)"
+    fi
+fi
+
 echo "[${BROWSER:-browser}] $(ip -o -4 addr show scope global | awk '{print $2, $4}')"
 
 exec node driver.mjs

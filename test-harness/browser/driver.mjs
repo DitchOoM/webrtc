@@ -109,6 +109,13 @@ async function answererInPage(cfg) {
   const done = new Promise((res) => (resolveDone = res));
 
   pc.oniceconnectionstatechange = () => log('ice state:', pc.iceConnectionState);
+  // Gathering visibility: which local candidates the engine actually produced, and — via the
+  // icecandidateerror event — every STUN/TURN server it FAILED to reach (url + STUN error code). This is
+  // what distinguishes "the engine gathered nothing at all" from "it tried the relay and the relay rejected
+  // it" when a lane yields zero remote candidates (e.g. a browser on a pure-v6 stack).
+  pc.onicegatheringstatechange = () => log('ice gathering state:', pc.iceGatheringState);
+  pc.onicecandidateerror = (e) =>
+    log(`icecandidateerror: url=${e.url} code=${e.errorCode} text=${JSON.stringify(e.errorText)} host=${e.hostCandidate ?? '-'}`);
   pc.onconnectionstatechange = () => {
     log('connection state:', pc.connectionState);
     if (pc.connectionState === 'connected') log('CONNECTED');
@@ -146,7 +153,8 @@ async function answererInPage(cfg) {
   // Trickle our local candidates out as gathered. Registered before setLocalDescription so none is missed.
   let candOutId = 0;
   pc.onicecandidate = (ev) => {
-    if (!ev.candidate) return; // end-of-candidates; the native side uses ICE consent, not this signal
+    if (!ev.candidate) { log('local candidate: <end-of-candidates>'); return; } // native side uses ICE consent, not this signal
+    log('local candidate:', ev.candidate.candidate);
     put('cand/answerer', candOutId++, ev.candidate.candidate);
   };
 

@@ -309,7 +309,10 @@ collect_diagnostics() {
         echo "answerer=${b_service:-peer_b}  rc_b=${rc_b:-n/a}"
         echo "SEED_A=${SEED_A:-<peer default>}  SEED_B=${SEED_B:-<peer default>}"
         echo "--- offerer selected ICE pair ---"
-        docker compose logs --no-log-prefix "${a_service:-peer_a}" 2>/dev/null | grep -F 'selectedPair=' || echo "(none logged)"
+        # Prefer the single captured offerer log ($a_log, visible by dynamic scope) over a fresh
+        # `docker compose logs` read — same anti-truncation reasoning as the relay assertion. Unset only for
+        # pre-connection failures (infra/netem), where "(none logged)" is the correct answer anyway.
+        printf '%s\n' "${a_log:-}" | grep -F 'selectedPair=' || echo "(none logged)"
     } > "$dir/MANIFEST.txt" 2>&1
 }
 
@@ -424,8 +427,20 @@ run_scenario() {
     rc_a=$(docker compose wait "$a_service" 2>/dev/null | grep -oE '[0-9]+$' | tail -1)
     rc_b=$(docker compose wait "$b_service" 2>/dev/null | grep -oE '[0-9]+$' | tail -1)
 
-    echo "── $a_service (offerer) ──"; docker compose logs --no-log-prefix "$a_service"
-    echo "── $b_service (answerer) ──"; docker compose logs --no-log-prefix "$b_service"
+    # Capture each peer's full container log ONCE, now that both have exited (the waits above blocked on it).
+    # The relay assertion below MUST grep this SAME captured text — NOT issue a second `docker compose logs`.
+    # Re-reading the json-file log of a just-exited container is not guaranteed to return identical bytes on a
+    # subsequent read (the log driver can hand back a truncated tail under CI load), which made the relay-
+    # proving lanes (firewall-relay6 / hairpin) FLAKY: the dump here showed `Connected(…Relayed…)` while the
+    # assertion's separate re-read of the same log missed it, failing a lane the ICE core had DETERMINISTICALLY
+    # relayed (pass vs fail jobs carry a byte-identical selected pair + seed). One read → the assertion proves
+    # exactly what we dumped.
+    local a_log b_log
+    a_log=$(docker compose logs --no-log-prefix "$a_service" 2>/dev/null)
+    b_log=$(docker compose logs --no-log-prefix "$b_service" 2>/dev/null)
+
+    echo "── $a_service (offerer) ──"; printf '%s\n' "$a_log"
+    echo "── $b_service (answerer) ──"; printf '%s\n' "$b_log"
 
     if [ "$rc_a" = "0" ] && [ "$rc_b" = "0" ]; then
         # Belt-and-suspenders for the RELAY-PROVING lanes (hairpin, firewall-relay6): a green rc only proves
@@ -440,7 +455,7 @@ run_scenario() {
         # offerer's trace reads `remote=Relayed(…)`. The old `local=Relayed` grep only held for hairpin, where
         # policy=relay forces BOTH sides onto relay candidates so the offerer's local is always Relayed.
         if { [ "$topo" = "hairpin" ] || [ "$name" = "firewall-relay6" ]; } \
-                && ! docker compose logs --no-log-prefix "$a_service" 2>/dev/null \
+                && ! printf '%s\n' "$a_log" \
                     | grep -qE 'Connected\(selectedPair=CandidatePair\(.*Relayed'; then
             fail_scenario "$name" "established but the selected ICE pair is NOT a relay pair (this lane must traverse the coturn TURN relay)"; return
         fi

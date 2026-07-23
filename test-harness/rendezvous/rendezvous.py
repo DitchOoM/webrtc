@@ -120,10 +120,25 @@ def _udp_handle(data: bytes) -> bytes | None:
     return None  # unknown opcode — ignore
 
 
+def _bind_dual_udp(port: int) -> socket.socket:
+    """A dual-stack UDP socket (`::` with IPV6_V6ONLY=0) so ONE mailbox serves both families — v4 peers
+    arrive v4-mapped, v6 peers natively. Falls back to a v4-only socket if v6 is unavailable, so the v4
+    lanes (where the runner may have no v6 stack) can never be broken by this."""
+    try:
+        sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        sock.bind(("::", port))
+        print(f"[rendezvous] UDP keyed-mailbox listening on [::]:{port} (dual-stack)", flush=True)
+        return sock
+    except OSError as e:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("0.0.0.0", port))
+        print(f"[rendezvous] UDP keyed-mailbox listening on 0.0.0.0:{port} (v4-only; v6 bind failed: {e})", flush=True)
+        return sock
+
+
 def _serve_udp(port: int) -> None:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("0.0.0.0", port))
-    print(f"[rendezvous] UDP keyed-mailbox listening on 0.0.0.0:{port}", flush=True)
+    sock = _bind_dual_udp(port)
     while True:
         data, addr = sock.recvfrom(65535)
         op = data[0] if data else 0
@@ -209,9 +224,23 @@ class _HttpHandler(BaseHTTPRequestHandler):
         self._send_json(200, {"records": [r.decode("utf-8", "replace") for r in records], "total": total})
 
 
+class _DualHTTPServer(ThreadingHTTPServer):
+    """A dual-stack (`::`, IPV6_V6ONLY=0) ThreadingHTTPServer so the HTTP face, like the UDP one, serves
+    both families from one bind (a v4 browser lane arrives v4-mapped; a v6 lane natively)."""
+    address_family = socket.AF_INET6
+
+    def server_bind(self) -> None:  # noqa: D102
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
+
+
 def _serve_http(port: int) -> None:
-    httpd = ThreadingHTTPServer(("0.0.0.0", port), _HttpHandler)
-    print(f"[rendezvous] HTTP keyed-mailbox listening on 0.0.0.0:{port}", flush=True)
+    try:
+        httpd: ThreadingHTTPServer = _DualHTTPServer(("::", port), _HttpHandler)
+        print(f"[rendezvous] HTTP keyed-mailbox listening on [::]:{port} (dual-stack)", flush=True)
+    except OSError as e:
+        httpd = ThreadingHTTPServer(("0.0.0.0", port), _HttpHandler)
+        print(f"[rendezvous] HTTP keyed-mailbox listening on 0.0.0.0:{port} (v4-only; v6 bind failed: {e})", flush=True)
     httpd.serve_forever()
 
 

@@ -51,7 +51,8 @@ fun main() {
     // + ephemeral keys via the derived DtlsConfig.random). Logging it is what lets a real-UDP CI flake be
     // reconstructed as a seeded virtual-time vnet fixture (standing directive #5) — see
     // docs/HARNESS_IPV6_DIAGNOSTICS_DESIGN.md. Without this line the seed that drove a failure is in no artifact.
-    println("[harness] role=${cfg.role} session=${cfg.session} policy=${cfg.icePolicy} local=${cfg.localIp}:${cfg.localPort} dtls13=${cfg.enableDtls13} seed=${cfg.seed}")
+    val binds = cfg.bindings.joinToString(", ") { "${it.family}=${it.localIp}" }
+    println("[harness] role=${cfg.role} session=${cfg.session} policy=${cfg.icePolicy} local=[$binds]:${cfg.localPort} dtls13=${cfg.enableDtls13} seed=${cfg.seed}")
     val code = runBlocking { runPeer(cfg) }
     println("[harness] exit=$code")
     exitProcess(code)
@@ -83,16 +84,23 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
         // seeded default is correct (the whole peer is deterministic-by-seed for replay).
         @Suppress("UnseamedEntropy") val dtlsRandom = Random(cfg.seed xor 0xD715L)
         val dtls = PureKotlinDtls(bg, clock, DtlsConfig(bufferFactory = net, enableDtls13 = cfg.enableDtls13, random = dtlsRandom))
-        val stun = resolveAddress(cfg.stunHost, cfg.stunPort)
-        val turn = resolveAddress(cfg.turnHost, cfg.turnPort)
 
         val gathering =
             IceGatheringPolicy { driver ->
-                if (cfg.icePolicy != IcePolicy.RelayOnly) {
-                    driver.gatherHost(cfg.localIp, cfg.localPort, stunServer = stun)
+                // One host(+srflx)+relay per configured family. A dual-stack lane advertises BOTH v4 and v6
+                // candidates, exercising the RFC 6724 candidate-priority ordering (webrtc-ice, PR #37); a
+                // single-stack lane advertises exactly one. Real WebRTC stacks (pion, the browsers) gather
+                // per family by enumerating interfaces — our explicit-bind peer mirrors that by looping the
+                // injected per-family [FamilyBinding]s, each with its own coturn address for that family.
+                for (b in cfg.bindings) {
+                    val stun = resolveAddress(b.stunHost, cfg.stunPort)
+                    val turn = resolveAddress(b.turnHost, cfg.turnPort)
+                    if (cfg.icePolicy != IcePolicy.RelayOnly) {
+                        driver.gatherHost(b.localIp, cfg.localPort, stunServer = stun)
+                    }
+                    // Relay is always gathered — the fallback path, and the only path under relayOnly.
+                    driver.gatherRelay(turn, cfg.turnUser, cfg.turnPass, b.localIp, cfg.relayPort)
                 }
-                // Relay is always gathered — it's the fallback path, and the only path under relayOnly.
-                driver.gatherRelay(turn, cfg.turnUser, cfg.turnPass, cfg.localIp, cfg.relayPort)
             }
 
         val pc =

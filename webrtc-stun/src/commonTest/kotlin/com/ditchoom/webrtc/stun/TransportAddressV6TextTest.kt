@@ -90,6 +90,16 @@ class TransportAddressV6TextTest {
             "2001:db8:0:0:0:0:0:0:0:1",
             ":1:2:3:4:5:6:7",
             "12345::",
+            // Embedded IPv4 is legal ONLY as the final 32 bits of the whole address (RFC 4291 §2.2.3) —
+            // never in the head of a "::"-terminated form.
+            "1.2.3.4::",
+            "1:2:1.2.3.4::",
+            // Kotlin's toIntOrNull/toUIntOrNull tolerate a leading sign; the wire format does not.
+            "2001:db8::+1",
+            "+2001:db8::1",
+            "2001:db8::-0",
+            "::ffff:+1.2.3.4",
+            "::ffff:1.2.3.-4",
         )) {
             assertNull(IpAddress.V6.parse(bad), "expected null for malformed literal: '$bad'")
         }

@@ -104,12 +104,13 @@ public sealed interface IpAddress {
                 val head = if (compressed) s.substring(0, dc) else s
                 val tail = if (compressed) s.substring(dc + 2) else ""
 
-                // The embedded-IPv4 tail (if any) is always the final group of the whole textual address.
-                val lastRunIsTail = compressed && tail.isNotEmpty()
+                // The embedded-IPv4 tail (if any) is always the final group of the WHOLE address (RFC 4291
+                // §2.2.3), so it is legal only in the head of an *uncompressed* literal (the head is then the
+                // whole address) or in a *non-empty* tail run — never in the head of a "::"-terminated form.
                 val headAcc = Hextets()
                 val tailAcc = Hextets()
-                if (!parseRun(head, headAcc, allowV4Tail = !lastRunIsTail)) return null
-                if (!parseRun(tail, tailAcc, allowV4Tail = lastRunIsTail)) return null
+                if (!parseRun(head, headAcc, allowV4Tail = !compressed)) return null
+                if (!parseRun(tail, tailAcc, allowV4Tail = compressed && tail.isNotEmpty())) return null
 
                 val total = headAcc.count + tailAcc.count
                 return if (compressed) {
@@ -150,9 +151,9 @@ public sealed interface IpAddress {
                         acc.append(((v4 shr HEXTET_BITS) and HEXTET_MASK.toUInt()).toInt())
                         acc.append((v4 and HEXTET_MASK.toUInt()).toInt())
                     } else {
-                        if ('.' in g || g.length > MAX_HEXTET_DIGITS) return false
+                        if (g.length > MAX_HEXTET_DIGITS || !g.isHexDigits()) return false // rejects '.', '+', '-', …
                         val v = g.toIntOrNull(HEX_RADIX) ?: return false
-                        if (v < 0 || v > HEXTET_MASK.toInt()) return false
+                        if (v > HEXTET_MASK.toInt()) return false
                         acc.append(v)
                     }
                 }
@@ -165,12 +166,17 @@ public sealed interface IpAddress {
                 if (octets.size != V4.SIZE_BYTES) return null
                 var bits = 0u
                 for (octet in octets) {
+                    if (octet.isEmpty() || !octet.all { it in '0'..'9' }) return null // rejects '+', '-', …
                     val value = octet.toUIntOrNull() ?: return null
                     if (value > MAX_OCTET) return null
                     bits = (bits shl Byte.SIZE_BITS) or value
                 }
                 return bits
             }
+
+            // Kotlin's toIntOrNull(radix) tolerates a leading '+'/'-' sign; the wire format does not. Guard
+            // the numeric parse so a signed group (e.g. "+a") is a typed reject, matching buffer-flow's parser.
+            private fun String.isHexDigits(): Boolean = isNotEmpty() && all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
 
             private const val HEXTET_COUNT = 8
             private const val HEXTETS_PER_WORD = 4

@@ -24,6 +24,13 @@
 // Exit 0 = connected AND a "ping" was received and a "pong" echoed back (then a short linger so SCTP
 // reliably delivers the final pong); non-zero = the watchdog fired first. Mirrors the native/Pion exit
 // contract so run-interop.sh asserts BOTH sides exit 0.
+//
+// Diagnostics: on every run (pass OR fail) it logs the engine's own `getStats()` — a 2s-cadence + per-edge
+// timeline (`getStats-timeline:`) plus a readable digest (`stats-summary:`) — and rich per-message /
+// per-channel accounting (negotiated ordered/maxRetransmits, size, running count, bufferedAmount). All of it
+// rides the page-console → node-stdout → container-log path that collect_diagnostics captures into the
+// failure bundle as <browser>.log, so a red semantics lane is root-caused from the browser's OWN counters
+// (bytes/messages/retransmits, selected pair + RTT, DTLS state) rather than inferred from a pcap.
 
 import http from 'node:http';
 import { chromium, firefox, webkit } from 'playwright';
@@ -112,6 +119,60 @@ async function answererInPage(cfg) {
   let resolveDone;
   const done = new Promise((res) => (resolveDone = res));
 
+  // getStats() diagnostics — the browser engine's OWN accounting (bytes/messages per data channel,
+  // retransmits, bufferedAmount, the selected candidate pair + RTT, DTLS/SCTP transport state). For the
+  // semantics lanes (large/fragmented, unordered, partial-reliable) this is the ground truth that a pcap can
+  // only infer. Sampled on a 2s cadence PLUS at each lifecycle edge into a timeline, dumped as one JSON blob
+  // at teardown so it rides the captured container log → the failure bundle (collect_diagnostics greps the
+  // <browser>.log). RTCStatsReport is a Map; we keep only the types that matter and flatten to plain objects.
+  const startT = Date.now();
+  const statsTimeline = [];
+  const STATS_TYPES = ['transport', 'sctp-transport', 'candidate-pair', 'local-candidate',
+    'remote-candidate', 'data-channel', 'peer-connection'];
+  const snapshotStats = async (tag) => {
+    const snap = { tag, tMs: Date.now() - startT, entries: [] };
+    try {
+      const report = await pc.getStats();
+      report.forEach((s) => { if (STATS_TYPES.includes(s.type)) snap.entries.push(s); });
+    } catch (e) {
+      snap.error = e && e.message ? e.message : String(e);
+    }
+    statsTimeline.push(snap);
+    return snap;
+  };
+  // A compact, human-first digest of the FINAL snapshot: the selected pair + RTT, transport DTLS state, and
+  // per-channel message/byte counters. Returned in the result (a readable backstop if the full timeline log
+  // line is ever truncated) and logged on its own line. Firefox marks the winning pair `selected`, Chrome
+  // `nominated`+`succeeded` — accept either.
+  const summarizeStats = (snap) => {
+    if (!snap) return null;
+    const out = { tMs: snap.tMs, selectedPair: null, transport: null, dataChannels: [] };
+    for (const s of snap.entries) {
+      if (s.type === 'candidate-pair' && (s.nominated || s.selected || s.state === 'succeeded')) {
+        out.selectedPair = {
+          state: s.state, nominated: s.nominated,
+          rttMs: s.currentRoundTripTime != null ? Math.round(s.currentRoundTripTime * 1000) : null,
+          bytesSent: s.bytesSent, bytesReceived: s.bytesReceived,
+        };
+      }
+      if (s.type === 'transport') {
+        out.transport = {
+          dtlsState: s.dtlsState, tlsVersion: s.tlsVersion, dtlsCipher: s.dtlsCipher,
+          bytesSent: s.bytesSent, bytesReceived: s.bytesReceived,
+        };
+      }
+      if (s.type === 'data-channel') {
+        out.dataChannels.push({
+          label: s.label, state: s.state,
+          messagesSent: s.messagesSent, messagesReceived: s.messagesReceived,
+          bytesSent: s.bytesSent, bytesReceived: s.bytesReceived,
+        });
+      }
+    }
+    return out;
+  };
+  const statsTimer = setInterval(() => { snapshotStats('periodic'); }, 2000);
+
   pc.oniceconnectionstatechange = () => log('ice state:', pc.iceConnectionState);
   // Gathering visibility: which local candidates the engine actually produced, and — via the
   // icecandidateerror event — every STUN/TURN server it FAILED to reach (url + STUN error code). This is
@@ -122,9 +183,10 @@ async function answererInPage(cfg) {
     log(`icecandidateerror: url=${e.url} code=${e.errorCode} text=${JSON.stringify(e.errorText)} host=${e.hostCandidate ?? '-'}`);
   pc.onconnectionstatechange = () => {
     log('connection state:', pc.connectionState);
-    if (pc.connectionState === 'connected') log('CONNECTED');
+    if (pc.connectionState === 'connected') { log('CONNECTED'); snapshotStats('connected'); }
     if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
       failReason = 'connectionState=' + pc.connectionState;
+      snapshotStats('failed');
       resolveDone();
     }
   };
@@ -135,15 +197,36 @@ async function answererInPage(cfg) {
   pc.ondatachannel = (ev) => {
     const dc = ev.channel;
     dc.binaryType = 'arraybuffer';
-    log('incoming data channel:', JSON.stringify(dc.label), 'id=', dc.id);
+    // Negotiated DCEP properties — proof the browser honored our DATA_CHANNEL_OPEN. For the semantics lanes
+    // these ARE the assertion surface: an unordered lane must show ordered=false, a partial-reliable lane a
+    // finite maxRetransmits / maxPacketLifeTime. (Default ping/pong lane: ordered=true, both null = reliable.)
+    log('incoming data channel:', JSON.stringify(dc.label), 'id=', dc.id,
+        'ordered=' + dc.ordered, 'maxRetransmits=' + dc.maxRetransmits,
+        'maxPacketLifeTime=' + dc.maxPacketLifeTime, 'protocol=' + JSON.stringify(dc.protocol),
+        'negotiated=' + dc.negotiated);
+    dc.onopen = () => { log('dc open:', JSON.stringify(dc.label), 'readyState=' + dc.readyState); snapshotStats('dc-open'); };
+    dc.onclosing = () => log('dc closing:', JSON.stringify(dc.label), 'readyState=' + dc.readyState);
+    dc.onclose = () => log('dc close:', JSON.stringify(dc.label), 'readyState=' + dc.readyState);
+    dc.onerror = (e) => log('dc error:', JSON.stringify(dc.label), (e && e.error && e.error.message) ? e.error.message : String(e));
+    let rxCount = 0;
+    let rxBytes = 0;
     dc.onmessage = (m) => {
-      const text = typeof m.data === 'string' ? m.data : new TextDecoder().decode(new Uint8Array(m.data));
-      log('received:', JSON.stringify(text), '(string=' + (typeof m.data === 'string') + ')');
+      const isString = typeof m.data === 'string';
+      const size = isString ? m.data.length : m.data.byteLength;
+      rxCount += 1;
+      rxBytes += size;
+      const text = isString ? m.data : new TextDecoder().decode(new Uint8Array(m.data));
+      // Per-message accounting (size + running count + bufferedAmount). On a large/fragmented lane this is how
+      // we see the reassembled message land intact; on a burst lane, how many arrived and in what order. Only
+      // small payloads are echoed verbatim into the log; a big binary is summarized by size.
+      log('received:', 'size=' + size, 'msg#' + rxCount, 'rxBytes=' + rxBytes,
+          'string=' + isString, 'bufferedAmount=' + dc.bufferedAmount,
+          size <= 64 ? 'data=' + JSON.stringify(text) : 'data=<' + size + 'B binary>');
       if (text.trim() === 'ping') {
         try {
           dc.send('pong');
           echoed = true;
-          log('echoed: "pong"');
+          log('echoed: "pong" bufferedAmount=' + dc.bufferedAmount);
           // Linger so SCTP reliably delivers the final pong (and its SACK) before teardown — the native
           // and Pion peers do the same after their send. Bounded and well under the offerer's echo timeout.
           setTimeout(() => resolveDone(), 3000);
@@ -199,11 +282,20 @@ async function answererInPage(cfg) {
   const watchdog = setTimeout(() => resolveDone(), Math.max(0, deadline - Date.now()));
   await done;
   clearTimeout(watchdog);
+  clearInterval(statsTimer);
+
+  // Final snapshot + full timeline dump — on BOTH success and failure, so a red lane always carries the
+  // engine's own view of what happened (the whole point of this instrumentation). The timeline is one JSON
+  // line (greppable as `getStats-timeline:` in the <browser>.log); the summary is a readable digest.
+  await snapshotStats('final');
+  log('getStats-timeline:', JSON.stringify(statsTimeline));
+  const statsSummary = summarizeStats(statsTimeline[statsTimeline.length - 1]);
+  log('stats-summary:', JSON.stringify(statsSummary));
 
   try { pc.close(); } catch { /* ignore */ }
-  if (echoed) return { ok: true, state: pc.connectionState };
-  if (failReason) return { ok: false, reason: failReason, state: pc.connectionState };
-  return { ok: false, reason: 'no ping/echo before deadline', state: pc.connectionState };
+  if (echoed) return { ok: true, state: pc.connectionState, stats: statsSummary };
+  if (failReason) return { ok: false, reason: failReason, state: pc.connectionState, stats: statsSummary };
+  return { ok: false, reason: 'no ping/echo before deadline', state: pc.connectionState, stats: statsSummary };
 }
 
 // Per-engine launch config. The in-page answerer is identical; only how we start the browser differs.

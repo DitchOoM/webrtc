@@ -2,8 +2,8 @@
 
 **Companion to:** [`RFC_KMP_WEBRTC.md`](./RFC_KMP_WEBRTC.md) (the *what* and *why*). This file is
 the *how*: sequencing, orchestration, exit criteria, and the working conventions each wave runs
-under. Update the status column as waves land; this file plays the role `TODO.md` + `HANDOFF.md`
-play in the socket repo.
+under. Update the status column as waves land; this file plays the role `TODO.md` plays in the
+socket repo.
 
 ---
 
@@ -32,9 +32,10 @@ How the work actually gets driven, based on what has worked in buffer/socket:
   below is sized to be completable with full context of its own scope. The sim RFC's
   "W1–W7 in one PR" worked because the waves shared one engine; here the waves cross module
   boundaries, so **PR-per-wave** with the label-driven version bump (`minor` for each new module).
-- **Session handoff discipline.** Every session that stops mid-wave writes/updates a
-  `HANDOFF.md` at repo root: what landed, what's verified on which platforms, exact next steps,
-  known traps. Sessions start by reading `RFC_KMP_WEBRTC.md` → this file → `HANDOFF.md`.
+- **Session handoff discipline.** Every session that stops mid-wave records what landed, what's
+  verified on which platforms, exact next steps, and known traps — in the session memory and the
+  PR description, with this file's status column kept current. Sessions start by reading
+  `RFC_KMP_WEBRTC.md` → this file.
 - **Cross-repo pre-work lands upstream first.** W0's two promotions are PRs against
   **socket** (and possibly a new repo), released to Maven Central *before* webrtc consumes them —
   the webrtc repo never depends on unpublished sibling snapshots (the validate-artifacts lesson:
@@ -73,7 +74,7 @@ checked in, CHANGELOG entry, standing-directive greps green.
 > `publishToMavenLocal` build; **but `socket-udp` is not yet on Central** (latest published socket is
 > 3.10.1, which predates #239; #239's deploy failed), so webrtc transport code must **not merge to
 > `main`** until socket lands a green `socket-udp` release. §11.1 (sim home) is answered (lives in
-> socket); resolve §11.4 before W3 and §11.3 before W4. See `HANDOFF.md`.
+> socket); resolve §11.4 before W3 and §11.3 before W4.
 
 ### W0 — Foundations (cross-repo) · status: ✅ merged
 Two upstream PRs + repo bootstrap. **Resolves RFC §11.1 first.**

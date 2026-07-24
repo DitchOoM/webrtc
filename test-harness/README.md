@@ -69,9 +69,8 @@ and RFC 8445 §5.1.2 → RFC 6724 v6 candidate priority — **exercised in CI** 
 production-driver dual-stack test, the v6 vnet echo + NAT). What is **not yet** in CI is a **real-network**
 (Docker) v6 / dual-stack interop topology: every lane above is IPv4-only, and the `harness-l2` matrix has
 no IP-family dimension. Adding v6-only + dual-stack lanes (and enabling IPv6 in dockerd on the runners) is
-the remaining follow-up — `docs/IPV6_DUAL_STACK_DESIGN.md` + `PHASE1_CLOSEOUT.md` §1.5-A are the ledger
-(note: real carrier NAT ships NAT444 *with* native IPv6 as the escape hatch, so the v6 topology rides with
-the CGNAT lanes there).
+the remaining follow-up (note: real carrier NAT ships NAT444 *with* native IPv6 as the escape hatch, so the
+v6 topology rides with the CGNAT lanes there).
 
 ## Running
 

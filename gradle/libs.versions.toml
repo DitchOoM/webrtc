@@ -45,9 +45,14 @@ buffer = "6.22.0"
 # whole quiche/rust/BoringSSL stack — so webrtc builds its own vnet (RFC §5.2: "the WebRTC-specific
 # addition"). No socket-testsuite entry here by design.
 # 3.11.0 (socket PR #239) is the first release with socket-udp on Maven Central — it pins buffer 6.11.0
-# (matches the buffer pin above) and publishes all of jvm/android/js/linux/apple. The earlier
-# merge-gate (dev against a publishToMavenLocal snapshot) is lifted.
-socket = "3.11.0"
+# and publishes all of jvm/android/js/linux/apple. The earlier merge-gate (dev against a
+# publishToMavenLocal snapshot) is lifted.
+# 3.15.0 (socket PR #266) adds UDP multicast: `UdpSocket.bindMulticast(...) → MulticastDatagramChannel`
+# (joinGroup on 224.0.0.251 / ff02::fb) — the seam the mDNS `.local` resolver (MulticastMdnsResolver)
+# binds to. Same platform set as socket-udp (jvm/android/js-node/linux/apple, NOT wasm). Its POM only
+# *requires* buffer 6.11.0, so it composes with any buffer >= that; we ride buffer 6.22.0 (above),
+# free to bump now that the DTLS oracle is symbol-decoupled. Unblocks CO-2 mDNS end-to-end.
+socket = "3.15.0"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"

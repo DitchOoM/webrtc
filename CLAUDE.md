@@ -15,9 +15,8 @@ target. Browsers are the sole exception: there `peerConnectionSupport()` delegat
 **Read these first, in order** (a resumed session starts here):
 1. `RFC_KMP_WEBRTC.md` — the architecture (the *what* and *why*).
 2. `EXECUTION_PLAN.md` — wave sequencing W0–W7, orchestration, exit criteria.
-3. `HANDOFF.md` — if present, the live state of the current wave (what landed, next steps, traps).
-4. `DESIGN_PRINCIPLES.md` — the type-safety + zero-copy manifesto, with code patterns.
-5. `TESTING.md` — unit → integration → interop strategy, the harness, external vectors, per-wave test exit criteria.
+3. `DESIGN_PRINCIPLES.md` — the type-safety + zero-copy manifesto, with code patterns.
+4. `TESTING.md` — unit → integration → interop strategy, the harness, external vectors, per-wave test exit criteria.
 
 Current state: **the pure-codec / socket-free track is complete** — W1 (`webrtc-stun`), W6-partial
 (`webrtc-sdp`), and W5-codec-floor (`webrtc-sctp` chunk codec + DCEP) are all merged to `main` (all
@@ -26,7 +25,7 @@ the UDP `DatagramChannel` `commonMain` seam (`socket-udp`, socket PR #239) + the
 harness (socket #225) — so **W2 (vnet) is a socket deliverable, not a webrtc wave**, and **W3
 (`webrtc-ice`) is next**. Transport dev is unblocked against a socket `publishToMavenLocal` build, but
 `socket-udp` is **not yet on Central** (latest socket 3.10.1 predates #239) — so webrtc transport code
-must not merge until it is. See `HANDOFF.md` → `EXECUTION_PLAN.md`.
+must not merge until it is. See `EXECUTION_PLAN.md`.
 
 ## Standing directives (every session, every wave)
 

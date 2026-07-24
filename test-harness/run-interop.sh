@@ -15,10 +15,20 @@
 # `DtlsSctpLossReproductionTest` (webrtc/src/commonTest/kotlin/com/ditchoom/webrtc/DtlsSctpLossReproductionTest.kt),
 # which reproduces the DTLS↔SCTP loss stall 100% deterministically and runs in the fast PR lanes.
 #
+# Data-channel SEMANTICS (docs/DC_SEMANTICS_INTEROP_DESIGN.md): every lane additionally runs the
+# offerer-driven phase sequence over the SAME association it establishes — s1 large/fragmented (byte-identity
+# + the negotiated a=max-message-size boundary), s2 unordered, s3 partial-reliable (PR-SCTP + FORWARD-TSN
+# no-wedge), s4 multiplexed, s5 reverse-direction (our lanes only), s6 DONE + graceful association SHUTDOWN.
+# The answerer is a scenario-agnostic reflector in every family, so this costs no new CI lanes. It lands
+# NON-GATING-first ($HARNESS_SEMANTICS_GATING, see below) exactly like every new lane here.
+#
 # Usage:
 #   ./run-interop.sh                 # full matrix, prebuilt-binary fast path (host gradle build)
 #   HARNESS_SELF_BUILD=1 ./run-interop.sh   # build the peer inside its image (portable: macOS/Apple, arm64)
 #   ./run-interop.sh <scenario-name> # run a single scenario by name
+#   HARNESS_SEMANTICS=0 ./run-interop.sh        # establish-and-echo only (the pre-semantics harness)
+#   HARNESS_SCENARIOS=s1 ./run-interop.sh       # run only the named semantics phase(s)
+#   HARNESS_SEMANTICS_GATING=1 ./run-interop.sh # a failed semantics phase FAILS its lane
 set -uo pipefail
 cd "$(dirname "$0")"
 
@@ -116,6 +126,28 @@ BRIDGE_NF_ORIG=$(docker run --rm --privileged --network host alpine:3.20 \
 # netfilter before every scenario after the first, breaking NAT forwarding for the rest of the matrix.)
 stack_down() { docker compose down -v --remove-orphans >/dev/null 2>&1 || true; }
 
+# Block until a peer service's container has exited and echo its exit code.
+#
+# NOT `docker compose wait`: that subcommand resolves the service against RUNNING containers only, so if the
+# container has ALREADY exited by the time the call is issued it prints nothing, writes `no containers for
+# project "<p>"` to stderr and exits 1 — yielding an EMPTY rc that reads as failure. Because the two peer
+# waits are necessarily sequential (offerer first, then answerer), any scenario where the ANSWERER exits
+# before/with the offerer lost its rc that way and failed a lane both peers had actually completed cleanly
+# (`[harness] exit=0`, `close-summary: observed=Closed clean=true` in the very log we dump). This stayed
+# latent while the answerer reliably outlived the offerer; the s6 graceful-shutdown phase made the two exits
+# simultaneous, turning it into a nondeterministic red across full-cone / address-restricted.
+#
+# `docker wait <container-id>` has no such asymmetry: it blocks when the container is running and returns the
+# recorded exit code IMMEDIATELY when it has already exited — the exited container still exists (nothing
+# removes it until stack_down). `ps -a` is load-bearing: without it, ps only lists running containers and we
+# would reacquire the same race one level down.
+peer_exit_rc() {
+    local cid
+    cid=$(docker compose ps -a -q "$1" 2>/dev/null | tail -1)
+    [ -n "$cid" ] || return 0   # no container at all → empty rc → caller fails the scenario, as it should
+    docker wait "$cid" 2>/dev/null | grep -oE '[0-9]+$' | tail -1
+}
+
 # Final teardown (EXIT only): stack down + restore the one host sysctl we changed, so the harness leaves
 # no global footprint.
 teardown() {
@@ -200,6 +232,69 @@ skip=" ${HARNESS_SKIP:-} "
 # promoted OUT of this list to GATING once peer_mdns (WEBRTC_REQUIRE_MDNS=true) made rc=0 PROVE mDNS
 # resolution rather than just obfuscation-ON interop — issue #48; they now assert as hard as every lane.)
 NON_GATING=" impaired-loss-delay ${HARNESS_NON_GATING:-} "
+
+# ── data-channel SEMANTICS (docs/DC_SEMANTICS_INTEROP_DESIGN.md, Phase-1 close-out item #2) ──────────
+# Every lane's offerer runs the phase sequence (s1 large/fragmented, s2 unordered, s3 partial-reliable,
+# s4 multiplexed, s5 reverse, s6 graceful close) over the SAME association it already establishes, and
+# every answerer becomes a universal reflector that exits on the offerer's DONE. No new lanes: each
+# existing lane gains the whole matrix. HARNESS_SEMANTICS=0 restores the pure establish-and-echo harness.
+#
+# GATING (decision D7): semantics land NON-GATING-first, exactly like every new lane here. The phases
+# always run and always report — a failure is an informational ::warning:: and does NOT redden the run —
+# until HARNESS_SEMANTICS_GATING=1 (a one-line follow-up) makes the peer itself exit non-zero on a failed
+# phase. That flag is what promotes them; nothing else changes.
+export PEER_SEMANTICS="${HARNESS_SEMANTICS:-1}"
+export PEER_SEMANTICS_REQUIRED="${HARNESS_SEMANTICS_GATING:-0}"
+export PEER_SEMANTICS_TIMEOUT_MS="${HARNESS_SEMANTICS_TIMEOUT_MS:-120000}"
+export PEER_SCENARIOS="${HARNESS_SCENARIOS:-}"   # e.g. "s1,s3" to debug a single phase
+sem_warned_names=""
+
+# Grade one lane's semantics result off the offerer's summary line (the peer prints it; we never re-read
+# the container log — same anti-truncation discipline as the relay assertion). Under gating the peer has
+# already failed itself, so this only reports; ungated it warns. $2 is the offerer's captured log.
+semantics_report() {
+    local name="$1" log="$2" summary failed
+    [ "$PEER_SEMANTICS" = "1" ] || return 0
+    summary=$(printf '%s\n' "$log" | grep -F 'semantics-summary:' | tail -1)
+    if [ -z "$summary" ]; then
+        echo "::warning::⚠️ [$name] the offerer printed no semantics-summary (phases did not run) — NON-GATING"
+        sem_warned_names="$sem_warned_names $name"
+        return 0
+    fi
+    echo "[semantics] [$name] ${summary#*semantics-summary: }"
+    failed=$(printf '%s\n' "$summary" | sed -n 's/.*failed=\([0-9][0-9]*\).*/\1/p')
+    if [ -n "$failed" ] && [ "$failed" != "0" ]; then
+        if [ "$PEER_SEMANTICS_REQUIRED" = "1" ]; then
+            # Gating: the peer exited non-zero for exactly this, so the lane has already been recorded a
+            # failure by the rc check — this line only names the phases.
+            echo "::error::❌ [$name] $failed data-channel semantics phase(s) failed: $(printf '%s\n' "$summary" | sed -n 's/.*failed-phases=\[\(.*\)\].*/\1/p')"
+        else
+            echo "::warning::⚠️ [$name] $failed data-channel semantics phase(s) failed: $(printf '%s\n' "$summary" | sed -n 's/.*failed-phases=\[\(.*\)\].*/\1/p') — NON-GATING (semantics land informational-first; set HARNESS_SEMANTICS_GATING=1 to promote)"
+            sem_warned_names="$sem_warned_names $name"
+        fi
+    fi
+
+    # Browser lanes only: assert the DCEP channel TYPES were honored end-to-end, read off the engine's own
+    # `dc-negotiated:` lines. This is the half of the proof the offerer cannot see — our side knows what it
+    # asked for in DATA_CHANNEL_OPEN, only the peer can report what it actually negotiated. (Pion and werift
+    # print the same shape; the W3C property names are what make the browser assertion airtight, so the
+    # grep is scoped there.) Informational under the same gate.
+    case "$b_impl" in chrome|firefox|webkit) ;; *) return 0 ;; esac
+    local b_log_local="$3" missing=""
+    # Herestrings, NOT `printf | grep -q`: under `set -o pipefail` a `grep -q` that matches EARLY exits
+    # before draining the pipe, printf dies of SIGPIPE (141), and pipefail hands that back as the pipeline's
+    # status — so a MATCH reads as a failure. It only bites once the log outgrows the 64 KiB pipe buffer,
+    # which the browser lanes (getStats timeline) now do. A herestring has no pipeline and no such trap.
+    grep -qE 'dc-negotiated:.*label="s2/unordered".*ordered=false' <<< "$b_log_local" || missing="$missing s2/unordered(ordered=false)"
+    grep -qE 'dc-negotiated:.*label="s3/rexmit".*maxRetransmits=0' <<< "$b_log_local" || missing="$missing s3/rexmit(maxRetransmits=0)"
+    grep -qE 'dc-negotiated:.*label="s3/timed".*maxPacketLifeTime=[0-9]' <<< "$b_log_local" || missing="$missing s3/timed(maxPacketLifeTime)"
+    if [ -n "$missing" ]; then
+        echo "::warning::⚠️ [$name] the browser never reported these negotiated DCEP properties:$missing — NON-GATING"
+        sem_warned_names="$sem_warned_names $name"
+    else
+        echo "[semantics] ✅ [$name] the browser reports our unordered + partial-reliable channel types as negotiated"
+    fi
+}
 
 # Family-degenerate scenarios (space-padded, whole-word `case` match). The v4 mapping-artifacts (symmetric
 # endpoint-dependent mapping, carrier double-NAT, hairpin) have NO v6 analog — over routed v6 the "NAT" is a
@@ -377,6 +472,11 @@ run_scenario() {
         *)       b_service="peer_b";                                export PEER_DTLS13="true" ;;
     esac
 
+    # s5 (reverse direction — the ANSWERER originates a data channel and the offerer reflects it) needs an
+    # answerer that can originate, i.e. one of OURS. Every foreign family is a dumb reflector by design, so
+    # the phase is enabled only on the native⇄native / jvm⇄native lanes and simply absent elsewhere.
+    if [ "$b_impl" = "native" ]; then export PEER_REVERSE=1; else export PEER_REVERSE=0; fi
+
     # NAT layering (carrier-grade / hairpin). Point each CPE's upstream at the right carrier NAT, activate
     # that carrier NAT's compose profile, and add it to this scenario's infra so `up` starts it (a profiled
     # service only starts when named or its profile is active). `single` leaves the CPEs on pub directly —
@@ -441,11 +541,11 @@ run_scenario() {
     # infra-up (profiles/seed/netem all set before compose-up-retry above), so there is nothing to recreate
     # here anyway — we only need the two peers created + started. v4 is unaffected (no return-route sidecars).
     docker compose up -d --no-build --no-recreate "$a_service" "$b_service"
-    # `docker compose wait` blocks until stop; its output form varies ("0" vs "container … status code 0"),
-    # so extract the trailing exit code robustly.
+    # Block until each peer has exited and read its exit code (see peer_exit_rc — order-independent, unlike
+    # `docker compose wait`).
     local rc_a rc_b
-    rc_a=$(docker compose wait "$a_service" 2>/dev/null | grep -oE '[0-9]+$' | tail -1)
-    rc_b=$(docker compose wait "$b_service" 2>/dev/null | grep -oE '[0-9]+$' | tail -1)
+    rc_a=$(peer_exit_rc "$a_service")
+    rc_b=$(peer_exit_rc "$b_service")
 
     # Capture each peer's full container log ONCE, now that both have exited (the waits above blocked on it).
     # The relay assertion below MUST grep this SAME captured text — NOT issue a second `docker compose logs`.
@@ -462,6 +562,10 @@ run_scenario() {
     echo "── $a_service (offerer) ──"; printf '%s\n' "$a_log"
     echo "── $b_service (answerer) ──"; printf '%s\n' "$b_log"
 
+    # Grade the data-channel semantics phases from the captured logs — on PASS and FAIL alike, since a red
+    # lane's phase verdicts are exactly what says WHICH semantic broke.
+    semantics_report "$name" "$a_log" "$b_log"
+
     if [ "$rc_a" = "0" ] && [ "$rc_b" = "0" ]; then
         # Belt-and-suspenders for the RELAY-PROVING lanes (hairpin, firewall-relay6): a green rc only proves
         # the peers ESTABLISHED — NOT that the path was the coturn RELAY. hairpin pins ice_policy=relay and
@@ -474,9 +578,11 @@ run_scenario() {
         # OFFERER can legitimately win the host side while the answerer holds the relay allocation — so the
         # offerer's trace reads `remote=Relayed(…)`. The old `local=Relayed` grep only held for hairpin, where
         # policy=relay forces BOTH sides onto relay candidates so the offerer's local is always Relayed.
+        # Herestring, not `printf | grep -q`: see semantics_report — with pipefail, a matching `grep -q`
+        # SIGPIPEs the printf on a log larger than the pipe buffer and the match reads as a MISS. The
+        # semantics phases grew every offerer log well past that, so this assertion had to stop using a pipe.
         if { [ "$topo" = "hairpin" ] || [ "$name" = "firewall-relay6" ]; } \
-                && ! printf '%s\n' "$a_log" \
-                    | grep -qE 'Connected\(selectedPair=CandidatePair\(.*Relayed'; then
+                && ! grep -qE 'Connected\(selectedPair=CandidatePair\(.*Relayed' <<< "$a_log"; then
             fail_scenario "$name" "established but the selected ICE pair is NOT a relay pair (this lane must traverse the coturn TURN relay)"; return
         fi
         echo "✅ [$name] PASS (offerer rc=$rc_a answerer rc=$rc_b)"; pass=$((pass+1))
@@ -498,7 +604,8 @@ run_mdns_scenario() {
     echo ""
     echo "═══ scenario: $name  (same-LAN mDNS, obfuscation ON, offerer=peer_mdns answerer=${b_impl}) ═══"
 
-    export ICE_POLICY="$policy" SESSION="$name" PEER_DTLS13="true"
+    # PEER_REVERSE=0: this lane's answerer is a browser, which can only reflect — never originate (s5).
+    export ICE_POLICY="$policy" SESSION="$name" PEER_DTLS13="true" PEER_REVERSE=0
     # Distinct per-lane seeds (see run_scenario). The browser answerer ignores WEBRTC_SEED.
     export SEED_A SEED_B
     SEED_A=$(printf '%s' "${name}-${IP_FAMILY}-a" | cksum | cut -d' ' -f1)
@@ -527,14 +634,16 @@ run_mdns_scenario() {
     docker compose up -d --no-build --no-recreate "$a_service" "$b_service"
 
     local rc_a rc_b
-    rc_a=$(docker compose wait "$a_service" 2>/dev/null | grep -oE '[0-9]+$' | tail -1)
-    rc_b=$(docker compose wait "$b_service" 2>/dev/null | grep -oE '[0-9]+$' | tail -1)
+    rc_a=$(peer_exit_rc "$a_service")
+    rc_b=$(peer_exit_rc "$b_service")
 
     local a_log b_log
     a_log=$(docker compose logs --no-log-prefix "$a_service" 2>/dev/null)
     b_log=$(docker compose logs --no-log-prefix "$b_service" 2>/dev/null)
     echo "── $a_service (offerer) ──"; printf '%s\n' "$a_log"
     echo "── $b_service (answerer) ──"; printf '%s\n' "$b_log"
+
+    semantics_report "$name" "$a_log" "$b_log"   # see run_scenario — same grading on this lane
 
     if [ "$rc_a" = "0" ] && [ "$rc_b" = "0" ]; then
         # PASS gate part 1 = both peers exit 0. For THIS lane rc_a=0 already means more than establish+echo:
@@ -549,11 +658,11 @@ run_mdns_scenario() {
         local mailbox
         mailbox=$(docker compose exec -T rendezvous python3 -c \
             "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:${RENDEZVOUS_HTTP_PORT}/dump').read().decode())" 2>/dev/null || true)
-        if ! printf '%s\n' "$mailbox" | grep -qiE '\.local'; then
+        if ! grep -qiE '\.local' <<< "$mailbox"; then
             fail_scenario "$name" "established but the browser never signaled an obfuscated .local host candidate into the mailbox (mDNS obfuscation not exercised)"; export COMPOSE_FILE="$saved_compose"; return
         fi
         echo "[mdns] browser signaled an obfuscated .local host candidate"
-        if ! printf '%s\n' "$a_log" | grep -qi 'mdns resolved'; then
+        if ! grep -qi 'mdns resolved' <<< "$a_log"; then
             fail_scenario "$name" "established but our MulticastMdnsResolver never resolved the browser's .local (no 'mdns resolved' line — the resolver was not exercised)"; export COMPOSE_FILE="$saved_compose"; return
         fi
         echo "[mdns] ✅ our MulticastMdnsResolver resolved the browser's .local candidate"
@@ -590,7 +699,7 @@ while IFS='|' read -r name a b policy netem a_impl b_impl topo <&3; do
 done 3<<< "$SCENARIOS"
 
 echo ""
-echo "═══ summary: $pass passed, $fail failed${failed_names:+ (failed:$failed_names)}${warned_names:+, $warn non-gating failure(s):$warned_names (informational — deterministic DtlsSctpLossReproductionTest is the hard gate)} ═══"
+echo "═══ summary: $pass passed, $fail failed${failed_names:+ (failed:$failed_names)}${warned_names:+, $warn non-gating failure(s):$warned_names (informational — deterministic DtlsSctpLossReproductionTest is the hard gate)}${sem_warned_names:+, data-channel semantics reported failures in:$sem_warned_names (informational until HARNESS_SEMANTICS_GATING=1)} ═══"
 # Exit non-zero iff a GATING scenario failed, or NOTHING ran at all. NON-GATING failures ($warn) never fail
 # the run — the impaired lane's hard gate is the deterministic DtlsSctpLossReproductionTest, and v6/dual lanes
 # land informational-first (FAMILY_GATING). A non-gating-ONLY run still counts as a successful run: e.g. a

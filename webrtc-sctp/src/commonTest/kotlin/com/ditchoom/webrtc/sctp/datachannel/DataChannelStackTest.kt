@@ -143,6 +143,46 @@ class DataChannelStackTest {
             )
         }
 
+    /**
+     * A datagram that arrives AFTER the stack has torn down must not crash the process.
+     *
+     * The reader loop enqueues every inbound datagram onto the drive loop's inbox, and a teardown the
+     * reader did not initiate (an association ABORT, or the far side's transport dying mid-read) closes
+     * that inbox under it — so the next `send` throws `ClosedSendChannelException`. On Kotlin/Native an
+     * uncaught throw in that launched coroutine takes the whole PROCESS down: the L2 interop harness saw
+     * the answerer exit **rc=139** at teardown, with every data-channel semantics phase already green.
+     *
+     * Reproduced deterministically here: a client whose INIT is never answered aborts after its retransmit
+     * budget (virtual time), which tears the stack down while the reader is still blocked on the transport;
+     * a straggler datagram then arrives on the still-open receive path. `backgroundScope` reports an
+     * uncaught child exception as a test failure, so this test fails without the fail-quiet guard.
+     */
+    @Test
+    fun datagram_arriving_after_teardown_does_not_crash_the_reader() =
+        runTest {
+            val pair = MemoryTransportPair(backgroundScope)
+            val client =
+                SctpDataChannelStack(
+                    pair.clientTransport,
+                    backgroundScope,
+                    clock(),
+                    SctpRole.Client,
+                    // Nobody answers the INIT, so the association exhausts this budget and aborts —
+                    // teardown arrives from the DRIVE loop, not from the reader.
+                    SctpConfig(rtoInitial = 100.milliseconds, rtoMin = 100.milliseconds, maxInitRetransmits = 1),
+                    Random(12),
+                )
+            client.start()
+            kotlinx.coroutines.delay(10.seconds) // virtual time: let the INIT budget run out
+            assertEquals(true, client.isTornDown, "an unanswered INIT aborts the association and tears the stack down")
+
+            // The far side is still able to put a datagram on the wire (its send channel was never closed —
+            // exactly the real case: the socket is torn down locally while packets are still in flight).
+            pair.serverTransport.send(textBuffer("straggler"))
+            kotlinx.coroutines.delay(1.seconds)
+            assertEquals(true, client.isTornDown, "the stack stays torn down and the straggler is dropped, not fatal")
+        }
+
     @Test
     fun empty_message_round_trips() =
         runTest {

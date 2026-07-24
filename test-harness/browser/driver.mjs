@@ -25,6 +25,14 @@
 // reliably delivers the final pong); non-zero = the watchdog fired first. Mirrors the native/Pion exit
 // contract so run-interop.sh asserts BOTH sides exit 0.
 //
+// Semantics mode (WEBRTC_SEMANTICS=1, see docs/DC_SEMANTICS_INTEROP_DESIGN.md): the page becomes a
+// universal REFLECTOR — every channel, every message, echoed back verbatim on the channel it arrived on —
+// and the run ends on the offerer's explicit DONE handshake rather than a timer. The browser is exactly
+// why the reflector is dumb: nothing beyond the W3C RTCDataChannel API can be injected here, so all of the
+// semantics matrix (fragmentation, unordered, partial reliability, multiplexing) is driven and asserted by
+// the offerer, and this side only has to echo and REPORT (the `dc-negotiated:` line below is the
+// end-to-end proof that our DCEP channel types were honored).
+//
 // Diagnostics: on every run (pass OR fail) it logs the engine's own `getStats()` — a 2s-cadence + per-edge
 // timeline (`getStats-timeline:`) plus a readable digest (`stats-summary:`) — and rich per-message /
 // per-channel accounting (negotiated ordered/maxRetransmits, size, running count, bufferedAmount). All of it
@@ -69,6 +77,12 @@ const cfg = {
   // can resolve). The same-LAN mdns lane sets WEBRTC_MDNS_OBFUSCATE=1 so the browser emits obfuscated
   // `.local` host candidates and our MulticastMdnsResolver resolves them over multicast on the shared L2.
   mdnsObfuscate: env('WEBRTC_MDNS_OBFUSCATE', '0') === '1',
+  // Data-channel semantics mode (docs/DC_SEMANTICS_INTEROP_DESIGN.md): reflect every channel until the
+  // offerer's explicit DONE instead of exiting a few seconds after the ping echo, which would tear the
+  // association down mid-sequence. Set by run-interop.sh for every lane; off leaves the historical
+  // establish-and-echo behaviour byte-identical.
+  semantics: env('WEBRTC_SEMANTICS', '0') === '1' || env('WEBRTC_SEMANTICS', '').toLowerCase() === 'true',
+  semanticsTimeoutMs: envInt('WEBRTC_SEMANTICS_TIMEOUT_MS', 120000),
 };
 
 // The answerer, evaluated INSIDE the browser page (this function is serialized and run in the browser,
@@ -112,9 +126,12 @@ async function answererInPage(cfg) {
   log(`role=answerer session=${cfg.session} policy=${cfg.icePolicy} local=${cfg.localIP} dtls=1.3`);
 
   const pc = new RTCPeerConnection(pcCfg);
-  const deadline = Date.now() + cfg.timeoutMs;
+  // In semantics mode the watchdog additionally has to cover the offerer's whole phase sequence, which
+  // runs after phase 0's ping/pong. A bound, not a budget — the run ends on DONE, not on the clock.
+  const deadline = Date.now() + cfg.timeoutMs + (cfg.semantics ? cfg.semanticsTimeoutMs : 0);
 
   let echoed = false;
+  let sawDone = false;
   let failReason = null;
   let resolveDone;
   const done = new Promise((res) => (resolveDone = res));
@@ -191,22 +208,36 @@ async function answererInPage(cfg) {
     }
   };
 
-  // The native offerer opens a DCEP channel labelled "harness" and sends "ping" (a binary-PPID message
-  // — its text helper isn't WebRTC-string-typed), so accept both binary and string, decode, and echo a
-  // string "pong" (which the native side decodes with .text()).
+  // The universal REFLECTOR (docs/DC_SEMANTICS_INTEROP_DESIGN.md §4): for EVERY channel the offerer opens,
+  // echo EVERY message back on that same channel, verbatim — same bytes, same string/binary type. Nothing
+  // here is scenario-aware: the label is logged, never branched on. The browser is precisely why the design
+  // works this way — we cannot inject behaviour past the W3C API here, so the answerer must be dumb and
+  // every scenario decision and assertion must live on the offerer side, in our Kotlin.
+  //
+  // The ONE historical exception is the liveness ritual: "ping" is echoed as the string "pong" (the native
+  // side decodes it with .text()), so phase 0 is bit-for-bit the test these lanes have always run.
   pc.ondatachannel = (ev) => {
     const dc = ev.channel;
     dc.binaryType = 'arraybuffer';
-    // Negotiated DCEP properties — proof the browser honored our DATA_CHANNEL_OPEN. For the semantics lanes
-    // these ARE the assertion surface: an unordered lane must show ordered=false, a partial-reliable lane a
-    // finite maxRetransmits / maxPacketLifeTime. (Default ping/pong lane: ordered=true, both null = reliable.)
-    log('incoming data channel:', JSON.stringify(dc.label), 'id=', dc.id,
-        'ordered=' + dc.ordered, 'maxRetransmits=' + dc.maxRetransmits,
-        'maxPacketLifeTime=' + dc.maxPacketLifeTime, 'protocol=' + JSON.stringify(dc.protocol),
+    // Negotiated DCEP properties — proof the browser honored our DATA_CHANNEL_OPEN. For the semantics
+    // phases these ARE the assertion surface, and run-interop.sh greps exactly this line: s2/unordered must
+    // show ordered=false, s3/rexmit maxRetransmits=0, s3/timed a finite maxPacketLifeTime. (Phase 0's
+    // control channel: ordered=true, both unset = reliable.) An unset value renders as "-", the same shape
+    // the Pion and werift reflectors print, so one grep works across every answerer family.
+    const show = (v) => (v === undefined || v === null ? '-' : String(v));
+    log('dc-negotiated:', 'label=' + JSON.stringify(dc.label), 'id=' + dc.id,
+        'ordered=' + show(dc.ordered), 'maxRetransmits=' + show(dc.maxRetransmits),
+        'maxPacketLifeTime=' + show(dc.maxPacketLifeTime), 'protocol=' + JSON.stringify(dc.protocol),
         'negotiated=' + dc.negotiated);
     dc.onopen = () => { log('dc open:', JSON.stringify(dc.label), 'readyState=' + dc.readyState); snapshotStats('dc-open'); };
     dc.onclosing = () => log('dc closing:', JSON.stringify(dc.label), 'readyState=' + dc.readyState);
-    dc.onclose = () => log('dc close:', JSON.stringify(dc.label), 'readyState=' + dc.readyState);
+    // Mirror-close: if the offerer closes its half, close ours too (the reflector holds no state past the
+    // channel). Today that is only observable at association teardown — per-channel close needs RFC 6525
+    // RE-CONFIG, which our stack does not implement yet (decision D1a).
+    dc.onclose = () => {
+      log('dc close:', JSON.stringify(dc.label), 'readyState=' + dc.readyState);
+      try { dc.close(); } catch { /* already closed */ }
+    };
     dc.onerror = (e) => log('dc error:', JSON.stringify(dc.label), (e && e.error && e.error.message) ? e.error.message : String(e));
     let rxCount = 0;
     let rxBytes = 0;
@@ -216,10 +247,10 @@ async function answererInPage(cfg) {
       rxCount += 1;
       rxBytes += size;
       const text = isString ? m.data : new TextDecoder().decode(new Uint8Array(m.data));
-      // Per-message accounting (size + running count + bufferedAmount). On a large/fragmented lane this is how
-      // we see the reassembled message land intact; on a burst lane, how many arrived and in what order. Only
-      // small payloads are echoed verbatim into the log; a big binary is summarized by size.
-      log('received:', 'size=' + size, 'msg#' + rxCount, 'rxBytes=' + rxBytes,
+      // Per-message accounting (size + running count + bufferedAmount). On the large/fragmented phase this
+      // is how we see the reassembled message land intact; on a burst phase, how many arrived and in what
+      // order. Only a small payload is echoed verbatim into the log; a big binary is summarized by size.
+      log('received on', JSON.stringify(dc.label) + ':', 'size=' + size, 'msg#' + rxCount, 'rxBytes=' + rxBytes,
           'string=' + isString, 'bufferedAmount=' + dc.bufferedAmount,
           size <= 64 ? 'data=' + JSON.stringify(text) : 'data=<' + size + 'B binary>');
       if (text.trim() === 'ping') {
@@ -227,12 +258,33 @@ async function answererInPage(cfg) {
           dc.send('pong');
           echoed = true;
           log('echoed: "pong" bufferedAmount=' + dc.bufferedAmount);
-          // Linger so SCTP reliably delivers the final pong (and its SACK) before teardown — the native
-          // and Pion peers do the same after their send. Bounded and well under the offerer's echo timeout.
-          setTimeout(() => resolveDone(), 3000);
+          // Without the semantics sequence the run is over here, so linger just long enough for SCTP to
+          // deliver the final pong (and its SACK) — the native and Pion peers do the same after their send.
+          // With it, the run ends on the offerer's explicit DONE instead (below), never on a timer.
+          if (!cfg.semantics) setTimeout(() => resolveDone(), 3000);
         } catch (e) {
           log('failed to send pong:', e.message);
         }
+        return;
+      }
+      try {
+        // Verbatim echo. `m.data` is already a string or an ArrayBuffer, so passing it straight back
+        // preserves both the bytes and the string/binary PPID the message arrived with.
+        dc.send(m.data);
+      } catch (e) {
+        log('failed to echo', size, 'bytes on', JSON.stringify(dc.label) + ':', e.message);
+        return;
+      }
+      // The offerer's completion handshake: once DONE has been echoed the run is over and we may tear
+      // down. This replaces the old "linger N seconds after the pong" race with an explicit agreement.
+      if (text.trim() === 'DONE') {
+        log('DONE echoed — the offerer signalled the run is complete');
+        sawDone = true;
+        snapshotStats('done');
+        // Brief linger so the DONE echo is delivered and the offerer's graceful association SHUTDOWN
+        // (RFC 4960 §9.2) is received and answered — the browser's own transport state at teardown is the
+        // clean-close evidence for s6.
+        setTimeout(() => resolveDone(), 3000);
       }
     };
   };
@@ -293,7 +345,13 @@ async function answererInPage(cfg) {
   log('stats-summary:', JSON.stringify(statsSummary));
 
   try { pc.close(); } catch { /* ignore */ }
-  if (echoed) return { ok: true, state: pc.connectionState, stats: statsSummary };
+  // Exit contract, mirroring the native/Pion/werift peers: established + echoed, and — in semantics mode —
+  // the offerer's DONE handshake. Ending on DONE (not a timer) is what keeps the association alive for the
+  // whole phase sequence.
+  if (echoed && (!cfg.semantics || sawDone)) return { ok: true, done: sawDone, state: pc.connectionState, stats: statsSummary };
+  if (echoed && cfg.semantics) {
+    return { ok: false, reason: "echoed the ping but the offerer's DONE never arrived", state: pc.connectionState, stats: statsSummary };
+  }
   if (failReason) return { ok: false, reason: failReason, state: pc.connectionState, stats: statsSummary };
   return { ok: false, reason: 'no ping/echo before deadline', state: pc.connectionState, stats: statsSummary };
 }
@@ -358,7 +416,11 @@ async function main() {
     // Node-side hard guard: the in-page deadline should resolve first; this only fires if the page hangs.
     result = await Promise.race([
       page.evaluate(answererInPage, cfg),
-      new Promise((res) => setTimeout(() => res({ ok: false, reason: 'node watchdog: page hung' }), cfg.timeoutMs + 15000)),
+      new Promise((res) =>
+        setTimeout(
+          () => res({ ok: false, reason: 'node watchdog: page hung' }),
+          cfg.timeoutMs + (cfg.semantics ? cfg.semanticsTimeoutMs : 0) + 15000,
+        )),
     ]);
   } finally {
     await browser.close().catch(() => {});

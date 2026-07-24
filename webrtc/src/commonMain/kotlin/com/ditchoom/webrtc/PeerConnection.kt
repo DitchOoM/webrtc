@@ -55,7 +55,10 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.random.Random
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
@@ -91,6 +94,18 @@ public data class PeerConnectionConfig(
      * tests inject a deterministic stub. Never a hardwired `224.0.0.251` socket in the session core.
      */
     public val mdnsResolver: MdnsResolver = MdnsResolver { MdnsResolution.Unresolved },
+    /**
+     * How long [RtcPeerConnection.close] lets an ESTABLISHED SCTP association finish its graceful shutdown
+     * (RFC 4960 §9.2 SHUTDOWN → SHUTDOWN-ACK → SHUTDOWN-COMPLETE) before the ICE transport underneath it is
+     * torn down. Without the wait the SHUTDOWN chunk is merely *queued* on the drive loop while `close()`
+     * shuts the socket, so the peer sees the association simply vanish — indistinguishable from a crash —
+     * instead of a clean close (W3C `close()` and every browser send it).
+     *
+     * A watchdog on observable state, not a budget: the wait ends the instant the association reports
+     * Closed, and is skipped entirely when there is nothing established to shut down. Set it to
+     * [Duration.ZERO] for an immediate teardown.
+     */
+    public val gracefulShutdownTimeout: Duration = 2.seconds,
 )
 
 /**
@@ -318,7 +333,35 @@ public class NativePeerConnection(
             // suspended on d.state forever (IceAgentDriver.close emits no terminal state).
             establishJob?.cancel()
             roleResolved.cancel() // unblock any runEstablishment awaiting the role
-            stack?.shutdown()
+            // Graceful association teardown (RFC 4960 §9.2) BEFORE the transport under it disappears:
+            // `shutdown()` only posts the request to the stack's drive loop, so closing the ICE driver in
+            // the same breath would pull the socket out from under the SHUTDOWN chunk and the peer would
+            // see the association vanish rather than close. Bounded by
+            // [PeerConnectionConfig.gracefulShutdownTimeout] and skipped unless something is established,
+            // so `close()` still never hangs.
+            val live = stack
+            if (live != null) {
+                live.shutdown()
+                // Wait only where a shutdown can actually complete: an established association, or one
+                // already mid-shutdown (our own request may have been processed before this check). A
+                // handshake that never finished has nothing to shut down gracefully, so waiting there
+                // would just add the timeout to every failed session's teardown.
+                val shuttingDown =
+                    when (live.state.value) {
+                        SctpAssociationState.Established,
+                        SctpAssociationState.ShutdownPending,
+                        SctpAssociationState.ShutdownSent,
+                        SctpAssociationState.ShutdownReceived,
+                        SctpAssociationState.ShutdownAckSent,
+                        -> true
+                        else -> false
+                    }
+                if (shuttingDown && config.gracefulShutdownTimeout > Duration.ZERO) {
+                    withTimeoutOrNull(config.gracefulShutdownTimeout) {
+                        live.state.first { it == SctpAssociationState.Closed }
+                    }
+                }
+            }
             driver?.close()
             localCandidateChannel.close()
             incomingChannels.close()

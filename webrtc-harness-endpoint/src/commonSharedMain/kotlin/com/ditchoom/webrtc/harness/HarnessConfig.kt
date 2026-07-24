@@ -73,7 +73,44 @@ internal data class HarnessConfig(
      * Tracks issue #48.
      */
     val requireMdns: Boolean,
+    /**
+     * Run the data-channel SEMANTICS phase sequence after phase 0's ping/pong (see [Semantics.kt] and
+     * docs/DC_SEMANTICS_INTEROP_DESIGN.md). Off by default so any other invocation keeps the historical
+     * establish-and-echo contract exactly; `run-interop.sh` turns it on for every lane.
+     *
+     * It also changes the ANSWERER's exit condition: instead of lingering a few seconds after echoing
+     * `pong` (which would kill the association mid-sequence), it reflects every channel until the offerer's
+     * explicit `DONE` handshake.
+     */
+    val semantics: Boolean,
+    /**
+     * Optional SUBSET of the offerer's compiled-in phase list, by short id (`WEBRTC_SCENARIOS="s1,s2"`) —
+     * a debugging knob, not a lane matrix. Empty = run them all. The list is never signalled to the peer:
+     * the reflector is scenario-agnostic by design, so there is nothing to tell it.
+     */
+    val scenarios: Set<String>,
+    /**
+     * Whether a failed semantics phase makes the process exit non-zero. Off while the semantics phases land
+     * NON-GATING-first (decision D7): the phases still run and still report, and `run-interop.sh` surfaces
+     * a failure as an informational `::warning::` until a one-line follow-up flips this on.
+     */
+    val semanticsRequired: Boolean,
+    /**
+     * Run the reverse-direction phase, in which the ANSWERER originates a data channel and the offerer
+     * reflects it (decision D4). Only meaningful when BOTH endpoints are ours — a foreign peer is a dumb
+     * reflector and never originates — so `run-interop.sh` sets it for the native⇄native / jvm⇄native lanes.
+     */
+    val reverseChannel: Boolean,
+    /**
+     * The watchdog for the whole semantics sequence, on top of [timeout] (which bounds establishment). A
+     * bound so a wedged phase cannot hang CI, not a wall-clock budget — every phase asserts observable
+     * state and finishes in milliseconds on a clean path (directive #4).
+     */
+    val semanticsTimeout: Duration,
 ) {
+    /** Whether phase [id] (`s1`, `s2`, …) is in this run's subset — everything runs when none was named. */
+    fun runsScenario(id: String): Boolean = scenarios.isEmpty() || id in scenarios
+
     companion object {
         fun fromEnv(): HarnessConfig {
             val role = if (envRequired("WEBRTC_ROLE").equals("offerer", ignoreCase = true)) Role.Offerer else Role.Answerer
@@ -113,8 +150,18 @@ internal data class HarnessConfig(
                 enableDtls13 = env("WEBRTC_DTLS13")?.equals("false", ignoreCase = true) != true,
                 // Off everywhere except the same-LAN mDNS lane, whose compose overlay sets it explicitly.
                 requireMdns = env("WEBRTC_REQUIRE_MDNS")?.equals("true", ignoreCase = true) == true,
+                // Semantics: off unless explicitly enabled, so an unmodified invocation keeps the exact
+                // historical establish-and-echo contract. run-interop.sh enables it for every lane.
+                semantics = env("WEBRTC_SEMANTICS").isTruthy(),
+                scenarios = env("WEBRTC_SCENARIOS")?.split(',', ' ')?.mapNotNull { it.trim().takeIf(String::isNotEmpty) }?.toSet().orEmpty(),
+                semanticsRequired = env("WEBRTC_SEMANTICS_REQUIRED").isTruthy(),
+                reverseChannel = env("WEBRTC_REVERSE").isTruthy(),
+                semanticsTimeout = (env("WEBRTC_SEMANTICS_TIMEOUT_MS")?.toLongOrNull() ?: 120_000L).milliseconds,
             )
         }
+
+        /** `1` / `true` (any case) enable a flag; anything else — including absent — leaves it off. */
+        private fun String?.isTruthy(): Boolean = this == "1" || this.equals("true", ignoreCase = true)
 
         private fun env(name: String): String? = readEnv(name)?.takeIf { it.isNotBlank() }
 

@@ -4,6 +4,7 @@ package com.ditchoom.webrtc.harness
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.AddressFamily
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.webrtc.PureKotlinDtls
 import com.ditchoom.webrtc.IceGatheringPolicy
@@ -12,6 +13,7 @@ import com.ditchoom.webrtc.PeerConnectionConfig
 import com.ditchoom.webrtc.PeerConnectionState
 import com.ditchoom.webrtc.dtls.DtlsConfig
 import com.ditchoom.webrtc.ice.IceConfig
+import com.ditchoom.webrtc.ice.MulticastMdnsResolver
 import com.ditchoom.webrtc.sctp.association.SctpConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sdp.SdpType
@@ -114,6 +116,18 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
                 config =
                     PeerConnectionConfig(
                         iceConfig = IceConfig(bufferFactory = net),
+                        // Resolve a peer's `<uuid>.local` host candidate (RFC 8828) over real multicast. Only
+                        // fires when a `.local` candidate actually arrives (the same-LAN mDNS lane, where the
+                        // browser advertises obfuscated hosts and shares our link); on the NAT'd lanes no
+                        // `.local` is ever offered, so this stays dormant. Query only the lane's families.
+                        mdnsResolver =
+                            MulticastMdnsResolver(
+                                families =
+                                    cfg.bindings
+                                        .map { if (it.family == IpFamily.V4) AddressFamily.IPv4 else AddressFamily.IPv6 }
+                                        .distinct(),
+                                bufferFactory = net,
+                            ),
                         // Fast SCTP RTO for the harness's low-RTT network: the default 3s initial RTO
                         // (RFC 4960, tuned for the internet) means a single lost DATA chunk — e.g. the
                         // echo pong under the impaired lane's loss — waits 3s before the first retransmit,

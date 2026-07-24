@@ -25,6 +25,46 @@ public final class com/ditchoom/webrtc/ice/CandidatePairState : java/lang/Enum {
 	public static fun values ()[Lcom/ditchoom/webrtc/ice/CandidatePairState;
 }
 
+public abstract interface class com/ditchoom/webrtc/ice/CandidateParse {
+}
+
+public final class com/ditchoom/webrtc/ice/CandidateParse$MdnsHost : com/ditchoom/webrtc/ice/CandidateParse {
+	public synthetic fun <init> (Ljava/lang/String;ILcom/ditchoom/webrtc/ice/ComponentId;Ljava/lang/String;JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()I
+	public final fun component3 ()Lcom/ditchoom/webrtc/ice/ComponentId;
+	public final fun component4-nlo9HBA ()Ljava/lang/String;
+	public final fun component5 ()J
+	public final fun copy-hMEMhdA (Ljava/lang/String;ILcom/ditchoom/webrtc/ice/ComponentId;Ljava/lang/String;J)Lcom/ditchoom/webrtc/ice/CandidateParse$MdnsHost;
+	public static synthetic fun copy-hMEMhdA$default (Lcom/ditchoom/webrtc/ice/CandidateParse$MdnsHost;Ljava/lang/String;ILcom/ditchoom/webrtc/ice/ComponentId;Ljava/lang/String;JILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/CandidateParse$MdnsHost;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getComponent ()Lcom/ditchoom/webrtc/ice/ComponentId;
+	public final fun getFoundation-nlo9HBA ()Ljava/lang/String;
+	public final fun getHostname ()Ljava/lang/String;
+	public final fun getPort ()I
+	public final fun getPriority ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/CandidateParse$Parsed : com/ditchoom/webrtc/ice/CandidateParse {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/IceCandidate;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/IceCandidate;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/IceCandidate;)Lcom/ditchoom/webrtc/ice/CandidateParse$Parsed;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/CandidateParse$Parsed;Lcom/ditchoom/webrtc/ice/IceCandidate;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/CandidateParse$Parsed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCandidate ()Lcom/ditchoom/webrtc/ice/IceCandidate;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/CandidateParse$Reject : com/ditchoom/webrtc/ice/CandidateParse {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/CandidateParse$Reject;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/ice/CandidateType : java/lang/Enum {
 	public static final field Host Lcom/ditchoom/webrtc/ice/CandidateType;
 	public static final field PeerReflexive Lcom/ditchoom/webrtc/ice/CandidateType;
@@ -239,6 +279,7 @@ public final class com/ditchoom/webrtc/ice/IceCandidateLine {
 	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/IceCandidateLine;
 	public final fun format (Lcom/ditchoom/webrtc/ice/IceCandidate;)Ljava/lang/String;
 	public final fun parse (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/IceCandidate;
+	public final fun parseLine (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/CandidateParse;
 }
 
 public final class com/ditchoom/webrtc/ice/IceConfig {
@@ -436,6 +477,7 @@ public final class com/ditchoom/webrtc/ice/IceGatheringKt {
 	public static synthetic fun gatherServerReflexive-2AWqQcw$default (Lcom/ditchoom/buffer/flow/DatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/random/Random;JJLcom/ditchoom/buffer/BufferFactory;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public static final fun getDEFAULT_GATHER_RTO ()J
 	public static final fun getDEFAULT_GATHER_TIMEOUT ()J
+	public static final fun resolveHostCandidate (Lcom/ditchoom/webrtc/ice/MdnsResolver;Lcom/ditchoom/webrtc/ice/CandidateParse$MdnsHost;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
 public abstract interface class com/ditchoom/webrtc/ice/IceOutput {
@@ -545,6 +587,21 @@ public final class com/ditchoom/webrtc/ice/MdnsResolution$Unresolved : com/ditch
 
 public abstract interface class com/ditchoom/webrtc/ice/MdnsResolver {
 	public abstract fun resolve (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/webrtc/ice/MulticastMdnsResolver : com/ditchoom/webrtc/ice/MdnsResolver {
+	public static final field Companion Lcom/ditchoom/webrtc/ice/MulticastMdnsResolver$Companion;
+	public static final field MDNS_GROUP_V4 Ljava/lang/String;
+	public static final field MDNS_GROUP_V6 Ljava/lang/String;
+	public static final field MDNS_PORT I
+	public static final field MDNS_TTL I
+	public synthetic fun <init> (Ljava/util/List;Lcom/ditchoom/buffer/BufferFactory;JILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Ljava/util/List;Lcom/ditchoom/buffer/BufferFactory;JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun resolve (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/webrtc/ice/MulticastMdnsResolver$Companion {
+	public final fun getDEFAULT_QUERY_TIMEOUT-UwyO8pc ()J
 }
 
 public final class com/ditchoom/webrtc/ice/NetworkId {

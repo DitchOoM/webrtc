@@ -33,5 +33,27 @@ kotlin {
         jvmTest.dependencies {
             implementation(libs.socket.udp)
         }
+
+        // ── mDNS multicast resolver actual (MulticastMdnsResolver, RFC 6762 `.local` resolution) ──
+        // It binds a socket-udp MulticastDatagramChannel, so it compiles ONLY into the non-browser targets
+        // that ship a socket-udp actual: jvm, android, linux, and — on a macOS host — macOS + iOS. One
+        // physical dir (src/socketMain) is added to each of those MAIN source sets (the per-source-set
+        // pattern), with socket-udp as their dependency. The sans-io core in commonMain stays socket-free
+        // and all-platform. EXCLUDED on purpose: js/wasm (both are also `browser()`, which has no raw UDP —
+        // a browser resolves `.local` inside its own RTCPeerConnection) and watchOS/tvOS (socket-udp
+        // publishes no artifact for them, matching its Apple matrix — so `appleMain`/`nativeMain` are too
+        // broad to hang the dependency on).
+        val mdnsSocketSourceSets = mutableListOf("jvmMain", "androidMain", "linuxMain")
+        if (org.jetbrains.kotlin.konan.target.HostManager.hostIsMac) {
+            mdnsSocketSourceSets += listOf("macosMain", "iosMain")
+        }
+        for (sourceSetName in mdnsSocketSourceSets) {
+            named(sourceSetName) {
+                kotlin.srcDir("src/socketMain/kotlin")
+                dependencies {
+                    implementation(libs.socket.udp)
+                }
+            }
+        }
     }
 }

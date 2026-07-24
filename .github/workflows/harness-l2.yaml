@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set up JDK 21
         uses: actions/setup-java@v5
@@ -64,7 +64,7 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
       - name: Cache Konan
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.konan
           key: konan-harness-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
@@ -82,7 +82,7 @@ jobs:
       # Common ancestor `…/build/bin` is stripped by upload-artifact@v4, so the artifact holds
       # linuxX64/… and linuxArm64/… — the l2 job downloads it back under …/build/bin.
       - name: Upload peer binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: peer-binaries
           path: |
@@ -93,7 +93,7 @@ jobs:
 
       # The JVM peer jar — a separate artifact (arch-independent; every jvm-* lane on either arch uses it).
       - name: Upload JVM peer jar
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: peer-jar
           path: webrtc-harness-endpoint/build/libs/webrtc-harness-peer-all.jar
@@ -121,19 +121,19 @@ jobs:
     # a wider margin than the original 8-scenario budget, especially on the slower arm64 runner.
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # No gradle / Kotlin-Native on this job — it RUNS the cross-built binary (works on the arm64 host,
       # which cannot build one). Docker builds the coturn/rendezvous/nat images natively for its arch.
       - name: Download peer binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: peer-binaries
           path: webrtc-harness-endpoint/build/bin
 
       # The arch-independent JVM jar (for the jvm-native / jvm-pion lanes).
       - name: Download JVM peer jar
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: peer-jar
           path: webrtc-harness-endpoint/build/libs
@@ -191,7 +191,7 @@ jobs:
         # writes test-harness/diag/** ONLY on a scenario failure (gating OR non-gating), so its presence is the
         # true "something failed" signal; a fully-green run leaves no diag dir and uploads nothing.
         if: ${{ failure() || hashFiles('test-harness/diag/**') != '' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: l2-harness-diag-${{ matrix.arch.name }}-${{ matrix.ipfamily }}
           path: |
@@ -229,17 +229,17 @@ jobs:
     runs-on: ${{ matrix.arch.runner }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Download peer binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: peer-binaries
           path: webrtc-harness-endpoint/build/bin
 
       # The arch-independent JVM jar (the jvm-<browser> lanes; harmless for the native lanes).
       - name: Download JVM peer jar
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: peer-jar
           path: webrtc-harness-endpoint/build/libs
@@ -270,7 +270,7 @@ jobs:
           docker network rm v6probe
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # Pre-build the browser image WITH a gha layer cache and load it into the daemon under compose's
       # default image name (webrtc-l2-harness-<service>), so the interop step reuses it (no rebuild). The
@@ -282,7 +282,7 @@ jobs:
       # per-step timeout turns that stall into a fast, retryable failure instead of a silent 30-min cancel.
       - name: Build browser image (gha-cached)
         id: browser_build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         timeout-minutes: 12
         continue-on-error: true
         with:
@@ -300,7 +300,7 @@ jobs:
       # a second failure is a genuine build error and SHOULD fail the job (fast, not at the 30-min timeout).
       - name: Build browser image (retry — no cache export)
         if: steps.browser_build.outcome == 'failure'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         timeout-minutes: 12
         with:
           context: test-harness/browser
@@ -329,7 +329,7 @@ jobs:
         # See the l2 job's upload step: non-gating v6/dual lanes exit 0, so gate on the presence of the
         # diag bundle (written only on a scenario failure), not just `failure()`, or the bundle never uploads.
         if: ${{ failure() || hashFiles('test-harness/diag/**') != '' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: l2-browser-diag-${{ matrix.browser }}-${{ matrix.peer }}-${{ matrix.arch.name }}-${{ matrix.ipfamily }}
           path: |

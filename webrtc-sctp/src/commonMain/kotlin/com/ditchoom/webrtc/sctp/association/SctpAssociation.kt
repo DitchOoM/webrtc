@@ -63,6 +63,18 @@ public class SctpAssociation(
     private val orderedSendSsn = HashMap<StreamId, Int>()
     private val pendingSend = ArrayDeque<OutstandingData>()
 
+    // User-data bytes accepted by send() but not yet handed to the wire — i.e. the depth of [pendingSend].
+    // Tracked as a running counter rather than summed on demand: this is read once per drive-loop item, and
+    // walking the deque there would make a full send buffer quadratic in the number of queued fragments.
+    //
+    // INTERNAL, deliberately. This is the truth the *driver* needs to apply backpressure (see
+    // SctpDataChannelStack), not a consumer-facing `bufferedAmount` — the data-channel API stays
+    // suspend-only, so nothing above this module observes a byte count.
+    private var pendingSendBytes: Int = 0
+
+    /** Bytes queued for transmission but not yet sent — the driver's backpressure signal. */
+    internal val bufferedBytes: Int get() = pendingSendBytes
+
     private var retransmissionQueue: RetransmissionQueue? = null
     private var reassemblyQueue: ReassemblyQueue? = null
     private var congestion: CongestionControl? = null
@@ -375,6 +387,7 @@ public class SctpAssociation(
                     firstSentAt = now,
                 )
             pendingSend.addLast(data)
+            pendingSendBytes += data.bytes
             nextTsn = nextTsn.next()
         }
         trySend(now, out)
@@ -407,6 +420,7 @@ public class SctpAssociation(
             val rwndOk = projected.toUInt() <= rq.peerReceiveWindow || zeroWindowProbe
             if (!cwndOk || !rwndOk) break
             pendingSend.removeFirst()
+            pendingSendBytes -= next.bytes
             next.lastSentAt = now
             rq.onSent(next)
             emitPacket(listOf(next.toChunk()), peerVerificationTag, out)
@@ -653,6 +667,7 @@ public class SctpAssociation(
         reassemblyQueue = null
         congestion = null
         pendingSend.clear()
+        pendingSendBytes = 0
         orderedSendSsn.clear()
     }
 

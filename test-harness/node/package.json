@@ -1,0 +1,14 @@
+{
+  "name": "webrtc-harness-node-peer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "werift (pure-TypeScript WebRTC) interop echo-peer for the L2 harness — W7 Phase 2(a), a JavaScript-engine differential oracle alongside Pion (Go) and the browsers.",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "peer.mjs",
+  "dependencies": {
+    "werift": "0.24.0"
+  }
+}

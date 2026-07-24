@@ -356,6 +356,44 @@ services:
       rendezvous: { condition: service_healthy }
       nat_b: { condition: service_healthy }
 
+  # node/werift (pure-TypeScript WebRTC) interop echo-peer — W7 Phase 2(a), a JavaScript-engine oracle.
+  # Like `pion`, a DROP-IN for the native answerer peer_b (same LAN, same IP, same NAT gateway, same
+  # WEBRTC_* env), so our offerer establishes against yet another independent WebRTC implementation and
+  # echoes ping/pong. It signals over the **UDP** rendezvous (RENDEZVOUS_IP/PORT), NOT the HTTP face — a
+  # Node process has raw UDP like Pion, unlike the browsers. Gated behind the `node` compose profile so it
+  # only starts for the node-interop / jvm-node scenarios (run-interop.sh activates it via
+  # COMPOSE_PROFILES=node); peer_b, pion, node, and the browsers all share PEER_B_IP but never run at the
+  # same time. No io_uring (Node engine, not socket-udp), so no seccomp=unconfined; NET_ADMIN for the
+  # default-route rewrite. Like Pion, werift is DTLS 1.2-only, so run-interop.sh pins PEER_DTLS13=false.
+  node:
+    profiles: ["node"]
+    build:
+      context: ./node
+      dockerfile: Dockerfile
+    cap_add: [NET_ADMIN]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      GATEWAY_IP: "${NAT_B_LAN_IP}"
+      WEBRTC_ROLE: answerer  # the werift peer is answerer-only; informational
+      WEBRTC_SESSION: "${SESSION:-l2}"
+      WEBRTC_LOCAL_IP: "${PEER_B_IP}"
+      WEBRTC_STUN_HOST: "${COTURN_IP}"
+      WEBRTC_STUN_PORT: "${STUN_PORT}"
+      WEBRTC_TURN_HOST: "${COTURN_IP}"
+      WEBRTC_TURN_PORT: "${STUN_PORT}"
+      WEBRTC_TURN_USER: "${TURN_USER}"
+      WEBRTC_TURN_PASS: "${TURN_PASS}"
+      WEBRTC_RENDEZVOUS_HOST: "${RENDEZVOUS_IP}"
+      WEBRTC_RENDEZVOUS_PORT: "${RENDEZVOUS_PORT}"
+      WEBRTC_ICE_POLICY: "${ICE_POLICY:-all}"
+      WEBRTC_TIMEOUT_MS: "${PEER_TIMEOUT_MS}"
+    networks:
+      lan_b: { ipv4_address: "${PEER_B_IP}" }
+    depends_on:
+      coturn: { condition: service_healthy }
+      rendezvous: { condition: service_healthy }
+      nat_b: { condition: service_healthy }
+
   # Headless-browser (Playwright) interop echo-peers — W7 Phase 2(b). Like `pion`, each is a DROP-IN for
   # the native answerer peer_b (same LAN/IP/NAT gateway/WEBRTC_* env), so our native offerer peer_a
   # establishes against a real BROWSER WebRTC engine and echoes ping/pong. Two engines, one image

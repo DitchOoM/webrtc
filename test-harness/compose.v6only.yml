@@ -108,6 +108,19 @@ services:
     networks:
       lan_b: { ipv4_address: "" }
 
+  # node signals over UDP (like Pion, not the browsers' HTTP face): its RENDEZVOUS_HOST becomes the bare v6
+  # literal, which signaling.mjs dials on a udp6 socket (no bracketing needed — dgram.connect takes the bare
+  # host). Its coturn STUN/TURN hosts are bracketed inside peer.mjs (brk()) for the URI grammar.
+  node:
+    environment:
+      GATEWAY_IP: ""
+      WEBRTC_LOCAL_IP: "${PEER_B_IP6}"
+      WEBRTC_STUN_HOST: "${COTURN_IP6}"
+      WEBRTC_TURN_HOST: "${COTURN_IP6}"
+      WEBRTC_RENDEZVOUS_HOST: "${RENDEZVOUS_IP6}"
+    networks:
+      lan_b: { ipv4_address: "" }
+
   chrome:
     environment:
       GATEWAY_IP: ""

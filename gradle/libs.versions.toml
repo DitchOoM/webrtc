@@ -28,7 +28,10 @@ kotlinxCoroutines = "1.11.0"
 # record-number encryption), `deriveTlsPremasterSecret` raw (EC)DHE secret (#302, the load-bearing ECDHE
 # primitive for both versions), and public `exportSpki()`/`exportEncoded()` (self-signed cert). All on
 # Maven Central. Bumped from 6.11.0; compiles clean JVM + LinuxX64 across all modules.
-buffer = "6.16.0"
+# 6.17.2 is the buffer version socket 3.15.0 pins transitively (socket-udp multicast, below); the
+# datagram-flow surface is additive/drop-in 6.16.0→6.17.2, so this only realigns webrtc's direct pin
+# with the socket-udp classpath (Gradle would resolve up regardless).
+buffer = "6.17.2"
 # DitchOoM socket sibling — the UDP `DatagramChannel` **actuals** webrtc's transport track binds to for
 # real-network candidate gathering (host/srflx/relay). The seam itself is buffer-flow's
 # `DatagramChannel` (on Central, above); `socket-udp` is only the platform real-socket implementation
@@ -43,7 +46,11 @@ buffer = "6.16.0"
 # 3.11.0 (socket PR #239) is the first release with socket-udp on Maven Central — it pins buffer 6.11.0
 # (matches the buffer pin above) and publishes all of jvm/android/js/linux/apple. The earlier
 # merge-gate (dev against a publishToMavenLocal snapshot) is lifted.
-socket = "3.11.0"
+# 3.15.0 (socket PR #266) adds UDP multicast: `UdpSocket.bindMulticast(...) → MulticastDatagramChannel`
+# (joinGroup/leaveGroup/TTL/loopback), the seam the webrtc-ice mDNS resolver actual (RFC 6762 `.local`
+# resolution) binds to. Same platform set as socket-udp (jvm/android/js-node/linux/apple, NOT wasm);
+# pins buffer 6.17.2 (above). Unblocks CO-2 mDNS end-to-end.
+socket = "3.15.0"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"

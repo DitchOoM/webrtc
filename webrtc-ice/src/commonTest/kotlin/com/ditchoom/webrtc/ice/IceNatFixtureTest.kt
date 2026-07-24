@@ -70,6 +70,37 @@ class IceNatFixtureTest {
             assertEquals(CandidateType.Relayed, bob.selectedPair!!.local.type, "Bob's selected local is the relay")
         }
 
+    @Test
+    fun mixed_symmetric_and_port_restricted_peers_fall_back_to_relay() =
+        runTest {
+            // The `mixed-sym-port` lane: one symmetric peer, one port-restricted. The symmetric side's
+            // srflx mapping is per-destination, so the advertised (STUN-learned) srflx is useless to the
+            // port-restricted peer — even with host+srflx+relay all gathered, only the relay bridges them.
+            val meetup = Vnets.meetup(backgroundScope, profileA = NatProfile.Symmetric, profileB = NatProfile.PortRestrictedCone)
+            val clock = IceDriver.clockOf { testScheduler.currentTime }
+            val alice = IceDriver(IceRole.Controlling, seed = 55, vnet = meetup.vnet, scope = backgroundScope, clock = clock)
+            val bob = IceDriver(IceRole.Controlled, seed = 66, vnet = meetup.vnet, scope = backgroundScope, clock = clock)
+            alice.start()
+            bob.start()
+
+            alice.bindHost("10.0.0.2", 5000, stunServer = meetup.stunAddress)
+            alice.gatherRelay(meetup.turnAddress, Vnets.TURN_USERNAME, Vnets.TURN_PASSWORD, "10.0.0.2", 6000)
+            bob.bindHost("10.0.1.2", 5000, stunServer = meetup.stunAddress)
+            bob.gatherRelay(meetup.turnAddress, Vnets.TURN_USERNAME, Vnets.TURN_PASSWORD, "10.0.1.2", 6000)
+            alice.connectTo(bob)
+            bob.connectTo(alice)
+
+            assertNotNull(withTimeoutOrNull(TIMEOUT) { alice.awaitConnected() }, "Alice connects — via the relay")
+            assertNotNull(withTimeoutOrNull(TIMEOUT) { bob.awaitConnected() }, "Bob connects — via the relay")
+            // Neither host nor srflx bridges a symmetric↔port-restricted mix: the selected pair is relayed.
+            val pair = alice.selectedPair!!
+            assertEquals(
+                CandidateType.Relayed,
+                pair.local.type,
+                "the symmetric peer can only be reached on its relay, got local=${pair.local.type} remote=${pair.remote.type}",
+            )
+        }
+
     private companion object {
         val TIMEOUT = 60.seconds
     }

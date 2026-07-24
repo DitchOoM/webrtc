@@ -65,6 +65,37 @@ docker-compose stack (existing services: `echo`, `http`, `toxiproxy`, `controlle
 The controller's `/describe` gains WebRTC entries so every platform discovers endpoints uniformly.
 Runs on the arch-matched matrix (no QEMU), Colima on macOS. **W7** (container work can start earlier).
 
+### L1 ↔ L2 parity matrix
+
+L2 (Docker) is Linux-only by nature — it drives real coturn / Pion / browsers over a real kernel
+network. Every L2 *network* scenario (NAT topology × IP family × policy — the peer-implementation axis
+`native/jvm/pion/chrome/firefox/webkit` is an interop concern, not a network one) has a deterministic
+L1 vnet fixture that reproduces the **same traversal outcome** under `runTest` virtual time, so
+**macOS / iOS-sim / Node / wasm / Android inherit the full NAT-traversal + TURN(v4/v6) + dual-stack
+story** that only Linux can prove on the real wire. The vnet is the source of truth; L2 is the oracle
+that keeps it honest (§5).
+
+| L2 scenario | family | L1 vnet fixture | Traversal proven |
+|---|---|---|---|
+| `full-cone` | v4 | `IceNatFixtureTest.full_cone_peers_connect_via_server_reflexive` | srflx hole-punch |
+| `port-restricted` / `address-restricted` | v4 | `VnetNatTest` (`hole_punch…`, `port_restricted…`, `address_restricted…`) | filtered srflx |
+| `symmetric-relay` | v4 | `IceNatFixtureTest.dual_symmetric_nats_connect_only_via_relay` | forced relay (mapping) |
+| `mixed-sym-port` | v4 | `IceNatFixtureTest.mixed_symmetric_and_port_restricted_peers_fall_back_to_relay` | forced relay (mixed) |
+| `relay-only` | v4 | `VnetTurnRelayTest.symmetric_peers_relay_a_round_trip_through_turn` | TURN relay round-trip |
+| `impaired-loss-delay` | v4 | `IceRelayLossTest` · `IceConsent/Nomination/RestartLossTest` · `VnetImpairmentTest` | loss/delay/reorder (seeded) |
+| `full-cone` / `port-restricted` | **v6** | `IceV6TraversalTest.port_restricted_v6_peers_connect_directly_by_hole_punching` | routed-v6 direct hole-punch |
+| `firewall-relay6` | **v6** | `IceV6TraversalTest.firewall_forces_a_v6_relay_when_direct_is_blocked` + `VnetTurnRelayV6Test` (Allocate family) | v6 network-forced relay discovery |
+| dual-stack preference | **dual** | `IceDualStackTest.dual_stack_agents_select_the_ipv6_pair` | RFC 6724 v6-preferred |
+| dual-stack fallback | **dual** | `IceDualStackNatTest.a_broken_v6_path_falls_back_to_the_v4_server_reflexive_pair` | happy-eyeballs v6→v4 |
+| RFC 6724 / 8445 priority | — | `IcePriorityTest` (family precedence + pair-priority arithmetic) | candidate/pair ordering |
+
+The vnet models routed IPv6 exactly as the harness does — **no NAT66**, a pure RFC 4787 §5 filtering
+router (`RoutedFilter`) or the `firewall-relay6` administrative firewall (`RoutedFirewall`), with
+`FamilyFabric` carrying a broken-v6 + working-v4 stack in one vnet for the fallback case.
+Harness-only failures (a peer's v6 signaling-bind, a browser CLAT shim, a log double-read) are **not**
+stack bugs and correctly have no fixture. cgnat / hairpin (v4-only carrier-NAT / NAT444) are a
+documented follow-up — they need NAT-*chaining* in the vnet fabric, tracked separately.
+
 ### L3 — Interop with foreign peers · tier Interop
 Borrow *other implementations* as the correctness oracle. Signaling is a seam, so the offer/answer
 exchange is scripted — interop runs are reproducible, not flaky live-network tests.

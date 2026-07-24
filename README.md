@@ -87,7 +87,10 @@ Because every core is sans-io and caller-clocked, the full stack (ICE + DTLS + S
 **deterministically under virtual time on every platform** — a rarity for WebRTC. Foreign-peer interop
 (Pion, headless Chrome) finds bugs; each one is demoted into a committed deterministic fixture, so it
 never flakes again. Real STUN/TURN (coturn), real NAT (iptables profiles), and impairment (netem) run
-in the container harness. Full strategy in [`TESTING.md`](./TESTING.md).
+in the container harness. Every Linux-only harness scenario — including v6 NAT traversal, `firewall-relay6`
+forced relay, and dual-stack fallback — has a matching virtual-time fixture, so **macOS / iOS / Node /
+wasm / Android inherit the same coverage**; see the L1↔L2 parity matrix and full strategy in
+[`TESTING.md`](./TESTING.md).
 
 ## License
 

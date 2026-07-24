@@ -178,6 +178,8 @@ jvm-node             | port-restricted    | port-restricted    | all   | -      
 jvm-chrome           | port-restricted    | port-restricted    | all   | -                                                | jvm    | chrome  | single
 jvm-firefox          | port-restricted    | port-restricted    | all   | -                                                | jvm    | firefox | single
 jvm-webkit           | port-restricted    | port-restricted    | all   | -                                                | jvm    | webkit  | single
+mdns-chrome          | -                  | -                  | all   | -                                                | native | chrome  | mdns
+mdns-firefox         | -                  | -                  | all   | -                                                | native | firefox | mdns
 "
 
 # Scenario selection:
@@ -194,14 +196,17 @@ skip=" ${HARNESS_SKIP:-} "
 # HARD loss gate (see the header). $HARNESS_NON_GATING appends caller-supplied lanes that are landing
 # informational-first (e.g. a new interop lane before it's proven green across all families — CI sets it for
 # node-interop/jvm-node; a one-line follow-up flips them to gating once green). Space-padded so `case`
-# matches whole words; the env list is space-separated names.
+# matches whole words; the env list is space-separated names. (mdns-chrome/mdns-firefox were themselves
+# promoted OUT of this list to GATING once peer_mdns (WEBRTC_REQUIRE_MDNS=true) made rc=0 PROVE mDNS
+# resolution rather than just obfuscation-ON interop — issue #48; they now assert as hard as every lane.)
 NON_GATING=" impaired-loss-delay ${HARNESS_NON_GATING:-} "
 
 # Family-degenerate scenarios (space-padded, whole-word `case` match). The v4 mapping-artifacts (symmetric
 # endpoint-dependent mapping, carrier double-NAT, hairpin) have NO v6 analog — over routed v6 the "NAT" is a
 # pure filtering router, so they are v4-only. `firewall-relay6` is the inverse: it needs the routed-v6
 # firewall to force relay-discovery, so it is v6/dual-only. family_skipped drops each outside its family.
-V4_ONLY_SCENARIOS=" symmetric-relay mixed-sym-port cgnat hairpin "
+# mdns-* is same-LAN v4-only (compose.mdns.yml defines only a v4 lan0); no v6 addresses, so skip off v4.
+V4_ONLY_SCENARIOS=" symmetric-relay mixed-sym-port cgnat hairpin mdns-chrome mdns-firefox "
 V6_ONLY_SCENARIOS=" firewall-relay6 "
 family_skipped() {
     local name=" $1 "
@@ -480,6 +485,85 @@ run_scenario() {
     fi
 }
 
+# ── same-LAN mDNS lane (CO-2 Part 3) ─────────────────────────────────────────────────────────────────
+# Topologically distinct from the NAT matrix: ONE shared bridge (lan0), NO NAT, NO netem, NO relay path.
+# A native offerer (peer_mdns — OUR MulticastMdnsResolver under test) establishes against a browser
+# answerer (chrome_mdns / firefox_mdns) that has mDNS obfuscation turned ON, so it emits `.local` host
+# candidates our peer must resolve over multicast on the shared L2. Layers compose.mdns.yml and starts only
+# coturn + rendezvous + the two peers — none of the NAT machinery (profiles/carriers/netem/captures) applies.
+# Reuses the shared pass/warn tally, fail_scenario, and collect_diagnostics (its NAT-only probes best-effort
+# degrade to empty files here). NON-GATING first (see $NON_GATING): a failure warns, never reddens the run.
+run_mdns_scenario() {
+    local name="$1" policy="${4:-all}" b_impl="${7:-chrome}"
+    echo ""
+    echo "═══ scenario: $name  (same-LAN mDNS, obfuscation ON, offerer=peer_mdns answerer=${b_impl}) ═══"
+
+    export ICE_POLICY="$policy" SESSION="$name" PEER_DTLS13="true"
+    # Distinct per-lane seeds (see run_scenario). The browser answerer ignores WEBRTC_SEED.
+    export SEED_A SEED_B
+    SEED_A=$(printf '%s' "${name}-${IP_FAMILY}-a" | cksum | cut -d' ' -f1)
+    SEED_B=$(printf '%s' "${name}-${IP_FAMILY}-b" | cksum | cut -d' ' -f1)
+
+    # Layer the mdns overlay onto the family base for THIS scenario's compose calls, then restore so a later
+    # scenario in the same run is unaffected. topo/a_service/b_service are locals collect_diagnostics reads.
+    local saved_compose="$COMPOSE_FILE"
+    export COMPOSE_FILE="${COMPOSE_FILE}:compose.mdns.yml"
+    local topo="mdns" a_service="peer_mdns" b_service
+    case "$b_impl" in
+        firefox) b_service="firefox_mdns"; export COMPOSE_PROFILES="mdns,mdns-firefox" ;;
+        *)       b_service="chrome_mdns";  export COMPOSE_PROFILES="mdns,mdns-chrome"  ;;
+    esac
+
+    local infra="coturn coturn_pcap rendezvous"
+    stack_down
+    if ! ./compose-up-retry.sh $infra; then
+        fail_scenario "$name" "infra failed to come up"; export COMPOSE_FILE="$saved_compose"; return
+    fi
+
+    # Build + start both peers together (see run_scenario for the one-`up` ordering rationale). The browser
+    # image is prebuilt + gha-cached in CI (HARNESS_NO_BROWSER_BUILD=1); locally we build it.
+    docker compose build "$a_service"
+    if [ "${HARNESS_NO_BROWSER_BUILD:-0}" = "1" ]; then : ; else docker compose build "$b_service"; fi
+    docker compose up -d --no-build --no-recreate "$a_service" "$b_service"
+
+    local rc_a rc_b
+    rc_a=$(docker compose wait "$a_service" 2>/dev/null | grep -oE '[0-9]+$' | tail -1)
+    rc_b=$(docker compose wait "$b_service" 2>/dev/null | grep -oE '[0-9]+$' | tail -1)
+
+    local a_log b_log
+    a_log=$(docker compose logs --no-log-prefix "$a_service" 2>/dev/null)
+    b_log=$(docker compose logs --no-log-prefix "$b_service" 2>/dev/null)
+    echo "── $a_service (offerer) ──"; printf '%s\n' "$a_log"
+    echo "── $b_service (answerer) ──"; printf '%s\n' "$b_log"
+
+    if [ "$rc_a" = "0" ] && [ "$rc_b" = "0" ]; then
+        # PASS gate part 1 = both peers exit 0. For THIS lane rc_a=0 already means more than establish+echo:
+        # peer_mdns runs with WEBRTC_REQUIRE_MDNS=true, so it only exits 0 if our MulticastMdnsResolver
+        # actually resolved the browser's obfuscated `<uuid>.local` over multicast (it keeps the poll/resolve
+        # loops alive past the sub-second prflx connect). So the lane now PROVES mDNS resolution, not just
+        # obfuscation-ON interop. We do NOT (and cannot) assert the resolved pair is SELECTED: mDNS is
+        # link-local, so a resolved `.local` is the same directly-reachable IP prflx already won on — no
+        # topology makes the mDNS pair win. See issue #48. Two hard assertions below corroborate rc_a=0:
+        #   1. the browser SIGNALED an obfuscated `.local` into the mailbox (source of truth for the exchange), and
+        #   2. OUR resolver logged `mdns resolved …` on one.
+        local mailbox
+        mailbox=$(docker compose exec -T rendezvous python3 -c \
+            "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:${RENDEZVOUS_HTTP_PORT}/dump').read().decode())" 2>/dev/null || true)
+        if ! printf '%s\n' "$mailbox" | grep -qiE '\.local'; then
+            fail_scenario "$name" "established but the browser never signaled an obfuscated .local host candidate into the mailbox (mDNS obfuscation not exercised)"; export COMPOSE_FILE="$saved_compose"; return
+        fi
+        echo "[mdns] browser signaled an obfuscated .local host candidate"
+        if ! printf '%s\n' "$a_log" | grep -qi 'mdns resolved'; then
+            fail_scenario "$name" "established but our MulticastMdnsResolver never resolved the browser's .local (no 'mdns resolved' line — the resolver was not exercised)"; export COMPOSE_FILE="$saved_compose"; return
+        fi
+        echo "[mdns] ✅ our MulticastMdnsResolver resolved the browser's .local candidate"
+        echo "✅ [$name] PASS (offerer rc=$rc_a answerer rc=$rc_b) — obfuscation-ON browser interop + mDNS resolution proven"; pass=$((pass+1))
+    else
+        fail_scenario "$name" "FAIL (offerer rc=$rc_a answerer rc=$rc_b)"
+    fi
+    export COMPOSE_FILE="$saved_compose"
+}
+
 # Here-string (not a pipe) so the loop runs in THIS shell and the tallies persist. Read the scenario list
 # on a DEDICATED fd (3), NOT stdin: `docker compose exec` (used by the netem `impaired` lane) attaches and
 # drains its stdin, which — if the loop read from stdin — would swallow every remaining scenario line, so
@@ -497,7 +581,12 @@ while IFS='|' read -r name a b policy netem a_impl b_impl topo <&3; do
     case "$skip" in *" $name "*) echo "── skip $name (HARNESS_SKIP)"; continue ;; esac
     # Family-skip: a v4-only mapping-artifact on v6/dual, or the v6-native firewall-relay6 on v4.
     if family_skipped "$name"; then echo "── skip $name (family $IP_FAMILY)"; continue; fi
-    run_scenario "$name" "$a" "$b" "$policy" "$netem" "$a_impl" "$b_impl" "$topo"
+    # The same-LAN mDNS lane has its own NAT-free runner (shared bridge, no netem/relay/carrier machinery).
+    if [ "$topo" = "mdns" ]; then
+        run_mdns_scenario "$name" "$a" "$b" "$policy" "$netem" "$a_impl" "$b_impl" "$topo"
+    else
+        run_scenario "$name" "$a" "$b" "$policy" "$netem" "$a_impl" "$b_impl" "$topo"
+    fi
 done 3<<< "$SCENARIOS"
 
 echo ""

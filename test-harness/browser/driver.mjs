@@ -58,6 +58,10 @@ const cfg = {
   icePolicy: env('WEBRTC_ICE_POLICY', 'all').toLowerCase(),
   timeoutMs: envInt('WEBRTC_TIMEOUT_MS', 45000),
   browser: BROWSER,
+  // mDNS host-candidate obfuscation. OFF by default (the NAT lanes want real-IP host candidates our peer
+  // can resolve). The same-LAN mdns lane sets WEBRTC_MDNS_OBFUSCATE=1 so the browser emits obfuscated
+  // `.local` host candidates and our MulticastMdnsResolver resolves them over multicast on the shared L2.
+  mdnsObfuscate: env('WEBRTC_MDNS_OBFUSCATE', '0') === '1',
 };
 
 // The answerer, evaluated INSIDE the browser page (this function is serialized and run in the browser,
@@ -210,8 +214,9 @@ function launcher() {
       options: {
         headless: true,
         firefoxUserPrefs: {
-          // Emit real-IP host candidates (not obfuscated `.local` mDNS names our peer can't resolve).
-          'media.peerconnection.ice.obfuscate_host_addresses': false,
+          // NAT lanes: false → real-IP host candidates our peer resolves directly. The same-LAN mdns lane
+          // sets true → obfuscated `.local` host candidates our MulticastMdnsResolver resolves for real.
+          'media.peerconnection.ice.obfuscate_host_addresses': cfg.mdnsObfuscate,
         },
       },
     };
@@ -225,16 +230,16 @@ function launcher() {
     return { type: webkit, options: { headless: true } };
   }
   // chromium (default)
+  const chromeArgs = ['--no-sandbox', '--disable-dev-shm-usage'];
+  // NAT lanes: disable Chromium's default mDNS host-candidate hiding so it emits real-IP host candidates
+  // our peer resolves directly. The same-LAN mdns lane omits this flag → Chromium KEEPS its default `.local`
+  // obfuscation, and our MulticastMdnsResolver resolves those candidates for real over the shared L2.
+  if (!cfg.mdnsObfuscate) {
+    chromeArgs.push('--disable-features=WebRtcHideLocalIpsWithMdns');
+  }
   return {
     type: chromium,
-    options: {
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-features=WebRtcHideLocalIpsWithMdns',
-      ],
-    },
+    options: { headless: true, args: chromeArgs },
   };
 }
 

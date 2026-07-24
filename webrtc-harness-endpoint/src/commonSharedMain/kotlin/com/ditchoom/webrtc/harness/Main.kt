@@ -4,6 +4,7 @@ package com.ditchoom.webrtc.harness
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.AddressFamily
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.webrtc.PureKotlinDtls
 import com.ditchoom.webrtc.IceGatheringPolicy
@@ -12,9 +13,13 @@ import com.ditchoom.webrtc.PeerConnectionConfig
 import com.ditchoom.webrtc.PeerConnectionState
 import com.ditchoom.webrtc.dtls.DtlsConfig
 import com.ditchoom.webrtc.ice.IceConfig
+import com.ditchoom.webrtc.ice.MdnsResolution
+import com.ditchoom.webrtc.ice.MdnsResolver
+import com.ditchoom.webrtc.ice.MulticastMdnsResolver
 import com.ditchoom.webrtc.sctp.association.SctpConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sdp.SdpType
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
@@ -58,6 +63,24 @@ fun main() {
     exitProcess(code)
 }
 
+// Wrap the mDNS resolver so every `.local` resolution is observable in the peer log — the same-LAN mDNS
+// interop lane greps this to prove our MulticastMdnsResolver actually fired on the browser's obfuscated
+// `<uuid>.local` candidate (as opposed to the connection winning via a peer-reflexive pair, which on a
+// no-NAT shared segment can short-circuit resolution). Harness-only; the library resolver stays silent.
+// [onResolved] fires once per successful resolution so [runPeer] can gate the require-mDNS lane on it.
+private fun MdnsResolver.logged(onResolved: () -> Unit): MdnsResolver =
+    MdnsResolver { hostname ->
+        resolve(hostname).also { res ->
+            when (res) {
+                is MdnsResolution.Resolved -> {
+                    println("[harness] mdns resolved $hostname -> ${res.address}")
+                    onResolved()
+                }
+                is MdnsResolution.Unresolved -> println("[harness] mdns UNRESOLVED $hostname")
+            }
+        }
+    }
+
 private suspend fun runPeer(cfg: HarnessConfig): Int =
     coroutineScope {
         // One cancellable child scope for all long-lived machinery (pc, dtls, the gather/trickle/poll
@@ -84,6 +107,11 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
         // seeded default is correct (the whole peer is deterministic-by-seed for replay).
         @Suppress("UnseamedEntropy") val dtlsRandom = Random(cfg.seed xor 0xD715L)
         val dtls = PureKotlinDtls(bg, clock, DtlsConfig(bufferFactory = net, enableDtls13 = cfg.enableDtls13, random = dtlsRandom))
+
+        // Completes the first time our MulticastMdnsResolver resolves a browser `.local` (via the `.logged`
+        // wrapper). The require-mDNS lane awaits it after echo (watchdog-bounded) so a rc=0 there PROVES
+        // resolution fired; every other lane leaves it uncompleted and never waits on it. See issue #48.
+        val mdnsResolved = CompletableDeferred<Unit>()
 
         val gathering =
             IceGatheringPolicy { driver ->
@@ -114,6 +142,18 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
                 config =
                     PeerConnectionConfig(
                         iceConfig = IceConfig(bufferFactory = net),
+                        // Resolve a peer's `<uuid>.local` host candidate (RFC 8828) over real multicast. Only
+                        // fires when a `.local` candidate actually arrives (the same-LAN mDNS lane, where the
+                        // browser advertises obfuscated hosts and shares our link); on the NAT'd lanes no
+                        // `.local` is ever offered, so this stays dormant. Query only the lane's families.
+                        mdnsResolver =
+                            MulticastMdnsResolver(
+                                families =
+                                    cfg.bindings
+                                        .map { if (it.family == IpFamily.V4) AddressFamily.IPv4 else AddressFamily.IPv6 }
+                                        .distinct(),
+                                bufferFactory = net,
+                            ).logged(onResolved = { mdnsResolved.complete(Unit) }),
                         // Fast SCTP RTO for the harness's low-RTT network: the default 3s initial RTO
                         // (RFC 4960, tuned for the internet) means a single lost DATA chunk — e.g. the
                         // echo pong under the impaired lane's loss — waits 3s before the first retransmit,
@@ -150,7 +190,7 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
         // carries the peer's own view of the exchange to seed a virtual-time vnet fixture from.
         val forensics = Forensics()
 
-        val ok =
+        val established =
             withTimeoutOrNull(cfg.timeout) {
                 when (cfg.role) {
                     Role.Offerer -> runOfferer(bg, pc, cfg, sigOut, sigIn, forensics)
@@ -159,6 +199,25 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
             } ?: run {
                 println("[harness] TIMEOUT after ${cfg.timeout}; state=${pc.connectionState.value}")
                 false
+            }
+
+        // Require-mDNS lane (issue #48): establish + echo alone don't prove mDNS RESOLUTION — prflx wins the
+        // pair long before the resolver matters (and a resolved `.local` can never BE the selected pair: it
+        // is link-local, i.e. the same directly-reachable IP). So here we additionally wait for our resolver
+        // to have fired on one of the browser's obfuscated `.local` candidates. The role's candidate-poll +
+        // fire-and-forget resolve loops are still live on `bg` (not cancelled until below), so the browser's
+        // trickled `.local` keeps arriving and resolving while we wait. Watchdog, not a wall-clock budget
+        // (directive #4): the observable state is "≥1 `.local` resolved". Off (every other lane) we don't wait.
+        val ok =
+            if (established && cfg.requireMdns) {
+                if (withTimeoutOrNull(MDNS_RESOLVE_WAIT) { mdnsResolved.await() } != null) {
+                    true
+                } else {
+                    println("[harness] mdns REQUIRED but no browser .local resolved within $MDNS_RESOLVE_WAIT")
+                    false
+                }
+            } else {
+                established
             }
 
         // Dump the transition history before bg.cancel() stops the collector. Ensure the final observed
@@ -363,3 +422,10 @@ private val POLL_INTERVAL = 200.milliseconds
 // window). Watchdogs, not wall-clock budgets (directive #4); the answerer's exit is the only thing slowed.
 private val ECHO_TIMEOUT = 15.seconds
 private val FLUSH_LINGER = 10.seconds
+
+// Require-mDNS lane watchdog (issue #48): how long, after echo, to wait for our resolver to fire on the
+// browser's obfuscated `.local`. Browsers gather host candidates FIRST (no STUN RTT), so the `.local` is
+// among the earliest trickled — it has normally already arrived by the time echo completes; this only
+// covers the tail where the browser's trickle lags our sub-second prflx connect. Bounded by the outer
+// cfg.timeout regardless. A watchdog on the observable "resolved" state, not a padding delay (directive #4).
+private val MDNS_RESOLVE_WAIT = 10.seconds

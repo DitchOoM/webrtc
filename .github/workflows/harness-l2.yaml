@@ -176,7 +176,7 @@ jobs:
         env:
           PEER_KEXE: "webrtc-harness-endpoint/build/bin/${{ matrix.arch.konan }}/peerReleaseExecutable/peer.kexe"
           PEER_JAR: "webrtc-harness-endpoint/build/libs/webrtc-harness-peer-all.jar"
-          HARNESS_SKIP: "chrome-interop firefox-interop webkit-interop jvm-chrome jvm-firefox jvm-webkit"
+          HARNESS_SKIP: "chrome-interop firefox-interop webkit-interop jvm-chrome jvm-firefox jvm-webkit mdns-chrome mdns-firefox"
           # node-interop + jvm-node land informational-first (per the impaired/v6 precedent): they RUN in
           # this fast job but a failure is a ::warning::, not a gate, while the werift lane proves out across
           # all families. Drop this line (a one-liner) to promote them to gating once green.
@@ -341,6 +341,93 @@ jobs:
           name: l2-browser-diag-${{ matrix.browser }}-${{ matrix.peer }}-${{ matrix.arch.name }}-${{ matrix.ipfamily }}
           path: |
             l2-browser.log
+            test-harness/diag/**
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # Same-LAN mDNS interop (CO-2 Part 3) — the ONE lane where link-local `.local` candidates actually flow.
+  # A native offerer (peer_mdns, our MulticastMdnsResolver) ⇄ a browser answerer with mDNS obfuscation ON,
+  # both on ONE shared bridge (compose.mdns.yml, no NAT). Distinct from l2-browser: v4-only (lan0 is v4),
+  # chrome + firefox only (WebKit has no obfuscation pref), native offerer only, and NON-GATING first (the
+  # scenarios are in run-interop.sh's $NON_GATING, so the run exits 0 even if a lane warns). Same gha-cached
+  # browser-image prebuild as l2-browser, but tagged for the `<engine>_mdns` compose service names.
+  l2-mdns:
+    name: "interop: mDNS same-LAN ${{ matrix.browser }} (${{ matrix.arch.name }})"
+    needs: build-peer
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - { runner: ubuntu-24.04, name: X64, konan: linuxX64 }
+          - { runner: ubuntu-24.04-arm, name: Arm64, konan: linuxArm64 }
+        browser: [chrome, firefox]
+    runs-on: ${{ matrix.arch.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download peer binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: peer-binaries
+          path: webrtc-harness-endpoint/build/bin
+
+      - name: Restore exec bit
+        run: chmod +x "webrtc-harness-endpoint/build/bin/${{ matrix.arch.konan }}/peerReleaseExecutable/peer.kexe"
+
+      - name: Enable container-router forwarding
+        run: sudo sysctl -w net.bridge.bridge-nf-call-iptables=0 net.bridge.bridge-nf-call-ip6tables=0 || true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Prebuild the browser image and load it under the compose default name for the mdns SERVICE
+      # (webrtc-l2-harness-<engine>_mdns), so HARNESS_NO_BROWSER_BUILD=1 reuses it. Same gha cache scope as
+      # l2-browser (per {engine × arch}) — the image is identical, only the loaded tag differs.
+      - name: Build browser image (gha-cached)
+        id: browser_build
+        uses: docker/build-push-action@v6
+        timeout-minutes: 12
+        continue-on-error: true
+        with:
+          context: test-harness/browser
+          build-args: |
+            BROWSER=${{ matrix.browser == 'chrome' && 'chromium' || matrix.browser }}
+          tags: webrtc-l2-harness-${{ matrix.browser }}_mdns:latest
+          load: true
+          cache-from: type=gha,scope=browser-${{ matrix.browser }}-${{ matrix.arch.name }}
+          cache-to: type=gha,mode=max,scope=browser-${{ matrix.browser }}-${{ matrix.arch.name }}
+
+      - name: Build browser image (retry — no cache export)
+        if: steps.browser_build.outcome == 'failure'
+        uses: docker/build-push-action@v6
+        timeout-minutes: 12
+        with:
+          context: test-harness/browser
+          build-args: |
+            BROWSER=${{ matrix.browser == 'chrome' && 'chromium' || matrix.browser }}
+          tags: webrtc-l2-harness-${{ matrix.browser }}_mdns:latest
+          load: true
+          cache-from: type=gha,scope=browser-${{ matrix.browser }}-${{ matrix.arch.name }}
+
+      - name: "Interop: native peer ⇄ ${{ matrix.browser }} (same-LAN mDNS, obfuscation ON)"
+        env:
+          PEER_KEXE: "webrtc-harness-endpoint/build/bin/${{ matrix.arch.konan }}/peerReleaseExecutable/peer.kexe"
+          HARNESS_NO_BROWSER_BUILD: "1"  # reuse the gha-cached image built above
+          IP_FAMILY: "v4"
+        run: |
+          set -o pipefail
+          bash test-harness/run-interop.sh "mdns-${{ matrix.browser }}" 2>&1 | tee l2-mdns.log
+
+      - name: Upload harness log + diagnostics (on any scenario failure)
+        # NON-GATING lane (exits 0 even on a warn), so gate on the presence of the diag bundle — written only
+        # on a scenario failure — not just `failure()`, else the bundle for the informational lane never uploads.
+        if: ${{ failure() || hashFiles('test-harness/diag/**') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: l2-mdns-diag-${{ matrix.browser }}-${{ matrix.arch.name }}
+          path: |
+            l2-mdns.log
             test-harness/diag/**
           retention-days: 14
           if-no-files-found: ignore

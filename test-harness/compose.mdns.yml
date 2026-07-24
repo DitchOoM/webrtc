@@ -1,0 +1,141 @@
+# ── same-LAN mDNS overlay (CO-2 Part 3) — layered on docker-compose.yml for the mdns-* lanes ─────────
+#
+# The NAT lanes put the peers on separate LANs, so a link-local mDNS query (224.0.0.251:5353 /
+# [ff02::fb]:5353) never crosses between them — a `.local` host candidate can therefore never actually be
+# RESOLVED there (correct behaviour: our agent skips it and falls back to srflx/relay, which WebKit already
+# proves). This overlay is the real end-to-end mDNS test: it puts a native peer (peer_mdns, OUR code, the
+# offerer) and a browser (chrome_mdns / firefox_mdns, the answerer, with mDNS obfuscation turned ON) on ONE
+# shared bridge (lan0) with NO NAT between them. The browser then emits obfuscated `.local` host candidates,
+# and our MulticastMdnsResolver resolves them for real over multicast on that single L2 segment.
+#
+# coturn + rendezvous also join lan0 (compose merges this into their base `pub` attachment) so STUN and the
+# signaling mailbox are reachable on the shared segment without a router — the mdns services point their
+# WEBRTC_{STUN,TURN,RENDEZVOUS}_HOST at the lan0 addresses. No GATEWAY_IP is set on the mdns services, so
+# their entrypoints do NOT rewrite the default route (they stay same-LAN); the Firefox v4-shim also stays
+# off (it needs GATEWAY_IP6, which is unset on this v4-only lane). run-interop.sh layers this file into
+# COMPOSE_FILE and starts peer_mdns + one browser for the `mdns-chrome` / `mdns-firefox` scenarios.
+
+networks:
+  # One shared L2 broadcast domain — the whole point: link-local multicast floods here, so the browser's
+  # `.local` host candidates reach our peer directly (no NAT, no router in between).
+  lan0:
+    ipam: { config: [{ subnet: "${LAN0_SUBNET}" }] }
+
+services:
+  # Give the two infra services a foot on lan0 too (merged with their base `pub` attachment) so the mdns
+  # peer/browser reach STUN + the rendezvous mailbox without any router.
+  coturn:
+    networks:
+      lan0: { ipv4_address: "${COTURN_LAN0_IP}" }
+  rendezvous:
+    networks:
+      lan0: { ipv4_address: "${RENDEZVOUS_LAN0_IP}" }
+
+  # Native OFFERER on the shared bridge — a drop-in for peer_a (same image/build/seccomp, offerer WEBRTC_*),
+  # but on lan0 with NO NAT gateway. This is the endpoint under test: it RESOLVES the browser's `.local`
+  # candidates via MulticastMdnsResolver (wired in the harness Main.kt). Gated behind the `mdns` profile.
+  peer_mdns:
+    profiles: ["mdns"]
+    build:
+      context: ..
+      dockerfile: "test-harness/peer/${PEER_DOCKERFILE:-Dockerfile}"
+      args: { PEER_KEXE: "${PEER_KEXE:-}" }
+    cap_add: [NET_ADMIN]
+    security_opt: ["seccomp=unconfined", "no-new-privileges:true"]  # io_uring (socket-udp) — see peer_a
+    environment:
+      # NO GATEWAY_IP → entrypoint leaves the default route on the lan0 bridge gw (stay same-LAN).
+      WEBRTC_ROLE: offerer
+      WEBRTC_SESSION: "${SESSION:-mdns}"
+      WEBRTC_LOCAL_IP: "${PEER_MDNS_IP}"
+      WEBRTC_LOCAL_PORT: "${ICE_PORT}"
+      WEBRTC_RELAY_PORT: "${RELAY_BIND_PORT}"
+      WEBRTC_STUN_HOST: "${COTURN_LAN0_IP}"
+      WEBRTC_STUN_PORT: "${STUN_PORT}"
+      WEBRTC_TURN_HOST: "${COTURN_LAN0_IP}"
+      WEBRTC_TURN_PORT: "${STUN_PORT}"
+      WEBRTC_TURN_USER: "${TURN_USER}"
+      WEBRTC_TURN_PASS: "${TURN_PASS}"
+      WEBRTC_RENDEZVOUS_HOST: "${RENDEZVOUS_LAN0_IP}"
+      WEBRTC_RENDEZVOUS_PORT: "${RENDEZVOUS_PORT}"
+      WEBRTC_ICE_POLICY: "${ICE_POLICY:-all}"
+      WEBRTC_TIMEOUT_MS: "${PEER_TIMEOUT_MS}"
+      WEBRTC_DTLS13: "${PEER_DTLS13:-true}"  # browsers negotiate 1.3
+      # This lane's raison d'être: don't exit 0 on establish+echo alone — REQUIRE that our MulticastMdnsResolver
+      # actually resolved the browser's obfuscated `<uuid>.local` host candidate over multicast (issue #48).
+      # Keeps the candidate-poll + resolve loops alive past the sub-second prflx connect so the `.local` the
+      # browser trickles is genuinely resolved on the critical path, making the lane's mDNS proof gating-worthy.
+      WEBRTC_REQUIRE_MDNS: "true"
+      WEBRTC_SEED: "${SEED_A:-}"
+    networks:
+      lan0: { ipv4_address: "${PEER_MDNS_IP}" }
+    depends_on:
+      coturn: { condition: service_healthy }
+      rendezvous: { condition: service_healthy }
+
+  # Chrome ANSWERER on the shared bridge, mDNS obfuscation ON (WEBRTC_MDNS_OBFUSCATE=1 → driver.mjs KEEPS
+  # Chromium's default `.local` host-candidate hiding, i.e. drops the `--disable-features=…Mdns` flag the
+  # NAT lanes use). A drop-in for the base `chrome` service but on lan0, no NAT. Gated `mdns-chrome`.
+  chrome_mdns:
+    profiles: ["mdns-chrome"]
+    build:
+      context: ./browser
+      dockerfile: Dockerfile
+      args: { BROWSER: chromium }
+    cap_add: [NET_ADMIN]
+    security_opt: ["no-new-privileges:true"]
+    shm_size: "512m"
+    environment:
+      BROWSER: chromium
+      WEBRTC_MDNS_OBFUSCATE: "1"
+      WEBRTC_ROLE: answerer
+      WEBRTC_SESSION: "${SESSION:-mdns}"
+      WEBRTC_LOCAL_IP: "${BROWSER_MDNS_IP}"
+      WEBRTC_STUN_HOST: "${COTURN_LAN0_IP}"
+      WEBRTC_STUN_PORT: "${STUN_PORT}"
+      WEBRTC_TURN_HOST: "${COTURN_LAN0_IP}"
+      WEBRTC_TURN_PORT: "${STUN_PORT}"
+      WEBRTC_TURN_USER: "${TURN_USER}"
+      WEBRTC_TURN_PASS: "${TURN_PASS}"
+      WEBRTC_RENDEZVOUS_HOST: "${RENDEZVOUS_LAN0_IP}"
+      WEBRTC_RENDEZVOUS_HTTP_PORT: "${RENDEZVOUS_HTTP_PORT}"
+      WEBRTC_ICE_POLICY: "${ICE_POLICY:-all}"
+      WEBRTC_TIMEOUT_MS: "${PEER_TIMEOUT_MS}"
+    networks:
+      lan0: { ipv4_address: "${BROWSER_MDNS_IP}" }
+    depends_on:
+      coturn: { condition: service_healthy }
+      rendezvous: { condition: service_healthy }
+
+  # Firefox ANSWERER on the shared bridge, mDNS obfuscation ON (WEBRTC_MDNS_OBFUSCATE=1 → driver.mjs sets
+  # media.peerconnection.ice.obfuscate_host_addresses=true). Its NSS/nICEr stack is a distinct oracle.
+  # Gated `mdns-firefox`.
+  firefox_mdns:
+    profiles: ["mdns-firefox"]
+    build:
+      context: ./browser
+      dockerfile: Dockerfile
+      args: { BROWSER: firefox }
+    cap_add: [NET_ADMIN]
+    security_opt: ["no-new-privileges:true"]
+    shm_size: "512m"
+    environment:
+      BROWSER: firefox
+      WEBRTC_MDNS_OBFUSCATE: "1"
+      WEBRTC_ROLE: answerer
+      WEBRTC_SESSION: "${SESSION:-mdns}"
+      WEBRTC_LOCAL_IP: "${BROWSER_MDNS_IP}"
+      WEBRTC_STUN_HOST: "${COTURN_LAN0_IP}"
+      WEBRTC_STUN_PORT: "${STUN_PORT}"
+      WEBRTC_TURN_HOST: "${COTURN_LAN0_IP}"
+      WEBRTC_TURN_PORT: "${STUN_PORT}"
+      WEBRTC_TURN_USER: "${TURN_USER}"
+      WEBRTC_TURN_PASS: "${TURN_PASS}"
+      WEBRTC_RENDEZVOUS_HOST: "${RENDEZVOUS_LAN0_IP}"
+      WEBRTC_RENDEZVOUS_HTTP_PORT: "${RENDEZVOUS_HTTP_PORT}"
+      WEBRTC_ICE_POLICY: "${ICE_POLICY:-all}"
+      WEBRTC_TIMEOUT_MS: "${PEER_TIMEOUT_MS}"
+    networks:
+      lan0: { ipv4_address: "${BROWSER_MDNS_IP}" }
+    depends_on:
+      coturn: { condition: service_healthy }
+      rendezvous: { condition: service_healthy }

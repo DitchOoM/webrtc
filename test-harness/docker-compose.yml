@@ -224,6 +224,22 @@ services:
       WEBRTC_RENDEZVOUS_PORT: "${RENDEZVOUS_PORT}"
       WEBRTC_ICE_POLICY: "${ICE_POLICY:-all}"
       WEBRTC_TIMEOUT_MS: "${PEER_TIMEOUT_MS}"
+      # ── data-channel semantics (docs/DC_SEMANTICS_INTEROP_DESIGN.md) ──
+      # WEBRTC_SEMANTICS=1 turns the offerer's phase sequence on and makes every answerer reflect EVERY
+      # channel until the offerer's explicit DONE (instead of exiting seconds after the ping echo, which
+      # would tear the association down mid-sequence). run-interop.sh sets it for every lane; unset keeps
+      # the historical establish-and-echo behaviour byte-identical.
+      WEBRTC_SEMANTICS: "${PEER_SEMANTICS:-0}"
+      WEBRTC_SEMANTICS_TIMEOUT_MS: "${PEER_SEMANTICS_TIMEOUT_MS:-120000}"
+      # Which phases run (empty = all) and whether a failed phase fails THIS process. Semantics land
+      # NON-GATING-first (decision D7): the phases always run and always report; run-interop.sh surfaces a
+      # failure as an informational ::warning:: until HARNESS_SEMANTICS_GATING=1 flips this on.
+      WEBRTC_SCENARIOS: "${PEER_SCENARIOS:-}"
+      WEBRTC_SEMANTICS_REQUIRED: "${PEER_SEMANTICS_REQUIRED:-0}"
+      # s5: the ANSWERER originates a channel and the offerer reflects it. Only meaningful when BOTH ends
+      # are ours — a foreign peer is a dumb reflector and never originates — so run-interop.sh enables it
+      # for the native<->native / jvm<->native lanes only. Both peers read it.
+      WEBRTC_REVERSE: "${PEER_REVERSE:-0}"
       # Default 1.3-on (production). The Pion interop lane sets PEER_DTLS13=false (run-interop.sh) so this
       # offerer pins DTLS 1.2 — Pion's released v3 is 1.2-only.
       WEBRTC_DTLS13: "${PEER_DTLS13:-true}"
@@ -261,6 +277,14 @@ services:
       WEBRTC_RENDEZVOUS_PORT: "${RENDEZVOUS_PORT}"
       WEBRTC_ICE_POLICY: "${ICE_POLICY:-all}"
       WEBRTC_TIMEOUT_MS: "${PEER_TIMEOUT_MS}"
+      # ── data-channel semantics (docs/DC_SEMANTICS_INTEROP_DESIGN.md) ──
+      # WEBRTC_SEMANTICS=1 turns the offerer's phase sequence on and makes every answerer reflect EVERY
+      # channel until the offerer's explicit DONE (instead of exiting seconds after the ping echo, which
+      # would tear the association down mid-sequence). run-interop.sh sets it for every lane; unset keeps
+      # the historical establish-and-echo behaviour byte-identical.
+      WEBRTC_SEMANTICS: "${PEER_SEMANTICS:-0}"
+      WEBRTC_SEMANTICS_TIMEOUT_MS: "${PEER_SEMANTICS_TIMEOUT_MS:-120000}"
+      WEBRTC_REVERSE: "${PEER_REVERSE:-0}"   # see peer_a — the answerer is the side that ORIGINATES in s5
       WEBRTC_DTLS13: "${PEER_DTLS13:-true}"  # see peer_a
       WEBRTC_SEED: "${SEED_B:-}"             # answerer=SEED_B (see peer_a)
     networks:
@@ -304,6 +328,22 @@ services:
       WEBRTC_RENDEZVOUS_PORT: "${RENDEZVOUS_PORT}"
       WEBRTC_ICE_POLICY: "${ICE_POLICY:-all}"
       WEBRTC_TIMEOUT_MS: "${PEER_TIMEOUT_MS}"
+      # ── data-channel semantics (docs/DC_SEMANTICS_INTEROP_DESIGN.md) ──
+      # WEBRTC_SEMANTICS=1 turns the offerer's phase sequence on and makes every answerer reflect EVERY
+      # channel until the offerer's explicit DONE (instead of exiting seconds after the ping echo, which
+      # would tear the association down mid-sequence). run-interop.sh sets it for every lane; unset keeps
+      # the historical establish-and-echo behaviour byte-identical.
+      WEBRTC_SEMANTICS: "${PEER_SEMANTICS:-0}"
+      WEBRTC_SEMANTICS_TIMEOUT_MS: "${PEER_SEMANTICS_TIMEOUT_MS:-120000}"
+      # Which phases run (empty = all) and whether a failed phase fails THIS process. Semantics land
+      # NON-GATING-first (decision D7): the phases always run and always report; run-interop.sh surfaces a
+      # failure as an informational ::warning:: until HARNESS_SEMANTICS_GATING=1 flips this on.
+      WEBRTC_SCENARIOS: "${PEER_SCENARIOS:-}"
+      WEBRTC_SEMANTICS_REQUIRED: "${PEER_SEMANTICS_REQUIRED:-0}"
+      # s5: the ANSWERER originates a channel and the offerer reflects it. Only meaningful when BOTH ends
+      # are ours — a foreign peer is a dumb reflector and never originates — so run-interop.sh enables it
+      # for the native<->native / jvm<->native lanes only. Both peers read it.
+      WEBRTC_REVERSE: "${PEER_REVERSE:-0}"
       # Default 1.3-on (production). The jvm-pion lane sets PEER_DTLS13=false (run-interop.sh) so this
       # offerer pins DTLS 1.2 — Pion's released v3 is 1.2-only.
       WEBRTC_DTLS13: "${PEER_DTLS13:-true}"
@@ -349,6 +389,13 @@ services:
       WEBRTC_RENDEZVOUS_PORT: "${RENDEZVOUS_PORT}"
       WEBRTC_ICE_POLICY: "${ICE_POLICY:-all}"
       WEBRTC_TIMEOUT_MS: "${PEER_TIMEOUT_MS}"
+      # ── data-channel semantics (docs/DC_SEMANTICS_INTEROP_DESIGN.md) ──
+      # WEBRTC_SEMANTICS=1 turns the offerer's phase sequence on and makes every answerer reflect EVERY
+      # channel until the offerer's explicit DONE (instead of exiting seconds after the ping echo, which
+      # would tear the association down mid-sequence). run-interop.sh sets it for every lane; unset keeps
+      # the historical establish-and-echo behaviour byte-identical.
+      WEBRTC_SEMANTICS: "${PEER_SEMANTICS:-0}"
+      WEBRTC_SEMANTICS_TIMEOUT_MS: "${PEER_SEMANTICS_TIMEOUT_MS:-120000}"
     networks:
       lan_b: { ipv4_address: "${PEER_B_IP}" }
     depends_on:
@@ -387,6 +434,13 @@ services:
       WEBRTC_RENDEZVOUS_PORT: "${RENDEZVOUS_PORT}"
       WEBRTC_ICE_POLICY: "${ICE_POLICY:-all}"
       WEBRTC_TIMEOUT_MS: "${PEER_TIMEOUT_MS}"
+      # ── data-channel semantics (docs/DC_SEMANTICS_INTEROP_DESIGN.md) ──
+      # WEBRTC_SEMANTICS=1 turns the offerer's phase sequence on and makes every answerer reflect EVERY
+      # channel until the offerer's explicit DONE (instead of exiting seconds after the ping echo, which
+      # would tear the association down mid-sequence). run-interop.sh sets it for every lane; unset keeps
+      # the historical establish-and-echo behaviour byte-identical.
+      WEBRTC_SEMANTICS: "${PEER_SEMANTICS:-0}"
+      WEBRTC_SEMANTICS_TIMEOUT_MS: "${PEER_SEMANTICS_TIMEOUT_MS:-120000}"
     networks:
       lan_b: { ipv4_address: "${PEER_B_IP}" }
     depends_on:
@@ -430,6 +484,13 @@ services:
       WEBRTC_RENDEZVOUS_HTTP_PORT: "${RENDEZVOUS_HTTP_PORT}"
       WEBRTC_ICE_POLICY: "${ICE_POLICY:-all}"
       WEBRTC_TIMEOUT_MS: "${PEER_TIMEOUT_MS}"
+      # ── data-channel semantics (docs/DC_SEMANTICS_INTEROP_DESIGN.md) ──
+      # WEBRTC_SEMANTICS=1 turns the offerer's phase sequence on and makes every answerer reflect EVERY
+      # channel until the offerer's explicit DONE (instead of exiting seconds after the ping echo, which
+      # would tear the association down mid-sequence). run-interop.sh sets it for every lane; unset keeps
+      # the historical establish-and-echo behaviour byte-identical.
+      WEBRTC_SEMANTICS: "${PEER_SEMANTICS:-0}"
+      WEBRTC_SEMANTICS_TIMEOUT_MS: "${PEER_SEMANTICS_TIMEOUT_MS:-120000}"
     networks:
       lan_b: { ipv4_address: "${PEER_B_IP}" }
     depends_on:
@@ -468,6 +529,13 @@ services:
       WEBRTC_RENDEZVOUS_HTTP_PORT: "${RENDEZVOUS_HTTP_PORT}"
       WEBRTC_ICE_POLICY: "${ICE_POLICY:-all}"
       WEBRTC_TIMEOUT_MS: "${PEER_TIMEOUT_MS}"
+      # ── data-channel semantics (docs/DC_SEMANTICS_INTEROP_DESIGN.md) ──
+      # WEBRTC_SEMANTICS=1 turns the offerer's phase sequence on and makes every answerer reflect EVERY
+      # channel until the offerer's explicit DONE (instead of exiting seconds after the ping echo, which
+      # would tear the association down mid-sequence). run-interop.sh sets it for every lane; unset keeps
+      # the historical establish-and-echo behaviour byte-identical.
+      WEBRTC_SEMANTICS: "${PEER_SEMANTICS:-0}"
+      WEBRTC_SEMANTICS_TIMEOUT_MS: "${PEER_SEMANTICS_TIMEOUT_MS:-120000}"
     networks:
       lan_b: { ipv4_address: "${PEER_B_IP}" }
     depends_on:
@@ -504,6 +572,13 @@ services:
       WEBRTC_RENDEZVOUS_HTTP_PORT: "${RENDEZVOUS_HTTP_PORT}"
       WEBRTC_ICE_POLICY: "${ICE_POLICY:-all}"
       WEBRTC_TIMEOUT_MS: "${PEER_TIMEOUT_MS}"
+      # ── data-channel semantics (docs/DC_SEMANTICS_INTEROP_DESIGN.md) ──
+      # WEBRTC_SEMANTICS=1 turns the offerer's phase sequence on and makes every answerer reflect EVERY
+      # channel until the offerer's explicit DONE (instead of exiting seconds after the ping echo, which
+      # would tear the association down mid-sequence). run-interop.sh sets it for every lane; unset keeps
+      # the historical establish-and-echo behaviour byte-identical.
+      WEBRTC_SEMANTICS: "${PEER_SEMANTICS:-0}"
+      WEBRTC_SEMANTICS_TIMEOUT_MS: "${PEER_SEMANTICS_TIMEOUT_MS:-120000}"
     networks:
       lan_b: { ipv4_address: "${PEER_B_IP}" }
     depends_on:

@@ -18,7 +18,9 @@ import com.ditchoom.webrtc.ice.MdnsResolver
 import com.ditchoom.webrtc.ice.MulticastMdnsResolver
 import com.ditchoom.webrtc.sctp.association.SctpConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
+import com.ditchoom.webrtc.sdp.SdpParseResult
 import com.ditchoom.webrtc.sdp.SdpType
+import com.ditchoom.webrtc.sdp.SessionDescription
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -190,34 +192,40 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
         // carries the peer's own view of the exchange to seed a virtual-time vnet fixture from.
         val forensics = Forensics()
 
-        val established =
-            withTimeoutOrNull(cfg.timeout) {
+        // Require-mDNS lane (issue #48): establish + echo alone don't prove mDNS RESOLUTION — prflx wins the
+        // pair long before the resolver matters (and a resolved `.local` can never BE the selected pair: it
+        // is link-local, i.e. the same directly-reachable IP). So the offerer additionally waits for our
+        // resolver to have fired on one of the browser's obfuscated `.local` candidates. The role's
+        // candidate-poll + fire-and-forget resolve loops are still live on `bg`, so the browser's trickled
+        // `.local` keeps arriving and resolving while we wait. Watchdog, not a wall-clock budget (directive
+        // #4): the observable state is "≥1 `.local` resolved". Off (every other lane) we don't wait.
+        //
+        // It is checked INSIDE the role (right after phase 0) rather than after it, because the semantics
+        // sequence ends by CLOSING the session — a post-hoc mDNS wait would then be watching a torn-down
+        // ICE agent.
+        val mdnsGate: suspend () -> Boolean = {
+            if (!cfg.requireMdns) {
+                true
+            } else if (withTimeoutOrNull(MDNS_RESOLVE_WAIT) { mdnsResolved.await() } != null) {
+                true
+            } else {
+                println("[harness] mdns REQUIRED but no browser .local resolved within $MDNS_RESOLVE_WAIT")
+                false
+            }
+        }
+
+        // The establishment watchdog, plus the semantics budget when the phase sequence runs (it is bounded
+        // again, per phase, inside the sequence itself).
+        val overall = if (cfg.semantics) cfg.timeout + cfg.semanticsTimeout else cfg.timeout
+        val ok =
+            withTimeoutOrNull(overall) {
                 when (cfg.role) {
-                    Role.Offerer -> runOfferer(bg, pc, cfg, sigOut, sigIn, forensics)
+                    Role.Offerer -> runOfferer(bg, pc, cfg, sigOut, sigIn, forensics, clock, mdnsGate)
                     Role.Answerer -> runAnswerer(bg, pc, cfg, sigOut, sigIn, forensics)
                 }
             } ?: run {
-                println("[harness] TIMEOUT after ${cfg.timeout}; state=${pc.connectionState.value}")
+                println("[harness] TIMEOUT after $overall; state=${pc.connectionState.value}")
                 false
-            }
-
-        // Require-mDNS lane (issue #48): establish + echo alone don't prove mDNS RESOLUTION — prflx wins the
-        // pair long before the resolver matters (and a resolved `.local` can never BE the selected pair: it
-        // is link-local, i.e. the same directly-reachable IP). So here we additionally wait for our resolver
-        // to have fired on one of the browser's obfuscated `.local` candidates. The role's candidate-poll +
-        // fire-and-forget resolve loops are still live on `bg` (not cancelled until below), so the browser's
-        // trickled `.local` keeps arriving and resolving while we wait. Watchdog, not a wall-clock budget
-        // (directive #4): the observable state is "≥1 `.local` resolved". Off (every other lane) we don't wait.
-        val ok =
-            if (established && cfg.requireMdns) {
-                if (withTimeoutOrNull(MDNS_RESOLVE_WAIT) { mdnsResolved.await() } != null) {
-                    true
-                } else {
-                    println("[harness] mdns REQUIRED but no browser .local resolved within $MDNS_RESOLVE_WAIT")
-                    false
-                }
-            } else {
-                established
             }
 
         // Dump the transition history before bg.cancel() stops the collector. Ensure the final observed
@@ -228,10 +236,14 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
         for (t in trace) println("[harness]   +${t.at.inWholeMilliseconds}ms  ${t.state}")
         forensics.dump(cfg.role)
 
+        // close() BEFORE bg.cancel(): it now performs a graceful association shutdown (RFC 4960 §9.2), and
+        // that needs the stack's drive/writer loops — which live on `bg` — to still be running. Cancelling
+        // first would leave the SHUTDOWN chunk queued on a dead loop and the peer would see the association
+        // vanish. Idempotent, so the offerer's s6 close phase has usually already done this.
+        pc.close()
         bg.cancel()
         sigOut.close()
         sigIn.close()
-        pc.close()
         if (ok) 0 else 1
     }
 
@@ -242,8 +254,17 @@ private suspend fun runOfferer(
     sigOut: UdpSignaling,
     sigIn: UdpSignaling,
     forensics: Forensics,
+    clock: () -> Instant,
+    mdnsGate: suspend () -> Boolean,
 ): Boolean {
-    val channel = pc.createDataChannel(DataChannelConfig(label = "harness"))
+    // The control channel — phase 0's ping/pong, then (semantics mode) the BEGIN/DONE lifecycle. It keeps
+    // its historical label so every existing lane's logs, diag bundles and getStats entries read the same.
+    val ctl = ControlChannel(pc.createDataChannel(DataChannelConfig(label = CTL_LABEL)))
+    // The offerer reflects too: the answerer-originated reverse channel (s5) is echoed by exactly the same
+    // universal reflector the far side runs, so neither side needs role-specific echo logic.
+    val reflector = Reflector(bg)
+    // The peer's `a=max-message-size` (RFC 8841 §6), read off its answer — s1 clamps its payload to it.
+    val remoteMaxMessageSize = CompletableDeferred<Long?>()
     val offer = pc.createOffer()
     forensics.recordSdp(Origin.Local, Sdp(offer))
     pc.setLocalDescription(SdpType.Offer, offer)
@@ -269,6 +290,7 @@ private suspend fun runOfferer(
                 val a = sigIn.poll(Slot.Answer, RecordId(0))
                 if (a.isNotEmpty()) {
                     forensics.recordSdp(Origin.Remote, Sdp(a.first()))
+                    remoteMaxMessageSize.complete(maxMessageSizeOf(a.first()))
                     pc.setRemoteDescription(SdpType.Answer, a.first())
                     answered = true
                 }
@@ -285,11 +307,68 @@ private suspend fun runOfferer(
     }
 
     if (!awaitEstablished(pc)) return false
-    channel.send(textBuffer("ping"))
-    val pong = withTimeoutOrNull(ECHO_TIMEOUT) { channel.receive().first() }?.text()
+
+    ctl.start(bg)
+    reflector.start(pc)
+
+    // Phase 0 — the liveness ritual every lane has always run, byte-identical: one `ping` on the control
+    // channel, one `pong` back. Establishment is still proven exactly as before, ahead of any semantics.
+    val pong = ctl.pingPongReply(ECHO_TIMEOUT)
     println("[harness] offerer echo reply: $pong")
-    return pong == "pong"
+    if (pong != "pong") return false
+    if (!mdnsGate()) return false
+    if (!cfg.semantics) return true
+
+    // The semantics sequence (docs/DC_SEMANTICS_INTEROP_DESIGN.md): every phase runs, a failure is recorded
+    // and the run continues (D2), and the summary line below is what run-interop.sh grades.
+    val report =
+        withTimeoutOrNull(cfg.semanticsTimeout) {
+            runSemanticsPhases(bg, pc, ctl, reflector, cfg, clock, remoteMaxMessageSize.await())
+        }
+    if (report == null) {
+        println("[harness] semantics: TIMEOUT — the phase sequence did not finish within ${cfg.semanticsTimeout}")
+        println("[harness] semantics-summary: total=0 passed=0 failed=1 failed-phases=[timeout]")
+        return !cfg.semanticsRequired
+    }
+
+    // s6/close — the DONE handshake, then a graceful ASSOCIATION shutdown (decision D1a: per-channel close
+    // needs RFC 6525 RE-CONFIG, which webrtc-sctp does not implement, so it stays a library follow-up).
+    // `DONE` returning proves the association was still healthy at teardown, and replaces the old
+    // FLUSH_LINGER-vs-ECHO_TIMEOUT teardown race with an explicit agreement that the run is over.
+    val closeStarted = clock()
+    val doneAcked = ctl.done()
+    if (doneAcked) {
+        println("[harness] s6/close: DONE acknowledged — starting the graceful association SHUTDOWN")
+        // close() drives SHUTDOWN → SHUTDOWN-ACK → SHUTDOWN-COMPLETE and waits (bounded) for the
+        // association to report Closed before the ICE transport under it goes away. The far side's log is
+        // where the proof lands: a CLEAN close, not an ABORT and not a vanished association.
+        pc.close()
+    }
+    report.record(
+        PhaseOutcome(
+            id = "s6",
+            passed = doneAcked,
+            detail =
+                if (doneAcked) {
+                    "DONE round-tripped and a graceful association SHUTDOWN was initiated (the peer's log carries the clean-close proof)"
+                } else {
+                    "the DONE handshake never round-tripped — the association was already gone before teardown"
+                },
+            took = clock() - closeStarted,
+        ),
+    )
+    report.printSummary()
+    // Non-gating-first (D7): the phases always run and always report; whether a failure fails THIS process
+    // is the orchestrator's call, carried in WEBRTC_SEMANTICS_REQUIRED.
+    return if (cfg.semanticsRequired) report.allPassed else true
 }
+
+/** The peer's advertised `a=max-message-size` (RFC 8841 §6) from its answer, or null if it advertised none. */
+private fun maxMessageSizeOf(sdp: String): Long? =
+    when (val parsed = SessionDescription.parseText(sdp)) {
+        is SdpParseResult.Success -> parsed.description.mediaDescriptions.firstOrNull()?.maxMessageSize()
+        is SdpParseResult.Reject -> null
+    }
 
 private suspend fun runAnswerer(
     bg: CoroutineScope,
@@ -336,18 +415,77 @@ private suspend fun runAnswerer(
         }
     }
 
-    val incoming = pc.incomingDataChannels.first()
-    val msg = withTimeoutOrNull(ECHO_TIMEOUT) { incoming.receive().first() }?.text()
-    println("[harness] answerer received: $msg")
-    if (msg == "ping") incoming.send(textBuffer("pong"))
-    val ok = awaitEstablished(pc) && msg == "ping"
-    // Linger before teardown so SCTP reliably delivers + gets the final "pong" acked. Without this the
-    // answerer closes its association the instant after send(), racing delivery, and the offerer's
-    // channel.receive() times out (the pong was queued but never transmitted/retransmitted). The
-    // offerer's ECHO_TIMEOUT bounds the wait on the other side; this window is shorter than that.
-    if (ok) delay(FLUSH_LINGER)
-    return ok
+    // The universal reflector (docs/DC_SEMANTICS_INTEROP_DESIGN.md §4): echo every message back on the
+    // channel it arrived on, for EVERY channel the offerer opens — the same ~15-line contract Pion, werift
+    // and the browser page implement. `ping`→`pong` is the one historical exception, so phase 0 is
+    // unchanged. No scenario logic lives here: the reflector never reads a label to decide behaviour.
+    val reflector = Reflector(bg)
+    reflector.start(pc)
+
+    val ping = reflector.awaitText("ping", ECHO_TIMEOUT)
+    println("[harness] answerer received: ${ping?.text}")
+    val ok = awaitEstablished(pc) && ping != null
+    if (!ok) return false
+
+    if (!cfg.semantics) {
+        // Linger before teardown so SCTP reliably delivers + gets the final "pong" acked. Without this the
+        // answerer closes its association the instant after send(), racing delivery, and the offerer's
+        // channel.receive() times out (the pong was queued but never transmitted/retransmitted). The
+        // offerer's ECHO_TIMEOUT bounds the wait on the other side; this window is shorter than that.
+        delay(FLUSH_LINGER)
+        return true
+    }
+
+    // Semantics mode: reflect until the offerer's explicit DONE — which replaces the linger/timeout race
+    // above with an agreement. Two lifecycle words are acted on; every other message is only echoed.
+    var reverse: Boolean? = null
+    var sawDone = false
+    withTimeoutOrNull(cfg.semanticsTimeout) {
+        for (event in reflector.events) {
+            when (event.text) {
+                // s5 (our lanes only): originate a channel in the REVERSE direction and assert our own
+                // echo comes back, exercising the DCEP responder path (odd stream-id parity) on the wire.
+                REVERSE_CUE -> if (cfg.reverseChannel && reverse == null) reverse = originateReverseChannel(pc)
+                DONE_MARKER -> {
+                    sawDone = true
+                    return@withTimeoutOrNull
+                }
+            }
+        }
+    }
+    if (!sawDone) {
+        println("[harness] semantics: the offerer's DONE never arrived within ${cfg.semanticsTimeout}")
+        return false
+    }
+    println("[harness] reverse-summary: enabled=${cfg.reverseChannel} ok=${reverse ?: "n/a"}")
+
+    // The far half of s6/close: the offerer now starts a graceful association SHUTDOWN, and THIS is where
+    // it is observed. A clean close reaches Closed; an ABORT or a vanished association reaches Failed or
+    // nothing at all. Observable state + watchdog (directive #4), never a fixed sleep.
+    val terminal =
+        withTimeoutOrNull(CLOSE_OBSERVE_WAIT) {
+            pc.connectionState.first { it is PeerConnectionState.Closed || it is PeerConnectionState.Failed }
+        }
+    println("[harness] close-summary: observed=${terminal ?: "<nothing within $CLOSE_OBSERVE_WAIT>"} clean=${terminal is PeerConnectionState.Closed}")
+    return true
 }
+
+/**
+ * s5 — the answerer originates a data channel and asserts the OFFERER reflects it. It is the one phase a
+ * foreign peer cannot play (they are dumb reflectors and never originate), so `run-interop.sh` enables it
+ * only on the native⇄native / jvm⇄native lanes. On the wire it exercises our DCEP responder parity: the
+ * answerer is the SCTP server, so this channel takes an ODD stream id (RFC 8832 §6).
+ */
+private suspend fun originateReverseChannel(pc: NativePeerConnection): Boolean {
+    val channel = pc.createDataChannel(DataChannelConfig(label = REVERSE_LABEL))
+    channel.send(textBuffer(REVERSE_PAYLOAD))
+    val echo = withTimeoutOrNull(ECHO_TIMEOUT) { channel.receive().first() }?.peekText()
+    println("[harness] s5/reverse: originated \"$REVERSE_LABEL\" (stream ${channel.id}); echo=${echo?.let { "\"$it\"" } ?: "<none>"}")
+    return echo == REVERSE_PAYLOAD
+}
+
+/** The single message the answerer sends on its reverse channel; the offerer reflects it verbatim. */
+private const val REVERSE_PAYLOAD = "rev#0"
 
 /** Suspend until the session reaches Connected (true) or a typed Failed (false, reason printed). */
 private suspend fun awaitEstablished(pc: NativePeerConnection): Boolean {
@@ -429,3 +567,8 @@ private val FLUSH_LINGER = 10.seconds
 // covers the tail where the browser's trickle lags our sub-second prflx connect. Bounded by the outer
 // cfg.timeout regardless. A watchdog on the observable "resolved" state, not a padding delay (directive #4).
 private val MDNS_RESOLVE_WAIT = 10.seconds
+
+// How long the answerer watches for the offerer's graceful association SHUTDOWN to land (s6/close). A
+// watchdog on the observable terminal state, not a sleep: it ends the moment the association reports
+// Closed. Comfortably longer than the offerer's own bounded close, so a clean close is never missed.
+private val CLOSE_OBSERVE_WAIT = 15.seconds

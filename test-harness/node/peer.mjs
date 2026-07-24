@@ -19,6 +19,13 @@
 // Exit 0 = ICE/DTLS connected AND a "ping" was received and a "pong" echoed back; non-zero = the
 // watchdog fired first (never established, or no ping) — mirroring the native peer's exit contract so
 // run-interop.sh asserts BOTH sides exit 0.
+//
+// Semantics mode (WEBRTC_SEMANTICS=1, see docs/DC_SEMANTICS_INTEROP_DESIGN.md): this peer becomes a
+// universal REFLECTOR — every channel, every message, echoed back verbatim on the channel it arrived on —
+// and exits only on the offerer's explicit DONE handshake instead of a few seconds after the ping echo. It
+// stays scenario-agnostic: it never reads a channel label to decide behaviour, so the whole data-channel
+// semantics matrix (fragmentation, unordered, partial reliability, multiplexing) is driven and asserted
+// entirely by the offerer.
 
 import { RTCPeerConnection } from "werift";
 import { openSignaling } from "./signaling.mjs";
@@ -32,8 +39,9 @@ async function main() {
   );
 
   // Overall watchdog: a bound, not a wall-clock budget — establish + reliable echo under a NAT/impaired
-  // path is legitimately slower than a clean path (directive #4).
-  const deadline = Date.now() + cfg.timeoutMs;
+  // path is legitimately slower than a clean path (directive #4). In semantics mode it additionally has to
+  // cover the offerer's whole phase sequence, which runs after phase 0's ping/pong.
+  const deadline = Date.now() + cfg.timeoutMs + (cfg.semantics ? cfg.semanticsTimeoutMs : 0);
 
   const pc = newPeerConnection(cfg);
 
@@ -41,6 +49,7 @@ async function main() {
   let connected = false;
   let failed = false;
   let echoed = false;
+  let done = false;
 
   // werift uses an Observable-style `.subscribe()` for events (not addEventListener). connectionState
   // values: "new"|"connecting"|"connected"|"disconnected"|"failed"|"closed".
@@ -50,17 +59,42 @@ async function main() {
     else if (s === "failed" || s === "closed") failed = true;
   });
 
-  // The native offerer creates a DCEP data channel labelled "harness" and sends "ping"; we accept it and
-  // echo "pong" as a STRING message. werift's `channel.send(string)` uses the WebRTC string PPID
-  // (WEBRTC_STRING) — the native side decodes it with .text() — while a Buffer would send the binary PPID.
+  // The universal REFLECTOR (docs/DC_SEMANTICS_INTEROP_DESIGN.md §4): for EVERY channel the offerer opens,
+  // echo EVERY message back on that same channel, verbatim — same bytes, same string/binary type. Nothing
+  // here is scenario-aware: the label is logged, never branched on. That is what lets one dumb answerer
+  // serve the whole semantics matrix while every assertion stays on the offerer side, in our Kotlin.
+  //
+  // The ONE historical exception is the liveness ritual: "ping" is echoed as "pong". werift's
+  // `channel.send(string)` uses the WebRTC string PPID (WEBRTC_STRING) — the native side decodes it with
+  // .text() — while a Buffer sends the binary PPID, so echoing `data` unchanged preserves the type.
   pc.onDataChannel.subscribe((dc) => {
-    console.log(`[node] incoming data channel: label=${JSON.stringify(dc.label)} id=${dc.id}`);
+    // The negotiated DCEP properties werift parsed out of our DATA_CHANNEL_OPEN — the "was the channel
+    // type honored end-to-end" evidence for the semantics channels (s2 unordered, s3 partial-reliable).
+    // Printed in the same shape as the Pion and browser reflectors; werift exposes them either directly or
+    // under `.parameters`, so read both and render an absent value as "-".
+    const p = dc.parameters ?? {};
+    const show = (v) => (v === undefined || v === null ? "-" : String(v));
+    console.log(
+      `[node] dc-negotiated: label=${JSON.stringify(dc.label)} id=${dc.id}` +
+        ` ordered=${show(dc.ordered ?? p.ordered)}` +
+        ` maxRetransmits=${show(dc.maxRetransmits ?? p.maxRetransmits)}` +
+        ` maxPacketLifeTime=${show(dc.maxPacketLifeTime ?? p.maxPacketLifeTime)}`,
+    );
+    let rx = 0;
+    let rxBytes = 0;
     dc.onMessage.subscribe((data) => {
-      // werift delivers a string for the string PPID and a Buffer for binary; the native "ping" is a
-      // string, so `data` is a JS string here.
+      // werift delivers a string for the string PPID and a Buffer for binary.
       const isString = typeof data === "string";
+      const size = isString ? Buffer.byteLength(data, "utf8") : data.length;
+      rx += 1;
+      rxBytes += size;
       const text = isString ? data : data.toString("utf8");
-      console.log(`[node] received: ${JSON.stringify(text)} (string=${isString})`);
+      // Only a small payload is rendered; a large binary (s1's ~200 KB) is summarized by size.
+      const rendered = size <= 64 ? JSON.stringify(text) : `<${size}B binary>`;
+      console.log(
+        `[node] received on ${JSON.stringify(dc.label)}: size=${size} msg#${rx} rxBytes=${rxBytes}` +
+          ` string=${isString} data=${rendered}`,
+      );
       if (text.trim() === "ping") {
         try {
           dc.send("pong");
@@ -70,6 +104,19 @@ async function main() {
         }
         console.log('[node] echoed: "pong"');
         echoed = true;
+        return;
+      }
+      try {
+        dc.send(data);
+      } catch (e) {
+        console.log(`[node] failed to echo ${size} bytes on ${JSON.stringify(dc.label)}: ${e}`);
+        return;
+      }
+      // The offerer's completion handshake: once DONE has been echoed the run is over and we may tear
+      // down. This replaces the old "linger N seconds after the pong" race with an explicit agreement.
+      if (text.trim() === DONE_MARKER) {
+        console.log("[node] DONE echoed — the offerer signalled the run is complete");
+        done = true;
       }
     });
   });
@@ -173,12 +220,30 @@ async function main() {
     return 1;
   }
 
+  if (cfg.semantics) {
+    // Semantics mode: keep reflecting until the offerer's explicit DONE. Exiting on a timer here would
+    // tear the association down mid-sequence — the linger below is exactly what DONE replaces.
+    if (!(await waitUntil(() => done, () => false, deadline))) {
+      console.log("[node] TIMEOUT waiting for the offerer's DONE handshake");
+      return 1;
+    }
+    // Brief linger so the DONE echo is delivered and the offerer's graceful association SHUTDOWN
+    // (RFC 4960 §9.2) is received and answered before this process exits.
+    await sleep(3000);
+    console.log(`[node] connection state at exit: ${pc.connectionState}`);
+    console.log("[node] exit=0 (established + echoed + DONE)");
+    return 0;
+  }
+
   // Linger so SCTP reliably delivers the final "pong" (and its SACK) before teardown — the native peer
   // does the same after its send. Bounded and well under the offerer's echo timeout.
   await sleep(3000);
   console.log("[node] exit=0 (established + echoed)");
   return 0;
 }
+
+// The offerer's completion word on the control channel (see the Kotlin ControlChannel).
+const DONE_MARKER = "DONE";
 
 // awaitOffer polls the `offer` slot until a record appears or the watchdog fires.
 async function awaitOffer(sig, deadline) {
@@ -251,7 +316,16 @@ function configFromEnv() {
     rendezvousPort: envInt("WEBRTC_RENDEZVOUS_PORT", 9999),
     icePolicy: env("WEBRTC_ICE_POLICY", "all").toLowerCase(),
     timeoutMs: envInt("WEBRTC_TIMEOUT_MS", 45000),
+    // Reflect until the offerer's DONE instead of exiting shortly after the ping echo — set by
+    // run-interop.sh (WEBRTC_SEMANTICS=1) whenever the offerer runs the data-channel semantics sequence.
+    semantics: isTruthy(env("WEBRTC_SEMANTICS", "")),
+    semanticsTimeoutMs: envInt("WEBRTC_SEMANTICS_TIMEOUT_MS", 120000),
   };
+}
+
+// "1" / "true" (any case) enable a flag; anything else — including absent — leaves it off.
+function isTruthy(v) {
+  return v === "1" || String(v).toLowerCase() === "true";
 }
 
 function env(name, def) {

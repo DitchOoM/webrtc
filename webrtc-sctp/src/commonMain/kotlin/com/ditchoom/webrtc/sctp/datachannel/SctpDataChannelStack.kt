@@ -138,11 +138,22 @@ public class SctpDataChannelStack(
     // ── the drive loop (the only place association.handle is called) ──
 
     private suspend fun readerLoop() {
-        while (true) {
-            val packet = transport.receive() ?: break
-            inbox.send(DriveItem.Inbound(packet))
+        // Every send here can race a tearDown that has already closed the inbox — most visibly at the END
+        // of a GRACEFUL shutdown, where the association reaches Closed, the stack tears down, and only then
+        // does the transport under it close and wake this loop for its final TransportClosed. On a closed
+        // inbox that send throws, and an uncaught throw in this launched coroutine takes the whole PROCESS
+        // down on Kotlin/Native (the L2 harness caught exactly that: rc=139 at answerer teardown). A closed
+        // inbox simply means the drive loop that would consume the item is already gone — the same
+        // fail-quiet the other inbox writers (post / shutdown / closeChannel) already implement.
+        try {
+            while (true) {
+                val packet = transport.receive() ?: break
+                inbox.send(DriveItem.Inbound(packet))
+            }
+            inbox.send(DriveItem.TransportClosed)
+        } catch (_: kotlinx.coroutines.channels.ClosedSendChannelException) {
+            // already torn down
         }
-        inbox.send(DriveItem.TransportClosed)
     }
 
     // Drain outgoing packets in strict emission order (SCTP tolerates reordering, but a single writer

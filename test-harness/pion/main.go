@@ -13,6 +13,13 @@
 // Exit 0 = ICE/DTLS connected AND a "ping" was received and a "pong" echoed back; non-zero = the
 // watchdog fired first (never established, or no ping) — mirroring the native peer's exit contract so
 // run-interop.sh asserts BOTH sides exit 0.
+//
+// Semantics mode (WEBRTC_SEMANTICS=1, see docs/DC_SEMANTICS_INTEROP_DESIGN.md): this peer becomes a
+// universal REFLECTOR — every channel, every message, echoed back verbatim on the channel it arrived on —
+// and exits only on the offerer's explicit DONE handshake instead of a few seconds after the ping echo.
+// It stays scenario-agnostic: it never reads a channel label to decide behaviour, so all of the
+// data-channel semantics matrix (fragmentation, unordered, partial reliability, multiplexing) is driven
+// and asserted entirely by the offerer.
 package main
 
 import (
@@ -34,8 +41,12 @@ func run() int {
 	fmt.Printf("[pion] role=answerer session=%s policy=%s local=%s dtls=1.2(v3)\n", cfg.session, cfg.icePolicy, cfg.localIP)
 
 	// Overall watchdog: a bound, not a wall-clock budget — establish + reliable echo under a NAT/impaired
-	// path is legitimately slower than a clean path (directive #4).
+	// path is legitimately slower than a clean path (directive #4). In semantics mode it additionally has
+	// to cover the offerer's whole phase sequence, which runs after phase 0's ping/pong.
 	deadline := time.Now().Add(cfg.timeout)
+	if cfg.semantics {
+		deadline = deadline.Add(cfg.semanticsTimeout)
+	}
 
 	pc, err := newPeerConnection(cfg)
 	if err != nil {
@@ -48,6 +59,7 @@ func run() int {
 	connected := make(chan struct{}, 1)
 	failed := make(chan struct{}, 1)
 	echoed := make(chan struct{}, 1)
+	done := make(chan struct{}, 1)
 
 	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
 		fmt.Printf("[pion] connection state: %s\n", s)
@@ -59,13 +71,36 @@ func run() int {
 		}
 	})
 
-	// The native offerer creates a DCEP data channel labelled "harness" and sends "ping"; we accept it and
-	// echo "pong" as a string message (WebRTC string PPID), which the native side decodes with .text().
+	// The universal REFLECTOR (docs/DC_SEMANTICS_INTEROP_DESIGN.md §4): for EVERY channel the offerer
+	// opens, echo EVERY message back on that same channel, verbatim — same bytes, same string/binary type.
+	// Nothing here is scenario-aware: the label is logged, never branched on. That is what lets one dumb
+	// answerer serve the whole semantics matrix (large/fragmented, unordered, partial-reliable, multiplexed)
+	// while every assertion stays on the offerer side, in our Kotlin.
+	//
+	// The ONE historical exception is the liveness ritual: "ping" is echoed as "pong" (a string message the
+	// native side decodes with .text()), so phase 0 is bit-for-bit the test this lane has always run.
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
-		fmt.Printf("[pion] incoming data channel: label=%q id=%v\n", dc.Label(), dc.ID())
+		// The negotiated DCEP properties Pion parsed out of our DATA_CHANNEL_OPEN. For the semantics
+		// channels these ARE the "was the channel type honored end-to-end" evidence: s2/unordered must show
+		// ordered=false, s3/rexmit maxRetransmits=0, s3/timed a finite maxPacketLifeTime. Printed in the
+		// same shape by every reflector family so one grep works across Pion, werift and the browsers.
+		fmt.Printf("[pion] dc-negotiated: label=%q id=%v ordered=%s maxRetransmits=%s maxPacketLifeTime=%s\n",
+			dc.Label(), dc.ID(), fmtBool(dc.Ordered()), fmtU16(dc.MaxRetransmits()), fmtU16(dc.MaxPacketLifeTime()))
+		dc.OnClose(func() { fmt.Printf("[pion] dc close: label=%q\n", dc.Label()) })
+		rx := 0
+		rxBytes := 0
 		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+			rx++
+			rxBytes += len(msg.Data)
 			text := string(msg.Data)
-			fmt.Printf("[pion] received: %q (string=%v)\n", text, msg.IsString)
+			// Only a small payload is rendered; a large binary (s1's ~200 KB) is summarized by size.
+			rendered := fmt.Sprintf("<%dB binary>", len(msg.Data))
+			if len(msg.Data) <= 64 {
+				rendered = fmt.Sprintf("%q", text)
+			}
+			fmt.Printf("[pion] received on %q: size=%d msg#%d rxBytes=%d string=%v data=%s\n",
+				dc.Label(), len(msg.Data), rx, rxBytes, msg.IsString, rendered)
+
 			if strings.TrimSpace(text) == "ping" {
 				if err := dc.SendText("pong"); err != nil {
 					fmt.Printf("[pion] failed to send pong: %v\n", err)
@@ -73,6 +108,24 @@ func run() int {
 				}
 				fmt.Println("[pion] echoed: \"pong\"")
 				trySignal(echoed)
+				return
+			}
+			// Verbatim echo, preserving the string/binary distinction the message arrived with.
+			var err error
+			if msg.IsString {
+				err = dc.SendText(text)
+			} else {
+				err = dc.Send(msg.Data)
+			}
+			if err != nil {
+				fmt.Printf("[pion] failed to echo %d bytes on %q: %v\n", len(msg.Data), dc.Label(), err)
+				return
+			}
+			// The offerer's completion handshake: once DONE has been echoed, the run is over and we may
+			// tear down. This replaces the old "linger N seconds after the pong" race with an agreement.
+			if strings.TrimSpace(text) == doneMarker {
+				fmt.Println("[pion] DONE echoed — the offerer signalled the run is complete")
+				trySignal(done)
 			}
 		})
 	})
@@ -174,11 +227,43 @@ func run() int {
 		return 1
 	}
 
+	if cfg.semantics {
+		// Semantics mode: keep reflecting until the offerer's explicit DONE. Exiting on a timer here would
+		// tear the association down mid-sequence — the linger below is exactly what DONE replaces.
+		if !waitEchoed(done, deadline) {
+			fmt.Println("[pion] TIMEOUT waiting for the offerer's DONE handshake")
+			return 1
+		}
+		// Brief linger so the DONE echo is delivered and the offerer's graceful association SHUTDOWN
+		// (RFC 4960 §9.2) is received and answered before this process exits.
+		time.Sleep(3 * time.Second)
+		fmt.Printf("[pion] connection state at exit: %s\n", pc.ConnectionState())
+		fmt.Println("[pion] exit=0 (established + echoed + DONE)")
+		return 0
+	}
+
 	// Linger so SCTP reliably delivers the final "pong" (and its SACK) before teardown — the native peer
 	// does the same after its send. Bounded and well under the offerer's echo timeout.
 	time.Sleep(3 * time.Second)
 	fmt.Println("[pion] exit=0 (established + echoed)")
 	return 0
+}
+
+// doneMarker is the offerer's completion word on the control channel (see the Kotlin ControlChannel).
+const doneMarker = "DONE"
+
+// fmtBool / fmtU16 render Pion's *bool / *uint16 DCEP properties in the SAME shape every reflector family
+// prints ("true"/"false", a number, or "-" when the peer left it unset), so run-interop.sh can assert the
+// negotiated channel type with one grep regardless of which stack answered.
+func fmtBool(v bool) string {
+	return strconv.FormatBool(v)
+}
+
+func fmtU16(v *uint16) string {
+	if v == nil {
+		return "-"
+	}
+	return strconv.Itoa(int(*v))
 }
 
 func awaitOffer(sig *signaling, deadline time.Time) string {
@@ -264,6 +349,10 @@ type config struct {
 	rendezvousPort int
 	icePolicy      string
 	timeout        time.Duration
+	// Reflect until the offerer's DONE instead of exiting shortly after the ping echo — set by
+	// run-interop.sh (WEBRTC_SEMANTICS=1) whenever the offerer runs the data-channel semantics sequence.
+	semantics        bool
+	semanticsTimeout time.Duration
 }
 
 func configFromEnv() config {
@@ -280,7 +369,15 @@ func configFromEnv() config {
 		rendezvousPort: envInt("WEBRTC_RENDEZVOUS_PORT", 9999),
 		icePolicy:      strings.ToLower(env("WEBRTC_ICE_POLICY", "all")),
 		timeout:        time.Duration(envInt("WEBRTC_TIMEOUT_MS", 45000)) * time.Millisecond,
+		semantics:      isTruthy(env("WEBRTC_SEMANTICS", "")),
+
+		semanticsTimeout: time.Duration(envInt("WEBRTC_SEMANTICS_TIMEOUT_MS", 120000)) * time.Millisecond,
 	}
+}
+
+// isTruthy accepts "1" / "true" (any case); anything else — including absent — leaves a flag off.
+func isTruthy(v string) bool {
+	return v == "1" || strings.EqualFold(v, "true")
 }
 
 func env(name, def string) string {

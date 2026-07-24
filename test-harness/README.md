@@ -96,6 +96,52 @@ Selecting scenarios: positional args are an **allowlist** (`./run-interop.sh chr
 runs just those); `HARNESS_SKIP="chrome-interop firefox-interop" ./run-interop.sh` is a **skiplist** (the CI
 `l2` job runs the full matrix minus the browser lanes, which run as their own parallel per-browser jobs).
 
+## Data-channel semantics — what each lane now proves beyond `ping`/`pong`
+
+A green lane used to prove **establishment**: ICE + DTLS + SCTP INIT + one DCEP OPEN + one 4-byte message.
+It proved nothing about the data-channel *semantics* the library implements. Every lane now also runs an
+**offerer-driven phase sequence** over the same association it already establishes, so the whole matrix
+comes for free on every existing lane and CI grows no jobs. Design note: `docs/DC_SEMANTICS_INTEROP_DESIGN.md`.
+
+| Phase | Channel(s) | What it proves against an independent stack |
+|---|---|---|
+| 0 | `harness` | establishment — the historical `ping`→`pong`, unchanged, still first |
+| `s1` | `s1/large` | SCTP **fragmentation + reassembly** both ways: ~200 KB echoed **byte-identical** (~167 DATA chunks), clamped to `min(ours, peer's a=max-message-size)` — plus a probe **at** that ceiling, which is what proves we read and honour RFC 8841 §6 |
+| `s2` | `s2/unordered` | the **unordered** channel type is honored end-to-end and still delivers (asserted as set equality, never order) |
+| `s3` | `s3/rexmit`, `s3/timed` | **PR-SCTP** (`MaxRetransmits(0)` / `MaxLifetime`) is accepted, and an abandoned message does **not wedge** the stream — the peer advanced past it, i.e. processed our **FORWARD-TSN** |
+| `s4` | `s4/a`,`s4/b`,`s4/c` | **multiplexing**: three concurrent channels with mixed profiles, each echo returning on its own stream (RFC 8832 §6 demux) |
+| `s5` | `s5/reverse` | the **answerer** originates a channel and we reflect it — our DCEP responder path (odd stream-id parity). Our lanes only; foreign peers never originate |
+| `s6` | `harness` | the `DONE` handshake, then a **graceful association SHUTDOWN** (RFC 4960 §9.2) — the peer sees a clean close, not a vanished association |
+
+**The answerer stays dumb in every family.** Its whole contract is: *for every incoming channel, echo every
+message back on that channel, verbatim; exit on `DONE`* (with `ping`→`pong` kept as the one historical
+exception). That is what makes a **browser** — where nothing beyond the W3C `RTCDataChannel` API can be
+injected — a first-class answerer for all of it: every scenario decision and every assertion lives on the
+offerer side, in our Kotlin. Channel labels are self-describing for logs, `getStats` and pcaps, but drive no
+behaviour. Each reflector also prints a `dc-negotiated:` line (`ordered=`, `maxRetransmits=`,
+`maxPacketLifeTime=`) — the half of the proof only the peer can report, which is what the browser lanes are
+asserted against.
+
+Grading is one greppable line from the offerer:
+
+```
+[harness] phase s1: PASS (+412ms) 204800B echoed byte-identical, and so did a boundary probe at exactly the negotiated 262144B
+[harness] semantics-summary: total=6 passed=6 failed=0 failed-phases=[]
+```
+
+A failed phase is **recorded and the sequence continues**, so one run reports everything that is broken.
+
+| Env | Default | Effect |
+|---|---|---|
+| `HARNESS_SEMANTICS` | `1` | `0` restores the pure establish-and-echo harness (phase 0 only) |
+| `HARNESS_SCENARIOS` | *(all)* | subset by short id, e.g. `s1,s3` — a debugging knob, never a lane matrix |
+| `HARNESS_SEMANTICS_GATING` | `0` | **non-gating first**: failures are informational `::warning::`s. `1` makes a failed phase fail its lane |
+| `HARNESS_SEMANTICS_TIMEOUT_MS` | `120000` | watchdog for the whole sequence, on top of the establishment watchdog |
+
+Not covered, deliberately: **per-channel close**. That needs an RFC 6525 RE-CONFIG stream reset, which
+`webrtc-sctp` does not implement — so `s6` proves the association-level shutdown we *do* implement, and
+per-channel close stays a library follow-up rather than a harness fiction.
+
 ## Interop: the Pion lane (W7 Phase 2a)
 
 The `pion-interop` scenario swaps the native answerer `peer_b` for a real **Pion (Go) echo-peer**

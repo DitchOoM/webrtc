@@ -110,6 +110,19 @@ Note the browser-reachability constraints socket already documented apply: a Kar
 `RTCPeerConnection` against our JVM peer on the same runner (`127.0.0.1`), no `host.docker.internal`
 gymnastics on Linux CI. **W6/W7.**
 
+**Data-channel semantics, not just establishment.** A green interop lane proving one `ping`→`pong` proves
+ICE + DTLS + SCTP INIT + one DCEP OPEN — and nothing about the semantics the library implements. So every
+lane additionally runs an offerer-driven phase sequence over the same association: fragmentation +
+reassembly of a message far past one MTU (byte-identity checked, sized against the peer's advertised
+`a=max-message-size` **and** probed at exactly that ceiling), unordered delivery, PR-SCTP with its
+FORWARD-TSN no-wedge property, three multiplexed channels with mixed profiles, a reverse-direction channel
+(our lanes only), and a graceful association SHUTDOWN. The answerer stays a scenario-agnostic **reflector**
+in every family — echo every message back on the channel it arrived on — because the binding constraint is
+the browser, where nothing beyond the W3C API can be injected; every assertion therefore lives on our side.
+Honest limits: a clean path rarely reorders and never abandons, so s2/s3 prove *negotiation* there and get
+their real proofs on the impaired lane, with the deterministic vnet suites remaining the hard gate for both.
+See `test-harness/README.md` and `docs/DC_SEMANTICS_INTEROP_DESIGN.md`. **W7.**
+
 ### L4 — Consumer smoke · tier Consumer
 The published `webrtc-testsuite`:
 

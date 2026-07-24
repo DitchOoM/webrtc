@@ -152,14 +152,18 @@ echoing `ping`→`pong`.
   host candidates. **WebKit exposes no such pref**, so it emits `.local` mDNS host candidates our peer
   can't resolve — its lane connects via the coturn **srflx/relay** candidates instead (our ICE agent skips
   the unresolvable hosts; srflx/relay carry connectivity across the NATs regardless).
-  - **mDNS end-to-end (obfuscation ON) is deferred to Phase 1.5.** Turning obfuscation ON — resolving the
-    browser's `<uuid>.local` host candidates instead of skipping them — is **gated on the socket library
-    gaining multicast support** (`socket-udp` today sets `multicast = false, // defer to Phase 5` and has no
-    `joinGroup` in its common seam), since resolving `.local` needs a real multicast mDNS resolver actual
-    (`224.0.0.251:5353`) on JVM **and** Kotlin/Native. This is a deliberate close-out deferral with **no
-    correctness impact** — lanes establish today with obfuscation OFF, and WebKit already proves the
-    srflx/relay path with `.local` present. The `MdnsResolver` seam stays un-wired, ready for 1.5. Canonical
-    ledger: `PHASE1_CLOSEOUT.md` §1.5-D. (Rahul's call, 2026-07-22.)
+  - **mDNS end-to-end (obfuscation ON) has its own dedicated lane** (`mdns-chrome` / `mdns-firefox`,
+    `compose.mdns.yml`). Once `socket-udp` gained multicast (3.15.0), the `MdnsResolver` seam was wired to a
+    real `MulticastMdnsResolver` actual (`224.0.0.251:5353` / `[ff02::fb]:5353`, JVM **and** Kotlin/Native),
+    so this lane puts our native peer (offerer) and a browser (answerer, obfuscation **ON**) on **one shared
+    L2 bridge** (`lan0`, no NAT) where multicast floods, and our resolver resolves the browser's
+    `<uuid>.local` host candidates for real. The lane **gates on proven resolution**: `peer_mdns` runs with
+    `WEBRTC_REQUIRE_MDNS=true`, so it only exits 0 if `MulticastMdnsResolver` actually fired on a `.local`
+    (it keeps the candidate-poll + resolve loops alive past the sub-second peer-reflexive connect). Note we
+    do **not** assert the resolved pair is *selected*: mDNS is link-local, so a resolved `.local` is the same
+    directly-reachable IP that prflx already won on — no topology makes the mDNS pair win a same-LAN race.
+    The NAT lanes keep obfuscation OFF (real-IP host candidates); WebKit still proves the srflx/relay path
+    with `.local` present. Canonical ledger: `PHASE1_CLOSEOUT.md` §1.5-D; issue #48.
 - Each is gated behind its own compose profile (`chrome` / `firefox` / `webkit`); they, `peer_b`, and
   `pion` share `PEER_B_IP` but never run at once. The image builds natively per-arch (Node + Playwright
   fetches the per-arch engine — only the selected one), no QEMU. In CI these run as a parallel

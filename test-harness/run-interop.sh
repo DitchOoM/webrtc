@@ -191,7 +191,9 @@ skip=" ${HARNESS_SKIP:-} "
 # NON-GATING (informational) scenarios — a failure here is logged but does NOT fail the run. The kernel-random
 # netem impaired lane can never be provably flake-free; the deterministic DtlsSctpLossReproductionTest is the
 # HARD loss gate (see the header). Keep this list minimal and space-padded so `case` matches whole words.
-NON_GATING=" impaired-loss-delay mdns-chrome mdns-firefox "
+# mdns-chrome/mdns-firefox were promoted to GATING once peer_mdns (WEBRTC_REQUIRE_MDNS=true) made rc=0 PROVE
+# mDNS resolution rather than just obfuscation-ON interop (issue #48) — they now assert as hard as every lane.
+NON_GATING=" impaired-loss-delay "
 
 # Family-degenerate scenarios (space-padded, whole-word `case` match). The v4 mapping-artifacts (symmetric
 # endpoint-dependent mapping, carrier double-NAT, hairpin) have NO v6 analog — over routed v6 the "NAT" is a
@@ -520,33 +522,27 @@ run_mdns_scenario() {
     echo "── $b_service (answerer) ──"; printf '%s\n' "$b_log"
 
     if [ "$rc_a" = "0" ] && [ "$rc_b" = "0" ]; then
-        # PASS gate = both peers exit 0 (establish + encrypted echo) with an obfuscation-ON browser — i.e.
-        # our peer INTEROPERATES with a browser configured to hide its host IPs behind `.local`. That is
-        # this lane's guarantee today. Two purely INFORMATIONAL probes below (never gate):
-        #   1. Did the browser SIGNAL an obfuscated `.local` candidate into the mailbox (the source of truth
-        #      for the exchanged set — the browser driver doesn't log candidate strings)?
-        #   2. Did OUR MulticastMdnsResolver fire on one (the peer's `.logged()` wrapper prints `mdns resolved
-        #      …`)?
-        # BOTH are commonly absent here, and that is EXPECTED, not a warning: on a no-NAT shared L2 segment
-        # ICE peer-reflexive discovery wins the pair in ~200ms (the STUN checks carry real IPs regardless of
-        # SDP-layer `.local` obfuscation), so the browser frequently connects before it even trickles its
-        # `.local` host candidate, and the resolver never sits on the critical path. Proving mDNS RESOLUTION
-        # is the SELECTED pair needs a topology that defeats prflx — tracked as a follow-up (see the PR),
-        # which is why this lane is NON-GATING. The probes are logged for signal, not asserted.
+        # PASS gate part 1 = both peers exit 0. For THIS lane rc_a=0 already means more than establish+echo:
+        # peer_mdns runs with WEBRTC_REQUIRE_MDNS=true, so it only exits 0 if our MulticastMdnsResolver
+        # actually resolved the browser's obfuscated `<uuid>.local` over multicast (it keeps the poll/resolve
+        # loops alive past the sub-second prflx connect). So the lane now PROVES mDNS resolution, not just
+        # obfuscation-ON interop. We do NOT (and cannot) assert the resolved pair is SELECTED: mDNS is
+        # link-local, so a resolved `.local` is the same directly-reachable IP prflx already won on — no
+        # topology makes the mDNS pair win. See issue #48. Two hard assertions below corroborate rc_a=0:
+        #   1. the browser SIGNALED an obfuscated `.local` into the mailbox (source of truth for the exchange), and
+        #   2. OUR resolver logged `mdns resolved …` on one.
         local mailbox
         mailbox=$(docker compose exec -T rendezvous python3 -c \
             "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:${RENDEZVOUS_HTTP_PORT}/dump').read().decode())" 2>/dev/null || true)
-        if printf '%s\n' "$mailbox" | grep -qiE '\.local'; then
-            echo "[mdns] browser signaled an obfuscated .local host candidate"
-        else
-            echo "[mdns] no .local candidate reached the mailbox (browser connected via peer-reflexive before trickling it — expected on a no-NAT segment)"
+        if ! printf '%s\n' "$mailbox" | grep -qiE '\.local'; then
+            fail_scenario "$name" "established but the browser never signaled an obfuscated .local host candidate into the mailbox (mDNS obfuscation not exercised)"; export COMPOSE_FILE="$saved_compose"; return
         fi
-        if printf '%s\n' "$a_log" | grep -qi 'mdns resolved'; then
-            echo "[mdns] ✅ our MulticastMdnsResolver resolved the browser's .local candidate"
-        else
-            echo "[mdns] resolver not exercised this run (peer-reflexive won the pair first — see the follow-up on forcing the mDNS path)"
+        echo "[mdns] browser signaled an obfuscated .local host candidate"
+        if ! printf '%s\n' "$a_log" | grep -qi 'mdns resolved'; then
+            fail_scenario "$name" "established but our MulticastMdnsResolver never resolved the browser's .local (no 'mdns resolved' line — the resolver was not exercised)"; export COMPOSE_FILE="$saved_compose"; return
         fi
-        echo "✅ [$name] PASS (offerer rc=$rc_a answerer rc=$rc_b) — obfuscation-ON browser interop"; pass=$((pass+1))
+        echo "[mdns] ✅ our MulticastMdnsResolver resolved the browser's .local candidate"
+        echo "✅ [$name] PASS (offerer rc=$rc_a answerer rc=$rc_b) — obfuscation-ON browser interop + mDNS resolution proven"; pass=$((pass+1))
     else
         fail_scenario "$name" "FAIL (offerer rc=$rc_a answerer rc=$rc_b)"
     fi

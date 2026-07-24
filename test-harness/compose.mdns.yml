@@ -60,6 +60,11 @@ services:
       WEBRTC_ICE_POLICY: "${ICE_POLICY:-all}"
       WEBRTC_TIMEOUT_MS: "${PEER_TIMEOUT_MS}"
       WEBRTC_DTLS13: "${PEER_DTLS13:-true}"  # browsers negotiate 1.3
+      # This lane's raison d'être: don't exit 0 on establish+echo alone — REQUIRE that our MulticastMdnsResolver
+      # actually resolved the browser's obfuscated `<uuid>.local` host candidate over multicast (issue #48).
+      # Keeps the candidate-poll + resolve loops alive past the sub-second prflx connect so the `.local` the
+      # browser trickles is genuinely resolved on the critical path, making the lane's mDNS proof gating-worthy.
+      WEBRTC_REQUIRE_MDNS: "true"
       WEBRTC_SEED: "${SEED_A:-}"
     networks:
       lan0: { ipv4_address: "${PEER_MDNS_IP}" }

@@ -59,6 +59,20 @@ internal data class HarnessConfig(
      * would otherwise negotiate up to 1.3 with another of our peers). Our 1.2 fallback is W4-tested.
      */
     val enableDtls13: Boolean,
+    /**
+     * Same-LAN mDNS lane only (`WEBRTC_REQUIRE_MDNS=true`): the peer's success additionally REQUIRES that
+     * our [MulticastMdnsResolver] resolved at least one of the browser's obfuscated `<uuid>.local` host
+     * candidates over multicast. Off (production/every other lane) mDNS is best-effort and never gates.
+     *
+     * Why this exists: on a no-NAT shared L2 segment ICE peer-reflexive wins the pair in ~200ms and the
+     * offerer would otherwise exit before it even polls the browser's trickled `.local` — so the resolver,
+     * though wired, never fires and the lane can't PROVE resolution. mDNS resolution can never be the
+     * *selected* pair here (it is link-local, so the resolved host is the same directly-reachable IP prflx
+     * already won on); the achievable proof is "we resolved a real browser's `.local` → valid host
+     * candidate". This flag keeps the poll/resolver loops alive (watchdog-bounded) until that happens.
+     * Tracks issue #48.
+     */
+    val requireMdns: Boolean,
 ) {
     companion object {
         fun fromEnv(): HarnessConfig {
@@ -97,6 +111,8 @@ internal data class HarnessConfig(
                 // Default true (production); the Pion lane sets WEBRTC_DTLS13=false. Any value other than
                 // an explicit "false" keeps 1.3 on.
                 enableDtls13 = env("WEBRTC_DTLS13")?.equals("false", ignoreCase = true) != true,
+                // Off everywhere except the same-LAN mDNS lane, whose compose overlay sets it explicitly.
+                requireMdns = env("WEBRTC_REQUIRE_MDNS")?.equals("true", ignoreCase = true) == true,
             )
         }
 

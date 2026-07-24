@@ -133,12 +133,13 @@ docker run --rm --privileged --network host alpine:3.20 \
 
 # ── scenario matrix — name | nat_a | nat_b | ice_policy | netem(args or "-") | a_impl | b_impl | topo ──
 #   a_impl (offerer / "our side") ∈ native | jvm
-#   b_impl (answerer)             ∈ native | pion | chrome | firefox | webkit
+#   b_impl (answerer)             ∈ native | pion | node | chrome | firefox | webkit
 #   topo (NAT layering)           ∈ single | cgnat | hairpin      (defaults to single when omitted)
 # Covers each of the four NAT profiles, the symmetric→relay fallback, an explicit relay-only lane, an
 # impaired data path (all native ⇄ native), the W7 Phase-2 interop lanes where the answerer is a real Pion
-# (Go) peer [2(a)] or a real headless browser — Chrome / Firefox / WebKit [2(b)], the JVM-offerer lanes:
-# the pure-Kotlin engine on the JVM (socket-udp NIO datapath) ⇄ native / Pion / Chrome / Firefox / WebKit
+# (Go) peer or a real werift (pure-TypeScript, JS-engine) peer [2(a)] or a real headless browser — Chrome /
+# Firefox / WebKit [2(b)], the JVM-offerer lanes:
+# the pure-Kotlin engine on the JVM (socket-udp NIO datapath) ⇄ native / Pion / node / Chrome / Firefox / WebKit
 # — proving the pure engine on the real wire from a managed runtime — PLUS two carrier-grade NAT (NAT444)
 # topologies: `cgnat` (each CPE behind its OWN carrier NAT — a genuine double NAT, traversed via srflx or
 # relay) and `hairpin` (both CPEs behind ONE shared carrier NAT — a single external identity, so ICE falls
@@ -153,8 +154,8 @@ docker run --rm --privileged --network host alpine:3.20 \
 # see family_skipped). `impaired-loss-delay` is NON-GATING (informational
 # — see $NON_GATING + the header): its kernel-random loss can't be provably flake-free, so the deterministic
 # DtlsSctpLossReproductionTest is the retained hard loss gate. Each expects BOTH peers to exit 0. The impl +
-# topo columns default to native/native/single when omitted. The pion lanes force DTLS 1.2 (Pion v3 is
-# 1.2-only); every other lane runs DTLS 1.3 (the default) — see run_scenario.
+# topo columns default to native/native/single when omitted. The pion AND node/werift lanes force DTLS 1.2
+# (both are 1.2-only); every other lane runs DTLS 1.3 (the default) — see run_scenario.
 SCENARIOS="
 full-cone            | full-cone          | full-cone          | all   | -                                                | native | native  | single
 port-restricted      | port-restricted    | port-restricted    | all   | -                                                | native | native  | single
@@ -167,11 +168,13 @@ impaired-loss-delay  | port-restricted    | port-restricted    | all   | loss 5%
 cgnat                | port-restricted    | port-restricted    | all   | -                                                | native | native  | cgnat
 hairpin              | port-restricted    | port-restricted    | relay | -                                                | native | native  | hairpin
 pion-interop         | port-restricted    | port-restricted    | all   | -                                                | native | pion    | single
+node-interop         | port-restricted    | port-restricted    | all   | -                                                | native | node    | single
 chrome-interop       | port-restricted    | port-restricted    | all   | -                                                | native | chrome  | single
 firefox-interop      | port-restricted    | port-restricted    | all   | -                                                | native | firefox | single
 webkit-interop       | port-restricted    | port-restricted    | all   | -                                                | native | webkit  | single
 jvm-native           | port-restricted    | port-restricted    | all   | -                                                | jvm    | native  | single
 jvm-pion             | port-restricted    | port-restricted    | all   | -                                                | jvm    | pion    | single
+jvm-node             | port-restricted    | port-restricted    | all   | -                                                | jvm    | node    | single
 jvm-chrome           | port-restricted    | port-restricted    | all   | -                                                | jvm    | chrome  | single
 jvm-firefox          | port-restricted    | port-restricted    | all   | -                                                | jvm    | firefox | single
 jvm-webkit           | port-restricted    | port-restricted    | all   | -                                                | jvm    | webkit  | single
@@ -190,10 +193,13 @@ skip=" ${HARNESS_SKIP:-} "
 
 # NON-GATING (informational) scenarios — a failure here is logged but does NOT fail the run. The kernel-random
 # netem impaired lane can never be provably flake-free; the deterministic DtlsSctpLossReproductionTest is the
-# HARD loss gate (see the header). Keep this list minimal and space-padded so `case` matches whole words.
-# mdns-chrome/mdns-firefox were promoted to GATING once peer_mdns (WEBRTC_REQUIRE_MDNS=true) made rc=0 PROVE
-# mDNS resolution rather than just obfuscation-ON interop (issue #48) — they now assert as hard as every lane.
-NON_GATING=" impaired-loss-delay "
+# HARD loss gate (see the header). $HARNESS_NON_GATING appends caller-supplied lanes that are landing
+# informational-first (e.g. a new interop lane before it's proven green across all families — CI sets it for
+# node-interop/jvm-node; a one-line follow-up flips them to gating once green). Space-padded so `case`
+# matches whole words; the env list is space-separated names. (mdns-chrome/mdns-firefox were themselves
+# promoted OUT of this list to GATING once peer_mdns (WEBRTC_REQUIRE_MDNS=true) made rc=0 PROVE mDNS
+# resolution rather than just obfuscation-ON interop — issue #48; they now assert as hard as every lane.)
+NON_GATING=" impaired-loss-delay ${HARNESS_NON_GATING:-} "
 
 # Family-degenerate scenarios (space-padded, whole-word `case` match). The v4 mapping-artifacts (symmetric
 # endpoint-dependent mapping, carrier double-NAT, hairpin) have NO v6 analog — over routed v6 the "NAT" is a
@@ -226,7 +232,13 @@ warn=0; warned_names=""
 # ::warning:: and increment $warn only — the run can still pass. $2 is the reason string.
 record_fail() {
     local name="$1" reason="$2" why=""
-    case "$NON_GATING" in *" $name "*) why="the deterministic DtlsSctpLossReproductionTest is the hard loss gate" ;; esac
+    case "$NON_GATING" in *" $name "*)
+        case "$name" in
+            impaired-loss-delay) why="the deterministic DtlsSctpLossReproductionTest is the hard loss gate" ;;
+            *)                   why="informational-first while the lane lands (a follow-up flips it to gating once green)" ;;
+        esac
+        ;;
+    esac
     if [ -z "$why" ] && family_nongating; then why="$IP_FAMILY lanes land informational-first (set FAMILY_GATING=1 once green)"; fi
     if [ -n "$why" ]; then
         echo "::warning::⚠️ [$name] $reason — NON-GATING ($why), so NOT failing the run"
@@ -356,6 +368,9 @@ run_scenario() {
     esac
     case "$b_impl" in
         pion)    b_service="pion";    profiles="$profiles pion";    export PEER_DTLS13="false" ;;
+        # werift is DTLS 1.2-only (record ProtocolVersion 0xFEFD; classic 6-flight handshake, no 1.3
+        # flights — see node/peer.mjs), so like Pion it pins PEER_DTLS13=false on BOTH peers.
+        node)    b_service="node";    profiles="$profiles node";    export PEER_DTLS13="false" ;;
         chrome)  b_service="chrome";  profiles="$profiles chrome";  export PEER_DTLS13="true" ;;
         firefox) b_service="firefox"; profiles="$profiles firefox"; export PEER_DTLS13="true" ;;
         webkit)  b_service="webkit";  profiles="$profiles webkit";  export PEER_DTLS13="true" ;;

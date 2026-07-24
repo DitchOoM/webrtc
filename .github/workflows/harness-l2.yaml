@@ -7,8 +7,11 @@ name: "L2 Interop Harness"
 # W7 Phase 2 adds INTEROP lanes against real independent WebRTC engines — the differential oracles the
 # harness exists to provide, split across two jobs so a slow browser build never gates the fast lanes:
 #   * `l2` — the NAT-profile matrix + `pion-interop` (native offerer ⇄ a real Pion (Go) answerer over
-#     DTLS 1.2 [Phase 2(a)]) + the fast JVM-offerer lanes (`jvm-native`, `jvm-pion`). HARNESS_SKIP drops
-#     the browser scenarios here.
+#     DTLS 1.2) + `node-interop` (⇄ a real werift pure-TypeScript / JS-engine answerer, also DTLS 1.2)
+#     [Phase 2(a)] + the fast JVM-offerer lanes (`jvm-native`, `jvm-pion`, `jvm-node`). Both interop
+#     answerers here are fast, non-browser (raw-UDP) images, so they gate on this job, not l2-browser.
+#     HARNESS_SKIP drops the browser scenarios here; node-interop + jvm-node run informational-first
+#     (HARNESS_NON_GATING) while the werift lane lands.
 #   * `l2-browser` — a per-{arch × engine × offerer} matrix of parallel jobs [Phase 2(b) + JVM]: our
 #     offerer (native peer OR JVM peer) ⇄ a real headless **Chrome** (Chromium libwebrtc), **Firefox**
 #     (NSS/nICEr/usrsctp — a fully independent stack), and **WebKit** (Safari's engine — a third oracle),
@@ -104,7 +107,7 @@ jobs:
   # `l2-browser` job (below) so a slow Chromium/Firefox image build never gates the fast native lanes and
   # each engine gets isolated logs. HARNESS_SKIP drops the browser scenarios from run-interop.sh's matrix.
   l2:
-    name: "establish over NAT profiles + Pion (${{ matrix.arch.name }}, ${{ matrix.ipfamily }})"
+    name: "establish over NAT profiles + Pion + node (${{ matrix.arch.name }}, ${{ matrix.ipfamily }})"
     needs: build-peer
     strategy:
       fail-fast: false
@@ -117,9 +120,9 @@ jobs:
           - { runner: ubuntu-24.04-arm, name: Arm64, konan: linuxArm64 }
         ipfamily: [v4, v6, dual]
     runs-on: ${{ matrix.arch.runner }}
-    # 11 scenarios now (7 NAT profiles + pion + jvm-native + jvm-pion + firewall-relay6), each a fresh stack —
-    # a wider margin than the original 8-scenario budget, especially on the slower arm64 runner.
-    timeout-minutes: 40
+    # 13 scenarios now (7 NAT profiles + pion + node + jvm-native + jvm-pion + jvm-node + firewall-relay6),
+    # each a fresh stack. node-interop/jvm-node are fast (Node + one npm dep, no browser engine download).
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
 
@@ -169,11 +172,15 @@ jobs:
       # v4 + dual + v6 are required lanes (v6 is red until its routed-v6 return-route + browser-bracketing
       # fixes fully land; that red is the honest signal, tracked via the SCENARIO summaries, not the masked
       # job status). impaired-loss-delay stays informational regardless (gated by $NON_GATING, not family).
-      - name: L2 interop matrix (native + Pion + JVM offerer)
+      - name: L2 interop matrix (native + Pion + node/werift + JVM offerer)
         env:
           PEER_KEXE: "webrtc-harness-endpoint/build/bin/${{ matrix.arch.konan }}/peerReleaseExecutable/peer.kexe"
           PEER_JAR: "webrtc-harness-endpoint/build/libs/webrtc-harness-peer-all.jar"
           HARNESS_SKIP: "chrome-interop firefox-interop webkit-interop jvm-chrome jvm-firefox jvm-webkit mdns-chrome mdns-firefox"
+          # node-interop + jvm-node land informational-first (per the impaired/v6 precedent): they RUN in
+          # this fast job but a failure is a ::warning::, not a gate, while the werift lane proves out across
+          # all families. Drop this line (a one-liner) to promote them to gating once green.
+          HARNESS_NON_GATING: "node-interop jvm-node"
           IP_FAMILY: "${{ matrix.ipfamily }}"
           FAMILY_GATING: "1"
         run: |

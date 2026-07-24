@@ -36,24 +36,30 @@ kotlin {
 
         // ── mDNS multicast resolver actual (MulticastMdnsResolver, RFC 6762 `.local` resolution) ──
         // It binds a socket-udp MulticastDatagramChannel, so it compiles ONLY into the non-browser targets
-        // that ship a socket-udp actual: jvm, android, linux, and — on a macOS host — macOS + iOS. One
-        // physical dir (src/socketMain) is added to each of those MAIN source sets (the per-source-set
-        // pattern), with socket-udp as their dependency. The sans-io core in commonMain stays socket-free
-        // and all-platform. EXCLUDED on purpose: js/wasm (both are also `browser()`, which has no raw UDP —
-        // a browser resolves `.local` inside its own RTCPeerConnection) and watchOS/tvOS (socket-udp
-        // publishes no artifact for them, matching its Apple matrix — so `appleMain`/`nativeMain` are too
-        // broad to hang the dependency on).
-        val mdnsSocketSourceSets = mutableListOf("jvmMain", "androidMain", "linuxMain")
-        if (org.jetbrains.kotlin.konan.target.HostManager.hostIsMac) {
-            mdnsSocketSourceSets += listOf("macosMain", "iosMain")
-        }
-        for (sourceSetName in mdnsSocketSourceSets) {
-            named(sourceSetName) {
-                kotlin.srcDir("src/socketMain/kotlin")
-                dependencies {
-                    implementation(libs.socket.udp)
-                }
+        // that ship a socket-udp actual: jvm, android, linux, and — on a macOS host — macOS + iOS.
+        //
+        // Modeled as a REAL shared `socketMain` source set (its files live once in src/socketMain/kotlin,
+        // the default root for a source set of that name) that those leaves `dependsOn` — NOT a srcDir
+        // replicated across each leaf. Both keep the sans-io commonMain core socket-free, but replicating
+        // one physical file across several leaf source sets makes Dokka reject it: its pre-generation check
+        // ("every Kotlin source file belongs to only one source set") fails with `Source sets 'android' and
+        // 'jvm' … have the common source roots: …/MulticastMdnsResolver.kt`, breaking
+        // :webrtc-ice:dokkaGeneratePublicationHtml (build-linux). A shared source set is one module → one
+        // owner. EXCLUDED on purpose: js/wasm (both `browser()`, no raw UDP — a browser resolves `.local`
+        // inside its own RTCPeerConnection) and watchOS/tvOS (socket-udp publishes no artifact for them, so
+        // `appleMain`/`nativeMain` are too broad to hang the dependency on).
+        val socketMain by creating {
+            dependsOn(commonMain.get())
+            dependencies {
+                implementation(libs.socket.udp)
             }
+        }
+        val mdnsSocketLeaves = mutableListOf("jvmMain", "androidMain", "linuxMain")
+        if (org.jetbrains.kotlin.konan.target.HostManager.hostIsMac) {
+            mdnsSocketLeaves += listOf("macosMain", "iosMain")
+        }
+        for (leaf in mdnsSocketLeaves) {
+            named(leaf) { dependsOn(socketMain) }
         }
     }
 }

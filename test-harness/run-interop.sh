@@ -126,6 +126,28 @@ BRIDGE_NF_ORIG=$(docker run --rm --privileged --network host alpine:3.20 \
 # netfilter before every scenario after the first, breaking NAT forwarding for the rest of the matrix.)
 stack_down() { docker compose down -v --remove-orphans >/dev/null 2>&1 || true; }
 
+# Block until a peer service's container has exited and echo its exit code.
+#
+# NOT `docker compose wait`: that subcommand resolves the service against RUNNING containers only, so if the
+# container has ALREADY exited by the time the call is issued it prints nothing, writes `no containers for
+# project "<p>"` to stderr and exits 1 — yielding an EMPTY rc that reads as failure. Because the two peer
+# waits are necessarily sequential (offerer first, then answerer), any scenario where the ANSWERER exits
+# before/with the offerer lost its rc that way and failed a lane both peers had actually completed cleanly
+# (`[harness] exit=0`, `close-summary: observed=Closed clean=true` in the very log we dump). This stayed
+# latent while the answerer reliably outlived the offerer; the s6 graceful-shutdown phase made the two exits
+# simultaneous, turning it into a nondeterministic red across full-cone / address-restricted.
+#
+# `docker wait <container-id>` has no such asymmetry: it blocks when the container is running and returns the
+# recorded exit code IMMEDIATELY when it has already exited — the exited container still exists (nothing
+# removes it until stack_down). `ps -a` is load-bearing: without it, ps only lists running containers and we
+# would reacquire the same race one level down.
+peer_exit_rc() {
+    local cid
+    cid=$(docker compose ps -a -q "$1" 2>/dev/null | tail -1)
+    [ -n "$cid" ] || return 0   # no container at all → empty rc → caller fails the scenario, as it should
+    docker wait "$cid" 2>/dev/null | grep -oE '[0-9]+$' | tail -1
+}
+
 # Final teardown (EXIT only): stack down + restore the one host sysctl we changed, so the harness leaves
 # no global footprint.
 teardown() {
@@ -519,11 +541,11 @@ run_scenario() {
     # infra-up (profiles/seed/netem all set before compose-up-retry above), so there is nothing to recreate
     # here anyway — we only need the two peers created + started. v4 is unaffected (no return-route sidecars).
     docker compose up -d --no-build --no-recreate "$a_service" "$b_service"
-    # `docker compose wait` blocks until stop; its output form varies ("0" vs "container … status code 0"),
-    # so extract the trailing exit code robustly.
+    # Block until each peer has exited and read its exit code (see peer_exit_rc — order-independent, unlike
+    # `docker compose wait`).
     local rc_a rc_b
-    rc_a=$(docker compose wait "$a_service" 2>/dev/null | grep -oE '[0-9]+$' | tail -1)
-    rc_b=$(docker compose wait "$b_service" 2>/dev/null | grep -oE '[0-9]+$' | tail -1)
+    rc_a=$(peer_exit_rc "$a_service")
+    rc_b=$(peer_exit_rc "$b_service")
 
     # Capture each peer's full container log ONCE, now that both have exited (the waits above blocked on it).
     # The relay assertion below MUST grep this SAME captured text — NOT issue a second `docker compose logs`.
@@ -612,8 +634,8 @@ run_mdns_scenario() {
     docker compose up -d --no-build --no-recreate "$a_service" "$b_service"
 
     local rc_a rc_b
-    rc_a=$(docker compose wait "$a_service" 2>/dev/null | grep -oE '[0-9]+$' | tail -1)
-    rc_b=$(docker compose wait "$b_service" 2>/dev/null | grep -oE '[0-9]+$' | tail -1)
+    rc_a=$(peer_exit_rc "$a_service")
+    rc_b=$(peer_exit_rc "$b_service")
 
     local a_log b_log
     a_log=$(docker compose logs --no-log-prefix "$a_service" 2>/dev/null)

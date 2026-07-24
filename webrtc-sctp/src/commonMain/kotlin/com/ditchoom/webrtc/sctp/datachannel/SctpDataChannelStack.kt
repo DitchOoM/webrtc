@@ -540,6 +540,17 @@ public class SctpClosedException(
  * One open data channel as a buffer-flow [Connection]<[ReadBuffer]> (RFC 8831). [send] posts one
  * user message to the association on this channel's stream with the channel's ordering + reliability;
  * [receive] is the inbound message flow. [id] is the SCTP stream identifier (RFC 8832 §6).
+ *
+ * **Backpressure is the suspension.** [send] returns as soon as the association accepts the message
+ * while its send buffer is shallow, but once queued-but-unsent bytes pass
+ * [SctpConfig.sendBufferHighWaterBytes] it suspends the caller until the peer has acknowledged enough
+ * to drain back to [SctpConfig.sendBufferLowWaterBytes]. So the obvious producer loop —
+ * `for (chunk in source) channel.send(chunk)` — is already flow-controlled, and a sender that outruns
+ * the wire is throttled rather than buffered without bound.
+ *
+ * There is deliberately no `bufferedAmount` gauge and no low-water callback to subscribe to: the
+ * suspension is the whole contract. If the association tears down while a caller is suspended, [send]
+ * throws [SctpClosedException] — it never suspends forever.
  */
 public class DataChannelConnection internal constructor(
     internal val streamId: StreamId,

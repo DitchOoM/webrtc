@@ -5,6 +5,7 @@ package com.ditchoom.webrtc
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.Connection
 import com.ditchoom.webrtc.dtls.DtlsFailureReason
+import com.ditchoom.webrtc.ice.CandidateParse
 import com.ditchoom.webrtc.ice.IceAgentDriver
 import com.ditchoom.webrtc.ice.IceCandidateLine
 import com.ditchoom.webrtc.ice.IceConfig
@@ -12,7 +13,10 @@ import com.ditchoom.webrtc.ice.IceConnectionState
 import com.ditchoom.webrtc.ice.IceCredentials
 import com.ditchoom.webrtc.ice.IcePassword
 import com.ditchoom.webrtc.ice.IceRole
+import com.ditchoom.webrtc.ice.MdnsResolution
+import com.ditchoom.webrtc.ice.MdnsResolver
 import com.ditchoom.webrtc.ice.Ufrag
+import com.ditchoom.webrtc.ice.resolveHostCandidate
 import com.ditchoom.webrtc.sctp.association.SctpAssociationState
 import com.ditchoom.webrtc.sctp.association.SctpConfig
 import com.ditchoom.webrtc.sctp.association.SctpFailureReason
@@ -79,6 +83,14 @@ public data class PeerConnectionConfig(
     public val sctpConfig: SctpConfig = SctpConfig(),
     /** The `m=application` media id (RFC 8829 §5.2.1). */
     public val mid: Mid = Mid("0"),
+    /**
+     * Resolves a peer's `<uuid>.local` mDNS host candidate (RFC 8838 privacy) to an address before a
+     * connectivity check is sent to it. The `commonMain` default is a **no-op** — it resolves nothing, so
+     * a `.local` candidate is simply dropped (the safe prior behaviour, and correct where no multicast
+     * responder exists). Platform `peerConnectionSupport()` factories inject a real multicast resolver;
+     * tests inject a deterministic stub. Never a hardwired `224.0.0.251` socket in the session core.
+     */
+    public val mdnsResolver: MdnsResolver = MdnsResolver { MdnsResolution.Unresolved },
 )
 
 /**
@@ -264,9 +276,26 @@ public class NativePeerConnection(
             if (d == null) {
                 pendingRemoteCandidates += candidate
             } else {
-                IceCandidateLine.parse(candidate)?.let(d::addRemoteCandidate)
+                addRemoteCandidateLine(d, candidate)
             }
         }
+
+    // Route a remote candidate line to the ICE driver, resolving an `<uuid>.local` mDNS host (RFC 8838
+    // privacy) via the injected [PeerConnectionConfig.mdnsResolver] first. The IP path adds synchronously
+    // (unchanged behaviour); only the mDNS path is launched — a multicast resolution round-trip must not
+    // block negotiation, and trickle candidates arrive asynchronously by nature. An unresolved `.local`
+    // (no responder) or a malformed line is silently dropped, exactly as before.
+    private fun addRemoteCandidateLine(
+        d: IceAgentDriver,
+        line: String,
+    ) {
+        when (val parsed = IceCandidateLine.parseLine(line)) {
+            is CandidateParse.Parsed -> d.addRemoteCandidate(parsed.candidate)
+            is CandidateParse.MdnsHost ->
+                scope.launch { config.mdnsResolver.resolveHostCandidate(parsed)?.let(d::addRemoteCandidate) }
+            CandidateParse.Reject -> Unit
+        }
+    }
 
     override suspend fun createDataChannel(config: DataChannelConfig): Connection<ReadBuffer> =
         negotiationLock.withLock {
@@ -315,7 +344,7 @@ public class NativePeerConnection(
             d.localCandidateGathered.collect { localCandidateChannel.trySend(IceCandidateLine.format(it)) }
         }
         establishJob = scope.launch { runEstablishment(d, sctpRandom) }
-        for (line in pendingRemoteCandidates) IceCandidateLine.parse(line)?.let(d::addRemoteCandidate)
+        for (line in pendingRemoteCandidates) addRemoteCandidateLine(d, line)
         pendingRemoteCandidates.clear()
         return d
     }
@@ -443,7 +472,7 @@ public class NativePeerConnection(
         // certificate, and a peer offering several digests for one cert gains nothing by the extras).
         remoteFingerprint =
             (media?.fingerprints() ?: emptyList()).firstOrNull() ?: description.fingerprints().firstOrNull()
-        media?.candidates()?.forEach { line -> IceCandidateLine.parse(line)?.let { driver?.addRemoteCandidate(it) } }
+        driver?.let { d -> media?.candidates()?.forEach { line -> addRemoteCandidateLine(d, line) } }
     }
 
     private fun localParams(

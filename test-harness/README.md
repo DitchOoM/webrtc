@@ -164,6 +164,14 @@ echoing `ping`→`pong`.
     directly-reachable IP that prflx already won on — no topology makes the mDNS pair win a same-LAN race.
     The NAT lanes keep obfuscation OFF (real-IP host candidates); WebKit still proves the srflx/relay path
     with `.local` present. Canonical ledger: `PHASE1_CLOSEOUT.md` §1.5-D; issue #48.
+- **Browser-side diagnostics (`driver.mjs`)**: on every run — pass *or* fail — the driver logs the engine's
+  own `getStats()` as a 2s-cadence + per-lifecycle-edge timeline (grep `getStats-timeline:`) plus a readable
+  digest (`stats-summary:` — selected pair + RTT, DTLS state, per-channel message/byte counters), and rich
+  per-message accounting (negotiated `ordered`/`maxRetransmits`/`maxPacketLifeTime`, size, running count,
+  `bufferedAmount`). All of it flows page-console → node-stdout → the container log, which
+  `collect_diagnostics` captures into the failure bundle as `<browser>.log`. So a red lane — especially a
+  data-channel *semantics* lane (large/fragmented, unordered, partial-reliable) — is root-caused from the
+  browser's OWN counters, not inferred from a pcap.
 - Each is gated behind its own compose profile (`chrome` / `firefox` / `webkit`); they, `peer_b`, and
   `pion` share `PEER_B_IP` but never run at once. The image builds natively per-arch (Node + Playwright
   fetches the per-arch engine — only the selected one), no QEMU. In CI these run as a parallel

@@ -55,15 +55,17 @@ public final class com/ditchoom/webrtc/NativePeerConnection : com/ditchoom/webrt
 }
 
 public final class com/ditchoom/webrtc/PeerConnectionConfig {
-	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;Lcom/ditchoom/webrtc/ice/MdnsResolver;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;Lcom/ditchoom/webrtc/ice/MdnsResolver;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()Lcom/ditchoom/webrtc/ice/IceConfig;
 	public final fun component2 ()Lcom/ditchoom/webrtc/sctp/association/SctpConfig;
 	public final fun component3-QcrJwnM ()Ljava/lang/String;
-	public final fun copy-z8l160A (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;)Lcom/ditchoom/webrtc/PeerConnectionConfig;
-	public static synthetic fun copy-z8l160A$default (Lcom/ditchoom/webrtc/PeerConnectionConfig;Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionConfig;
+	public final fun component4 ()Lcom/ditchoom/webrtc/ice/MdnsResolver;
+	public final fun copy-OU19698 (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;Lcom/ditchoom/webrtc/ice/MdnsResolver;)Lcom/ditchoom/webrtc/PeerConnectionConfig;
+	public static synthetic fun copy-OU19698$default (Lcom/ditchoom/webrtc/PeerConnectionConfig;Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;Lcom/ditchoom/webrtc/ice/MdnsResolver;ILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionConfig;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getIceConfig ()Lcom/ditchoom/webrtc/ice/IceConfig;
+	public final fun getMdnsResolver ()Lcom/ditchoom/webrtc/ice/MdnsResolver;
 	public final fun getMid-QcrJwnM ()Ljava/lang/String;
 	public final fun getSctpConfig ()Lcom/ditchoom/webrtc/sctp/association/SctpConfig;
 	public fun hashCode ()I

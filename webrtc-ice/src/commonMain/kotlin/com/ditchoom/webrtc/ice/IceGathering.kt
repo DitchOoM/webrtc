@@ -83,6 +83,26 @@ public sealed interface MdnsResolution {
 }
 
 /**
+ * Resolve a parsed [CandidateParse.MdnsHost] to a concrete host [IceCandidate] via this resolver, or null
+ * if the `<uuid>.local` name has no responder ([MdnsResolution.Unresolved]) — an unresolvable privacy
+ * candidate is simply dropped, never checked. mDNS resolves a **name to an address** (RFC 6762); the
+ * candidate's own [port][CandidateParse.MdnsHost.port] and browser-supplied foundation/priority ride the
+ * line unobfuscated, so the resolved IP is combined with them (the resolution's port, if any, is ignored).
+ */
+public suspend fun MdnsResolver.resolveHostCandidate(mdns: CandidateParse.MdnsHost): IceCandidate? =
+    when (val resolution = resolve(mdns.hostname)) {
+        is MdnsResolution.Resolved ->
+            IceCandidate.Host(
+                address = TransportAddress(resolution.address.toTransportAddress().ip, mdns.port.toUShort()),
+                component = mdns.component,
+                transport = IceTransport.Udp,
+                foundation = mdns.foundation,
+                priority = mdns.priority,
+            )
+        MdnsResolution.Unresolved -> null
+    }
+
+/**
  * Gather a **server-reflexive** address (RFC 8445 §5.1.1.2): send a STUN Binding to [stunServer] over
  * [socket] and read back the XOR-MAPPED-ADDRESS the server observed — behind a NAT, our external
  * mapping. A driver step (it does I/O), so it is a `suspend` function, clocked by the caller's

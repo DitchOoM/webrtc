@@ -10,7 +10,7 @@ ktlint = "14.2.0"
 detekt = "2.0.0-alpha.5"
 mavenPublish = "0.37.0"
 dokka = "2.2.0"
-kover = "0.9.8"
+kover = "0.9.9"
 binaryCompatibilityValidator = "0.18.1"
 kotlinxCoroutines = "1.11.0"
 # DitchOoM buffer stack — the zero-copy substrate this library is built on.
@@ -28,7 +28,7 @@ kotlinxCoroutines = "1.11.0"
 # record-number encryption), `deriveTlsPremasterSecret` raw (EC)DHE secret (#302, the load-bearing ECDHE
 # primitive for both versions), and public `exportSpki()`/`exportEncoded()` (self-signed cert). All on
 # Maven Central. Bumped from 6.11.0; compiles clean JVM + LinuxX64 across all modules.
-buffer = "6.16.0"
+buffer = "6.22.0"
 # DitchOoM socket sibling — the UDP `DatagramChannel` **actuals** webrtc's transport track binds to for
 # real-network candidate gathering (host/srflx/relay). The seam itself is buffer-flow's
 # `DatagramChannel` (on Central, above); `socket-udp` is only the platform real-socket implementation
@@ -43,7 +43,7 @@ buffer = "6.16.0"
 # 3.11.0 (socket PR #239) is the first release with socket-udp on Maven Central — it pins buffer 6.11.0
 # (matches the buffer pin above) and publishes all of jvm/android/js/linux/apple. The earlier
 # merge-gate (dev against a publishToMavenLocal snapshot) is lifted.
-socket = "3.11.0"
+socket = "3.15.0"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"

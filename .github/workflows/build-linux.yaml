@@ -29,7 +29,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set up JDK 21
         uses: actions/setup-java@v5
@@ -52,7 +52,7 @@ jobs:
       # Kotlin/Native toolchain + prebuilts (linuxX64/linuxArm64 compiles, qemu-aarch64). Mirrors the
       # Apple lane; keyed on the version catalog so a Kotlin bump busts it.
       - name: Cache Konan
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.konan
           key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
@@ -87,7 +87,7 @@ jobs:
       # earlier step failed. (A Develocity Build Scan with per-test timing is also published each run.)
       - name: Upload test reports (on failure)
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-reports-linux
           path: |
@@ -101,7 +101,7 @@ jobs:
       # without this a non-test failure means reading the raw Actions log. --stacktrace is captured above.
       - name: Upload full build log (on failure)
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-log-linux
           path: build-linux.log
@@ -121,7 +121,7 @@ jobs:
           cp -r ~/.m2/repository/com/ditchoom/. /tmp/maven-local-linux/com/ditchoom/
 
       - name: Upload maven-local (linux)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: maven-local-linux
           path: /tmp/maven-local-linux

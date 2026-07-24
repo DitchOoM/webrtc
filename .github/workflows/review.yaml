@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
@@ -44,7 +44,7 @@ jobs:
       # not re-discovered — the input then becomes a committed regression fixture (directive #5).
       - name: Upload Jazzer crash repros (on failure)
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-repros-stun
           path: '**/build/fuzz/**'
@@ -59,7 +59,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
@@ -71,7 +71,7 @@ jobs:
         run: ./gradlew :webrtc-sdp:sdpCodecFuzz -PsdpFuzzSeconds=120 --no-configuration-cache
       - name: Upload Jazzer crash repros (on failure)
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-repros-sdp
           path: '**/build/fuzz/**'
@@ -86,7 +86,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
@@ -98,7 +98,7 @@ jobs:
         run: ./gradlew :webrtc-sctp:sctpCodecFuzz -PsctpFuzzSeconds=120 --no-configuration-cache
       - name: Upload Jazzer crash repros (on failure)
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-repros-sctp
           path: '**/build/fuzz/**'

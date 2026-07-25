@@ -5,11 +5,15 @@ package com.ditchoom.webrtc.sctp.association
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.codec.DecodeContext
+import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.webrtc.sctp.DataChunkFlags
 import com.ditchoom.webrtc.sctp.DeliveryOrder
+import com.ditchoom.webrtc.sctp.ErrorCauseCode
 import com.ditchoom.webrtc.sctp.ForwardTsnStream
 import com.ditchoom.webrtc.sctp.SctpChunk
 import com.ditchoom.webrtc.sctp.SctpDecodeResult
+import com.ditchoom.webrtc.sctp.SctpErrorCause
 import com.ditchoom.webrtc.sctp.SctpPacket
 import com.ditchoom.webrtc.sctp.SctpPacketBuilder
 import com.ditchoom.webrtc.sctp.SctpParameter
@@ -158,27 +162,37 @@ public class SctpAssociation(
             abortWith(SctpFailureReason.ProtocolViolation(ProtocolViolationKind.ZeroStreams), reflectTag = init.initiateTag, out)
             return
         }
-        // Stateless responder: choose our tag/TSN and bake the whole TCB into the State Cookie, so no
-        // state is held until the COOKIE-ECHO returns (RFC 4960 §5.1.3 — the cookie mechanism).
-        val ourTag = randomTag()
-        val ourInitialTsn = randomTsn()
-        val forwardTsn = init.supportsForwardTsn()
+        val advertised =
+            when (val response = initResponse()) {
+                // RFC 4960 §9.2: an INIT while we are SHUTDOWN-ACK-SENT is not a new association — our
+                // SHUTDOWN COMPLETE was lost. Discard the INIT and retransmit the SHUTDOWN ACK.
+                InitResponse.ResendShutdownAck -> {
+                    emitPacket(listOf(SctpChunk.ShutdownAck), peerVerificationTag, out)
+                    return
+                }
+                is InitResponse.Advertise -> response
+            }
         val cookie =
             encodeCookie(
-                peerTag = init.initiateTag,
-                peerInitialTsn = init.initialTsn,
-                peerRwnd = init.advertisedReceiverWindow,
-                peerForwardTsn = forwardTsn,
-                ourTag = ourTag,
-                ourInitialTsn = ourInitialTsn,
+                StateCookie(
+                    magic = StateCookie.MAGIC,
+                    peerTag = init.initiateTag,
+                    peerInitialTsn = init.initialTsn,
+                    peerRwnd = init.advertisedReceiverWindow,
+                    peerForwardTsn = init.supportsForwardTsn(),
+                    ourTag = advertised.ourTag,
+                    ourInitialTsn = advertised.ourInitialTsn,
+                    localTieTag = advertised.localTieTag,
+                    peerTieTag = advertised.peerTieTag,
+                ),
             )
         val initAck =
             SctpChunk.InitAck(
-                initiateTag = ourTag,
+                initiateTag = advertised.ourTag,
                 advertisedReceiverWindow = config.receiveWindowBytes,
                 outboundStreams = config.outboundStreams,
                 inboundStreams = config.inboundStreams,
-                initialTsn = ourInitialTsn,
+                initialTsn = advertised.ourInitialTsn,
                 parameters =
                     listOf(
                         SctpParameter.ofValue(com.ditchoom.webrtc.sctp.ParameterType.StateCookie, cookie),
@@ -187,7 +201,58 @@ public class SctpAssociation(
                     ),
             )
         emitPacket(listOf(initAck), init.initiateTag, out)
+        // "the existing association, including its current state, and the corresponding TCB MUST NOT be
+        // changed" (§5.2.1 / §5.2.2) — nothing above touches state, and the T1-init timer keeps running.
     }
+
+    /** What an inbound INIT is answered with. A phase decides it, so it is a type, not a pair of flags. */
+    private sealed interface InitResponse {
+        /** RFC 4960 §9.2 — SHUTDOWN-ACK-SENT: the peer missed our SHUTDOWN COMPLETE, so repeat the ACK. */
+        data object ResendShutdownAck : InitResponse
+
+        /** The TCB the INIT ACK advertises, plus the Tie-Tags its State Cookie carries. */
+        data class Advertise(
+            val ourTag: VerificationTag,
+            val ourInitialTsn: Tsn,
+            val localTieTag: VerificationTag,
+            val peerTieTag: VerificationTag,
+        ) : InitResponse
+    }
+
+    /**
+     * Which TCB to advertise in an INIT ACK, decided by an exhaustive `when` over the phase (RFC 4960
+     * §5.2.1, §5.2.2, §9.2). Three genuinely different answers hide behind "respond to an INIT":
+     *
+     * - **Closed** — no TCB. Mint a tag and TSN and bake the whole thing into the State Cookie; nothing
+     *   is retained until the COOKIE ECHO returns (§5.1.3, the stateless-responder mechanism). The
+     *   Tie-Tags stay zero, which is the cookie saying "no previous TCB existed" (§5.2.2 note).
+     * - **COOKIE-WAIT / COOKIE-ECHOED** — an initialization collision (§5.2.1), which is now the norm
+     *   rather than the exception since both roles associate (see SctpDataChannelStack). The INIT ACK
+     *   MUST repeat the Initiate Tag and initial TSN of *our own* INIT. Minting fresh ones instead is
+     *   exactly what deadlocks a collision: the peer echoes a cookie naming a tag we no longer stamp on
+     *   our packets, so each side's COOKIE ECHO fails the other's Verification Tag check and both
+     *   handshakes time out with nothing on the wire to explain it. Tie-Tags are populated in
+     *   COOKIE-ECHOED only (§5.2.1 last paragraph, and the §5.2.2 note excluding COOKIE-WAIT).
+     * - **Established / shutting down** — an unexpected INIT while a TCB exists (§5.2.2): the INIT ACK
+     *   MUST carry a *new* random Initiate Tag, and the Tie-Tags carry the tags of the association we
+     *   keep running. That pairing — new tags, Tie-Tags naming the live association — is precisely what
+     *   lets the returning COOKIE ECHO be recognised as a peer restart in §5.2.4's Table 2.
+     */
+    private fun initResponse(): InitResponse =
+        when (_state) {
+            SctpAssociationState.Closed ->
+                InitResponse.Advertise(randomTag(), randomTsn(), ZERO_TAG, ZERO_TAG)
+            SctpAssociationState.CookieWait ->
+                InitResponse.Advertise(localVerificationTag, localInitialTsn, ZERO_TAG, ZERO_TAG)
+            SctpAssociationState.CookieEchoed ->
+                InitResponse.Advertise(localVerificationTag, localInitialTsn, localVerificationTag, peerVerificationTag)
+            SctpAssociationState.Established,
+            SctpAssociationState.ShutdownPending,
+            SctpAssociationState.ShutdownSent,
+            SctpAssociationState.ShutdownReceived,
+            -> InitResponse.Advertise(randomTag(), randomTsn(), localVerificationTag, peerVerificationTag)
+            SctpAssociationState.ShutdownAckSent -> InitResponse.ResendShutdownAck
+        }
 
     private fun onInitAck(
         initAck: SctpChunk.InitAck,
@@ -216,12 +281,132 @@ public class SctpAssociation(
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        if (_state == SctpAssociationState.Established) {
-            // Our COOKIE-ACK was lost and the peer retransmitted; just re-ack.
-            emitPacket(listOf(SctpChunk.CookieAck), peerVerificationTag, out)
+        val cookie = decodeCookie(echo.cookie) ?: return // silently drop a cookie we did not mint (RFC 4960 §5.1.5)
+        // No TCB yet: the ordinary passive open (RFC 4960 §5.1.5) — unpack the cookie and come up.
+        if (_state == SctpAssociationState.Closed) {
+            adoptCookie(cookie, now, out)
             return
         }
-        val cookie = decodeCookie(echo.cookie) ?: return // silently drop a cookie we did not mint (RFC 4960 §5.1.5)
+        // A TCB exists, so RFC 4960 §5.2.4's Table 2 decides — see [CookieEchoAction].
+        when (cookieEchoAction(cookie)) {
+            CookieEchoAction.Restart -> onPeerRestart(cookie, now, out)
+            CookieEchoAction.Collision ->
+                if (_state == SctpAssociationState.Established) {
+                    // Established already: take only the peer's new tag. Re-deriving TSNs and queues
+                    // underneath a live association would strand data that is already in flight.
+                    peerVerificationTag = cookie.peerTag
+                    emitPacket(listOf(SctpChunk.CookieAck), peerVerificationTag, out)
+                } else {
+                    adoptCookie(cookie, now, out)
+                }
+            CookieEchoAction.Complete -> {
+                // Duplicate/late-but-valid cookie for the association we already have (action D, and the
+                // retransmit case where our COOKIE ACK was lost). Ack it and finish the handshake.
+                emitPacket(listOf(SctpChunk.CookieAck), peerVerificationTag, out)
+                if (_state == SctpAssociationState.CookieEchoed) {
+                    transition(SctpAssociationState.Established, out)
+                    cancelHandshake()
+                    cookieEcho = null
+                    trySend(now, out)
+                }
+            }
+            // Actions C and "any case not shown in Table 2": discard the cookie, change no state, and
+            // leave every timer running.
+            CookieEchoAction.Discard -> Unit
+        }
+    }
+
+    /**
+     * The action RFC 4960 §5.2.4 Table 2 prescribes for a COOKIE ECHO that arrives when a TCB already
+     * exists. The row is chosen by how the cookie's two tags and two Tie-Tags compare with the live TCB.
+     */
+    private enum class CookieEchoAction {
+        /** (A) `X X M M` — new tags, but Tie-Tags naming our live association: the peer restarted. */
+        Restart,
+
+        /** (B) `M X` / `M 0` — an initialization collision; adopt the peer's Verification Tag. */
+        Collision,
+
+        /** (D) `M M` — the cookie describes the association we already have; ack and finish. */
+        Complete,
+
+        /** (C) `X M 0 0` — our own cookie arrived late — and every combination the table omits. */
+        Discard,
+    }
+
+    /** How one tag in a returning cookie relates to the live TCB — the `M` / `X` / `0` of Table 2. */
+    private enum class TagMatch { Matches, Differs, Absent }
+
+    private fun match(
+        inCookie: VerificationTag,
+        inTcb: VerificationTag,
+    ): TagMatch =
+        when {
+            inCookie == ZERO_TAG -> TagMatch.Absent
+            inCookie == inTcb -> TagMatch.Matches
+            else -> TagMatch.Differs
+        }
+
+    private fun cookieEchoAction(cookie: StateCookie): CookieEchoAction {
+        val local = match(cookie.ourTag, localVerificationTag)
+        val peer = match(cookie.peerTag, peerVerificationTag)
+        val tieTags = match(cookie.localTieTag, localVerificationTag) to match(cookie.peerTieTag, peerVerificationTag)
+        return when {
+            // | Local | Peer | Local-Tie | Peer-Tie | Action |
+            // |   M   |  M   |     A     |    A     |  (D)   |
+            local == TagMatch.Matches && peer == TagMatch.Matches -> CookieEchoAction.Complete
+            // |   M   |  X   |     A     |    A     |  (B)   |   and   |  M  |  0  |  A  |  A  |  (B)  |
+            local == TagMatch.Matches -> CookieEchoAction.Collision
+            // |   X   |  X   |     M     |    M     |  (A)   |
+            local == TagMatch.Differs &&
+                peer == TagMatch.Differs &&
+                tieTags == (TagMatch.Matches to TagMatch.Matches) -> CookieEchoAction.Restart
+            // |   X   |  M   |     0     |    0     |  (C)   |  — and "any case not shown".
+            else -> CookieEchoAction.Discard
+        }
+    }
+
+    /**
+     * RFC 4960 §5.2.4 action A — the peer restarted and is opening a brand-new association over the same
+     * transport. "The existing session is treated the same as if it received an ABORT followed by a new
+     * COOKIE ECHO": every stream, TSN and congestion variable resets to its initial value, and the upper
+     * layer is told this was a RESTART rather than a lost association ([SctpOutput.PeerRestarted]) — the
+     * data channels it had open are gone, because the peer no longer knows about them.
+     */
+    private fun onPeerRestart(
+        cookie: StateCookie,
+        now: Instant,
+        out: MutableList<SctpOutput>,
+    ) {
+        // "If the endpoint is in the SHUTDOWN-ACK-SENT state and recognizes that the peer has restarted,
+        // it MUST NOT set up a new association but instead resend the SHUTDOWN ACK and send an ERROR."
+        if (_state == SctpAssociationState.ShutdownAckSent) {
+            emitPacket(
+                listOf(
+                    SctpChunk.ShutdownAck,
+                    SctpChunk.Error(listOf(SctpErrorCause.empty(ErrorCauseCode.CookieReceivedWhileShuttingDown))),
+                ),
+                peerVerificationTag,
+                out,
+            )
+            return
+        }
+        clearControlBlocks() // drop the old association's queues, stream state and unsent messages
+        cancelAllTimers()
+        consecutiveRtxErrors = 0
+        packetsSinceSack = 0
+        // Adopt first, notify second: the COOKIE ACK is queued before the driver acts on the
+        // notification, so the peer's handshake completes even when the driver tears its channels down.
+        adoptCookie(cookie, now, out)
+        out += SctpOutput.PeerRestarted
+    }
+
+    /** Bring the association up on the TCB carried by [cookie], and acknowledge it. */
+    private fun adoptCookie(
+        cookie: StateCookie,
+        now: Instant,
+        out: MutableList<SctpOutput>,
+    ) {
         localVerificationTag = cookie.ourTag
         localInitialTsn = cookie.ourInitialTsn
         nextTsn = cookie.ourInitialTsn
@@ -231,6 +416,8 @@ public class SctpAssociation(
         emitPacket(listOf(SctpChunk.CookieAck), peerVerificationTag, out)
         transition(SctpAssociationState.Established, out)
         cancelHandshake()
+        cookieEcho = null
+        trySend(now, out)
     }
 
     private fun onCookieAck(
@@ -706,7 +893,13 @@ public class SctpAssociation(
         if (first is SctpChunk.Abort && first.verificationTagReflected) {
             return packet.verificationTag == peerVerificationTag || packet.verificationTag == localVerificationTag
         }
-        if (localVerificationTag.value == 0u) return true // pre-TCB (e.g. INIT-ACK / COOKIE-ECHO landing)
+        // RFC 4960 §8.5.1(D): a COOKIE ECHO carries the tag from the INIT ACK that minted its cookie, and
+        // "the receiver of a COOKIE ECHO follows the procedures in Section 5" — i.e. it is authenticated by
+        // the cookie, not by this gate. It MUST be exempt: a restarting peer echoes the *new* tag our
+        // §5.2.2 INIT ACK gave it, which by construction is not the tag of the association still running
+        // here, so gating on it would drop the restart before §5.2.4's Table 2 ever saw it.
+        if (first is SctpChunk.CookieEcho) return true
+        if (localVerificationTag.value == 0u) return true // pre-TCB (e.g. an INIT-ACK landing)
         return packet.verificationTag == localVerificationTag
     }
 
@@ -771,58 +964,20 @@ public class SctpAssociation(
     // ── State Cookie (RFC 4960 §5.1.3) — a self-authenticated TCB snapshot. Over DTLS the transport
     // already authenticates the peer, so the cookie carries a fixed magic rather than an HMAC; a cookie
     // without our magic is one we did not mint and is silently dropped (RFC 4960 §5.1.5). ──
-    private class Cookie(
-        val peerTag: VerificationTag,
-        val peerInitialTsn: Tsn,
-        val peerRwnd: UInt,
-        val peerForwardTsn: Boolean,
-        val ourTag: VerificationTag,
-        val ourInitialTsn: Tsn,
-    )
-
-    private fun encodeCookie(
-        peerTag: VerificationTag,
-        peerInitialTsn: Tsn,
-        peerRwnd: UInt,
-        peerForwardTsn: Boolean,
-        ourTag: VerificationTag,
-        ourInitialTsn: Tsn,
-    ): ReadBuffer {
-        val buf = config.bufferFactory.allocate(COOKIE_SIZE, ByteOrder.BIG_ENDIAN)
-        buf.writeUInt(COOKIE_MAGIC)
-        buf.writeUInt(peerTag.value)
-        buf.writeUInt(peerInitialTsn.value)
-        buf.writeUInt(peerRwnd)
-        buf.writeByte(if (peerForwardTsn) 1 else 0)
-        buf.writeUInt(ourTag.value)
-        buf.writeUInt(ourInitialTsn.value)
+    private fun encodeCookie(cookie: StateCookie): ReadBuffer {
+        val buf = config.bufferFactory.allocate(StateCookie.SIZE_BYTES, ByteOrder.BIG_ENDIAN)
+        StateCookieCodec.encode(buf, cookie, EncodeContext.Empty)
         buf.resetForRead()
-        buf.setLimit(COOKIE_SIZE)
+        buf.setLimit(StateCookie.SIZE_BYTES)
         return buf
     }
 
-    private fun decodeCookie(view: ReadBuffer): Cookie? {
+    /** null for anything that is not a cookie we minted — RFC 4960 §5.1.5 discards those silently. */
+    private fun decodeCookie(view: ReadBuffer): StateCookie? {
         val slice = view.slice()
-        if (slice.remaining() < COOKIE_SIZE) return null
-        val base = slice.position()
-        if (readU32(slice, base) != COOKIE_MAGIC) return null
-        return Cookie(
-            peerTag = VerificationTag(readU32(slice, base + 4)),
-            peerInitialTsn = Tsn(readU32(slice, base + 8)),
-            peerRwnd = readU32(slice, base + 12),
-            peerForwardTsn = slice.get(base + 16).toInt() != 0,
-            ourTag = VerificationTag(readU32(slice, base + 17)),
-            ourInitialTsn = Tsn(readU32(slice, base + 21)),
-        )
-    }
-
-    private fun readU32(
-        b: ReadBuffer,
-        i: Int,
-    ): UInt {
-        val hi = ((b.get(i).toInt() and 0xFF) shl 8) or (b.get(i + 1).toInt() and 0xFF)
-        val lo = ((b.get(i + 2).toInt() and 0xFF) shl 8) or (b.get(i + 3).toInt() and 0xFF)
-        return ((hi.toLong() shl 16) or lo.toLong()).toUInt()
+        if (slice.remaining() < StateCookie.SIZE_BYTES) return null
+        val cookie = StateCookieCodec.decode(slice, DecodeContext.Empty)
+        return cookie.takeIf { it.magic == StateCookie.MAGIC }
     }
 
     public companion object {
@@ -830,7 +985,8 @@ public class SctpAssociation(
         public const val SCTP_DATA_CHANNEL_PORT: UShort = 5000u
 
         private const val SACK_EVERY = 2
-        private const val COOKIE_MAGIC: UInt = 0xD1C40C1Eu // "DitchOom Cookie"
-        private const val COOKIE_SIZE = 25 // magic(4)+peerTag(4)+peerTsn(4)+peerRwnd(4)+fwd(1)+ourTag(4)+ourTsn(4)
+
+        /** "No tag here" — an unset Tie-Tag, and the Verification Tag of a packet that carries an INIT. */
+        private val ZERO_TAG = VerificationTag(0u)
     }
 }

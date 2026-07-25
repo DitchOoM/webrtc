@@ -684,6 +684,19 @@ public final class com/ditchoom/webrtc/sctp/Tsn {
 	public final synthetic fun unbox-impl ()I
 }
 
+public final class com/ditchoom/webrtc/sctp/TsnCodec : com/ditchoom/buffer/codec/Codec {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/TsnCodec;
+	public synthetic fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Ljava/lang/Object;
+	public fun decode-Fcmy8lU (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)I
+	public synthetic fun encode (Lcom/ditchoom/buffer/WriteBuffer;Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun encode-9IcOWGo (Lcom/ditchoom/buffer/WriteBuffer;ILcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+	public synthetic fun sizeHint (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)I
+	public fun sizeHint-pjLGDmc (ILcom/ditchoom/buffer/codec/EncodeContext;)I
+	public synthetic fun wireSize (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+	public fun wireSize-pjLGDmc (ILcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+}
+
 public final class com/ditchoom/webrtc/sctp/UnrecognizedAction : java/lang/Enum {
 	public static final field SkipAndContinue Lcom/ditchoom/webrtc/sctp/UnrecognizedAction;
 	public static final field SkipAndReport Lcom/ditchoom/webrtc/sctp/UnrecognizedAction;
@@ -913,6 +926,13 @@ public final class com/ditchoom/webrtc/sctp/association/SctpFailureReason$Handsh
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/sctp/association/SctpFailureReason$PeerRestarted : com/ditchoom/webrtc/sctp/association/SctpFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/association/SctpFailureReason$PeerRestarted;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/sctp/association/SctpFailureReason$ProtocolViolation : com/ditchoom/webrtc/sctp/association/SctpFailureReason {
 	public fun <init> (Lcom/ditchoom/webrtc/sctp/association/ProtocolViolationKind;)V
 	public final fun component1 ()Lcom/ditchoom/webrtc/sctp/association/ProtocolViolationKind;
@@ -958,6 +978,13 @@ public final class com/ditchoom/webrtc/sctp/association/SctpOutput$MessageReceiv
 	public final fun getPayloadProtocolId-N_xLETs ()I
 	public final fun getStreamId-cFBZvdc ()I
 	public final fun getUnordered ()Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/SctpOutput$PeerRestarted : com/ditchoom/webrtc/sctp/association/SctpOutput {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/association/SctpOutput$PeerRestarted;
+	public fun equals (Ljava/lang/Object;)Z
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }

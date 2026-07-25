@@ -14,8 +14,12 @@ import kotlin.jvm.JvmInline
  * An SCTP Transmission Sequence Number (RFC 4960 §3.3.1) — a 32-bit sequence value that wraps, so it
  * is compared with serial-number arithmetic ([sackPrecedes]), never as a plain unsigned `<`. Distinct
  * in the type system from a [VerificationTag] or a raw `UInt`.
+ *
+ * `@ProtocolMessage` over the scalar makes it a 4-byte FixedSize field a generated codec can read and
+ * write directly, exactly as [VerificationTag] is — used by the `StateCookieCodec`.
  */
 @JvmInline
+@ProtocolMessage(wireOrder = Endianness.Big)
 public value class Tsn(
     public val value: UInt,
 ) {

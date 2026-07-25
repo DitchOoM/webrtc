@@ -50,6 +50,10 @@ internal class SctpSim(
     /** Messages delivered up to each endpoint, in order (endpoint A's inbox, endpoint B's inbox). */
     val inboxA = ArrayList<SctpOutput.MessageReceived>()
     val inboxB = ArrayList<SctpOutput.MessageReceived>()
+
+    /** RFC 4960 §5.2.4 action A notifications, one per peer restart the endpoint adopted. */
+    val restartsA = ArrayList<Unit>()
+    val restartsB = ArrayList<Unit>()
     val abortsA = ArrayList<SctpFailureReason>()
     val abortsB = ArrayList<SctpFailureReason>()
 
@@ -133,6 +137,7 @@ internal class SctpSim(
                 is SctpOutput.Transmit -> schedule(fromA, output.payloadView())
                 is SctpOutput.MessageReceived -> (if (fromA) inboxA else inboxB) += output
                 is SctpOutput.Aborted -> (if (fromA) abortsA else abortsB) += output.reason
+                SctpOutput.PeerRestarted -> (if (fromA) restartsA else restartsB).let { it.add(Unit) }
                 is SctpOutput.StateChanged -> Unit
             }
         }

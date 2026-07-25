@@ -51,4 +51,19 @@ public sealed interface SctpOutput {
     public data class Aborted(
         public val reason: SctpFailureReason,
     ) : SctpOutput
+
+    /**
+     * The peer restarted: it opened a *new* association over the same transport, and RFC 4960 §5.2.4
+     * action A adopted it (the association itself is [SctpAssociationState.Established] again, on fresh
+     * TSNs and streams). This is emitted **instead of** [Aborted] — the RFC's "notification of RESTART
+     * SHOULD be sent to the ULP instead of a COMMUNICATION LOST notification" — because the association
+     * is alive; what is gone is everything that was open on it, since the peer no longer knows about it.
+     *
+     * What to do about that is the driver's call, not the association's: the DataChannel layer treats it
+     * as a teardown ([SctpFailureReason.PeerRestarted]), because a data-channel session whose peer has
+     * forgotten every stream cannot be continued, only renegotiated. Unreachable in the WebRTC profile
+     * proper — an SCTP association lives inside one DTLS session (RFC 8831 §6), so a peer that restarts
+     * brings a new transport with it — which is exactly why it is surfaced rather than assumed away.
+     */
+    public data object PeerRestarted : SctpOutput
 }

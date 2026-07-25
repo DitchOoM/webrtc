@@ -190,7 +190,15 @@ public class SctpDataChannelStack(
     }
 
     private suspend fun driveLoop() {
-        if (role == SctpRole.Client) apply(association.handle(SctpEvent.Associate, now()))
+        // Associate from BOTH roles, not just the DTLS client. RFC 8831 makes the DTLS client the natural
+        // opener, but the deployed ecosystem does not treat that as exclusive: libwebrtc sends its INIT
+        // whichever DTLS role it holds (proven directly — a Chrome *offerer*, i.e. the DTLS server,
+        // INITs), and werift picks its SCTP role off the ICE role instead, so as a controlled answerer it
+        // never INITs at all. Waiting for the peer to open therefore deadlocks against werift, while
+        // opening unconditionally interoperates with everyone — at the cost of a simultaneous open on
+        // every path where the peer also opens, which the association resolves per RFC 4960 §5.2.1/§5.2.4.
+        // The role still decides stream-id parity (RFC 8832 §6); it no longer decides who initiates.
+        apply(association.handle(SctpEvent.Associate, now()))
         while (!closed) {
             val deadline = association.nextDeadline(now())
             val item =
@@ -299,6 +307,10 @@ public class SctpDataChannelStack(
                 is SctpOutput.StateChanged -> onStateChanged(output.state)
                 is SctpOutput.MessageReceived -> onMessage(output)
                 is SctpOutput.Aborted -> tearDown(output.reason)
+                // The association survived the peer's restart, but every channel on it did not: the peer
+                // has forgotten each stream, so continuing would be a lie. Tear down with a typed reason
+                // and let the session renegotiate (RFC 4960 §5.2.4 action A — see SctpOutput.PeerRestarted).
+                SctpOutput.PeerRestarted -> tearDown(SctpFailureReason.PeerRestarted)
             }
         }
     }

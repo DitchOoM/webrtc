@@ -35,3 +35,7 @@ Crash_*.java
 crash-*
 timeout-*
 oom-*
+
+# The interop harness npm-installs werift here (node/werift answerer lane + the DTLS differential).
+test-harness/node/node_modules/
+test-harness/browser/node_modules/

@@ -25,7 +25,7 @@ part you can never fully trust.
 | **TB — real-stack vnet** | full native stack (real BoringSSL) through simulated NATs/impairment; strict trace-prefix invariants, RNG drift bounded | commonTest, native + JVM | yes (±1-datagram RNG drift bound) | W5 |
 | **Integration** | container harness: coturn, NAT-profile containers (iptables), netem impairment, toxiproxy on signaling | harness CI job, arch-matched matrix | no (real OS net) | W7 |
 | **Interop** | our stack ⇄ Pion echo peer; our stack ⇄ headless Chrome (`RTCPeerConnection`) via Karma | harness CI job | scripted signaling | W7 |
-| **Consumer** | published `webrtc-testsuite`: `withWebRtcHarness { … }` from a clean checkout | consumers' commonTest | per-scenario | W7 |
+| **Consumer** | `.ci/consumer-smoke` — a standalone build declaring `com.ditchoom:webrtc` + `webrtc-testsuite` by coordinate, compiled + K/N-linked + run (`withWebRtcHarness { natType(); relayOnly(); impaired() }`) against a **cold** resolve of the merged maven-local repo (pre-publish) and of **Maven Central** (post-release) | `consumer-smoke.yaml`, Linux + macOS hosts | yes (virtual time) | W7 |
 | **Benchmarks** | kotlinx-benchmark in `src/commonBenchmark/kotlin`; parse / crypto ops-per-sec, tracked in `PERFORMANCE.md` | on demand + release | n/a | per module |
 
 T0–TB are unit-to-integration on a single machine with no Docker. Integration/Interop/Consumer need the
@@ -202,6 +202,13 @@ Mirror socket's split so the fast path stays fast:
   L2 integration + L4 consumer scenarios against `127.0.0.1`. Arch-matched matrix, `--wait` on
   healthchecks to kill readiness flakes.
 - **Interop job** — L3: our stack ⇄ Pion, our stack ⇄ Chrome/Karma.
+- **Consumer-smoke job** (`consumer-smoke.yaml`) — the artifact-shape safety net, run twice per release:
+  on every PR and merge against the merged maven-local repo `validate-artifacts` produced (so a broken
+  artifact fails the merge instead of reaching Central), and again after the tag against **Maven Central
+  only** — no `mavenLocal()` in the repository list, so a module that never actually published has
+  nowhere to fall back to. Every run uses a throwaway `GRADLE_USER_HOME` and `--no-build-cache`: a warm
+  cache would hide exactly the missing-variant bug the lane exists to find. `validate-artifacts` checks
+  the *shape* of the published tree; this compiles, links, and runs against it.
 
 Because the harness no longer depends on flaky public hosts, the integration job can run on every PR,
 not just labeled ones.
@@ -221,7 +228,7 @@ each wave must ship:
 | **W4 `webrtc-dtls`** | handshake between two of our stacks over the vnet under virtual time (RNG-drift bound asserted); dropped-flight retransmission fixture; wrapper-free invariant; Apple/Android runtime-validated on runners |
 | **W5 `webrtc-sctp`+DC** | **end-to-end TB**: two full stacks (ICE+DTLS+SCTP) over dual-NAT vnet exchange ordered/unordered/lossy messages under virtual time, all platforms; SCTP invariants in fuzz set; one loop-until-dry fuzz campaign |
 | **W6 `webrtc` root** | full API round-trip fixture (signaling scripted); browser target compiles + delegation unit-tested under Karma; wpt `webrtc/` smoke on the browser target |
-| **W7 harness/interop** | interop green (our stack ⇄ Pion, ⇄ Chrome establish + exchange data-channel messages in CI); consumer-smoke from clean checkout; `webrtc-testsuite` published + in `validate-artifacts` |
+| **W7 harness/interop** | interop green (our stack ⇄ Pion, ⇄ Chrome establish + exchange data-channel messages in CI); consumer-smoke from a clean checkout — cold, from Central as well as pre-publish, gating `publish`; `webrtc-testsuite` published + in `validate-artifacts` |
 
 ---
 

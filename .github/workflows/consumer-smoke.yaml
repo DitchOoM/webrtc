@@ -1,0 +1,173 @@
+name: "Consumer Smoke"
+
+# W7 exit criterion, the last unmet one: a REAL downstream consumer of the published artifacts —
+# `.ci/consumer-smoke`, a standalone Gradle build with its own settings.gradle.kts that declares
+# `com.ditchoom:webrtc` and `com.ditchoom:webrtc-testsuite` by coordinate and nothing else from this repo.
+#
+# It is deliberately stronger than `validate-artifacts.yaml`, which only inspects the SHAPE of the
+# published tree (module present, .pom present, .module present). This lane COMPILES consumer code against
+# the published API on every declared target, LINKS a Kotlin/Native test binary against the published
+# klibs, and RUNS the behavioural `withWebRtcHarness { natType(); relayOnly(); impaired() }` scenario. That
+# catches the three failure classes shape-validation cannot see: an API that resolves but won't compile, a
+# klib left out of the publish (the socket #188 class of bug), and a runtime break in the published jar.
+#
+# TWO SOURCES, one project (`.ci/consumer-smoke/build.gradle.kts` switches on -PcentralOnly/-PmavenRepoPath):
+#   * `maven-local` — the merged repo `validate-artifacts` just produced, i.e. BEFORE publishing. This is
+#     the gate: it fails the PR/merge rather than shipping a broken artifact.
+#   * `central` — Maven Central and NOTHING else, AFTER a release. mavenLocal() is not in the repository
+#     list at all in this mode, so a module that never actually reached Central has nowhere to fall back
+#     to. This is the honest answer to "does the thing we published work for someone who isn't us".
+#
+# COLD by construction: every run uses a throwaway GRADLE_USER_HOME under the job's temp dir and
+# --no-build-cache, so dependency resolution, klib download and compilation all happen from scratch. A
+# warm cache could hide exactly the missing-variant bug this lane exists to find.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version to resolve as a consumer"
+        required: true
+        type: string
+      source:
+        description: "Where to resolve from: maven-local (pre-release, merged repo) | central (post-release)"
+        required: true
+        type: string
+      include-macos:
+        description: >-
+          Also run the macosArm64 consumer host. A cold run downloads its own ~600 MB Kotlin/Native
+          distribution (coldness is the point — a warm cache hides the missing-variant bug this lane
+          exists to find), so the PR lane runs Linux only and the merge/release lanes run both. A
+          macOS-only publish break is therefore caught at merge, still before anything reaches Central.
+        required: false
+        default: false
+        type: boolean
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Published version to smoke from Maven Central (e.g. 0.2.0)"
+        required: true
+        type: string
+      include-macos:
+        description: "Also run the macosArm64 consumer host"
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  consumer-smoke:
+    name: "consumer ⇄ ${{ inputs.source || 'central' }} (${{ inputs.version }}, ${{ matrix.host.label }})"
+    runs-on: ${{ matrix.host.runs-on }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # The consumer project gates its native target on the host (linuxX64 on Linux, macosArm64 on
+        # macOS) to match what each publishing lane actually produced — so covering both native variants
+        # needs both hosts, exactly as validate-artifacts merges both maven-local halves. Selected via
+        # fromJSON because a matrix cannot be made conditional inline; see the `include-macos` input for
+        # why the PR lane is Linux-only.
+        host: ${{ fromJSON(inputs.include-macos && '[{"label":"linuxX64","runs-on":"ubuntu-latest"},{"label":"macosArm64","runs-on":"macos-latest"}]' || '[{"label":"linuxX64","runs-on":"ubuntu-latest"}]') }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      # PRE-release source: the merged maven-local repo validate-artifacts uploaded. Absent in the
+      # `central` flow, where the artifacts come off the network instead.
+      - name: Download merged maven-local
+        if: inputs.source == 'maven-local'
+        uses: actions/download-artifact@v4
+        with:
+          name: maven-local-merged
+          path: /tmp/maven-local-merged
+
+      # POST-release source: Central is eventually consistent — the publish step returns before the
+      # artifact is servable from repo1. Poll rather than race, so a green publish never reports a red
+      # consumer lane for a reason that has nothing to do with the artifact.
+      - name: Wait for Maven Central to serve the version
+        if: inputs.source != 'maven-local'
+        shell: bash
+        run: |
+          set -uo pipefail
+          version="${{ inputs.version }}"
+          # Both coordinates the consumer declares directly — either one missing is a failed release.
+          for module in webrtc webrtc-testsuite; do
+            url="https://repo1.maven.org/maven2/com/ditchoom/$module/$version/$module-$version.pom"
+            for attempt in $(seq 1 30); do
+              code=$(curl -s -o /dev/null -w '%{http_code}' "$url")
+              if [ "$code" = "200" ]; then
+                echo "  ok: $module@$version is servable from Central"
+                break
+              fi
+              if [ "$attempt" = "30" ]; then
+                echo "::error::$module@$version never became servable from Maven Central (last HTTP $code after 30 attempts / ~15m): $url"
+                exit 1
+              fi
+              echo "  [$attempt/30] $module@$version not on Central yet (HTTP $code) — retrying in 30s"
+              sleep 30
+            done
+          done
+
+      # A throwaway GRADLE_USER_HOME is what makes the run COLD: no reused dependency cache, no reused
+      # Kotlin/Native distribution, nothing carried over from another lane in this repo.
+      - name: Consumer build + tests (cold, from ${{ inputs.source || 'central' }})
+        shell: bash
+        env:
+          SOURCE: ${{ inputs.source || 'central' }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          guh="${RUNNER_TEMP}/consumer-smoke-gradle-home"
+          rm -rf "$guh"
+          if [ "$SOURCE" = "maven-local" ]; then
+            repo_arg="-PmavenRepoPath=/tmp/maven-local-merged"
+          else
+            repo_arg="-PcentralOnly=true"
+          fi
+          echo "=== consumer-smoke: version=$VERSION source=$SOURCE host=${{ matrix.host.label }} ==="
+          ./gradlew -p .ci/consumer-smoke -g "$guh" \
+            -PwebrtcVersion="$VERSION" $repo_arg \
+            build --no-daemon --no-build-cache --console=plain
+
+      # Assert the tests actually RAN. A consumer project whose test source set silently stopped being
+      # wired would otherwise pass green forever — the same "silence is a failure mode" discipline the
+      # L2 harness applies to its semantics summaries.
+      - name: Assert the consumer tests ran
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          results=(.ci/consumer-smoke/build/test-results/*/TEST-*.xml)
+          if [ ${#results[@]} -eq 0 ]; then
+            echo "::error::the consumer project produced no test results — its tests did not run"; exit 1
+          fi
+          total=0
+          for f in "${results[@]}"; do
+            n=$(grep -o 'tests="[0-9]*"' "$f" | head -1 | tr -dc '0-9')
+            echo "  $(basename "$f"): $n test(s)"
+            total=$((total + n))
+          done
+          # Floor, not an exact count, so adding a scenario never needs a workflow edit: 4 jvmTest
+          # scenarios (flat, symmetric-relay, relay-only, impaired+relayOnly+symmetric) + 2 native link
+          # tests. A number below this means a source set stopped being compiled.
+          if [ "$total" -lt 6 ]; then
+            echo "::error::only $total consumer test(s) ran; expected at least 6 (4 harness scenarios + 2 native link)"; exit 1
+          fi
+          echo "=== consumer-smoke: $total test(s) passed against $VERSION ==="
+        env:
+          VERSION: ${{ inputs.version }}
+
+      - name: Upload consumer test reports (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: consumer-smoke-reports-${{ inputs.source || 'central' }}-${{ matrix.host.label }}
+          path: |
+            .ci/consumer-smoke/build/reports/**
+            .ci/consumer-smoke/build/test-results/**
+          retention-days: 14
+          if-no-files-found: ignore

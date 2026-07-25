@@ -11,7 +11,8 @@ name: "L2 Interop Harness"
 #     [Phase 2(a)] + the fast JVM-offerer lanes (`jvm-native`, `jvm-pion`, `jvm-node`). Both interop
 #     answerers here are fast, non-browser (raw-UDP) images, so they gate on this job, not l2-browser.
 #     HARNESS_SKIP drops the browser scenarios here; node-interop + jvm-node run informational-first
-#     (HARNESS_NON_GATING) while the werift lane lands.
+#     (HARNESS_NON_GATING) while the werift lane lands — for ESTABLISHMENT and, as the same two named
+#     holdouts in run-interop.sh's $SEMANTICS_NON_GATING, for the data-channel semantics phases too.
 #   * `l2-browser` — a per-{arch × engine × offerer} matrix of parallel jobs [Phase 2(b) + JVM]: our
 #     offerer (native peer OR JVM peer) ⇄ a real headless **Chrome** (Chromium libwebrtc), **Firefox**
 #     (NSS/nICEr/usrsctp — a fully independent stack), and **WebKit** (Safari's engine — a third oracle),

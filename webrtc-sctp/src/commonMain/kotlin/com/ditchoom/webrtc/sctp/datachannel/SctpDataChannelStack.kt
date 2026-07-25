@@ -79,6 +79,18 @@ public class SctpDataChannelStack(
     private var nextStreamId: Int = if (role == SctpRole.Client) 0 else 1
     private var closed = false
 
+    // Streams we OPENed on which nothing has yet come back. RFC 8832 §6: "before the DATA_CHANNEL_ACK
+    // message or any other message has been received on a data channel, all other messages containing
+    // user data and belonging to this data channel MUST be sent ordered, no matter whether the data
+    // channel is ordered or not." Until the channel is confirmed, user data is therefore forced ordered
+    // (see dispatchCommand) — otherwise SCTP may deliver the first payload AHEAD of the still-ordered
+    // DCEP OPEN, and a peer that reads the first message on a new stream as necessarily DCEP sees a
+    // WebRTC-Binary PPID instead. (Pion does exactly that, and its accept loop dies on the error, so
+    // EVERY later channel on that association is lost too — how this was found; see the interop soak.)
+    // Only the OPENING side is constrained: on a peer-opened channel we have by definition already
+    // received a message on it (the OPEN itself).
+    private val unconfirmedOutbound = HashSet<Int>()
+
     // Senders parked by backpressure: their message is already queued in the association, but the send
     // buffer was above the high-water mark when it went in, so their deferred stays incomplete until the
     // buffer drains to the low-water mark. FIFO — the first sender to park is the first released.
@@ -215,7 +227,19 @@ public class SctpDataChannelStack(
                     pendingOpens.addLast(command)
                 }
             is SendCommand -> {
-                apply(association.handle(SctpEvent.SendMessage(command.options, command.payload), now()))
+                // RFC 8832 §6: user data on a channel we opened is sent ORDERED until that channel is
+                // confirmed, whatever ordering the channel was configured with. Ordered delivery is the
+                // stronger guarantee, so an unordered channel is never violated by it — and it is what
+                // keeps the DCEP OPEN first on the wire for the peer that requires it. Resolved HERE,
+                // on the drive loop, because that is where the confirmation set is mutated; sendMessage
+                // runs on the caller's coroutine and must not read it.
+                val options =
+                    if (command.options.streamId.value in unconfirmedOutbound) {
+                        command.options.copy(unordered = false)
+                    } else {
+                        command.options
+                    }
+                apply(association.handle(SctpEvent.SendMessage(options, command.payload), now()))
                 // Fast path: while the send buffer is shallow the caller is released immediately, so a
                 // well-behaved sender still pipelines at full rate and never pays for the check. Only once
                 // the association is genuinely behind does the caller park (released in releaseDrainedSenders).
@@ -225,7 +249,10 @@ public class SctpDataChannelStack(
                     awaitingDrain.addLast(command)
                 }
             }
-            is CloseChannelCommand -> channels.remove(command.streamId.value)
+            is CloseChannelCommand -> {
+                channels.remove(command.streamId.value)
+                unconfirmedOutbound -= command.streamId.value
+            }
             ShutdownCommand -> apply(association.handle(SctpEvent.Shutdown, now()))
         }
     }
@@ -242,6 +269,7 @@ public class SctpDataChannelStack(
         val streamId = StreamId(nextStreamId)
         nextStreamId += 2
         val connection = registerChannel(streamId, command.config, incoming = false)
+        unconfirmedOutbound += streamId.value
         val open =
             DataChannelMessage.Open(
                 channelType = channelTypeOf(command.config),
@@ -282,6 +310,11 @@ public class SctpDataChannelStack(
     }
 
     private fun onMessage(message: SctpOutput.MessageReceived) {
+        // "…the DATA_CHANNEL_ACK message OR ANY OTHER MESSAGE has been received on a data channel"
+        // (RFC 8832 §6) — so anything inbound on the stream confirms it, not the ACK alone. A peer that
+        // never ACKs but replies with user data still releases us; one that answers nothing keeps us on
+        // ordered delivery forever, which is a safe degradation rather than a stall.
+        unconfirmedOutbound -= message.streamId.value
         if (message.payloadProtocolId == PayloadProtocolId.WebRtcDcep) {
             onDcep(message)
             return
@@ -395,6 +428,7 @@ public class SctpDataChannelStack(
         for (connection in channels.values) connection.closeLocal()
         channels.clear()
         pendingInbound.clear()
+        unconfirmedOutbound.clear()
         for (command in pendingOpens) command.deferred.completeExceptionally(cause)
         pendingOpens.clear()
         accepted.close()

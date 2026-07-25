@@ -41,6 +41,21 @@ public data class SctpConfig(
     public val inboundStreams: UShort = 1024u,
     /** T2-shutdown / SHUTDOWN-ACK retransmit budget before the association aborts. */
     public val maxShutdownRetransmits: Int = 5,
+    /**
+     * Send-buffer high-water mark: once this many user-data bytes are queued-but-unsent, a `send()` stops
+     * completing eagerly and suspends its caller until the queue drains to [sendBufferLowWaterBytes].
+     *
+     * The message that crosses the mark is still enqueued before its caller parks, so the queue is bounded
+     * by `sendBufferHighWaterBytes + (one message) × (concurrent senders)`, not by this value alone.
+     * Defaults to the advertised [receiveWindowBytes] — one window in flight is the most a peer can accept
+     * without SACKing, so queuing appreciably more only adds latency.
+     */
+    public val sendBufferHighWaterBytes: Int = 1024 * 1024,
+    /**
+     * Send-buffer low-water mark: parked senders resume once the queue drains to this. Kept well below
+     * [sendBufferHighWaterBytes] so a sender is not woken once per SACK to immediately re-park (hysteresis).
+     */
+    public val sendBufferLowWaterBytes: Int = 512 * 1024,
     /** The buffer allocator for encoded packets and reassembly copies — inject a tracking factory in tests. */
     public val bufferFactory: BufferFactory = BufferFactory.Default,
 )

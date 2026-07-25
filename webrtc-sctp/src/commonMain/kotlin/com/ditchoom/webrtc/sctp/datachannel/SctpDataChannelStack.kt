@@ -79,6 +79,16 @@ public class SctpDataChannelStack(
     private var nextStreamId: Int = if (role == SctpRole.Client) 0 else 1
     private var closed = false
 
+    // Senders parked by backpressure: their message is already queued in the association, but the send
+    // buffer was above the high-water mark when it went in, so their deferred stays incomplete until the
+    // buffer drains to the low-water mark. FIFO — the first sender to park is the first released.
+    //
+    // This is what makes `send()` the ONLY backpressure signal the API needs: no bufferedAmount property,
+    // no onBufferedAmountLow callback: a caller that can outrun the association simply stops being resumed.
+    private val awaitingDrain = ArrayDeque<SendCommand>()
+    private val highWaterBytes = config.sendBufferHighWaterBytes
+    private val lowWaterBytes = config.sendBufferLowWaterBytes
+
     private val _state = MutableStateFlow<SctpAssociationState>(SctpAssociationState.Closed)
 
     /** The association lifecycle, surfaced for the PeerConnection layer / tests to await. */
@@ -86,6 +96,10 @@ public class SctpDataChannelStack(
 
     /** True once the stack has torn down (transport close / abort) — test-visible, not public API. */
     internal val isTornDown: Boolean get() = closed
+
+    /** Queued-but-unsent user bytes, and how many senders are parked on backpressure — test-visible only. */
+    internal val bufferedBytes: Int get() = association.bufferedBytes
+    internal val parkedSenders: Int get() = awaitingDrain.size
 
     /** Launch the driver: the transport reader, and the single serialized association drive loop. */
     public fun start() {
@@ -185,6 +199,10 @@ public class SctpDataChannelStack(
             // A received ABORT (apply → tearDown) or a transport close stops the loop here rather than
             // continuing to drive `handle` on a dead association.
             if (closed) break
+            // Every item above can have drained the send buffer — a SACK opening cwnd/rwnd most obviously,
+            // but also a timer firing a retransmit. This is the one serialized place that sees all of them,
+            // so it is the one place parked senders are released.
+            releaseDrainedSenders()
         }
     }
 
@@ -198,11 +216,26 @@ public class SctpDataChannelStack(
                 }
             is SendCommand -> {
                 apply(association.handle(SctpEvent.SendMessage(command.options, command.payload), now()))
-                command.deferred.complete(Unit)
+                // Fast path: while the send buffer is shallow the caller is released immediately, so a
+                // well-behaved sender still pipelines at full rate and never pays for the check. Only once
+                // the association is genuinely behind does the caller park (released in releaseDrainedSenders).
+                if (association.bufferedBytes <= highWaterBytes) {
+                    command.deferred.complete(Unit)
+                } else {
+                    awaitingDrain.addLast(command)
+                }
             }
             is CloseChannelCommand -> channels.remove(command.streamId.value)
             ShutdownCommand -> apply(association.handle(SctpEvent.Shutdown, now()))
         }
+    }
+
+    // Release parked senders once the association has drained to the low-water mark. All-or-nothing on the
+    // mark, not one-per-freed-byte: the hysteresis gap between the two marks is what stops a sender being
+    // woken by every SACK only to re-park on its next message.
+    private fun releaseDrainedSenders() {
+        if (awaitingDrain.isEmpty() || association.bufferedBytes > lowWaterBytes) return
+        while (awaitingDrain.isNotEmpty()) awaitingDrain.removeFirst().deferred.complete(Unit)
     }
 
     private fun dispatchOpen(command: OpenCommand) {
@@ -373,6 +406,11 @@ public class SctpDataChannelStack(
             val item = inbox.tryReceive().getOrNull() ?: break
             if (item is DriveItem.Command) failCommand(item.command, cause)
         }
+        // …and every sender parked by backpressure. These are NOT in the inbox — their command was already
+        // processed and their message queued; only the resume is outstanding. A tearDown that drained just
+        // the inbox would leave them suspended forever on an association that will never drain again,
+        // which is the same leak the review caught on the command path (directive: no unbounded suspension).
+        while (awaitingDrain.isNotEmpty()) awaitingDrain.removeFirst().deferred.completeExceptionally(cause)
     }
 
     private fun failCommand(
@@ -502,6 +540,17 @@ public class SctpClosedException(
  * One open data channel as a buffer-flow [Connection]<[ReadBuffer]> (RFC 8831). [send] posts one
  * user message to the association on this channel's stream with the channel's ordering + reliability;
  * [receive] is the inbound message flow. [id] is the SCTP stream identifier (RFC 8832 §6).
+ *
+ * **Backpressure is the suspension.** [send] returns as soon as the association accepts the message
+ * while its send buffer is shallow, but once queued-but-unsent bytes pass
+ * [SctpConfig.sendBufferHighWaterBytes] it suspends the caller until the peer has acknowledged enough
+ * to drain back to [SctpConfig.sendBufferLowWaterBytes]. So the obvious producer loop —
+ * `for (chunk in source) channel.send(chunk)` — is already flow-controlled, and a sender that outruns
+ * the wire is throttled rather than buffered without bound.
+ *
+ * There is deliberately no `bufferedAmount` gauge and no low-water callback to subscribe to: the
+ * suspension is the whole contract. If the association tears down while a caller is suspended, [send]
+ * throws [SctpClosedException] — it never suspends forever.
  */
 public class DataChannelConnection internal constructor(
     internal val streamId: StreamId,

@@ -794,13 +794,15 @@ public final class com/ditchoom/webrtc/sctp/association/SctpAssociationState$Shu
 }
 
 public final class com/ditchoom/webrtc/sctp/association/SctpConfig {
-	public synthetic fun <init> (JJJIIIIIJSSILcom/ditchoom/buffer/BufferFactory;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public synthetic fun <init> (JJJIIIIIJSSILcom/ditchoom/buffer/BufferFactory;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JJJIIIIIJSSIIILcom/ditchoom/buffer/BufferFactory;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JJJIIIIIJSSIIILcom/ditchoom/buffer/BufferFactory;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1-UwyO8pc ()J
 	public final fun component10-Mh2AYeg ()S
 	public final fun component11-Mh2AYeg ()S
 	public final fun component12 ()I
-	public final fun component13 ()Lcom/ditchoom/buffer/BufferFactory;
+	public final fun component13 ()I
+	public final fun component14 ()I
+	public final fun component15 ()Lcom/ditchoom/buffer/BufferFactory;
 	public final fun component2-UwyO8pc ()J
 	public final fun component3-UwyO8pc ()J
 	public final fun component4 ()I
@@ -809,8 +811,8 @@ public final class com/ditchoom/webrtc/sctp/association/SctpConfig {
 	public final fun component7-pVg5ArA ()I
 	public final fun component8 ()I
 	public final fun component9-UwyO8pc ()J
-	public final fun copy-OX3IdvI (JJJIIIIIJSSILcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/sctp/association/SctpConfig;
-	public static synthetic fun copy-OX3IdvI$default (Lcom/ditchoom/webrtc/sctp/association/SctpConfig;JJJIIIIIJSSILcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpConfig;
+	public final fun copy-G94uY68 (JJJIIIIIJSSIIILcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/sctp/association/SctpConfig;
+	public static synthetic fun copy-G94uY68$default (Lcom/ditchoom/webrtc/sctp/association/SctpConfig;JJJIIIIIJSSIIILcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpConfig;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getBufferFactory ()Lcom/ditchoom/buffer/BufferFactory;
 	public final fun getInboundStreams-Mh2AYeg ()S
@@ -825,6 +827,8 @@ public final class com/ditchoom/webrtc/sctp/association/SctpConfig {
 	public final fun getRtoMax-UwyO8pc ()J
 	public final fun getRtoMin-UwyO8pc ()J
 	public final fun getSackDelay-UwyO8pc ()J
+	public final fun getSendBufferHighWaterBytes ()I
+	public final fun getSendBufferLowWaterBytes ()I
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }

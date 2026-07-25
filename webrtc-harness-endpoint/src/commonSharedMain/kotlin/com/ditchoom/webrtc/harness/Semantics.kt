@@ -9,6 +9,7 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.Connection
 import com.ditchoom.webrtc.NativePeerConnection
+import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.association.SctpReliability
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConnection
@@ -449,7 +450,7 @@ private suspend fun echoIsIdentical(
  * deterministic vnet suites remain the hard reordering gate.
  */
 private suspend fun phaseUnordered(pc: NativePeerConnection): Verdict {
-    val channel = pc.createDataChannel(DataChannelConfig(label = "s2/unordered", ordered = false))
+    val channel = pc.createDataChannel(DataChannelConfig(label = "s2/unordered", delivery = DeliveryOrder.Unordered))
     for (i in 0 until BURST) channel.send(textBuffer("s2#$i"))
     val seen = collectTagged(channel, "s2#", BURST, ECHO_WAIT)
     val missing = (0 until BURST).filterNot { it in seen }
@@ -533,7 +534,7 @@ private suspend fun phaseMultiplex(
     val channels =
         listOf(
             pc.createDataChannel(DataChannelConfig(label = "s4/a")) to "s4a",
-            pc.createDataChannel(DataChannelConfig(label = "s4/b", ordered = false)) to "s4b",
+            pc.createDataChannel(DataChannelConfig(label = "s4/b", delivery = DeliveryOrder.Unordered)) to "s4b",
             pc.createDataChannel(DataChannelConfig(label = "s4/c", reliability = SctpReliability.MaxRetransmits(3))) to "s4c",
         )
 

@@ -84,8 +84,14 @@ public fun interface IceGatheringPolicy {
 public data class PeerConnectionConfig(
     public val iceConfig: IceConfig = IceConfig(),
     public val sctpConfig: SctpConfig = SctpConfig(),
-    /** The `m=application` media id (RFC 8829 §5.2.1). */
-    public val mid: Mid = Mid("0"),
+    /**
+     * The media id of the **data-channel** `m=application` section (RFC 8829 §5.2.1).
+     *
+     * Named for its section rather than being the bare `mid`: a session has one mid *per* m-section, so
+     * once Phase 2 adds `m=audio`/`m=video` an unqualified `mid` on the session config would be
+     * ambiguous about which section it identifies. It is the data channel's, and always was.
+     */
+    public val dataChannelMid: Mid = Mid("0"),
     /**
      * Resolves a peer's `<uuid>.local` mDNS host candidate (RFC 8838 privacy) to an address before a
      * connectivity check is sent to it. The `commonMain` default is a **no-op** — it resolves nothing, so
@@ -109,6 +115,25 @@ public data class PeerConnectionConfig(
 )
 
 /**
+ * Opt-in marker for IMPLEMENTING [RtcPeerConnection] outside this library.
+ *
+ * Sealing would be the natural expression of "we own every implementation", and every implementation
+ * really is ours — but Kotlin treats each multiplatform source set as its own module, so a `commonMain`
+ * sealed interface cannot be implemented by `BrowserPeerConnection` in `jsMain`. This marker is the
+ * equivalent that does work across source sets: nobody implements the interface by accident, and anyone
+ * who opts in has accepted that Phase 2 adds members to it (media: `addTrack`, incoming tracks,
+ * transceivers). USING an RtcPeerConnection needs no opt-in — only implementing one does.
+ */
+@RequiresOptIn(
+    level = RequiresOptIn.Level.ERROR,
+    message =
+        "Implementing RtcPeerConnection outside com.ditchoom:webrtc is not a stable contract: Phase 2 " +
+            "(media) adds members to it, which will break external implementations. Prefer wrapping an " +
+            "existing implementation, or the harnesses in webrtc-testsuite.",
+)
+public annotation class ExternalRtcPeerConnectionImplementation
+
+/**
  * The consumer session API (RFC §3.1) — a **Layer-2 session** (`establish` is signaling-shaped, not
  * host:port-shaped, so WebRTC is only ever a session type, never a `Transport.connect`). It is
  * transport-agnostic by shape: a data channel *is* a buffer-flow [Connection]<[ReadBuffer]>
@@ -121,6 +146,8 @@ public data class PeerConnectionConfig(
  * failure surfaces as [PeerConnectionState.Failed] with a typed [PeerConnectionFailureReason] and, where
  * thrown, a [WebRtcException] in socket's `SocketException` vocabulary (RFC §3.1).
  */
+
+@SubclassOptInRequired(ExternalRtcPeerConnectionImplementation::class)
 public interface RtcPeerConnection {
     /** The connection lifecycle (W3C `connectionState`). */
     public val connectionState: StateFlow<PeerConnectionState>
@@ -188,6 +215,7 @@ public interface RtcPeerConnection {
  * plaintext stand-in — which is **not** wire-secure. There is deliberately no default, so the insecure
  * choice is greppable at every call site.
  */
+@OptIn(ExternalRtcPeerConnectionImplementation::class)
 public class NativePeerConnection(
     private val scope: CoroutineScope,
     private val clock: () -> Instant,
@@ -529,7 +557,7 @@ public class NativePeerConnection(
             // so what we advertise and what we prove are the same thing by construction (RFC 8122).
             fingerprint = dtls.localFingerprint,
             setup = setup,
-            mid = config.mid,
+            mid = config.dataChannelMid,
         )
 
     private fun parseOrThrow(sdp: String): SessionDescription =

@@ -31,6 +31,14 @@ public final class com/ditchoom/webrtc/sctp/DataChunkFlags$Companion {
 	public static synthetic fun of-BfIjuo0$default (Lcom/ditchoom/webrtc/sctp/DataChunkFlags$Companion;ZZZZILjava/lang/Object;)B
 }
 
+public final class com/ditchoom/webrtc/sctp/DeliveryOrder : java/lang/Enum {
+	public static final field Ordered Lcom/ditchoom/webrtc/sctp/DeliveryOrder;
+	public static final field Unordered Lcom/ditchoom/webrtc/sctp/DeliveryOrder;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/webrtc/sctp/DeliveryOrder;
+	public static fun values ()[Lcom/ditchoom/webrtc/sctp/DeliveryOrder;
+}
+
 public final class com/ditchoom/webrtc/sctp/ErrorCauseCode {
 	public static final field Companion Lcom/ditchoom/webrtc/sctp/ErrorCauseCode$Companion;
 	public static final synthetic fun box-impl (S)Lcom/ditchoom/webrtc/sctp/ErrorCauseCode;
@@ -1009,36 +1017,36 @@ public final class com/ditchoom/webrtc/sctp/association/SctpReliability$Reliable
 }
 
 public final class com/ditchoom/webrtc/sctp/association/SctpSendOptions {
-	public synthetic fun <init> (IIZLcom/ditchoom/webrtc/sctp/association/SctpReliability;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public synthetic fun <init> (IIZLcom/ditchoom/webrtc/sctp/association/SctpReliability;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (IILcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (IILcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1-cFBZvdc ()I
 	public final fun component2-N_xLETs ()I
-	public final fun component3 ()Z
+	public final fun component3 ()Lcom/ditchoom/webrtc/sctp/DeliveryOrder;
 	public final fun component4 ()Lcom/ditchoom/webrtc/sctp/association/SctpReliability;
-	public final fun copy-5Ooy7ls (IIZLcom/ditchoom/webrtc/sctp/association/SctpReliability;)Lcom/ditchoom/webrtc/sctp/association/SctpSendOptions;
-	public static synthetic fun copy-5Ooy7ls$default (Lcom/ditchoom/webrtc/sctp/association/SctpSendOptions;IIZLcom/ditchoom/webrtc/sctp/association/SctpReliability;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpSendOptions;
+	public final fun copy-5Ooy7ls (IILcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;)Lcom/ditchoom/webrtc/sctp/association/SctpSendOptions;
+	public static synthetic fun copy-5Ooy7ls$default (Lcom/ditchoom/webrtc/sctp/association/SctpSendOptions;IILcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpSendOptions;
 	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDelivery ()Lcom/ditchoom/webrtc/sctp/DeliveryOrder;
 	public final fun getPayloadProtocolId-N_xLETs ()I
 	public final fun getReliability ()Lcom/ditchoom/webrtc/sctp/association/SctpReliability;
 	public final fun getStreamId-cFBZvdc ()I
-	public final fun getUnordered ()Z
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
 
 public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelConfig {
-	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;ZLcom/ditchoom/webrtc/sctp/association/SctpReliability;SILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;ZLcom/ditchoom/webrtc/sctp/association/SctpReliability;SLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;SILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;SLkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()Ljava/lang/String;
 	public final fun component2 ()Ljava/lang/String;
-	public final fun component3 ()Z
+	public final fun component3 ()Lcom/ditchoom/webrtc/sctp/DeliveryOrder;
 	public final fun component4 ()Lcom/ditchoom/webrtc/sctp/association/SctpReliability;
 	public final fun component5-Mh2AYeg ()S
-	public final fun copy-kBKUC64 (Ljava/lang/String;Ljava/lang/String;ZLcom/ditchoom/webrtc/sctp/association/SctpReliability;S)Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;
-	public static synthetic fun copy-kBKUC64$default (Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;Ljava/lang/String;Ljava/lang/String;ZLcom/ditchoom/webrtc/sctp/association/SctpReliability;SILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;
+	public final fun copy-kBKUC64 (Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;S)Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;
+	public static synthetic fun copy-kBKUC64$default (Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;SILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;
 	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDelivery ()Lcom/ditchoom/webrtc/sctp/DeliveryOrder;
 	public final fun getLabel ()Ljava/lang/String;
-	public final fun getOrdered ()Z
 	public final fun getPriority-Mh2AYeg ()S
 	public final fun getProtocol ()Ljava/lang/String;
 	public final fun getReliability ()Lcom/ditchoom/webrtc/sctp/association/SctpReliability;

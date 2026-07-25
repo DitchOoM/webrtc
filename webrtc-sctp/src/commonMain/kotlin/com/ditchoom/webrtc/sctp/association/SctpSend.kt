@@ -35,13 +35,13 @@ public sealed interface SctpReliability {
 }
 
 /**
- * How one outbound user message is delivered: its [streamId], whether it is [unordered], its
- * [reliability] policy, and the [payloadProtocolId] the peer sees (RFC 8831 §6.6 — DCEP control vs.
- * string vs. binary). The message bytes ride the [SctpEvent.SendMessage] event; this is the metadata.
+ * How one outbound user message is delivered: its [streamId], its [delivery] order, its [reliability]
+ * policy, and the [payloadProtocolId] the peer sees (RFC 8831 §6.6 — DCEP control vs. string vs.
+ * binary). The message bytes ride the [SctpEvent.SendMessage] event; this is the metadata.
  */
 public data class SctpSendOptions(
     public val streamId: com.ditchoom.webrtc.sctp.StreamId,
     public val payloadProtocolId: com.ditchoom.webrtc.sctp.PayloadProtocolId,
-    public val unordered: Boolean = false,
+    public val delivery: com.ditchoom.webrtc.sctp.DeliveryOrder = com.ditchoom.webrtc.sctp.DeliveryOrder.Ordered,
     public val reliability: SctpReliability = SctpReliability.Reliable,
 )

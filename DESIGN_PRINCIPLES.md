@@ -192,6 +192,39 @@ transport underneath is swappable without touching consumer code. There are two 
 So "swap the transport for testing" happens at whichever layer you need: replace the whole session with
 a fake `StreamMux`, or keep the real protocol stack and replace only the packets/clock beneath it.
 
+## 8. The API lock: what the `.api` files promise
+
+The checked-in `.api` files are the public commitment, validated by `./gradlew apiCheck`. Phase 1's
+close-out fixed what that commitment actually means, so Phase 2 (media) does not relitigate it per-PR.
+
+**The bar is source compatibility, not binary.** A consumer rebuilds against each release. Concretely:
+
+- **Adding a knob to a config is allowed, at the END of the parameter list.** Existing call sites keep
+  compiling. It *is* a recompile-required change: Kotlin's synthetic all-defaults constructor encodes the
+  parameter count, so a pre-built consumer jar would hit `NoSuchMethodError`. That is accepted and is why
+  the configs stay ordinary `data class`es — the synthesized `equals`/`hashCode` cannot drift out of sync
+  with the fields, which a hand-written pair silently can, and under a source bar the `componentN` /
+  `copy-<hash>` churn costs only a noisier `apiDump` diff.
+- **Adding a variant to a sealed hierarchy is allowed.** It is binary-additive and breaks only a consumer
+  `when` that was exhaustive without an `else` — which is the entire point of sealing, and the trade-off
+  we accept in exchange for exhaustiveness at *our* call sites. `PeerConnectionFailureReason`,
+  `IceFailureReason`, `SctpFailureReason`, `SdpRejectReason`, `JsepError`, and `SctpRejectReason` all
+  carry this rule. Phase 2 adds `PeerConnectionFailureReason.Media` under it rather than widening
+  `Unknown`, whose `String` stays a diagnostic and is never a discriminant (§6).
+- **Adding a member to `RtcPeerConnection` is allowed.** It is marked
+  `@SubclassOptInRequired(ExternalRtcPeerConnectionImplementation::class)`. Sealing would say this more
+  directly, but Kotlin treats every multiplatform source set as its own module, so a `commonMain` sealed
+  interface cannot be implemented by `BrowserPeerConnection` in `jsMain`. The opt-in marker is the
+  equivalent that survives that: implementing it is a deliberate act that accepts Phase-2 additions;
+  *using* one needs no opt-in.
+- **The protocol codecs are public products.** `webrtc-stun`, `webrtc-sdp`, and `webrtc-sctp`'s chunk
+  codec are deliverables in their own right (`RFC_KMP_WEBRTC.md` §3), not implementation detail that
+  leaked. They are held to the same promise as the consumer surface.
+
+What the lock verified mechanically, and what CI keeps true: **no primitive array appears in any public
+signature** in any module (§1 holds at the boundary, not only in `*Main/` sources), and every identifier
+at a boundary is a value class (§2).
+
 ---
 
 These rules are not style preferences; each one buys a specific property — zero-copy throughput,

@@ -236,7 +236,7 @@ public class SctpDataChannelStack(
                 // runs on the caller's coroutine and must not read it.
                 val options =
                     if (command.options.streamId.value in unconfirmedOutbound) {
-                        command.options.copy(unordered = false)
+                        command.options.copy(delivery = DeliveryOrder.Ordered)
                     } else {
                         command.options
                     }

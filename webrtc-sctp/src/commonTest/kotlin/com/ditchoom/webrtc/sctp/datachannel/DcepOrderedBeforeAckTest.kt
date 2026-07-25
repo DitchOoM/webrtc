@@ -6,6 +6,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.managed
+import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.PayloadProtocolId
 import com.ditchoom.webrtc.sctp.SctpChunk
 import com.ditchoom.webrtc.sctp.SctpDecodeResult
@@ -93,7 +94,7 @@ class DcepOrderedBeforeAckTest {
             client.start()
             server.start()
 
-            val channel = client.open(DataChannelConfig(label = "unordered", ordered = false))
+            val channel = client.open(DataChannelConfig(label = "unordered", delivery = DeliveryOrder.Unordered))
             val streamId = (channel as DataChannelConnection).streamId.value
             channel.send(textBuffer("first"))
 
@@ -136,7 +137,7 @@ class DcepOrderedBeforeAckTest {
             client.start()
             server.start()
 
-            val channel = client.open(DataChannelConfig(label = "unordered", ordered = false))
+            val channel = client.open(DataChannelConfig(label = "unordered", delivery = DeliveryOrder.Unordered))
             val streamId = (channel as DataChannelConnection).streamId.value
 
             // Let the server's DATA_CHANNEL_ACK land before sending anything: the channel is now confirmed,

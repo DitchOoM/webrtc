@@ -237,6 +237,10 @@ private fun hexDigit(c: Char): Int =
 
 private fun hexToReadBuffer(hex: String): ReadBuffer {
     val len = hex.length / 2
+    // BufferFactory.Default is correct HERE, and is not a missed seam: on the browser-delegated path the
+    // whole stack is the browser's own RTCPeerConnection, `create(scope, iceServers)` takes no config, and
+    // so there is no consumer-injected factory in play to honour. Every allocation the PURE-KOTLIN stack
+    // makes routes through an injected factory (see webrtc-stun / SctpConfig / IceConfig).
     val out = BufferFactory.Default.allocate(maxOf(1, len), ByteOrder.BIG_ENDIAN)
     var i = 0
     while (i < len) {

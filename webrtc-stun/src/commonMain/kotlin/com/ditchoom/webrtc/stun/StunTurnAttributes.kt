@@ -30,8 +30,11 @@ public const val TURN_FAMILY_IPV6: UByte = 0x02u
  * §7.2's default), which against a v6-only TURN server has no usable address (it falls back to loopback,
  * yielding a relay candidate no peer can reach → ICE `AllPairsFailed`).
  */
-public fun RawAttribute.Companion.ofRequestedAddressFamily(family: UByte): RawAttribute {
-    val v = BufferFactory.Default.allocate(REQUESTED_ADDRESS_FAMILY_BYTES, ByteOrder.BIG_ENDIAN)
+public fun RawAttribute.Companion.ofRequestedAddressFamily(
+    family: UByte,
+    factory: BufferFactory = BufferFactory.Default,
+): RawAttribute {
+    val v = factory.allocate(REQUESTED_ADDRESS_FAMILY_BYTES, ByteOrder.BIG_ENDIAN)
     v.writeUByte(family)
     v.writeByte(0)
     v.writeShort(0)
@@ -43,8 +46,11 @@ public fun RawAttribute.Companion.ofRequestedAddressFamily(family: UByte): RawAt
 public fun RawAttribute.asRequestedAddressFamily(): UByte? = if (length == REQUESTED_ADDRESS_FAMILY_BYTES) value.get(0).toUByte() else null
 
 /** LIFETIME (RFC 8656 §18.4): a u32 duration in seconds (Allocate/Refresh). */
-public fun RawAttribute.Companion.ofLifetime(seconds: UInt): RawAttribute {
-    val v = BufferFactory.Default.allocate(U32_BYTES, ByteOrder.BIG_ENDIAN)
+public fun RawAttribute.Companion.ofLifetime(
+    seconds: UInt,
+    factory: BufferFactory = BufferFactory.Default,
+): RawAttribute {
+    val v = factory.allocate(U32_BYTES, ByteOrder.BIG_ENDIAN)
     v.writeUInt(seconds)
     v.resetForRead()
     return ofValue(StunAttributeType.Lifetime, v)
@@ -54,8 +60,11 @@ public fun RawAttribute.Companion.ofLifetime(seconds: UInt): RawAttribute {
 public fun RawAttribute.asLifetimeSeconds(): UInt? = if (length == U32_BYTES) value.getUnsignedInt(0) else null
 
 /** REQUESTED-TRANSPORT (RFC 8656 §18.6): a 1-byte protocol number then 3 reserved bytes. */
-public fun RawAttribute.Companion.ofRequestedTransport(protocol: UByte = TURN_TRANSPORT_UDP): RawAttribute {
-    val v = BufferFactory.Default.allocate(REQUESTED_TRANSPORT_BYTES, ByteOrder.BIG_ENDIAN)
+public fun RawAttribute.Companion.ofRequestedTransport(
+    protocol: UByte = TURN_TRANSPORT_UDP,
+    factory: BufferFactory = BufferFactory.Default,
+): RawAttribute {
+    val v = factory.allocate(REQUESTED_TRANSPORT_BYTES, ByteOrder.BIG_ENDIAN)
     v.writeUByte(protocol)
     v.writeByte(0)
     v.writeShort(0)
@@ -67,8 +76,11 @@ public fun RawAttribute.Companion.ofRequestedTransport(protocol: UByte = TURN_TR
 public fun RawAttribute.asRequestedTransport(): UByte? = if (length == REQUESTED_TRANSPORT_BYTES) value.get(0).toUByte() else null
 
 /** CHANNEL-NUMBER (RFC 8656 §18.1): a u16 channel then 2 reserved bytes. */
-public fun RawAttribute.Companion.ofChannelNumber(channel: UShort): RawAttribute {
-    val v = BufferFactory.Default.allocate(CHANNEL_NUMBER_BYTES, ByteOrder.BIG_ENDIAN)
+public fun RawAttribute.Companion.ofChannelNumber(
+    channel: UShort,
+    factory: BufferFactory = BufferFactory.Default,
+): RawAttribute {
+    val v = factory.allocate(CHANNEL_NUMBER_BYTES, ByteOrder.BIG_ENDIAN)
     v.writeUShort(channel)
     v.writeShort(0)
     v.resetForRead()
@@ -82,8 +94,11 @@ public fun RawAttribute.asChannelNumber(): UShort? = if (length == CHANNEL_NUMBE
  * UNKNOWN-ATTRIBUTES (RFC 8489 §14.9): the list of attribute types a 420 error response reports as
  * not-understood — a packed sequence of u16 types.
  */
-public fun RawAttribute.Companion.ofUnknownAttributes(types: List<StunAttributeType>): RawAttribute {
-    val v = BufferFactory.Default.allocate((types.size * U16_BYTES).coerceAtLeast(1), ByteOrder.BIG_ENDIAN)
+public fun RawAttribute.Companion.ofUnknownAttributes(
+    types: List<StunAttributeType>,
+    factory: BufferFactory = BufferFactory.Default,
+): RawAttribute {
+    val v = factory.allocate((types.size * U16_BYTES).coerceAtLeast(1), ByteOrder.BIG_ENDIAN)
     for (t in types) v.writeUShort(t.value)
     v.resetForRead()
     v.setLimit(types.size * U16_BYTES)

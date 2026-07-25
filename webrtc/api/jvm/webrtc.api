@@ -11,24 +11,49 @@ public abstract interface class com/ditchoom/webrtc/DtlsTransportFactory {
 	public abstract fun secure (Lcom/ditchoom/webrtc/ice/IceDataTransport;Lcom/ditchoom/webrtc/DtlsRole;Lcom/ditchoom/webrtc/sdp/Fingerprint;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
+public abstract interface annotation class com/ditchoom/webrtc/ExternalRtcPeerConnectionImplementation : java/lang/annotation/Annotation {
+}
+
 public abstract interface class com/ditchoom/webrtc/IceGatheringPolicy {
 	public abstract fun gather (Lcom/ditchoom/webrtc/ice/IceAgentDriver;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
 public final class com/ditchoom/webrtc/IceServer {
+	public fun <init> (Ljava/lang/String;Lcom/ditchoom/webrtc/IceServerCredentials;)V
+	public synthetic fun <init> (Ljava/lang/String;Lcom/ditchoom/webrtc/IceServerCredentials;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V
-	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public fun <init> (Ljava/util/List;Ljava/lang/String;Ljava/lang/String;)V
-	public synthetic fun <init> (Ljava/util/List;Ljava/lang/String;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Ljava/util/List;Lcom/ditchoom/webrtc/IceServerCredentials;)V
+	public synthetic fun <init> (Ljava/util/List;Lcom/ditchoom/webrtc/IceServerCredentials;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()Ljava/util/List;
+	public final fun component2 ()Lcom/ditchoom/webrtc/IceServerCredentials;
+	public final fun copy (Ljava/util/List;Lcom/ditchoom/webrtc/IceServerCredentials;)Lcom/ditchoom/webrtc/IceServer;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/IceServer;Ljava/util/List;Lcom/ditchoom/webrtc/IceServerCredentials;ILjava/lang/Object;)Lcom/ditchoom/webrtc/IceServer;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCredentials ()Lcom/ditchoom/webrtc/IceServerCredentials;
+	public final fun getUrls ()Ljava/util/List;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/IceServerCredentials {
+}
+
+public final class com/ditchoom/webrtc/IceServerCredentials$LongTerm : com/ditchoom/webrtc/IceServerCredentials {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
 	public final fun component2 ()Ljava/lang/String;
-	public final fun component3 ()Ljava/lang/String;
-	public final fun copy (Ljava/util/List;Ljava/lang/String;Ljava/lang/String;)Lcom/ditchoom/webrtc/IceServer;
-	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/IceServer;Ljava/util/List;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/IceServer;
+	public final fun copy (Ljava/lang/String;Ljava/lang/String;)Lcom/ditchoom/webrtc/IceServerCredentials$LongTerm;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/IceServerCredentials$LongTerm;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/IceServerCredentials$LongTerm;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getCredential ()Ljava/lang/String;
-	public final fun getUrls ()Ljava/util/List;
 	public final fun getUsername ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/IceServerCredentials$None : com/ditchoom/webrtc/IceServerCredentials {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/IceServerCredentials$None;
+	public fun equals (Ljava/lang/Object;)Z
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -65,10 +90,10 @@ public final class com/ditchoom/webrtc/PeerConnectionConfig {
 	public final fun copy-5yiUJ0I (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;Lcom/ditchoom/webrtc/ice/MdnsResolver;J)Lcom/ditchoom/webrtc/PeerConnectionConfig;
 	public static synthetic fun copy-5yiUJ0I$default (Lcom/ditchoom/webrtc/PeerConnectionConfig;Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;Lcom/ditchoom/webrtc/ice/MdnsResolver;JILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionConfig;
 	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDataChannelMid-QcrJwnM ()Ljava/lang/String;
 	public final fun getGracefulShutdownTimeout-UwyO8pc ()J
 	public final fun getIceConfig ()Lcom/ditchoom/webrtc/ice/IceConfig;
 	public final fun getMdnsResolver ()Lcom/ditchoom/webrtc/ice/MdnsResolver;
-	public final fun getMid-QcrJwnM ()Ljava/lang/String;
 	public final fun getSctpConfig ()Lcom/ditchoom/webrtc/sctp/association/SctpConfig;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;

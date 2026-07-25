@@ -2,6 +2,7 @@
 
 package com.ditchoom.webrtc.sctp.association
 
+import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.PayloadProtocolId
 import com.ditchoom.webrtc.sctp.StreamId
 import kotlin.test.Test
@@ -57,7 +58,7 @@ class SctpDeepFuzzTest {
                         SctpSendOptions(
                             stream,
                             PayloadProtocolId.WebRtcBinary,
-                            unordered = true,
+                            delivery = DeliveryOrder.Unordered,
                             reliability = SctpReliability.MaxRetransmits(1),
                         ),
                         payload(24, seed = i),

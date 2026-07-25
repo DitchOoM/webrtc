@@ -8,6 +8,7 @@ import com.ditchoom.buffer.flow.Connection
 import com.ditchoom.buffer.flow.Receiver
 import com.ditchoom.buffer.flow.Sender
 import com.ditchoom.buffer.flow.StreamMux
+import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.PayloadProtocolId
 import com.ditchoom.webrtc.sctp.StreamId
 import com.ditchoom.webrtc.sctp.association.SctpAssociation
@@ -253,7 +254,7 @@ public class SctpDataChannelStack(
         sendOnStream(
             streamId,
             PayloadProtocolId.WebRtcDcep,
-            ordered = true,
+            delivery = DeliveryOrder.Ordered,
             reliability = SctpReliability.Reliable,
             payload = open.encode(bufferFactory),
         )
@@ -313,7 +314,7 @@ public class SctpDataChannelStack(
                 sendOnStream(
                     message.streamId,
                     PayloadProtocolId.WebRtcDcep,
-                    ordered = true,
+                    delivery = DeliveryOrder.Ordered,
                     reliability = SctpReliability.Reliable,
                     payload = DataChannelMessage.Ack.encode(bufferFactory),
                 )
@@ -357,7 +358,7 @@ public class SctpDataChannelStack(
         // empty-marker PPID (RFC 8831 §6.6), stripped back to empty on delivery.
         val payload = if (empty) singleZeroByte() else message
         val deferred = CompletableDeferred<Unit>()
-        val options = SctpSendOptions(streamId, ppid, unordered = !config.ordered, reliability = config.reliability)
+        val options = SctpSendOptions(streamId, ppid, delivery = config.delivery, reliability = config.reliability)
         post(SendCommand(options, payload, deferred))
         deferred.await()
     }
@@ -376,11 +377,11 @@ public class SctpDataChannelStack(
     private fun sendOnStream(
         streamId: StreamId,
         ppid: PayloadProtocolId,
-        ordered: Boolean,
+        delivery: DeliveryOrder,
         reliability: SctpReliability,
         payload: ReadBuffer,
     ) {
-        val options = SctpSendOptions(streamId, ppid, unordered = !ordered, reliability = reliability)
+        val options = SctpSendOptions(streamId, ppid, delivery = delivery, reliability = reliability)
         apply(association.handle(SctpEvent.SendMessage(options, payload), now()))
     }
 
@@ -439,7 +440,7 @@ public class SctpDataChannelStack(
 
     private fun channelTypeOf(config: DataChannelConfig): ChannelType =
         ChannelType.of(
-            ordered = config.ordered,
+            ordered = config.delivery == DeliveryOrder.Ordered,
             reliability =
                 when (config.reliability) {
                     SctpReliability.Reliable -> Reliability.Reliable
@@ -459,7 +460,7 @@ public class SctpDataChannelStack(
         DataChannelConfig(
             label = open.label,
             protocol = open.protocol,
-            ordered = open.channelType.ordered,
+            delivery = if (open.channelType.ordered) DeliveryOrder.Ordered else DeliveryOrder.Unordered,
             reliability =
                 when (open.channelType.reliability) {
                     Reliability.Reliable -> SctpReliability.Reliable

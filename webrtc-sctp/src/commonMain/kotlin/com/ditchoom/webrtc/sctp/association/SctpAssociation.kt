@@ -6,6 +6,7 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.webrtc.sctp.DataChunkFlags
+import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.ForwardTsnStream
 import com.ditchoom.webrtc.sctp.SctpChunk
 import com.ditchoom.webrtc.sctp.SctpDecodeResult
@@ -364,7 +365,7 @@ public class SctpAssociation(
         val options = event.options
         val fragments = fragment(event.payload)
         val ssn: StreamSequenceNumber =
-            if (options.unordered) {
+            if (options.delivery == DeliveryOrder.Unordered) {
                 StreamSequenceNumber(0u)
             } else {
                 val current = orderedSendSsn[options.streamId] ?: 0
@@ -374,7 +375,7 @@ public class SctpAssociation(
         for ((index, fragmentPayload) in fragments.withIndex()) {
             val beginning = index == 0
             val ending = index == fragments.lastIndex
-            val flags = DataChunkFlags.of(beginning = beginning, ending = ending, unordered = options.unordered)
+            val flags = DataChunkFlags.of(beginning = beginning, ending = ending, unordered = options.delivery == DeliveryOrder.Unordered)
             val data =
                 OutstandingData(
                     tsn = nextTsn,

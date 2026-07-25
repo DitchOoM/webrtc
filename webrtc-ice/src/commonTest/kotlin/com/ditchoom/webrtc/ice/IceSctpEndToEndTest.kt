@@ -8,6 +8,7 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.managed
 import com.ditchoom.webrtc.ice.vnet.Vnets
+import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.association.SctpReliability
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConnection
@@ -117,7 +118,13 @@ class IceSctpEndToEndTest {
             server.start()
 
             val channel =
-                client.open(DataChannelConfig(label = "unordered", ordered = false, reliability = SctpReliability.MaxRetransmits(2)))
+                client.open(
+                    DataChannelConfig(
+                        label = "unordered",
+                        delivery = DeliveryOrder.Unordered,
+                        reliability = SctpReliability.MaxRetransmits(2),
+                    ),
+                )
             val incoming = withTimeoutOrNull(timeout) { server.acceptBidirectional() }!!
 
             channel.send(textBuffer("u0"))

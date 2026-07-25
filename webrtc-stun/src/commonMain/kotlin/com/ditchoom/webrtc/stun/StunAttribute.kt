@@ -64,15 +64,17 @@ public class RawAttribute internal constructor(
             type: StunAttributeType,
             address: TransportAddress,
             transactionId: TransactionId,
-        ): RawAttribute = ofValue(type, encodeAddress(address, xorWith = transactionId))
+            factory: BufferFactory = BufferFactory.Default,
+        ): RawAttribute = ofValue(type, encodeAddress(address, xorWith = transactionId, factory = factory), factory)
 
         /** Wraps a caller-built, exactly-[length]-byte value, padding it to a 4-byte boundary with zeros. */
         internal fun ofValue(
             type: StunAttributeType,
             declared: ReadBuffer,
+            factory: BufferFactory = BufferFactory.Default,
         ): RawAttribute {
             val len = declared.remaining()
-            val padded = BufferFactory.Default.allocate(StunMessage.paddedLength(len), ByteOrder.BIG_ENDIAN)
+            val padded = factory.allocate(StunMessage.paddedLength(len), ByteOrder.BIG_ENDIAN)
             val dp = declared.position()
             padded.write(declared)
             declared.position(dp)
@@ -92,16 +94,19 @@ public class RawAttribute internal constructor(
         public fun ofText(
             type: StunAttributeType,
             text: String,
+            factory: BufferFactory = BufferFactory.Default,
         ): RawAttribute {
-            val bytes = BufferFactory.Default.allocate(utf8Size(text), ByteOrder.BIG_ENDIAN)
+            val bytes = factory.allocate(utf8Size(text), ByteOrder.BIG_ENDIAN)
             bytes.writeString(text, Charset.UTF8)
             bytes.resetForRead()
-            return ofValue(type, bytes)
+            return ofValue(type, bytes, factory)
         }
 
         /** MAPPED-ADDRESS (RFC 8489 §14.1) — plaintext family/port/address. */
-        public fun ofMappedAddress(address: TransportAddress): RawAttribute =
-            ofValue(StunAttributeType.MappedAddress, encodeAddress(address, xorWith = null))
+        public fun ofMappedAddress(
+            address: TransportAddress,
+            factory: BufferFactory = BufferFactory.Default,
+        ): RawAttribute = ofValue(StunAttributeType.MappedAddress, encodeAddress(address, xorWith = null, factory = factory), factory)
 
         /**
          * XOR-MAPPED-ADDRESS (RFC 8489 §14.2) — port XOR'd with the cookie's high half, address
@@ -110,18 +115,27 @@ public class RawAttribute internal constructor(
         public fun ofXorMappedAddress(
             address: TransportAddress,
             transactionId: TransactionId,
-        ): RawAttribute = ofValue(StunAttributeType.XorMappedAddress, encodeAddress(address, xorWith = transactionId))
+            factory: BufferFactory = BufferFactory.Default,
+        ): RawAttribute =
+            ofValue(
+                StunAttributeType.XorMappedAddress,
+                encodeAddress(address, xorWith = transactionId, factory = factory),
+                factory,
+            )
 
         /** ERROR-CODE (RFC 8489 §14.8). */
-        public fun ofErrorCode(error: StunErrorCode): RawAttribute {
+        public fun ofErrorCode(
+            error: StunErrorCode,
+            factory: BufferFactory = BufferFactory.Default,
+        ): RawAttribute {
             val reason = error.reason
-            val body = BufferFactory.Default.allocate(ADDR_HEADER_BYTES + utf8Size(reason), ByteOrder.BIG_ENDIAN)
+            val body = factory.allocate(ADDR_HEADER_BYTES + utf8Size(reason), ByteOrder.BIG_ENDIAN)
             body.writeShort(0) // 2 reserved bytes
             body.writeByte((error.code / ERROR_CLASS_DIVISOR).toByte()) // class (3..6)
             body.writeByte((error.code % ERROR_CLASS_DIVISOR).toByte()) // number (0..99)
             body.writeString(reason, Charset.UTF8)
             body.resetForRead()
-            return ofValue(StunAttributeType.ErrorCode, body)
+            return ofValue(StunAttributeType.ErrorCode, body, factory)
         }
 
         internal fun ipv6XorKey(transactionId: TransactionId?): Pair<ULong, ULong> {
@@ -134,9 +148,10 @@ public class RawAttribute internal constructor(
         private fun encodeAddress(
             address: TransportAddress,
             xorWith: TransactionId?,
+            factory: BufferFactory = BufferFactory.Default,
         ): ReadBuffer {
             val ip = address.ip
-            val buf = BufferFactory.Default.allocate(ADDR_HEADER_BYTES + ipSize(ip), ByteOrder.BIG_ENDIAN)
+            val buf = factory.allocate(ADDR_HEADER_BYTES + ipSize(ip), ByteOrder.BIG_ENDIAN)
             buf.writeByte(0) // reserved
             buf.writeUByte(ip.family)
             val portMask = if (xorWith != null) PORT_XOR else 0

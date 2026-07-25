@@ -113,8 +113,8 @@ public class TurnAllocation(
         val transactionId = TransactionId.random(random)
         val indication =
             StunMessageBuilder
-                .of(StunClass.Indication, StunMethod.Send, transactionId)
-                .add(RawAttribute.ofXorAddress(StunAttributeType.XorPeerAddress, peer.toTransportAddress(), transactionId))
+                .of(StunClass.Indication, StunMethod.Send, transactionId, bufferFactory)
+                .add(RawAttribute.ofXorAddress(StunAttributeType.XorPeerAddress, peer.toTransportAddress(), transactionId, bufferFactory))
                 .add(RawAttribute.ofRaw(StunAttributeType.Data, payload))
                 .encode(bufferFactory)
         underlying.send(indication, to = server)
@@ -137,7 +137,14 @@ public class TurnAllocation(
         val response =
             request(DEFAULT_GATHER_TIMEOUT) { transactionId ->
                 builderFor(StunMethod.CreatePermission, transactionId)
-                    .add(RawAttribute.ofXorAddress(StunAttributeType.XorPeerAddress, peer.toTransportAddress(), transactionId))
+                    .add(
+                        RawAttribute.ofXorAddress(
+                            StunAttributeType.XorPeerAddress,
+                            peer.toTransportAddress(),
+                            transactionId,
+                            bufferFactory,
+                        ),
+                    )
             }
         if (response?.messageType?.stunClass == StunClass.SuccessResponse) permitted += peer.host
     }
@@ -190,14 +197,14 @@ public class TurnAllocation(
 
     private fun allocateRequest(transactionId: TransactionId): StunMessageBuilder {
         val builder =
-            authed(StunMessageBuilder.of(StunClass.Request, StunMethod.Allocate, transactionId))
-                .add(RawAttribute.ofRequestedTransport())
+            authed(StunMessageBuilder.of(StunClass.Request, StunMethod.Allocate, transactionId, bufferFactory))
+                .add(RawAttribute.ofRequestedTransport(factory = bufferFactory))
         // RFC 8656 §7.2: without REQUESTED-ADDRESS-FAMILY the server allocates an IPv4 relay. A v6 TURN
         // server has no usable v4 relay address (it falls back to loopback → an unreachable relay candidate
         // → ICE AllPairsFailed), so ask for the family that matches the server we are allocating on. v4 is
         // left to the default (attribute omitted), so the v4 path is wire-unchanged.
         if (server.family == AddressFamily.IPv6) {
-            builder.add(RawAttribute.ofRequestedAddressFamily(TURN_FAMILY_IPV6))
+            builder.add(RawAttribute.ofRequestedAddressFamily(TURN_FAMILY_IPV6, bufferFactory))
         }
         return builder
     }
@@ -205,13 +212,13 @@ public class TurnAllocation(
     private fun builderFor(
         method: StunMethod,
         transactionId: TransactionId,
-    ): StunMessageBuilder = authed(StunMessageBuilder.of(StunClass.Request, method, transactionId))
+    ): StunMessageBuilder = authed(StunMessageBuilder.of(StunClass.Request, method, transactionId, bufferFactory))
 
     // Add USERNAME and, once challenged, REALM/NONCE (RFC 8656 long-term-credential form).
     private fun authed(builder: StunMessageBuilder): StunMessageBuilder {
-        builder.add(RawAttribute.ofText(StunAttributeType.Username, username))
-        realm?.let { builder.add(RawAttribute.ofText(StunAttributeType.Realm, it)) }
-        nonce?.let { builder.add(RawAttribute.ofText(StunAttributeType.Nonce, it)) }
+        builder.add(RawAttribute.ofText(StunAttributeType.Username, username, bufferFactory))
+        realm?.let { builder.add(RawAttribute.ofText(StunAttributeType.Realm, it, bufferFactory)) }
+        nonce?.let { builder.add(RawAttribute.ofText(StunAttributeType.Nonce, it, bufferFactory)) }
         return builder
     }
 

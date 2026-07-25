@@ -7,6 +7,7 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.Connection
+import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.association.SctpReliability
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sdp.SdpType
@@ -52,8 +53,15 @@ private fun newRtcPeerConnection(iceServers: List<IceServer>): dynamic {
         val urls = js("[]")
         for (u in server.urls) urls.push(u)
         entry.urls = urls
-        server.username?.let { entry.username = it }
-        server.credential?.let { entry.credential = it }
+        // Both halves together or neither — the sealed credential makes the half-filled entry the
+        // browser used to accept unrepresentable.
+        when (val credentials = server.credentials) {
+            IceServerCredentials.None -> Unit
+            is IceServerCredentials.LongTerm -> {
+                entry.username = credentials.username
+                entry.credential = credentials.credential
+            }
+        }
         servers.push(entry)
     }
     config.iceServers = servers
@@ -83,7 +91,7 @@ private fun iceCandidateInit(candidate: String): dynamic {
 // not silently dropped to the browser defaults (ordered + reliable).
 private fun dataChannelInit(config: DataChannelConfig): dynamic {
     val init: dynamic = js("({})")
-    init.ordered = config.ordered
+    init.ordered = config.delivery == DeliveryOrder.Ordered
     when (val r = config.reliability) {
         SctpReliability.Reliable -> Unit
         is SctpReliability.MaxRetransmits -> init.maxRetransmits = r.maxRetransmits
@@ -123,6 +131,7 @@ private fun mapSignalingState(state: String): SignalingState? =
         else -> null
     }
 
+@OptIn(ExternalRtcPeerConnectionImplementation::class)
 private class BrowserPeerConnection(
     iceServers: List<IceServer>,
 ) : RtcPeerConnection {
@@ -247,6 +256,10 @@ private fun readBufferToArrayBuffer(buf: ReadBuffer): ArrayBuffer {
 private fun arrayBufferToReadBuffer(ab: ArrayBuffer): ReadBuffer {
     val u8 = Uint8Array(ab)
     val len = u8.length
+    // BufferFactory.Default is correct HERE, and is not a missed seam: on the browser-delegated path the
+    // whole stack is the browser's own RTCPeerConnection, `create(scope, iceServers)` takes no config, and
+    // so there is no consumer-injected factory in play to honour. Every allocation the PURE-KOTLIN stack
+    // makes routes through an injected factory (see webrtc-stun / SctpConfig / IceConfig).
     val out = BufferFactory.Default.allocate(maxOf(1, len), ByteOrder.BIG_ENDIAN)
     for (i in 0 until len) out.writeByte(u8[i])
     out.resetForRead()

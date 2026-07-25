@@ -7,6 +7,7 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.Connection
+import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.association.SctpReliability
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sdp.SdpType
@@ -49,6 +50,7 @@ private object WasmJsBrowserSupport : PeerConnectionSupport.BrowserDelegated {
     ): RtcPeerConnection = WasmBrowserPeerConnection(iceServers)
 }
 
+@OptIn(ExternalRtcPeerConnectionImplementation::class)
 private class WasmBrowserPeerConnection(
     iceServers: List<IceServer>,
 ) : RtcPeerConnection {
@@ -175,8 +177,14 @@ private fun iceServersJson(iceServers: List<IceServer>): String =
                 append('"').append(jsonEscape(url)).append('"')
             }
             append(']')
-            server.username?.let { append(",\"username\":\"").append(jsonEscape(it)).append('"') }
-            server.credential?.let { append(",\"credential\":\"").append(jsonEscape(it)).append('"') }
+            // Both halves together or neither (see the sealed IceServerCredentials).
+            when (val credentials = server.credentials) {
+                IceServerCredentials.None -> Unit
+                is IceServerCredentials.LongTerm -> {
+                    append(",\"username\":\"").append(jsonEscape(credentials.username)).append('"')
+                    append(",\"credential\":\"").append(jsonEscape(credentials.credential)).append('"')
+                }
+            }
             append('}')
         }
         append("]}")
@@ -185,7 +193,7 @@ private fun iceServersJson(iceServers: List<IceServer>): String =
 // RTCDataChannelInit — ordered/reliability/protocol forwarded so they aren't dropped to browser defaults.
 private fun dataChannelInitJson(config: DataChannelConfig): String =
     buildString {
-        append("{\"ordered\":").append(config.ordered)
+        append("{\"ordered\":").append(config.delivery == DeliveryOrder.Ordered)
         when (val r = config.reliability) {
             SctpReliability.Reliable -> Unit
             is SctpReliability.MaxRetransmits -> append(",\"maxRetransmits\":").append(r.maxRetransmits)
@@ -229,6 +237,10 @@ private fun hexDigit(c: Char): Int =
 
 private fun hexToReadBuffer(hex: String): ReadBuffer {
     val len = hex.length / 2
+    // BufferFactory.Default is correct HERE, and is not a missed seam: on the browser-delegated path the
+    // whole stack is the browser's own RTCPeerConnection, `create(scope, iceServers)` takes no config, and
+    // so there is no consumer-injected factory in play to honour. Every allocation the PURE-KOTLIN stack
+    // makes routes through an injected factory (see webrtc-stun / SctpConfig / IceConfig).
     val out = BufferFactory.Default.allocate(maxOf(1, len), ByteOrder.BIG_ENDIAN)
     var i = 0
     while (i < len) {

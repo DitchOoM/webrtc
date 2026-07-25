@@ -7,6 +7,7 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.managed
+import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.PayloadProtocolId
 import com.ditchoom.webrtc.sctp.StreamId
 import kotlin.test.Test
@@ -155,7 +156,10 @@ class SctpAssociationTest {
         for (i in 0 until count) {
             sim.post(
                 toA = true,
-                SctpEvent.SendMessage(SctpSendOptions(STREAM0, PayloadProtocolId.WebRtcBinary, unordered = true), payload(30, seed = i)),
+                SctpEvent.SendMessage(
+                    SctpSendOptions(STREAM0, PayloadProtocolId.WebRtcBinary, delivery = DeliveryOrder.Unordered),
+                    payload(30, seed = i),
+                ),
             )
         }
         sim.run()
@@ -180,7 +184,7 @@ class SctpAssociationTest {
                     SctpSendOptions(
                         STREAM0,
                         PayloadProtocolId.WebRtcBinary,
-                        unordered = true,
+                        delivery = DeliveryOrder.Unordered,
                         reliability = SctpReliability.MaxRetransmits(0),
                     ),
                     payload(30, seed = i),

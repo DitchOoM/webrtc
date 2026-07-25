@@ -1,5 +1,6 @@
 package com.ditchoom.webrtc.sctp.datachannel
 
+import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.association.SctpReliability
 
 /**
@@ -17,7 +18,7 @@ public enum class SctpRole {
 }
 
 /**
- * The negotiated properties of one data channel (RFC 8832 §5.1 DATA_CHANNEL_OPEN). [ordered] and
+ * The negotiated properties of one data channel (RFC 8832 §5.1 DATA_CHANNEL_OPEN). [delivery] and
  * [reliability] map straight onto the DCEP Channel Type + Reliability Parameter; [label] and [protocol]
  * are the UTF-8 identifiers the peer sees. This is the value carried in a DATA_CHANNEL_OPEN and
  * reconstructed from one on the receiving side.
@@ -25,7 +26,7 @@ public enum class SctpRole {
 public data class DataChannelConfig(
     public val label: String = "",
     public val protocol: String = "",
-    public val ordered: Boolean = true,
+    public val delivery: DeliveryOrder = DeliveryOrder.Ordered,
     public val reliability: SctpReliability = SctpReliability.Reliable,
     /** DCEP scheduling priority (RFC 8832 §5.1) — opaque to this subset; carried through verbatim. */
     public val priority: UShort = 0u,

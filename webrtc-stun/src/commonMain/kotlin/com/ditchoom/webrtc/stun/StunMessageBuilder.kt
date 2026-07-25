@@ -19,6 +19,13 @@ import com.ditchoom.buffer.crypto.hmacSha256
 public class StunMessageBuilder(
     private val messageType: StunMessageType,
     private val transactionId: TransactionId,
+    /**
+     * Allocator for every scratch buffer this builder makes — the integrity/fingerprint prefixes and
+     * attribute values. A constructor-injected seam with a production default (directive #2): a caller
+     * that hands the stack a pooled or tracking factory gets it used HERE too, rather than silently
+     * bypassed by a hardwired `BufferFactory.Default`.
+     */
+    private val factory: BufferFactory = BufferFactory.Default,
 ) {
     private val attributes = mutableListOf<RawAttribute>()
 
@@ -31,7 +38,7 @@ public class StunMessageBuilder(
     public fun addMessageIntegrity(key: ReadBuffer): StunMessageBuilder {
         requireNoFingerprintYet("MESSAGE-INTEGRITY")
         val prefix = serializePrefix(lengthAddend = MESSAGE_INTEGRITY_TLV_BYTES)
-        attributes += RawAttribute.ofValue(StunAttributeType.MessageIntegrity, hmacSha1(key, prefix, BufferFactory.Default))
+        attributes += RawAttribute.ofValue(StunAttributeType.MessageIntegrity, hmacSha1(key, prefix, factory), factory)
         return this
     }
 
@@ -50,9 +57,9 @@ public class StunMessageBuilder(
         }
         requireNoFingerprintYet("MESSAGE-INTEGRITY-SHA256")
         val prefix = serializePrefix(lengthAddend = StunMessage.TLV_HEADER_BYTES + tagLengthBytes)
-        val full = hmacSha256(key, prefix, BufferFactory.Default)
+        val full = hmacSha256(key, prefix, factory)
         val tag = if (tagLengthBytes == HMAC_SHA256_BYTES) full else full.sliceOf(0, tagLengthBytes)
-        attributes += RawAttribute.ofValue(StunAttributeType.MessageIntegritySha256, tag)
+        attributes += RawAttribute.ofValue(StunAttributeType.MessageIntegritySha256, tag, factory)
         return this
     }
 
@@ -68,10 +75,10 @@ public class StunMessageBuilder(
     public fun addFingerprint(): StunMessageBuilder {
         val prefix = serializePrefix(lengthAddend = FINGERPRINT_TLV_BYTES)
         val crc = prefix.crc32() xor StunMessage.FINGERPRINT_XOR
-        val value = BufferFactory.Default.allocate(UINT_BYTES, ByteOrder.BIG_ENDIAN)
+        val value = factory.allocate(UINT_BYTES, ByteOrder.BIG_ENDIAN)
         value.writeUInt(crc)
         value.resetForRead()
-        attributes += RawAttribute.ofValue(StunAttributeType.Fingerprint, value)
+        attributes += RawAttribute.ofValue(StunAttributeType.Fingerprint, value, factory)
         return this
     }
 
@@ -83,7 +90,7 @@ public class StunMessageBuilder(
     }
 
     /** Convenience: build then [StunMessage.encode]. */
-    public fun encode(factory: BufferFactory = BufferFactory.Default): com.ditchoom.buffer.PlatformBuffer = build().encode(factory)
+    public fun encode(factory: BufferFactory = this.factory): com.ditchoom.buffer.PlatformBuffer = build().encode(factory)
 
     // Serializes header + current attributes into a read-ready buffer, with the header length field
     // set to (current attribute bytes + the about-to-be-added attribute's wire size) — the length the
@@ -91,7 +98,7 @@ public class StunMessageBuilder(
     private fun serializePrefix(lengthAddend: Int): ReadBuffer {
         val attrBytes = attributes.sumOf { StunMessage.TLV_HEADER_BYTES + StunMessage.paddedLength(it.length) }
         val header = StunHeader(messageType, (attrBytes + lengthAddend).toUShort(), Stun.MAGIC_COOKIE, transactionId)
-        val scratch = BufferFactory.Default.allocate(StunHeader.SIZE_BYTES + attrBytes, ByteOrder.BIG_ENDIAN)
+        val scratch = factory.allocate(StunHeader.SIZE_BYTES + attrBytes, ByteOrder.BIG_ENDIAN)
         StunMessage.writeInto(scratch, header, attributes)
         scratch.resetForRead()
         return scratch
@@ -109,6 +116,7 @@ public class StunMessageBuilder(
             stunClass: StunClass,
             method: StunMethod,
             transactionId: TransactionId,
-        ): StunMessageBuilder = StunMessageBuilder(StunMessageType.of(stunClass, method), transactionId)
+            factory: BufferFactory = BufferFactory.Default,
+        ): StunMessageBuilder = StunMessageBuilder(StunMessageType.of(stunClass, method), transactionId, factory)
     }
 }

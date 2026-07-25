@@ -231,9 +231,10 @@ services:
       # the historical establish-and-echo behaviour byte-identical.
       WEBRTC_SEMANTICS: "${PEER_SEMANTICS:-0}"
       WEBRTC_SEMANTICS_TIMEOUT_MS: "${PEER_SEMANTICS_TIMEOUT_MS:-120000}"
-      # Which phases run (empty = all) and whether a failed phase fails THIS process. Semantics land
-      # NON-GATING-first (decision D7): the phases always run and always report; run-interop.sh surfaces a
-      # failure as an informational ::warning:: until HARNESS_SEMANTICS_GATING=1 flips this on.
+      # Which phases run (empty = all) and whether a failed phase fails THIS process. Semantics landed
+      # NON-GATING-first (decision D7) and are now PROMOTED: run-interop.sh resolves the gate PER LANE
+      # (semantics_gate_for) and exports it before this service comes up, so a failed phase fails the lane
+      # everywhere except the named holdouts in $SEMANTICS_NON_GATING.
       WEBRTC_SCENARIOS: "${PEER_SCENARIOS:-}"
       WEBRTC_SEMANTICS_REQUIRED: "${PEER_SEMANTICS_REQUIRED:-0}"
       # s5: the ANSWERER originates a channel and the offerer reflects it. Only meaningful when BOTH ends
@@ -335,9 +336,10 @@ services:
       # the historical establish-and-echo behaviour byte-identical.
       WEBRTC_SEMANTICS: "${PEER_SEMANTICS:-0}"
       WEBRTC_SEMANTICS_TIMEOUT_MS: "${PEER_SEMANTICS_TIMEOUT_MS:-120000}"
-      # Which phases run (empty = all) and whether a failed phase fails THIS process. Semantics land
-      # NON-GATING-first (decision D7): the phases always run and always report; run-interop.sh surfaces a
-      # failure as an informational ::warning:: until HARNESS_SEMANTICS_GATING=1 flips this on.
+      # Which phases run (empty = all) and whether a failed phase fails THIS process. Semantics landed
+      # NON-GATING-first (decision D7) and are now PROMOTED: run-interop.sh resolves the gate PER LANE
+      # (semantics_gate_for) and exports it before this service comes up, so a failed phase fails the lane
+      # everywhere except the named holdouts in $SEMANTICS_NON_GATING.
       WEBRTC_SCENARIOS: "${PEER_SCENARIOS:-}"
       WEBRTC_SEMANTICS_REQUIRED: "${PEER_SEMANTICS_REQUIRED:-0}"
       # s5: the ANSWERER originates a channel and the offerer reflects it. Only meaningful when BOTH ends

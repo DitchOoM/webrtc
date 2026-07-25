@@ -19,8 +19,9 @@
 # offerer-driven phase sequence over the SAME association it establishes — s1 large/fragmented (byte-identity
 # + the negotiated a=max-message-size boundary), s2 unordered, s3 partial-reliable (PR-SCTP + FORWARD-TSN
 # no-wedge), s4 multiplexed, s5 reverse-direction (our lanes only), s6 DONE + graceful association SHUTDOWN.
-# The answerer is a scenario-agnostic reflector in every family, so this costs no new CI lanes. It lands
-# NON-GATING-first ($HARNESS_SEMANTICS_GATING, see below) exactly like every new lane here.
+# The answerer is a scenario-agnostic reflector in every family, so this costs no new CI lanes. They landed
+# NON-GATING-first and are now PROMOTED: a failed phase FAILS its lane everywhere except the named holdouts
+# in $SEMANTICS_NON_GATING (see below) — the werift lanes, which never establish at all.
 #
 # Usage:
 #   ./run-interop.sh                 # full matrix, prebuilt-binary fast path (host gradle build)
@@ -28,7 +29,8 @@
 #   ./run-interop.sh <scenario-name> # run a single scenario by name
 #   HARNESS_SEMANTICS=0 ./run-interop.sh        # establish-and-echo only (the pre-semantics harness)
 #   HARNESS_SCENARIOS=s1 ./run-interop.sh       # run only the named semantics phase(s)
-#   HARNESS_SEMANTICS_GATING=1 ./run-interop.sh # a failed semantics phase FAILS its lane
+#   HARNESS_SEMANTICS_GATING=0 ./run-interop.sh # de-gate semantics everywhere (debugging; default is 1)
+#   HARNESS_SEMANTICS_NON_GATING="x y" ./run-interop.sh  # override the named informational-lane holdouts
 set -uo pipefail
 cd "$(dirname "$0")"
 
@@ -239,24 +241,53 @@ NON_GATING=" impaired-loss-delay ${HARNESS_NON_GATING:-} "
 # every answerer becomes a universal reflector that exits on the offerer's DONE. No new lanes: each
 # existing lane gains the whole matrix. HARNESS_SEMANTICS=0 restores the pure establish-and-echo harness.
 #
-# GATING (decision D7): semantics land NON-GATING-first, exactly like every new lane here. The phases
-# always run and always report — a failure is an informational ::warning:: and does NOT redden the run —
-# until HARNESS_SEMANTICS_GATING=1 (a one-line follow-up) makes the peer itself exit non-zero on a failed
-# phase. That flag is what promotes them; nothing else changes.
+# GATING (decision D7): semantics landed NON-GATING-first, exactly like every new lane here — and are now
+# PROMOTED. The default is gating; the promotion is PER LANE rather than one global flag, because the
+# blocker was never our stack: across all 6 NAT-matrix jobs of run 30127793273 every lane of ours reported
+# total=6 passed=6, and the only two holdouts were foreign-peer lanes. $SEMANTICS_NON_GATING carves those
+# out; everything else now fails its lane on a failed phase.
+#
+# HARNESS_SEMANTICS_GATING=0 restores the old informational-everywhere behavior for a debugging run.
 export PEER_SEMANTICS="${HARNESS_SEMANTICS:-1}"
-export PEER_SEMANTICS_REQUIRED="${HARNESS_SEMANTICS_GATING:-0}"
 export PEER_SEMANTICS_TIMEOUT_MS="${HARNESS_SEMANTICS_TIMEOUT_MS:-120000}"
 export PEER_SCENARIOS="${HARNESS_SCENARIOS:-}"   # e.g. "s1,s3" to debug a single phase
 sem_warned_names=""
+
+# Lanes whose SEMANTICS stay informational while everything else gates. Space-padded for whole-word `case`.
+# This is deliberately a list of NAMED, UNDERSTOOD holdouts, not a blanket switch — a lane may sit here only
+# with a reason:
+#   node-interop / jvm-node — werift never reaches Connected on these lanes at all (state=Connecting at
+#     3m30s), so they print no semantics summary to grade. They are ALREADY informational for establishment
+#     ($HARNESS_NON_GATING, set by CI); gating their semantics would be gating a lane that never runs.
+# `pion-interop` was the third holdout and is NOT here any more: its s2/s3/s4 failures were OUR RFC 8832 §6
+# violation (unordered user data overtaking the DCEP OPEN, killing pion's accept loop), fixed in the commit
+# this change is stacked on. Gating it is what keeps that fixed.
+SEMANTICS_NON_GATING=" ${HARNESS_SEMANTICS_NON_GATING-node-interop jvm-node} "
+
+# Resolve THIS lane's semantics gate. Exported per scenario (compose reads it at `up` time, and the stack is
+# re-upped per scenario) so the peer itself exits non-zero on a failed phase only where we mean it to.
+semantics_gate_for() {
+    case "$SEMANTICS_NON_GATING" in *" $1 "*) echo 0; return ;; esac
+    echo "${HARNESS_SEMANTICS_GATING:-1}"
+}
 
 # Grade one lane's semantics result off the offerer's summary line (the peer prints it; we never re-read
 # the container log — same anti-truncation discipline as the relay assertion). Under gating the peer has
 # already failed itself, so this only reports; ungated it warns. $2 is the offerer's captured log.
 semantics_report() {
     local name="$1" log="$2" summary failed
+    sem_missing=0
     [ "$PEER_SEMANTICS" = "1" ] || return 0
     summary=$(printf '%s\n' "$log" | grep -F 'semantics-summary:' | tail -1)
     if [ -z "$summary" ]; then
+        # Under gating, silence is a failure mode of its own: a lane whose phases silently STOPPED RUNNING
+        # would otherwise pass green forever, since the peer only exits non-zero on a phase that ran and
+        # failed. Flagged here and consumed on the PASS path (a lane that also failed its rc check is
+        # already recorded, so this can never double-count).
+        if [ "$(semantics_gate_for "$name")" = "1" ]; then
+            sem_missing=1
+            return 0
+        fi
         echo "::warning::⚠️ [$name] the offerer printed no semantics-summary (phases did not run) — NON-GATING"
         sem_warned_names="$sem_warned_names $name"
         return 0
@@ -269,7 +300,7 @@ semantics_report() {
             # failure by the rc check — this line only names the phases.
             echo "::error::❌ [$name] $failed data-channel semantics phase(s) failed: $(printf '%s\n' "$summary" | sed -n 's/.*failed-phases=\[\(.*\)\].*/\1/p')"
         else
-            echo "::warning::⚠️ [$name] $failed data-channel semantics phase(s) failed: $(printf '%s\n' "$summary" | sed -n 's/.*failed-phases=\[\(.*\)\].*/\1/p') — NON-GATING (semantics land informational-first; set HARNESS_SEMANTICS_GATING=1 to promote)"
+            echo "::warning::⚠️ [$name] $failed data-channel semantics phase(s) failed: $(printf '%s\n' "$summary" | sed -n 's/.*failed-phases=\[\(.*\)\].*/\1/p') — NON-GATING (this lane is a named holdout in \$SEMANTICS_NON_GATING), so NOT failing the run"
             sem_warned_names="$sem_warned_names $name"
         fi
     fi
@@ -439,6 +470,11 @@ run_scenario() {
 
     export NAT_A_PROFILE="$nat_a" NAT_B_PROFILE="$nat_b" ICE_POLICY="$policy" SESSION="$name"
 
+    # Per-lane semantics gate — compose reads this at `up` time and the stack is re-upped per scenario, so
+    # the peer enforces phases (exits non-zero on a failed one) on exactly the lanes we promote.
+    export PEER_SEMANTICS_REQUIRED
+    PEER_SEMANTICS_REQUIRED=$(semantics_gate_for "$name")
+
     # DISTINCT per-lane, per-role seeds (scenario+family+role → a stable u32 via cksum) so no two lanes and
     # neither peer share entropy. Our peers read WEBRTC_SEED (=SEED_A offerer / SEED_B answerer, wired in
     # compose); it drives EVERY entropy source (ICE/DTLS/SCTP), so a logged seed reproduces exactly this
@@ -585,6 +621,9 @@ run_scenario() {
                 && ! grep -qE 'Connected\(selectedPair=CandidatePair\(.*Relayed' <<< "$a_log"; then
             fail_scenario "$name" "established but the selected ICE pair is NOT a relay pair (this lane must traverse the coturn TURN relay)"; return
         fi
+        if [ "$sem_missing" = "1" ]; then
+            fail_scenario "$name" "both peers exited 0 but the offerer printed NO semantics-summary — the data-channel phases did not run on a lane that gates them"; return
+        fi
         echo "✅ [$name] PASS (offerer rc=$rc_a answerer rc=$rc_b)"; pass=$((pass+1))
     else
         fail_scenario "$name" "FAIL (offerer rc=$rc_a answerer rc=$rc_b)"
@@ -606,6 +645,10 @@ run_mdns_scenario() {
 
     # PEER_REVERSE=0: this lane's answerer is a browser, which can only reflect — never originate (s5).
     export ICE_POLICY="$policy" SESSION="$name" PEER_DTLS13="true" PEER_REVERSE=0
+
+    # Per-lane semantics gate — see run_scenario.
+    export PEER_SEMANTICS_REQUIRED
+    PEER_SEMANTICS_REQUIRED=$(semantics_gate_for "$name")
     # Distinct per-lane seeds (see run_scenario). The browser answerer ignores WEBRTC_SEED.
     export SEED_A SEED_B
     SEED_A=$(printf '%s' "${name}-${IP_FAMILY}-a" | cksum | cut -d' ' -f1)
@@ -666,6 +709,9 @@ run_mdns_scenario() {
             fail_scenario "$name" "established but our MulticastMdnsResolver never resolved the browser's .local (no 'mdns resolved' line — the resolver was not exercised)"; export COMPOSE_FILE="$saved_compose"; return
         fi
         echo "[mdns] ✅ our MulticastMdnsResolver resolved the browser's .local candidate"
+        if [ "$sem_missing" = "1" ]; then
+            fail_scenario "$name" "both peers exited 0 but the offerer printed NO semantics-summary — the data-channel phases did not run on a lane that gates them"; export COMPOSE_FILE="$saved_compose"; return
+        fi
         echo "✅ [$name] PASS (offerer rc=$rc_a answerer rc=$rc_b) — obfuscation-ON browser interop + mDNS resolution proven"; pass=$((pass+1))
     else
         fail_scenario "$name" "FAIL (offerer rc=$rc_a answerer rc=$rc_b)"
@@ -699,7 +745,7 @@ while IFS='|' read -r name a b policy netem a_impl b_impl topo <&3; do
 done 3<<< "$SCENARIOS"
 
 echo ""
-echo "═══ summary: $pass passed, $fail failed${failed_names:+ (failed:$failed_names)}${warned_names:+, $warn non-gating failure(s):$warned_names (informational — deterministic DtlsSctpLossReproductionTest is the hard gate)}${sem_warned_names:+, data-channel semantics reported failures in:$sem_warned_names (informational until HARNESS_SEMANTICS_GATING=1)} ═══"
+echo "═══ summary: $pass passed, $fail failed${failed_names:+ (failed:$failed_names)}${warned_names:+, $warn non-gating failure(s):$warned_names (informational — deterministic DtlsSctpLossReproductionTest is the hard gate)}${sem_warned_names:+, data-channel semantics reported failures in:$sem_warned_names (informational — named holdouts in \$SEMANTICS_NON_GATING)} ═══"
 # Exit non-zero iff a GATING scenario failed, or NOTHING ran at all. NON-GATING failures ($warn) never fail
 # the run — the impaired lane's hard gate is the deterministic DtlsSctpLossReproductionTest, and v6/dual lanes
 # land informational-first (FAMILY_GATING). A non-gating-ONLY run still counts as a successful run: e.g. a

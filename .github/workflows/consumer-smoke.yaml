@@ -37,8 +37,9 @@ on:
         description: >-
           Also run the macosArm64 consumer host. A cold run downloads its own ~600 MB Kotlin/Native
           distribution (coldness is the point — a warm cache hides the missing-variant bug this lane
-          exists to find), so the PR lane runs Linux only and the merge/release lanes run both. A
-          macOS-only publish break is therefore caught at merge, still before anything reaches Central.
+          exists to find), which is why this is a switch at all. Every caller now passes true: running
+          one host is not really a per-target artifact gate, and a Linux-only run once let a Linux-only
+          test source set through to main, where the macOS job failed at merge and blocked the release.
         required: false
         default: false
         type: boolean
@@ -153,9 +154,13 @@ jobs:
           done
           # Floor, not an exact count, so adding a scenario never needs a workflow edit: 4 jvmTest
           # scenarios (flat, symmetric-relay, relay-only, impaired+relayOnly+symmetric) + 2 native link
-          # tests. A number below this means a source set stopped being compiled.
+          # tests. A number below this means a source set stopped being compiled — which is not
+          # hypothetical: exactly 4 here once meant ApiLinkTest sat in a Linux-only `linuxX64Test`
+          # source set, so the macOS host compiled no native tests and link-tested no Apple klibs. If
+          # this fires, check the per-file list above for a MISSING native result before touching the
+          # floor; the fix is almost certainly a source set, not this number.
           if [ "$total" -lt 6 ]; then
-            echo "::error::only $total consumer test(s) ran; expected at least 6 (4 harness scenarios + 2 native link)"; exit 1
+            echo "::error::only $total consumer test(s) ran; expected at least 6 (4 harness scenarios + 2 native link). A missing native result usually means the K/N test source set is not shared across hosts (use src/nativeTest, not src/<target>Test)."; exit 1
           fi
           echo "=== consumer-smoke: $total test(s) passed against $VERSION ==="
         env:

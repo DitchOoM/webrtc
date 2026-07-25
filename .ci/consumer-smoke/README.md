@@ -37,7 +37,7 @@ binary shape; they do not prove a consumer's `when` still compiles without an `e
 selected pair can only mean the knob took effect), and the exit-criterion composition
 `natType(Symmetric) + relayOnly() + impaired(loss/delay/jitter/duplicate)`.
 
-`linuxX64Test/ApiLinkTest.kt` (`macosArm64Test` on macOS) is the native **link** gate.
+`nativeTest/ApiLinkTest.kt` is the native **link** gate. It sits in `nativeTest` so the default hierarchy template maps it to `linuxX64Test` on Linux and `macosArm64Test` on macOS — a per-target source set would leave one host's klibs untested.
 
 ## Running it
 

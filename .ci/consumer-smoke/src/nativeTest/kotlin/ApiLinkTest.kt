@@ -9,6 +9,11 @@ import kotlin.test.assertNotNull
  * transitive `:webrtc`/`:webrtc-*` klibs) into a linked K/N test binary, so a klib left out of the
  * publish surfaces as a link-time failure here rather than slipping past dependency resolution. Runs no
  * network — its purpose is to make the published surface reachable for the native linker.
+ *
+ * Lives in `nativeTest`, **not** `linuxX64Test`. The default hierarchy template maps it to whichever
+ * native target the host declares — `linuxX64Test` on Linux, `macosArm64Test` on macOS — so both hosts'
+ * klibs get link-tested. It was Linux-only once, which meant the macOS lane silently ran four tests
+ * instead of six and never link-tested the Apple klibs at all.
  */
 class ApiLinkTest {
     @Test

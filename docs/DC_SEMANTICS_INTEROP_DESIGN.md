@@ -204,6 +204,8 @@ it genuinely proves vs. what stays in the vnet tests** (honesty about clean-path
 - **`run-interop.sh`** — no matrix change required (semantics run inside existing lanes). Optional: a
   `WEBRTC_SCENARIOS` subset knob for targeted CI debugging; land semantics **NON_GATING-first** per the
   established convention (`$HARNESS_NON_GATING`), flip to gating once green across families/engines.
+  *(Landed: semantics gate everywhere, and the last per-lane holdouts — `node-interop`/`jvm-node` — were
+  promoted once the SCTP INIT deadlock (#43) that kept werift at `Connecting` was fixed.)*
 - **No new signaling wire** — `ctl` is just another data channel; labels ride existing DCEP OPEN.
 - Diagnostics: the #52 getStats timeline + per-message counters already capture everything a red
   semantics phase needs (bytes/messages/retransmits per channel, DTLS/SCTP state) — no new capture.

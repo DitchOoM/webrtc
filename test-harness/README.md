@@ -136,7 +136,7 @@ A failed phase is **recorded and the sequence continues**, so one run reports ev
 | `HARNESS_SEMANTICS` | `1` | `0` restores the pure establish-and-echo harness (phase 0 only) |
 | `HARNESS_SCENARIOS` | *(all)* | subset by short id, e.g. `s1,s3` — a debugging knob, never a lane matrix |
 | `HARNESS_SEMANTICS_GATING` | `1` | **promoted**: a failed phase fails its lane. `0` de-gates everywhere for a debugging run |
-| `HARNESS_SEMANTICS_NON_GATING` | `node-interop jvm-node` | named lanes whose semantics stay informational — the werift lanes, which never reach `Connected` at all, so there is nothing to grade |
+| `HARNESS_SEMANTICS_NON_GATING` | *(empty)* | named lanes whose semantics stay informational. Empty — every lane gates. `node-interop`/`jvm-node` were the last holdouts (werift never reached `Connected`, so there was nothing to grade); the SCTP INIT deadlock behind that (#43) is fixed and both are promoted |
 | `HARNESS_SEMANTICS_TIMEOUT_MS` | `120000` | watchdog for the whole sequence, on top of the establishment watchdog |
 
 Not covered, deliberately: **per-channel close**. That needs an RFC 6525 RE-CONFIG stream reset, which

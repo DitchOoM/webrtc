@@ -186,6 +186,14 @@ testsuite wired into release + validate-artifacts from its first version.
 - **Exit:** interop green: our stack ⇄ Pion and our stack ⇄ Chrome establish + exchange data
   channel messages in CI on the arch-matched matrix; consumer-smoke passes from a clean checkout;
   first public release cut.
+- **Consumer-smoke — landed.** `.ci/consumer-smoke` is a standalone build (its own
+  `settings.gradle.kts`) that declares `com.ditchoom:webrtc` **and** `com.ditchoom:webrtc-testsuite`
+  by coordinate, compiles consumer code against them on every declared target, links a Kotlin/Native
+  test binary against the published klibs, and runs the exit-criterion scenario
+  `natType(); relayOnly(); impaired()` end-to-end. `consumer-smoke.yaml` runs it **cold** (throwaway
+  `GRADLE_USER_HOME`, `--no-build-cache`) in two modes: against the merged maven-local repo on every
+  PR and merge — `publish` needs it, so a consumer-breaking release cannot reach Central — and
+  against **Maven Central only** after the tag, which is what proves the publish itself.
 
 ### P2 — Media transport · status: ☐ · *after W6; separate RFC addendum before starting*
 `webrtc-rtp` (codec module), `webrtc-srtp` (in-place AEAD, tag tailroom API upstream in buffer),

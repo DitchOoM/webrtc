@@ -12,7 +12,17 @@ jobs:
   release:
     name: Release pushed tag
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
+      # `v0.2.0` → `0.2.0`. GitHub expressions have no substring function, so the tag is stripped here
+      # and handed to the consumer lane as a job output.
+      - name: Derive version from tag
+        id: version
+        env:
+          tag: ${{ github.ref_name }}
+        run: echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
       - name: Create release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -26,3 +36,17 @@ jobs:
                 --title="${GITHUB_REPOSITORY#*/} ${tag#v}" \
                 --generate-notes
           fi
+
+  # The POST-release half of the consumer gate: resolve the just-released version from Maven Central and
+  # NOTHING else, cold, as an outside project would. `merged.yaml` already proved the same consumer
+  # against the pre-publish merged repo; this proves the publish itself — that every module and every
+  # target variant genuinely landed on Central and is usable from there. It polls for Central's eventual
+  # consistency rather than racing it.
+  consumer-smoke-central:
+    name: Consumer smoke from Maven Central
+    needs: release
+    uses: ./.github/workflows/consumer-smoke.yaml
+    with:
+      version: ${{ needs.release.outputs.version }}
+      source: central
+      include-macos: true

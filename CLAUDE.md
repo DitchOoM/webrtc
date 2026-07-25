@@ -141,10 +141,16 @@ above) and a `gradle.properties`, and `include(":…")` it in `settings.gradle.k
 
 ## CI/CD
 
-- **PR** (`review.yaml`): `standing-directives` greps → `build-linux` + `build-apple` → `validate-artifacts`.
+- **PR** (`review.yaml`): `standing-directives` greps → `build-linux` + `build-apple` → `validate-artifacts`
+  → `consumer-smoke` (`.ci/consumer-smoke`, a standalone build resolving `com.ditchoom:webrtc` +
+  `webrtc-testsuite` by coordinate; compiles, K/N-links, and runs `withWebRtcHarness { natType();
+  relayOnly(); impaired() }` against a **cold** resolve — throwaway `GRADLE_USER_HOME`, no build cache).
 - **Release** (`merged.yaml`): version bump controlled by PR labels (`major` / `minor`, else patch;
-  `skip-release` / `draft-release` change the flow) → build → validate → `publish-to-central` → finalize
-  (tag + GitHub release). `release.yaml` completes/cancels a draft; `released.yaml` mirrors a pushed tag.
+  `skip-release` / `draft-release` change the flow) → build → validate → `consumer-smoke` (maven-local,
+  both hosts — `publish` needs it, so a consumer-breaking release never reaches Central) →
+  `publish-to-central` → finalize (tag + GitHub release). `release.yaml` completes/cancels a draft;
+  `released.yaml` mirrors a pushed tag **and then re-runs `consumer-smoke` against Maven Central only**
+  (no `mavenLocal()` fallback), which is what proves the publish itself.
 - Version is auto-derived from Maven Central metadata + the label bump; greenfield starts at 0.0.1.
 - Every published artifact (including `webrtc-testsuite`) goes through `validate-artifacts` from its
   first release (the socket #188 lesson).

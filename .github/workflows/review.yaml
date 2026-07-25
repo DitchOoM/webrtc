@@ -110,3 +110,13 @@ jobs:
     uses: ./.github/workflows/validate-artifacts.yaml
     with:
       version: ${{ needs.build-linux.outputs.version }}
+
+  # W7 exit criterion: a real downstream consumer resolves the artifacts this PR would publish, compiles
+  # against them on every target, links them into a K/N binary, and RUNS the harness scenarios. Needs
+  # `validate` for its merged maven-local repo, so a shape problem is reported by the cheaper lane first.
+  consumer-smoke:
+    needs: [build-linux, validate]
+    uses: ./.github/workflows/consumer-smoke.yaml
+    with:
+      version: ${{ needs.build-linux.outputs.version }}
+      source: maven-local

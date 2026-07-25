@@ -116,8 +116,20 @@ jobs:
     with:
       version: ${{ needs.build-linux.outputs.version }}
 
-  publish:
+  # The pre-publish consumer gate: a real downstream project resolves the merged maven-local repo,
+  # compiles + links + runs the harness scenarios against it. `publish` needs this, so a release that
+  # would break a consumer never reaches Central in the first place.
+  consumer-smoke:
     needs: [check-release, build-linux, validate]
+    if: needs.check-release.outputs.flow != 'skip'
+    uses: ./.github/workflows/consumer-smoke.yaml
+    with:
+      version: ${{ needs.build-linux.outputs.version }}
+      source: maven-local
+      include-macos: true
+
+  publish:
+    needs: [check-release, build-linux, validate, consumer-smoke]
     if: needs.check-release.outputs.flow == 'draft' || needs.check-release.outputs.flow == 'release'
     uses: ./.github/workflows/publish-to-central.yaml
     with:

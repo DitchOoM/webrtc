@@ -277,6 +277,46 @@ public sealed interface SctpChunk {
         override fun writeValue(dest: WriteBuffer): Unit = Unit
     }
 
+    /**
+     * RE-CONFIG (type 130, RFC 6525 §3.1) — stream reconfiguration. The body is a run of RFC 6525 §4
+     * parameters; the RFC constrains it to **one or two** ([wellFormed]), the usual pairing being a
+     * request plus the response to the peer's outstanding request in the same chunk.
+     *
+     * Held as raw [SctpParameter]s for the same reason [Init] is: a decoded chunk re-encodes
+     * byte-for-byte even when it carries a parameter this codec does not interpret. Read the typed
+     * view with [reConfigParameters] / [SctpParameter.asReConfigParameter].
+     */
+    public data class ReConfig(
+        public val parameters: List<SctpParameter>,
+    ) : SctpChunk {
+        override val type: SctpChunkType get() = SctpChunkType.ReConfig
+        override val flagsByte: UByte get() = 0u
+        override val valueSize: Int get() = tlvWireSize(parameters.map { it.paddedValue.remaining() })
+
+        /**
+         * RFC 6525 §3.1: a RE-CONFIG carries at least one and at most two parameters. Reported rather
+         * than enforced at decode, so a non-conforming chunk is still preserved and re-encoded exactly
+         * (forward compatibility) while the association can refuse to act on it.
+         */
+        public val wellFormed: Boolean get() = parameters.size in 1..MAX_RECONFIG_PARAMETERS
+
+        /**
+         * Each parameter's interpretation, in wire order — including the rejects, so a caller can tell
+         * "not a RE-CONFIG parameter" (ignorable) from "malformed" (answerable) rather than seeing a
+         * silently shortened list.
+         */
+        public fun reConfigParameters(): List<ReConfigParameterDecode> = parameters.map { it.asReConfigParameter() }
+
+        override fun writeValue(dest: WriteBuffer) {
+            for (p in parameters) writeParameter(dest, p)
+        }
+
+        public companion object {
+            /** Builds a RE-CONFIG from typed parameters (RFC 6525 §3.1 allows one or two). */
+            public fun of(vararg parameters: ReConfigParameter): ReConfig = ReConfig(parameters.map { it.toParameter() })
+        }
+    }
+
     /** FORWARD-TSN (type 192, RFC 3758 §3.2) — advances the cumulative TSN past abandoned messages. */
     public data class ForwardTsn(
         public val newCumulativeTsn: Tsn,
@@ -319,6 +359,7 @@ public sealed interface SctpChunk {
         private const val TSN_BYTES = 4
         private const val FWD_TSN_STREAM_BYTES = 4 // stream id(2) + SSN(2)
         private const val T_BIT: UByte = 0x01u
+        private const val MAX_RECONFIG_PARAMETERS = 2 // RFC 6525 §3.1
 
         /**
          * Decodes one chunk body given its [type], [flags], and the zero-copy [value] region (exactly
@@ -377,6 +418,7 @@ public sealed interface SctpChunk {
                 SctpChunkType.CookieAck -> if (n != 0) null else CookieAck
                 SctpChunkType.ShutdownComplete -> if (n != 0) null else ShutdownComplete(flags.toInt() and T_BIT.toInt() != 0)
                 SctpChunkType.ForwardTsn -> decodeForwardTsn(value, n)
+                SctpChunkType.ReConfig -> decodeParameters(value, 0, n)?.let { ReConfig(it) }
                 else -> Unrecognized(type, flags, value.sliceOf(0, n))
             }
         }

@@ -30,6 +30,29 @@ public value class ParameterType(
         public val CookiePreservative: ParameterType = ParameterType(9u)
         public val SupportedAddressTypes: ParameterType = ParameterType(12u)
 
+        // ── RFC 6525 stream reconfiguration (§4) ──────────────────────────────────────────────────
+        // All six sit in the `00` high-bit range: a receiver that does not recognize one stops
+        // processing and discards, which is why an endpoint only ever sends these to a peer that
+        // advertised RE-CONFIG in its Supported Extensions.
+
+        /** Outgoing SSN Reset Request (RFC 6525 §4.1) — reset the SENDER's outgoing streams. */
+        public val OutgoingSsnResetRequest: ParameterType = ParameterType(0x000Du)
+
+        /** Incoming SSN Reset Request (RFC 6525 §4.2) — ask the peer to reset ITS outgoing streams. */
+        public val IncomingSsnResetRequest: ParameterType = ParameterType(0x000Eu)
+
+        /** SSN/TSN Reset Request (RFC 6525 §4.3) — reset every SSN and both TSN spaces. */
+        public val SsnTsnResetRequest: ParameterType = ParameterType(0x000Fu)
+
+        /** Re-configuration Response (RFC 6525 §4.4) — the result of a request, by sequence number. */
+        public val ReConfigResponse: ParameterType = ParameterType(0x0010u)
+
+        /** Add Outgoing Streams Request (RFC 6525 §4.5) — grow the sender's outgoing stream space. */
+        public val AddOutgoingStreamsRequest: ParameterType = ParameterType(0x0011u)
+
+        /** Add Incoming Streams Request (RFC 6525 §4.6) — grow the sender's incoming stream space. */
+        public val AddIncomingStreamsRequest: ParameterType = ParameterType(0x0012u)
+
         /** Supported Extensions (RFC 5061 §4.2.7) — the chunk types this endpoint understands. */
         public val SupportedExtensions: ParameterType = ParameterType(0x8008u)
 

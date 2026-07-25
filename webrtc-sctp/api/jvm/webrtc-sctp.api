@@ -113,11 +113,17 @@ public final class com/ditchoom/webrtc/sctp/ParameterType {
 }
 
 public final class com/ditchoom/webrtc/sctp/ParameterType$Companion {
+	public final fun getAddIncomingStreamsRequest-VORfRic ()S
+	public final fun getAddOutgoingStreamsRequest-VORfRic ()S
 	public final fun getCookiePreservative-VORfRic ()S
 	public final fun getForwardTsnSupported-VORfRic ()S
 	public final fun getHeartbeatInfo-VORfRic ()S
+	public final fun getIncomingSsnResetRequest-VORfRic ()S
 	public final fun getIpv4Address-VORfRic ()S
 	public final fun getIpv6Address-VORfRic ()S
+	public final fun getOutgoingSsnResetRequest-VORfRic ()S
+	public final fun getReConfigResponse-VORfRic ()S
+	public final fun getSsnTsnResetRequest-VORfRic ()S
 	public final fun getStateCookie-VORfRic ()S
 	public final fun getSupportedAddressTypes-VORfRic ()S
 	public final fun getSupportedExtensions-VORfRic ()S
@@ -147,6 +153,237 @@ public final class com/ditchoom/webrtc/sctp/PayloadProtocolId$Companion {
 	public final fun getWebRtcString-N_xLETs ()I
 	public final fun getWebRtcStringEmpty-N_xLETs ()I
 	public final fun getWebRtcStringPartial-N_xLETs ()I
+}
+
+public final class com/ditchoom/webrtc/sctp/ReConfigKt {
+	public static final fun asReConfigParameter (Lcom/ditchoom/webrtc/sctp/SctpParameter;)Lcom/ditchoom/webrtc/sctp/ReConfigParameterDecode;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/ReConfigMalformedReason {
+}
+
+public final class com/ditchoom/webrtc/sctp/ReConfigMalformedReason$RaggedStreamList : com/ditchoom/webrtc/sctp/ReConfigMalformedReason {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/webrtc/sctp/ReConfigMalformedReason$RaggedStreamList;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/ReConfigMalformedReason$RaggedStreamList;IILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/ReConfigMalformedReason$RaggedStreamList;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getTrailingBytes ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ReConfigMalformedReason$UnassignedResult : com/ditchoom/webrtc/sctp/ReConfigMalformedReason {
+	public synthetic fun <init> (ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-pVg5ArA ()I
+	public final fun copy-WZ4Q5Ns (I)Lcom/ditchoom/webrtc/sctp/ReConfigMalformedReason$UnassignedResult;
+	public static synthetic fun copy-WZ4Q5Ns$default (Lcom/ditchoom/webrtc/sctp/ReConfigMalformedReason$UnassignedResult;IILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/ReConfigMalformedReason$UnassignedResult;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getWireValue-pVg5ArA ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ReConfigMalformedReason$WrongLength : com/ditchoom/webrtc/sctp/ReConfigMalformedReason {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/webrtc/sctp/ReConfigMalformedReason$WrongLength;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/ReConfigMalformedReason$WrongLength;IILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/ReConfigMalformedReason$WrongLength;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getActual ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/ReConfigParameter {
+	public abstract fun getType-VORfRic ()S
+	public abstract fun toParameter ()Lcom/ditchoom/webrtc/sctp/SctpParameter;
+}
+
+public final class com/ditchoom/webrtc/sctp/ReConfigParameter$AddIncomingStreams : com/ditchoom/webrtc/sctp/ReConfigParameter {
+	public synthetic fun <init> (ISLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-crVZwhA ()I
+	public final fun component2-Mh2AYeg ()S
+	public final fun copy-qXYFhIo (IS)Lcom/ditchoom/webrtc/sctp/ReConfigParameter$AddIncomingStreams;
+	public static synthetic fun copy-qXYFhIo$default (Lcom/ditchoom/webrtc/sctp/ReConfigParameter$AddIncomingStreams;ISILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/ReConfigParameter$AddIncomingStreams;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCount-Mh2AYeg ()S
+	public final fun getRequestSequenceNumber-crVZwhA ()I
+	public fun getType-VORfRic ()S
+	public fun hashCode ()I
+	public fun toParameter ()Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ReConfigParameter$AddOutgoingStreams : com/ditchoom/webrtc/sctp/ReConfigParameter {
+	public synthetic fun <init> (ISLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-crVZwhA ()I
+	public final fun component2-Mh2AYeg ()S
+	public final fun copy-qXYFhIo (IS)Lcom/ditchoom/webrtc/sctp/ReConfigParameter$AddOutgoingStreams;
+	public static synthetic fun copy-qXYFhIo$default (Lcom/ditchoom/webrtc/sctp/ReConfigParameter$AddOutgoingStreams;ISILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/ReConfigParameter$AddOutgoingStreams;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCount-Mh2AYeg ()S
+	public final fun getRequestSequenceNumber-crVZwhA ()I
+	public fun getType-VORfRic ()S
+	public fun hashCode ()I
+	public fun toParameter ()Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ReConfigParameter$IncomingSsnReset : com/ditchoom/webrtc/sctp/ReConfigParameter {
+	public synthetic fun <init> (ILjava/util/List;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-crVZwhA ()I
+	public final fun component2 ()Ljava/util/List;
+	public final fun copy-d-a4XsQ (ILjava/util/List;)Lcom/ditchoom/webrtc/sctp/ReConfigParameter$IncomingSsnReset;
+	public static synthetic fun copy-d-a4XsQ$default (Lcom/ditchoom/webrtc/sctp/ReConfigParameter$IncomingSsnReset;ILjava/util/List;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/ReConfigParameter$IncomingSsnReset;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getRequestSequenceNumber-crVZwhA ()I
+	public final fun getStreams ()Ljava/util/List;
+	public fun getType-VORfRic ()S
+	public fun hashCode ()I
+	public fun toParameter ()Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ReConfigParameter$OutgoingSsnReset : com/ditchoom/webrtc/sctp/ReConfigParameter {
+	public synthetic fun <init> (IIILjava/util/List;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-crVZwhA ()I
+	public final fun component2-crVZwhA ()I
+	public final fun component3-LdEUlac ()I
+	public final fun component4 ()Ljava/util/List;
+	public final fun copy-qMPlN1k (IIILjava/util/List;)Lcom/ditchoom/webrtc/sctp/ReConfigParameter$OutgoingSsnReset;
+	public static synthetic fun copy-qMPlN1k$default (Lcom/ditchoom/webrtc/sctp/ReConfigParameter$OutgoingSsnReset;IIILjava/util/List;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/ReConfigParameter$OutgoingSsnReset;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getRequestSequenceNumber-crVZwhA ()I
+	public final fun getResetsAllStreams ()Z
+	public final fun getResponseSequenceNumber-crVZwhA ()I
+	public final fun getSenderLastAssignedTsn-LdEUlac ()I
+	public final fun getStreams ()Ljava/util/List;
+	public fun getType-VORfRic ()S
+	public fun hashCode ()I
+	public fun toParameter ()Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ReConfigParameter$Response : com/ditchoom/webrtc/sctp/ReConfigParameter {
+	public synthetic fun <init> (ILcom/ditchoom/webrtc/sctp/ReConfigResult;Lcom/ditchoom/webrtc/sctp/ReConfigParameter$TsnPair;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (ILcom/ditchoom/webrtc/sctp/ReConfigResult;Lcom/ditchoom/webrtc/sctp/ReConfigParameter$TsnPair;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-crVZwhA ()I
+	public final fun component2 ()Lcom/ditchoom/webrtc/sctp/ReConfigResult;
+	public final fun component3 ()Lcom/ditchoom/webrtc/sctp/ReConfigParameter$TsnPair;
+	public final fun copy-5b2UTVQ (ILcom/ditchoom/webrtc/sctp/ReConfigResult;Lcom/ditchoom/webrtc/sctp/ReConfigParameter$TsnPair;)Lcom/ditchoom/webrtc/sctp/ReConfigParameter$Response;
+	public static synthetic fun copy-5b2UTVQ$default (Lcom/ditchoom/webrtc/sctp/ReConfigParameter$Response;ILcom/ditchoom/webrtc/sctp/ReConfigResult;Lcom/ditchoom/webrtc/sctp/ReConfigParameter$TsnPair;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/ReConfigParameter$Response;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getResponseSequenceNumber-crVZwhA ()I
+	public final fun getResult ()Lcom/ditchoom/webrtc/sctp/ReConfigResult;
+	public final fun getTsns ()Lcom/ditchoom/webrtc/sctp/ReConfigParameter$TsnPair;
+	public fun getType-VORfRic ()S
+	public fun hashCode ()I
+	public fun toParameter ()Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ReConfigParameter$SsnTsnReset : com/ditchoom/webrtc/sctp/ReConfigParameter {
+	public synthetic fun <init> (ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-crVZwhA ()I
+	public final fun copy-zILTKGk (I)Lcom/ditchoom/webrtc/sctp/ReConfigParameter$SsnTsnReset;
+	public static synthetic fun copy-zILTKGk$default (Lcom/ditchoom/webrtc/sctp/ReConfigParameter$SsnTsnReset;IILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/ReConfigParameter$SsnTsnReset;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getRequestSequenceNumber-crVZwhA ()I
+	public fun getType-VORfRic ()S
+	public fun hashCode ()I
+	public fun toParameter ()Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ReConfigParameter$TsnPair {
+	public synthetic fun <init> (IILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-LdEUlac ()I
+	public final fun component2-LdEUlac ()I
+	public final fun copy-0i9M-qI (II)Lcom/ditchoom/webrtc/sctp/ReConfigParameter$TsnPair;
+	public static synthetic fun copy-0i9M-qI$default (Lcom/ditchoom/webrtc/sctp/ReConfigParameter$TsnPair;IIILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/ReConfigParameter$TsnPair;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReceiverNextTsn-LdEUlac ()I
+	public final fun getSenderNextTsn-LdEUlac ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/ReConfigParameterDecode {
+}
+
+public final class com/ditchoom/webrtc/sctp/ReConfigParameterDecode$Interpreted : com/ditchoom/webrtc/sctp/ReConfigParameterDecode {
+	public fun <init> (Lcom/ditchoom/webrtc/sctp/ReConfigParameter;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sctp/ReConfigParameter;
+	public final fun copy (Lcom/ditchoom/webrtc/sctp/ReConfigParameter;)Lcom/ditchoom/webrtc/sctp/ReConfigParameterDecode$Interpreted;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/ReConfigParameterDecode$Interpreted;Lcom/ditchoom/webrtc/sctp/ReConfigParameter;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/ReConfigParameterDecode$Interpreted;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getParameter ()Lcom/ditchoom/webrtc/sctp/ReConfigParameter;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ReConfigParameterDecode$Malformed : com/ditchoom/webrtc/sctp/ReConfigParameterDecode {
+	public synthetic fun <init> (SLcom/ditchoom/webrtc/sctp/ReConfigMalformedReason;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-VORfRic ()S
+	public final fun component2 ()Lcom/ditchoom/webrtc/sctp/ReConfigMalformedReason;
+	public final fun copy-FKy87FQ (SLcom/ditchoom/webrtc/sctp/ReConfigMalformedReason;)Lcom/ditchoom/webrtc/sctp/ReConfigParameterDecode$Malformed;
+	public static synthetic fun copy-FKy87FQ$default (Lcom/ditchoom/webrtc/sctp/ReConfigParameterDecode$Malformed;SLcom/ditchoom/webrtc/sctp/ReConfigMalformedReason;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/ReConfigParameterDecode$Malformed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReason ()Lcom/ditchoom/webrtc/sctp/ReConfigMalformedReason;
+	public final fun getType-VORfRic ()S
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ReConfigParameterDecode$NotReConfig : com/ditchoom/webrtc/sctp/ReConfigParameterDecode {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/ReConfigParameterDecode$NotReConfig;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ReConfigRequestSequenceNumber {
+	public static final synthetic fun box-impl (I)Lcom/ditchoom/webrtc/sctp/ReConfigRequestSequenceNumber;
+	public static fun constructor-impl (I)I
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (ILjava/lang/Object;)Z
+	public static final fun equals-impl0 (II)Z
+	public final fun getValue-pVg5ArA ()I
+	public fun hashCode ()I
+	public static fun hashCode-impl (I)I
+	public static final fun next-crVZwhA (I)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (I)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()I
+}
+
+public final class com/ditchoom/webrtc/sctp/ReConfigRequestSequenceNumberCodec : com/ditchoom/buffer/codec/Codec {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/ReConfigRequestSequenceNumberCodec;
+	public synthetic fun decode (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)Ljava/lang/Object;
+	public fun decode-P55HpF0 (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/codec/DecodeContext;)I
+	public synthetic fun encode (Lcom/ditchoom/buffer/WriteBuffer;Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun encode-6YfHNE4 (Lcom/ditchoom/buffer/WriteBuffer;ILcom/ditchoom/buffer/codec/EncodeContext;)V
+	public fun peekFrameSize (Lcom/ditchoom/buffer/stream/StreamProcessor;I)Lcom/ditchoom/buffer/codec/PeekResult;
+	public synthetic fun sizeHint (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)I
+	public fun sizeHint-d-a4XsQ (ILcom/ditchoom/buffer/codec/EncodeContext;)I
+	public synthetic fun wireSize (Ljava/lang/Object;Lcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+	public fun wireSize-d-a4XsQ (ILcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
+}
+
+public final class com/ditchoom/webrtc/sctp/ReConfigResult : java/lang/Enum {
+	public static final field Denied Lcom/ditchoom/webrtc/sctp/ReConfigResult;
+	public static final field ErrorBadSequenceNumber Lcom/ditchoom/webrtc/sctp/ReConfigResult;
+	public static final field ErrorRequestAlreadyInProgress Lcom/ditchoom/webrtc/sctp/ReConfigResult;
+	public static final field ErrorWrongSsn Lcom/ditchoom/webrtc/sctp/ReConfigResult;
+	public static final field InProgress Lcom/ditchoom/webrtc/sctp/ReConfigResult;
+	public static final field SuccessNothingToDo Lcom/ditchoom/webrtc/sctp/ReConfigResult;
+	public static final field SuccessPerformed Lcom/ditchoom/webrtc/sctp/ReConfigResult;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public final fun getWireValue-pVg5ArA ()I
+	public final fun isSuccess ()Z
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/webrtc/sctp/ReConfigResult;
+	public static fun values ()[Lcom/ditchoom/webrtc/sctp/ReConfigResult;
 }
 
 public final class com/ditchoom/webrtc/sctp/Sctp {
@@ -347,6 +584,28 @@ public final class com/ditchoom/webrtc/sctp/SctpChunk$InitAck : com/ditchoom/web
 	public fun writeValue (Lcom/ditchoom/buffer/WriteBuffer;)V
 }
 
+public final class com/ditchoom/webrtc/sctp/SctpChunk$ReConfig : com/ditchoom/webrtc/sctp/SctpChunk {
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/SctpChunk$ReConfig$Companion;
+	public fun <init> (Ljava/util/List;)V
+	public final fun component1 ()Ljava/util/List;
+	public final fun copy (Ljava/util/List;)Lcom/ditchoom/webrtc/sctp/SctpChunk$ReConfig;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/SctpChunk$ReConfig;Ljava/util/List;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpChunk$ReConfig;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getFlagsByte-w2LRezQ ()B
+	public final fun getParameters ()Ljava/util/List;
+	public fun getType-xlduujU ()B
+	public fun getValueSize ()I
+	public final fun getWellFormed ()Z
+	public fun hashCode ()I
+	public final fun reConfigParameters ()Ljava/util/List;
+	public fun toString ()Ljava/lang/String;
+	public fun writeValue (Lcom/ditchoom/buffer/WriteBuffer;)V
+}
+
+public final class com/ditchoom/webrtc/sctp/SctpChunk$ReConfig$Companion {
+	public final fun of ([Lcom/ditchoom/webrtc/sctp/ReConfigParameter;)Lcom/ditchoom/webrtc/sctp/SctpChunk$ReConfig;
+}
+
 public final class com/ditchoom/webrtc/sctp/SctpChunk$Sack : com/ditchoom/webrtc/sctp/SctpChunk {
 	public synthetic fun <init> (IILjava/util/List;Ljava/util/List;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1-LdEUlac ()I
@@ -454,6 +713,7 @@ public final class com/ditchoom/webrtc/sctp/SctpChunkType$Companion {
 	public final fun getHeartbeatAck-xlduujU ()B
 	public final fun getInit-xlduujU ()B
 	public final fun getInitAck-xlduujU ()B
+	public final fun getReConfig-xlduujU ()B
 	public final fun getSack-xlduujU ()B
 	public final fun getShutdown-xlduujU ()B
 	public final fun getShutdownAck-xlduujU ()B

@@ -2,10 +2,8 @@
 
 package com.ditchoom.webrtc.sctp.association
 
-import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.webrtc.sctp.DataChunkFlags
-import com.ditchoom.webrtc.sctp.PayloadProtocolId
-import com.ditchoom.webrtc.sctp.SctpChunk
 import com.ditchoom.webrtc.sctp.StreamId
 import com.ditchoom.webrtc.sctp.StreamSequenceNumber
 import com.ditchoom.webrtc.sctp.Tsn
@@ -25,19 +23,29 @@ internal enum class TxState {
 }
 
 /**
- * One DATA chunk the sender is tracking for reliability (RFC 4960 §6.1). Carries everything needed to
- * rebuild the wire chunk on a retransmit — the copied [userData] view is retained (GC-managed) for the
- * chunk's lifetime and dropped from the queue when the chunk is acked or abandoned (explicit pool
- * `release` of the copy is the deferred directive-#6 refactor). [reliability] and [firstSentAt] drive
- * RFC 3758 abandonment.
+ * One DATA chunk the sender is tracking for reliability (RFC 4960 §6.1).
+ *
+ * What is retained is the **fully encoded wire packet** ([packet]: common header + this one DATA chunk,
+ * CRC32c already placed), not a copy of the user payload. The retransmission queue must own bytes that
+ * outlive `send()` — the caller's payload is borrowed for the duration of one `handle` call — so exactly
+ * one copy of the user data is architecturally required; encoding at accept time makes that copy *be*
+ * the encode, instead of copying into an owned payload buffer and then copying again into the datagram
+ * (directive #6). A retransmit is byte-identical to the original send by construction (same tag, ports,
+ * TSN, flags, SSN, PPID, payload), so it is simply a fresh view of the same bytes — and the CRC is
+ * computed once for the chunk's whole lifetime rather than once per transmission.
+ *
+ * The packet is retained (GC-managed) until the chunk is acked or abandoned and dropped from the queue.
+ * [streamId], [ssn] and [flags] are kept because RFC 3758 abandonment reads them to build FORWARD-TSN;
+ * [reliability] and [firstSentAt] drive the abandonment decision itself.
  */
 internal class OutstandingData(
     val tsn: Tsn,
     val streamId: StreamId,
     val ssn: StreamSequenceNumber,
-    val ppid: PayloadProtocolId,
     val flags: DataChunkFlags,
-    val userData: ReadBuffer,
+    /** Payload bytes this chunk contributes to the flight size / peer window (user data only). */
+    val bytes: Int,
+    private val packet: PlatformBuffer,
     val reliability: SctpReliability,
     val firstSentAt: Instant,
 ) {
@@ -46,19 +54,15 @@ internal class OutstandingData(
     var missingReports: Int = 0
     var txState: TxState = TxState.InFlight
 
-    /** Bytes this chunk contributes to the flight size / peer window (the user-data payload only). */
-    val bytes: Int get() = userData.remaining()
-
-    /** Rebuild the wire DATA chunk for an initial send or a retransmit (a fresh view of the payload). */
-    fun toChunk(): SctpChunk.Data =
-        SctpChunk.Data(
-            flags = flags,
-            tsn = tsn,
-            streamId = streamId,
-            streamSequenceNumber = ssn,
-            payloadProtocolId = ppid,
-            userData = userData.slice(),
-        )
+    /**
+     * A fresh read view over the encoded packet, for the initial send and for every retransmit. The
+     * position is pinned to 0 first so the view always spans the whole packet regardless of what a
+     * previous holder did with its own view.
+     */
+    fun wirePacket(): PlatformBuffer {
+        packet.position(0)
+        return packet.slice()
+    }
 }
 
 /** What one SACK did to the retransmission queue — applied by the association to RTT/cwnd/timers. */

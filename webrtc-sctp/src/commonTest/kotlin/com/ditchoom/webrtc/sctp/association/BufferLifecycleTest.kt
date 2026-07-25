@@ -9,6 +9,7 @@ import com.ditchoom.webrtc.sctp.StreamId
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
@@ -68,6 +69,85 @@ class BufferLifecycleTest {
             b.handle(SctpEvent.TimerFired, now)
         }
         assertEquals(baseline, factory.allocations, "an idle association allocates nothing per timer tick")
+    }
+
+    /**
+     * Directive #6, the send path specifically: **one owned copy per fragment, not two.** The
+     * retransmission queue must own bytes past `send()` (the caller's payload is borrowed for the
+     * duration of the `handle` call), so one copy is architecturally required — and it is the encode into
+     * the wire packet. `fragment()` therefore hands out zero-copy views, including the sub-MTU case where
+     * it hands out the whole payload as one view.
+     *
+     * Counted on the sender alone (the event is fed to `a` directly, not through the sim) so no peer SACK
+     * or reassembly allocation is included. The earlier two-copy path allocated `2 * fragments` here.
+     */
+    @Test
+    fun send_allocates_one_buffer_per_fragment() {
+        val factory = CountingBufferFactory(BufferFactory.managed())
+        val config = SctpConfig(bufferFactory = factory)
+        val a = SctpAssociation(config, Random(5))
+        val b = SctpAssociation(config, Random(6))
+        val sim = SctpSimWith(a, b)
+        sim.associateA()
+        sim.run()
+
+        val beforeSmall = factory.allocations
+        a.handle(
+            SctpEvent.SendMessage(SctpSendOptions(stream, PayloadProtocolId.WebRtcBinary), payload(config.maxPayloadBytes)),
+            epoch,
+        )
+        assertEquals(1, factory.allocations - beforeSmall, "a sub-MTU message costs exactly one buffer: its encoded packet")
+
+        val fragments = 3
+        val beforeLarge = factory.allocations
+        a.handle(
+            SctpEvent.SendMessage(SctpSendOptions(stream, PayloadProtocolId.WebRtcBinary), payload(config.maxPayloadBytes * fragments)),
+            epoch,
+        )
+        assertEquals(
+            fragments,
+            factory.allocations - beforeLarge,
+            "a fragmented message costs exactly one buffer per fragment — the fragments themselves are views",
+        )
+        // That those views carry the right regions is proven end to end by
+        // SctpAssociationTest.large_message_is_fragmented_and_reassembled (11 fragments, byte-exact).
+    }
+
+    /**
+     * A retransmit re-sends the *same* encoded packet (the queue holds the wire bytes, not the payload),
+     * so it must still be byte-identical to the original transmission — the property the pre-encode
+     * relies on. Drives one association's T3-rtx directly: send, let the timer expire with no SACK, and
+     * compare the two datagrams byte for byte.
+     */
+    @Test
+    fun retransmit_reemits_byte_identical_packet() {
+        val config = SctpConfig()
+        val a = SctpAssociation(config, Random(7))
+        val b = SctpAssociation(config, Random(8))
+        val sim = SctpSimWith(a, b)
+        sim.associateA()
+        sim.run()
+
+        var now = epoch
+        val first =
+            a
+                .handle(SctpEvent.SendMessage(SctpSendOptions(stream, PayloadProtocolId.WebRtcBinary), payload(64)), now)
+                .filterIsInstance<SctpOutput.Transmit>()
+                .single()
+                .packet
+                .bytes()
+
+        // No SACK ever arrives: fire timers until the T3-rtx deadline puts the chunk back on the wire.
+        now = assertNotNull(a.nextDeadline(now), "an outstanding chunk arms T3-rtx")
+        val again =
+            a
+                .handle(SctpEvent.TimerFired, now)
+                .filterIsInstance<SctpOutput.Transmit>()
+                .single()
+                .packet
+                .bytes()
+
+        assertEquals(first, again, "the retransmit is the same wire packet, CRC included")
     }
 }
 

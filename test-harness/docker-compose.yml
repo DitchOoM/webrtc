@@ -443,6 +443,11 @@ services:
       # the historical establish-and-echo behaviour byte-identical.
       WEBRTC_SEMANTICS: "${PEER_SEMANTICS:-0}"
       WEBRTC_SEMANTICS_TIMEOUT_MS: "${PEER_SEMANTICS_TIMEOUT_MS:-120000}"
+      # werift's own `debug`-package tracing (ICE / DTLS / SCTP), off by default. werift reports its
+      # internal failures — a DTLS decrypt error, a certificate-fingerprint mismatch, an SCTP abort — ONLY
+      # through these scopes; otherwise the failure lands in a promise that never settles and the peer
+      # just sits in `connecting`. Set NODE_DEBUG_SCOPES='werift*' when diagnosing this lane.
+      DEBUG: "${NODE_DEBUG_SCOPES:-}"
     networks:
       lan_b: { ipv4_address: "${PEER_B_IP}" }
     depends_on:

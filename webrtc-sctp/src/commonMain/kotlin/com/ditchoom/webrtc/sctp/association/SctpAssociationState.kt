@@ -49,6 +49,13 @@ public sealed interface SctpFailureReason {
     public data object HandshakeTimeout : SctpFailureReason
 
     /**
+     * The peer restarted the association (RFC 4960 §5.2.4 action A). The *association* recovered onto
+     * the peer's new TCB, but every stream that was open on the old one is gone with it, so the
+     * DataChannel layer above tears down — see [SctpOutput.PeerRestarted].
+     */
+    public data object PeerRestarted : SctpFailureReason
+
+    /**
      * A handshake chunk was malformed or arrived out of the protocol's expected order in a way that
      * cannot be recovered (e.g. an INIT-ACK with no State Cookie, or a cookie we did not mint).
      */

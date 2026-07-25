@@ -20,8 +20,9 @@
 # + the negotiated a=max-message-size boundary), s2 unordered, s3 partial-reliable (PR-SCTP + FORWARD-TSN
 # no-wedge), s4 multiplexed, s5 reverse-direction (our lanes only), s6 DONE + graceful association SHUTDOWN.
 # The answerer is a scenario-agnostic reflector in every family, so this costs no new CI lanes. They landed
-# NON-GATING-first and are now PROMOTED: a failed phase FAILS its lane everywhere except the named holdouts
-# in $SEMANTICS_NON_GATING (see below) — the werift lanes, which never establish at all.
+# NON-GATING-first and are now FULLY PROMOTED: a failed phase FAILS its lane, on EVERY lane. The holdout
+# list ($SEMANTICS_NON_GATING, see below) is empty — the last two entries, the werift lanes, were promoted
+# once the SCTP INIT deadlock that kept them at `Connecting` was fixed (issue #43).
 #
 # Usage:
 #   ./run-interop.sh                 # full matrix, prebuilt-binary fast path (host gradle build)
@@ -228,11 +229,12 @@ skip=" ${HARNESS_SKIP:-} "
 # NON-GATING (informational) scenarios — a failure here is logged but does NOT fail the run. The kernel-random
 # netem impaired lane can never be provably flake-free; the deterministic DtlsSctpLossReproductionTest is the
 # HARD loss gate (see the header). $HARNESS_NON_GATING appends caller-supplied lanes that are landing
-# informational-first (e.g. a new interop lane before it's proven green across all families — CI sets it for
-# node-interop/jvm-node; a one-line follow-up flips them to gating once green). Space-padded so `case`
-# matches whole words; the env list is space-separated names. (mdns-chrome/mdns-firefox were themselves
-# promoted OUT of this list to GATING once peer_mdns (WEBRTC_REQUIRE_MDNS=true) made rc=0 PROVE mDNS
-# resolution rather than just obfuscation-ON interop — issue #48; they now assert as hard as every lane.)
+# informational-first (a new interop lane before it's proven green across all families; a one-line follow-up
+# flips it to gating once green). CI currently sets it for NOTHING — every lane gates. Space-padded so `case`
+# matches whole words; the env list is space-separated names. Two cohorts have been promoted OUT of this list
+# to GATING: mdns-chrome/mdns-firefox, once peer_mdns (WEBRTC_REQUIRE_MDNS=true) made rc=0 PROVE mDNS
+# resolution rather than just obfuscation-ON interop (issue #48); and node-interop/jvm-node, once the SCTP
+# INIT deadlock behind them was fixed (issue #43). They all now assert as hard as every other lane.
 NON_GATING=" impaired-loss-delay ${HARNESS_NON_GATING:-} "
 
 # ── data-channel SEMANTICS (docs/DC_SEMANTICS_INTEROP_DESIGN.md, Phase-1 close-out item #2) ──────────
@@ -255,14 +257,16 @@ sem_warned_names=""
 
 # Lanes whose SEMANTICS stay informational while everything else gates. Space-padded for whole-word `case`.
 # This is deliberately a list of NAMED, UNDERSTOOD holdouts, not a blanket switch — a lane may sit here only
-# with a reason:
-#   node-interop / jvm-node — werift never reaches Connected on these lanes at all (state=Connecting at
-#     3m30s), so they print no semantics summary to grade. They are ALREADY informational for establishment
-#     ($HARNESS_NON_GATING, set by CI); gating their semantics would be gating a lane that never runs.
-# `pion-interop` was the third holdout and is NOT here any more: its s2/s3/s4 failures were OUR RFC 8832 §6
-# violation (unordered user data overtaking the DCEP OPEN, killing pion's accept loop), fixed in the commit
-# this change is stacked on. Gating it is what keeps that fixed.
-SEMANTICS_NON_GATING=" ${HARNESS_SEMANTICS_NON_GATING-node-interop jvm-node} "
+# with a reason. It is now EMPTY: every lane's semantics gate. The last two holdouts have been promoted:
+#   node-interop / jvm-node — werift used to never reach Connected on these lanes at all (state=Connecting
+#     at 3m30s), so they printed no semantics summary to grade. Root cause (issue #43) was an SCTP INIT
+#     deadlock: we chose the SCTP client role off the DTLS role, werift chooses it off the ICE role, so on
+#     these pairings NEITHER peer sent the INIT. We now associate from BOTH roles and resolve the resulting
+#     INIT collisions per RFC 4960 §5.2. Both lanes now report total=5 passed=5 failed=0 (5, not 6 — s5
+#     reverse-direction is our-lanes-only) across all 6 arch × family jobs, the same shape as the Pion lanes.
+#   pion-interop — its s2/s3/s4 failures were OUR RFC 8832 §6 violation (unordered user data overtaking the
+#     DCEP OPEN, killing pion's accept loop). Fixed; gating it is what keeps it fixed.
+SEMANTICS_NON_GATING=" ${HARNESS_SEMANTICS_NON_GATING-} "
 
 # Resolve THIS lane's semantics gate. Exported per scenario (compose reads it at `up` time, and the stack is
 # re-upped per scenario) so the peer itself exits non-zero on a failed phase only where we mean it to.

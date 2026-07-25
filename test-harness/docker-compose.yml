@@ -233,8 +233,8 @@ services:
       WEBRTC_SEMANTICS_TIMEOUT_MS: "${PEER_SEMANTICS_TIMEOUT_MS:-120000}"
       # Which phases run (empty = all) and whether a failed phase fails THIS process. Semantics landed
       # NON-GATING-first (decision D7) and are now PROMOTED: run-interop.sh resolves the gate PER LANE
-      # (semantics_gate_for) and exports it before this service comes up, so a failed phase fails the lane
-      # everywhere except the named holdouts in $SEMANTICS_NON_GATING.
+      # (semantics_gate_for) and exports it before this service comes up, so a failed phase fails the lane.
+      # $SEMANTICS_NON_GATING (the per-lane holdout list) is now empty — every lane gates.
       WEBRTC_SCENARIOS: "${PEER_SCENARIOS:-}"
       WEBRTC_SEMANTICS_REQUIRED: "${PEER_SEMANTICS_REQUIRED:-0}"
       # s5: the ANSWERER originates a channel and the offerer reflects it. Only meaningful when BOTH ends
@@ -338,8 +338,8 @@ services:
       WEBRTC_SEMANTICS_TIMEOUT_MS: "${PEER_SEMANTICS_TIMEOUT_MS:-120000}"
       # Which phases run (empty = all) and whether a failed phase fails THIS process. Semantics landed
       # NON-GATING-first (decision D7) and are now PROMOTED: run-interop.sh resolves the gate PER LANE
-      # (semantics_gate_for) and exports it before this service comes up, so a failed phase fails the lane
-      # everywhere except the named holdouts in $SEMANTICS_NON_GATING.
+      # (semantics_gate_for) and exports it before this service comes up, so a failed phase fails the lane.
+      # $SEMANTICS_NON_GATING (the per-lane holdout list) is now empty — every lane gates.
       WEBRTC_SCENARIOS: "${PEER_SCENARIOS:-}"
       WEBRTC_SEMANTICS_REQUIRED: "${PEER_SEMANTICS_REQUIRED:-0}"
       # s5: the ANSWERER originates a channel and the offerer reflects it. Only meaningful when BOTH ends
@@ -423,7 +423,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     environment:
       GATEWAY_IP: "${NAT_B_LAN_IP}"
-      WEBRTC_ROLE: answerer  # the werift peer is answerer-only; informational
+      WEBRTC_ROLE: answerer  # the werift peer is answerer-only (a reflector, never an offerer)
       WEBRTC_SESSION: "${SESSION:-l2}"
       WEBRTC_LOCAL_IP: "${PEER_B_IP}"
       WEBRTC_STUN_HOST: "${COTURN_IP}"

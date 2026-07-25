@@ -114,9 +114,17 @@ jobs:
   # W7 exit criterion: a real downstream consumer resolves the artifacts this PR would publish, compiles
   # against them on every target, links them into a K/N binary, and RUNS the harness scenarios. Needs
   # `validate` for its merged maven-local repo, so a shape problem is reported by the cheaper lane first.
+  #
+  # BOTH hosts, on every PR. This lane first ran Linux-only to save the ~600 MB Kotlin/Native download a
+  # cold macOS run costs — and that is exactly how a Linux-only `ApiLinkTest` source set reached main and
+  # blocked a release: the macOS job was first exercised at merge, which is the most expensive moment to
+  # discover it. The point of this gate is per-target artifact shape, so validating one target on PRs was
+  # never really the gate. `build-apple` already puts a macOS runner in every PR's budget, and the two
+  # jobs run in parallel.
   consumer-smoke:
     needs: [build-linux, validate]
     uses: ./.github/workflows/consumer-smoke.yaml
     with:
       version: ${{ needs.build-linux.outputs.version }}
       source: maven-local
+      include-macos: true

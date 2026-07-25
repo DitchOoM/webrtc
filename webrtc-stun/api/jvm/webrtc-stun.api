@@ -52,12 +52,17 @@ public final class com/ditchoom/webrtc/stun/RawAttribute {
 }
 
 public final class com/ditchoom/webrtc/stun/RawAttribute$Companion {
-	public final fun ofErrorCode (Lcom/ditchoom/webrtc/stun/StunErrorCode;)Lcom/ditchoom/webrtc/stun/RawAttribute;
-	public final fun ofMappedAddress (Lcom/ditchoom/webrtc/stun/TransportAddress;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public final fun ofErrorCode (Lcom/ditchoom/webrtc/stun/StunErrorCode;Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static synthetic fun ofErrorCode$default (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;Lcom/ditchoom/webrtc/stun/StunErrorCode;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public final fun ofMappedAddress (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static synthetic fun ofMappedAddress$default (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/RawAttribute;
 	public final fun ofRaw-1i-FKtQ (SLcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/stun/RawAttribute;
-	public final fun ofText-1i-FKtQ (SLjava/lang/String;)Lcom/ditchoom/webrtc/stun/RawAttribute;
-	public final fun ofXorAddress-0gP_rzY (SLcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransactionId;)Lcom/ditchoom/webrtc/stun/RawAttribute;
-	public final fun ofXorMappedAddress (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransactionId;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public final fun ofText-0gP_rzY (SLjava/lang/String;Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static synthetic fun ofText-0gP_rzY$default (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;SLjava/lang/String;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public final fun ofXorAddress-1XGhJdE (SLcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransactionId;Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static synthetic fun ofXorAddress-1XGhJdE$default (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;SLcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransactionId;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public final fun ofXorMappedAddress (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransactionId;Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static synthetic fun ofXorMappedAddress$default (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransactionId;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/RawAttribute;
 }
 
 public final class com/ditchoom/webrtc/stun/Stun {
@@ -211,8 +216,10 @@ public final class com/ditchoom/webrtc/stun/StunMessage {
 	public final fun getTransactionId ()Lcom/ditchoom/webrtc/stun/TransactionId;
 	public final fun unknownComprehensionRequired (Ljava/util/Set;)Ljava/util/List;
 	public final fun verifyFingerprint ()Z
-	public final fun verifyMessageIntegrity (Lcom/ditchoom/buffer/ReadBuffer;)Z
-	public final fun verifyMessageIntegritySha256 (Lcom/ditchoom/buffer/ReadBuffer;)Z
+	public final fun verifyMessageIntegrity (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/BufferFactory;)Z
+	public static synthetic fun verifyMessageIntegrity$default (Lcom/ditchoom/webrtc/stun/StunMessage;Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Z
+	public final fun verifyMessageIntegritySha256 (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/BufferFactory;)Z
+	public static synthetic fun verifyMessageIntegritySha256$default (Lcom/ditchoom/webrtc/stun/StunMessage;Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Z
 }
 
 public final class com/ditchoom/webrtc/stun/StunMessage$Companion {
@@ -221,7 +228,8 @@ public final class com/ditchoom/webrtc/stun/StunMessage$Companion {
 
 public final class com/ditchoom/webrtc/stun/StunMessageBuilder {
 	public static final field Companion Lcom/ditchoom/webrtc/stun/StunMessageBuilder$Companion;
-	public synthetic fun <init> (SLcom/ditchoom/webrtc/stun/TransactionId;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (SLcom/ditchoom/webrtc/stun/TransactionId;Lcom/ditchoom/buffer/BufferFactory;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (SLcom/ditchoom/webrtc/stun/TransactionId;Lcom/ditchoom/buffer/BufferFactory;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun add (Lcom/ditchoom/webrtc/stun/RawAttribute;)Lcom/ditchoom/webrtc/stun/StunMessageBuilder;
 	public final fun addFingerprint ()Lcom/ditchoom/webrtc/stun/StunMessageBuilder;
 	public final fun addMessageIntegrity (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/stun/StunMessageBuilder;
@@ -233,7 +241,8 @@ public final class com/ditchoom/webrtc/stun/StunMessageBuilder {
 }
 
 public final class com/ditchoom/webrtc/stun/StunMessageBuilder$Companion {
-	public final fun of-CxgZA5U (Lcom/ditchoom/webrtc/stun/StunClass;SLcom/ditchoom/webrtc/stun/TransactionId;)Lcom/ditchoom/webrtc/stun/StunMessageBuilder;
+	public final fun of-8wF_gP0 (Lcom/ditchoom/webrtc/stun/StunClass;SLcom/ditchoom/webrtc/stun/TransactionId;Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/stun/StunMessageBuilder;
+	public static synthetic fun of-8wF_gP0$default (Lcom/ditchoom/webrtc/stun/StunMessageBuilder$Companion;Lcom/ditchoom/webrtc/stun/StunClass;SLcom/ditchoom/webrtc/stun/TransactionId;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/StunMessageBuilder;
 }
 
 public final class com/ditchoom/webrtc/stun/StunMessageType {
@@ -474,12 +483,16 @@ public final class com/ditchoom/webrtc/stun/StunTurnAttributesKt {
 	public static final fun asRequestedAddressFamily (Lcom/ditchoom/webrtc/stun/RawAttribute;)Lkotlin/UByte;
 	public static final fun asRequestedTransport (Lcom/ditchoom/webrtc/stun/RawAttribute;)Lkotlin/UByte;
 	public static final fun asUnknownAttributes (Lcom/ditchoom/webrtc/stun/RawAttribute;)Ljava/util/List;
-	public static final fun ofChannelNumber-i8woANY (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;S)Lcom/ditchoom/webrtc/stun/RawAttribute;
-	public static final fun ofLifetime-Qn1smSk (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;I)Lcom/ditchoom/webrtc/stun/RawAttribute;
-	public static final fun ofRequestedAddressFamily-EK-6454 (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;B)Lcom/ditchoom/webrtc/stun/RawAttribute;
-	public static final fun ofRequestedTransport-EK-6454 (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;B)Lcom/ditchoom/webrtc/stun/RawAttribute;
-	public static synthetic fun ofRequestedTransport-EK-6454$default (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;BILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/RawAttribute;
-	public static final fun ofUnknownAttributes (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;Ljava/util/List;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static final fun ofChannelNumber-qEOnv9Y (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;SLcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static synthetic fun ofChannelNumber-qEOnv9Y$default (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;SLcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static final fun ofLifetime-OsBMiQA (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;ILcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static synthetic fun ofLifetime-OsBMiQA$default (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;ILcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static final fun ofRequestedAddressFamily-Zo7BePA (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;BLcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static synthetic fun ofRequestedAddressFamily-Zo7BePA$default (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;BLcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static final fun ofRequestedTransport-Zo7BePA (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;BLcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static synthetic fun ofRequestedTransport-Zo7BePA$default (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;BLcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static final fun ofUnknownAttributes (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;Ljava/util/List;Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/stun/RawAttribute;
+	public static synthetic fun ofUnknownAttributes$default (Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;Ljava/util/List;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/stun/RawAttribute;
 }
 
 public final class com/ditchoom/webrtc/stun/TransactionId {

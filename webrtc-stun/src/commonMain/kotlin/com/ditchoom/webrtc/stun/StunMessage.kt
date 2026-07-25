@@ -91,15 +91,18 @@ public class StunMessage internal constructor(
      * **rewritten** to cover through the MESSAGE-INTEGRITY attribute (so a trailing FINGERPRINT does
      * not perturb it). Fed to the MAC in three slices — no mutation of the datagram, no full copy.
      */
-    public fun verifyMessageIntegrity(key: ReadBuffer): Boolean {
+    public fun verifyMessageIntegrity(
+        key: ReadBuffer,
+        factory: BufferFactory = BufferFactory.Default,
+    ): Boolean {
         val src = source ?: return false
         val miAt = messageIntegrityOffset ?: return false
         // A conforming MESSAGE-INTEGRITY value is exactly 20 bytes (HMAC-SHA1); a malformed short
         // length would make the 20-byte compare below run off the datagram (Jazzer regression).
         if (src.u16be(miAt + TYPE_FIELD_BYTES) != HMAC_SHA1_BYTES) return false
-        val out = BufferFactory.Default.allocate(HMAC_SHA1_BYTES, ByteOrder.BIG_ENDIAN)
+        val out = factory.allocate(HMAC_SHA1_BYTES, ByteOrder.BIG_ENDIAN)
         val mac = HmacSha1Mac(key)
-        feedIntegrityPrefix(src, miAt, TLV_HEADER_BYTES + HMAC_SHA1_BYTES) { mac.update(it) }
+        feedIntegrityPrefix(src, miAt, TLV_HEADER_BYTES + HMAC_SHA1_BYTES, factory) { mac.update(it) }
         mac.doFinalInto(out)
         out.resetForRead()
         return out.constantTimeEquals(src.sliceOf(miAt + TLV_HEADER_BYTES, miAt + TLV_HEADER_BYTES + HMAC_SHA1_BYTES))
@@ -111,16 +114,19 @@ public class StunMessage internal constructor(
      * length-rewritten prefix as [verifyMessageIntegrity]; the on-wire value may be **truncated** to a
      * multiple of 4 in 16..32 bytes (RFC 8489 §14.6), so only the declared prefix of the MAC is compared.
      */
-    public fun verifyMessageIntegritySha256(key: ReadBuffer): Boolean {
+    public fun verifyMessageIntegritySha256(
+        key: ReadBuffer,
+        factory: BufferFactory = BufferFactory.Default,
+    ): Boolean {
         val src = source ?: return false
         val miAt = messageIntegritySha256Offset ?: return false
         val declaredLen = src.u16be(miAt + TYPE_FIELD_BYTES)
         if (declaredLen < MIN_SHA256_MI_BYTES || declaredLen > HMAC_SHA256_BYTES || declaredLen % ALIGNMENT != 0) {
             return false
         }
-        val out = BufferFactory.Default.allocate(HMAC_SHA256_BYTES, ByteOrder.BIG_ENDIAN)
+        val out = factory.allocate(HMAC_SHA256_BYTES, ByteOrder.BIG_ENDIAN)
         val mac = HmacSha256Mac(key)
-        feedIntegrityPrefix(src, miAt, TLV_HEADER_BYTES + declaredLen) { mac.update(it) }
+        feedIntegrityPrefix(src, miAt, TLV_HEADER_BYTES + declaredLen, factory) { mac.update(it) }
         mac.doFinalInto(out)
         out.resetForRead()
         // Compare only the declared (possibly truncated) prefix of the computed MAC.
@@ -135,10 +141,11 @@ public class StunMessage internal constructor(
         src: ReadBuffer,
         attrAt: Int,
         attrWireSize: Int,
+        factory: BufferFactory,
         update: (ReadBuffer) -> Unit,
     ) {
         val patchedLength = (attrAt - (sourceStart + StunHeader.SIZE_BYTES)) + attrWireSize
-        val patched = BufferFactory.Default.allocate(LENGTH_FIELD_BYTES, ByteOrder.BIG_ENDIAN)
+        val patched = factory.allocate(LENGTH_FIELD_BYTES, ByteOrder.BIG_ENDIAN)
         patched.writeUShort(patchedLength.toUShort())
         patched.resetForRead()
         update(src.sliceOf(sourceStart, sourceStart + TYPE_FIELD_BYTES)) // message type

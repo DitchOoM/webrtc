@@ -459,9 +459,14 @@ public class IceAgent(
         val prflxPriority = IceCandidate.computePriority(CandidateType.PeerReflexive, entry.pair.local.component)
         val builder =
             StunMessageBuilder
-                .of(StunClass.Request, StunMethod.Binding, txid)
-                .add(RawAttribute.ofText(StunAttributeType.Username, "${remote.ufrag.value}:${_localCredentials.ufrag.value}"))
-                .add(IceAttributes.priority(prflxPriority, config.bufferFactory))
+                .of(StunClass.Request, StunMethod.Binding, txid, config.bufferFactory)
+                .add(
+                    RawAttribute.ofText(
+                        StunAttributeType.Username,
+                        "${remote.ufrag.value}:${_localCredentials.ufrag.value}",
+                        config.bufferFactory,
+                    ),
+                ).add(IceAttributes.priority(prflxPriority, config.bufferFactory))
                 .add(
                     if (_role == IceRole.Controlling) {
                         IceAttributes.controlling(tieBreaker, config.bufferFactory)
@@ -618,16 +623,16 @@ public class IceAgent(
         mapped: TransportAddress,
     ): ReadBuffer =
         StunMessageBuilder
-            .of(StunClass.SuccessResponse, StunMethod.Binding, transactionId)
-            .add(RawAttribute.ofXorMappedAddress(mapped, transactionId))
+            .of(StunClass.SuccessResponse, StunMethod.Binding, transactionId, config.bufferFactory)
+            .add(RawAttribute.ofXorMappedAddress(mapped, transactionId, config.bufferFactory))
             .addMessageIntegrity(localKey())
             .addFingerprint()
             .encode(config.bufferFactory)
 
     private fun roleConflictResponse(transactionId: TransactionId): ReadBuffer =
         StunMessageBuilder
-            .of(StunClass.ErrorResponse, StunMethod.Binding, transactionId)
-            .add(RawAttribute.ofErrorCode(StunErrorCode(ROLE_CONFLICT, "Role Conflict")))
+            .of(StunClass.ErrorResponse, StunMethod.Binding, transactionId, config.bufferFactory)
+            .add(RawAttribute.ofErrorCode(StunErrorCode(ROLE_CONFLICT, "Role Conflict"), config.bufferFactory))
             .addMessageIntegrity(localKey())
             .addFingerprint()
             .encode(config.bufferFactory)

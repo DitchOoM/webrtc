@@ -256,6 +256,10 @@ private fun readBufferToArrayBuffer(buf: ReadBuffer): ArrayBuffer {
 private fun arrayBufferToReadBuffer(ab: ArrayBuffer): ReadBuffer {
     val u8 = Uint8Array(ab)
     val len = u8.length
+    // BufferFactory.Default is correct HERE, and is not a missed seam: on the browser-delegated path the
+    // whole stack is the browser's own RTCPeerConnection, `create(scope, iceServers)` takes no config, and
+    // so there is no consumer-injected factory in play to honour. Every allocation the PURE-KOTLIN stack
+    // makes routes through an injected factory (see webrtc-stun / SctpConfig / IceConfig).
     val out = BufferFactory.Default.allocate(maxOf(1, len), ByteOrder.BIG_ENDIAN)
     for (i in 0 until len) out.writeByte(u8[i])
     out.resetForRead()

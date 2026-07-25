@@ -125,7 +125,15 @@ public suspend fun gatherServerReflexive(
     bufferFactory: BufferFactory = BufferFactory.Default,
 ): ServerReflexiveResult {
     val transactionId = TransactionId.random(random)
-    val request = StunMessageBuilder.of(StunClass.Request, StunMethod.Binding, transactionId).addFingerprint().encode(bufferFactory)
+    val request =
+        StunMessageBuilder
+            .of(
+                StunClass.Request,
+                StunMethod.Binding,
+                transactionId,
+                bufferFactory,
+            ).addFingerprint()
+            .encode(bufferFactory)
     // Retransmit the Binding every [retransmitInterval] until a matching response arrives or [timeout]
     // elapses (RFC 8489 §6.2.1 spirit) — a single lost request or response must not cost the whole srflx.
     val result =

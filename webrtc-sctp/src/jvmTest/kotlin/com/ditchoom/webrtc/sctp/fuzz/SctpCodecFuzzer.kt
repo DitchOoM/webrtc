@@ -3,6 +3,7 @@ package com.ditchoom.webrtc.sctp.fuzz
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.managed
+import com.ditchoom.webrtc.sctp.ReConfigParameterDecode
 import com.ditchoom.webrtc.sctp.SctpChunk
 import com.ditchoom.webrtc.sctp.SctpDecodeResult
 import com.ditchoom.webrtc.sctp.SctpPacket
@@ -121,6 +122,17 @@ object SctpCodecFuzzer {
                 is SctpChunk.Abort -> chunk.causes.forEach { drain(it.value) }
                 is SctpChunk.Error -> chunk.causes.forEach { drain(it.value) }
                 is SctpChunk.Unrecognized -> drain(chunk.value)
+                // RE-CONFIG (RFC 6525): the interpretation of every parameter is itself a decoder over
+                // attacker-controlled bytes — a stream-id run bounded by a declared length, a response
+                // whose optional TSN tail is keyed off that length. Exercising it here holds it to the
+                // same totality invariant as the rest: a malformed body must return a typed reject, not
+                // throw. Both branches of the interpreted/rejected split are walked.
+                is SctpChunk.ReConfig -> {
+                    chunk.wellFormed
+                    chunk.reConfigParameters().forEach { decode ->
+                        if (decode is ReConfigParameterDecode.Interpreted) decode.parameter.toParameter()
+                    }
+                }
                 else -> Unit
             }
         }

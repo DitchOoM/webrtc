@@ -483,6 +483,14 @@ public class SctpAssociation(
                 SctpChunk.ShutdownAck -> onShutdownAck(out)
                 is SctpChunk.ShutdownComplete -> onShutdownComplete(out)
                 is SctpChunk.Error -> Unit
+                // RE-CONFIG (RFC 6525) is decoded by the codec floor but not yet acted on: this
+                // association does not list chunk type 130 in its INIT Supported Extensions, so a
+                // conforming peer never sends one (RFC 6525 §5.1: an endpoint sends RE-CONFIG only to a
+                // peer that advertised support). Ignoring it is therefore the correct behaviour today,
+                // and matches how an unrecognized type-130 chunk would have been treated before —
+                // SkipAndContinue, per its high bits. The stream-reset state machine that answers these,
+                // and the advertisement that invites them, land together in a follow-up.
+                is SctpChunk.ReConfig -> Unit
                 is SctpChunk.Unrecognized -> Unit
             }
         }

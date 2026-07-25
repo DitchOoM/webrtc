@@ -62,6 +62,13 @@ public value class SctpChunkType(
         public val CookieAck: SctpChunkType = SctpChunkType(11u)
         public val ShutdownComplete: SctpChunkType = SctpChunkType(14u)
 
+        /**
+         * RE-CONFIG (RFC 6525 §3.1) — the stream-reconfiguration chunk; type 130 (0x82). Its high bits
+         * are `10`, so a peer that does not implement RFC 6525 skips it and keeps processing the packet
+         * ([UnrecognizedAction.SkipAndContinue]) rather than dropping the whole datagram.
+         */
+        public val ReConfig: SctpChunkType = SctpChunkType(130u)
+
         /** FORWARD-TSN (RFC 3758 §3.2) — the partial-reliability skip marker; type 192 (0xC0). */
         public val ForwardTsn: SctpChunkType = SctpChunkType(192u)
     }

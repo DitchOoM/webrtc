@@ -2,6 +2,7 @@ package com.ditchoom.webrtc.sctp
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
+import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.managed
@@ -46,6 +47,30 @@ internal fun ReadBuffer.toIntList(): List<Int> {
     val out = ArrayList<Int>(remaining())
     for (i in position() until limit()) out += get(i).toInt() and 0xFF
     return out
+}
+
+/**
+ * A buffer's remaining bytes as a lowercase hex string — the inverse of [bufferOfHex], and the readable
+ * form for pinning a wire layout: an expected-byte assertion written as hex stays one line per logical
+ * field instead of one line per byte (which is what an `Int` list degrades into under ktlint's
+ * argument-list wrapping). Does not disturb this buffer's position.
+ *
+ * Uses buffer's own `ReadBuffer.encodeHexInto` rather than a per-byte format loop: that is the bulk
+ * path (word-at-a-time in common, a single C transform over raw pointers on the native backends), and
+ * a per-byte loop here is the pattern this library exists to avoid — test helpers get copied.
+ *
+ * The destination buffer is buffer's API shape, not an accident: `encodeHexInto` writes ASCII hex
+ * *into a WriteBuffer* and buffer exposes no `ReadBuffer` → hex-`String` form, so a `String` result has
+ * to be read back out of one. Worth a small upstream addition; until then this is the honest cost.
+ */
+internal fun ReadBuffer.toHex(): String {
+    val n = remaining()
+    if (n == 0) return ""
+    val hex = BufferFactory.managed().allocate(n * 2, ByteOrder.BIG_ENDIAN)
+    encodeHexInto(hex, position(), n)
+    hex.resetForRead()
+    hex.setLimit(n * 2)
+    return hex.readString(n * 2, Charset.UTF8)
 }
 
 /**

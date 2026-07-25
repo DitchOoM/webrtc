@@ -375,14 +375,26 @@ public class SctpAssociation(
             val beginning = index == 0
             val ending = index == fragments.lastIndex
             val flags = DataChunkFlags.of(beginning = beginning, ending = ending, unordered = options.unordered)
+            // Encode the whole packet now, while the caller's payload is still borrowed-valid: this single
+            // copy into the datagram *is* the owned copy the retransmission queue needs (directive #6), so
+            // the fragment views above never have to be materialized into buffers of their own.
+            val chunk =
+                SctpChunk.Data(
+                    flags = flags,
+                    tsn = nextTsn,
+                    streamId = options.streamId,
+                    streamSequenceNumber = ssn,
+                    payloadProtocolId = options.payloadProtocolId,
+                    userData = fragmentPayload,
+                )
             val data =
                 OutstandingData(
                     tsn = nextTsn,
                     streamId = options.streamId,
                     ssn = ssn,
-                    ppid = options.payloadProtocolId,
                     flags = flags,
-                    userData = fragmentPayload,
+                    bytes = fragmentPayload.remaining(),
+                    packet = encodePacket(listOf(chunk), peerVerificationTag),
                     reliability = options.reliability,
                     firstSentAt = now,
                 )
@@ -409,7 +421,7 @@ public class SctpAssociation(
         for (data in rq.retransmittable()) {
             if (rq.outstandingBytes > 0 && rq.outstandingBytes + data.bytes > cc.cwnd) break
             rq.markRetransmitted(data, now)
-            emitPacket(listOf(data.toChunk()), peerVerificationTag, out)
+            out += SctpOutput.Transmit(data.wirePacket())
         }
 
         while (pendingSend.isNotEmpty()) {
@@ -423,7 +435,7 @@ public class SctpAssociation(
             pendingSendBytes -= next.bytes
             next.lastSentAt = now
             rq.onSent(next)
-            emitPacket(listOf(next.toChunk()), peerVerificationTag, out)
+            out += SctpOutput.Transmit(next.wirePacket())
         }
 
         if (rq.outstandingBytes > 0 && t3Deadline == null) t3Deadline = now + rtt.rto
@@ -701,26 +713,36 @@ public class SctpAssociation(
         headerTag: VerificationTag,
         out: MutableList<SctpOutput>,
     ) {
-        val builder = SctpPacketBuilder(localPort, remotePort, headerTag)
-        for (chunk in chunks) builder.add(chunk)
-        out += SctpOutput.Transmit(builder.encode(config.bufferFactory))
+        out += SctpOutput.Transmit(encodePacket(chunks, headerTag))
     }
 
+    private fun encodePacket(
+        chunks: List<SctpChunk>,
+        headerTag: VerificationTag,
+    ): PlatformBuffer {
+        val builder = SctpPacketBuilder(localPort, remotePort, headerTag)
+        for (chunk in chunks) builder.add(chunk)
+        return builder.encode(config.bufferFactory)
+    }
+
+    /**
+     * Split one user message into per-chunk payloads of at most [SctpConfig.maxPayloadBytes] (RFC 4960
+     * §6.9). The results are **zero-copy views over the caller's borrowed payload**, valid only for the
+     * duration of this `handle` call — [onSendMessage] consumes each one immediately by encoding it into
+     * its wire packet, which is the copy that survives. A sub-MTU message is therefore not copied here at
+     * all; it is simply the whole payload as one view.
+     */
     private fun fragment(payload: ReadBuffer): List<ReadBuffer> {
         val slice = payload.slice()
         val total = slice.remaining()
-        if (total <= config.maxPayloadBytes) return listOf(copyOf(slice))
+        if (total <= config.maxPayloadBytes) return listOf(slice)
         val out = ArrayList<ReadBuffer>((total + config.maxPayloadBytes - 1) / config.maxPayloadBytes)
         var offset = 0
         while (offset < total) {
             val len = minOf(config.maxPayloadBytes, total - offset)
-            val fragment = config.bufferFactory.allocate(len, ByteOrder.BIG_ENDIAN)
-            val src = slice.slice()
-            src.position(offset)
-            src.setLimit(offset + len)
-            fragment.write(src)
-            fragment.resetForRead()
-            fragment.setLimit(len)
+            val fragment = slice.slice()
+            fragment.position(offset)
+            fragment.setLimit(offset + len)
             out += fragment
             offset += len
         }

@@ -79,3 +79,35 @@ path adds the table-driven CRC32c fold over the packet (word-batched input read,
 precedent) if a hot bulk-checksum path ever appears. Re-run with
 `./gradlew :webrtc-sctp:jvmBenchmarkBenchmark` for the `main` profile, and add the Linux K/N column at
 release.
+
+The same class also benchmarks the **association round trip** — one user message pushed through a pair
+of established associations on a lossless, zero-latency link and driven until both sides are drained:
+fragment + encode + CRC on the sender, decode + verify + reassemble on the receiver, SACK back,
+cumulative-ack processing. The round trip is the unit deliberately: timing the send call alone flatters
+any change that merely *defers* work past accept (a window-blocked sender queues chunks it has not
+encoded yet), which is exactly the trap the directive-#6 measurement below had to avoid.
+
+| Benchmark | What it covers | JVM (main) |
+|---|---|---|
+| `sendSmallMessageRoundTrip` | 1200-byte message — one DATA chunk, the data-channel common case | ~110K ops/s, ±50% |
+| `sendFragmentedMessageRoundTrip` | 16 KiB message — 14 fragments, so fragmentation dominates | ~6K ops/s, ±50% |
+
+**Those error bars are the harness, not the hardware, and they are not yet a usable baseline.** A round
+trip allocates several buffers per op (the packet, the reassembly copy, the SACK), so at ~100K ops/s
+this benchmark is partly measuring GC scheduling, and its per-iteration results are bimodal (86K–132K
+within one 5-iteration run). The codec benchmarks above, running in the same JVMs interleaved with it,
+hold ±1–5% — so the variance is specific to this workload's allocation churn. Treat the numbers as
+order-of-magnitude only until the harness is conditioned (pooled buffers in the fixture, longer
+iterations/more forks, or measuring allocation *bytes* instead of ops/s) and re-baselined on a quiet
+machine.
+
+Directive #6, send-path copy reduction: the retransmission queue must own bytes past `send()` (the
+caller's payload is borrowed for one `handle` call), so **one** copy of the user data is architecturally
+required — but there used to be two, because `fragment()` allocated and copied each fragment (even a
+sub-MTU one) and the packet encoder then copied it again into the datagram. `fragment()` now emits
+zero-copy views and the queue retains the *encoded wire packet*, so the encode **is** the owned copy and
+a retransmit re-emits the same bytes (CRC included) instead of re-encoding. Paired A/B runs of this
+benchmark put the new path ahead on both shapes, but the spread above is far too wide to publish a
+percentage, so **the claim this change actually stands on is the allocation count**, asserted exactly
+and on every platform by `BufferLifecycleTest.send_allocates_one_buffer_per_fragment`: one buffer per
+fragment, previously two (mutation-checked — restoring the old `copyOf` fails it).

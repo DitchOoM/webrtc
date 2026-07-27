@@ -138,8 +138,14 @@ public sealed interface IceConnectionState {
         public val selected: CandidatePair,
     ) : IceConnectionState
 
-    /** Consent to a previously selected pair was lost (RFC 7675); may recover if a check succeeds again. */
-    public data object Disconnected : IceConnectionState
+    // There is deliberately no `Disconnected` case (the W3C `RTCIceConnectionState` "disconnected" value:
+    // connectivity lost but possibly recoverable). This agent never emitted one, and after RFC 7675
+    // revocation was made terminal it cannot: §5.1 says "the same ICE credentials MUST NOT be used on the
+    // affected 5-tuple again ... a new session, or an ICE restart, is needed", so consent loss goes
+    // straight to [Failed] with [IceFailureReason.ConsentExpired] and recovery runs through
+    // [IceEvent.Restart]. A state meaning "may recover if a check succeeds again" describes exactly the
+    // resurrection that made consent expiry non-terminal in the first place — so modelling it would be
+    // modelling a bug. A consumer that wants the W3C vocabulary maps [Failed] to "failed"; nothing is lost.
 
     /** ICE gave up — the typed reason (no pairs, all failed, consent expired). */
     public data class Failed(

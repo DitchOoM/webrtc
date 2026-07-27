@@ -14,17 +14,6 @@ public final class com/ditchoom/webrtc/ice/CandidatePair {
 	public fun toString ()Ljava/lang/String;
 }
 
-public final class com/ditchoom/webrtc/ice/CandidatePairState : java/lang/Enum {
-	public static final field Failed Lcom/ditchoom/webrtc/ice/CandidatePairState;
-	public static final field Frozen Lcom/ditchoom/webrtc/ice/CandidatePairState;
-	public static final field InProgress Lcom/ditchoom/webrtc/ice/CandidatePairState;
-	public static final field Succeeded Lcom/ditchoom/webrtc/ice/CandidatePairState;
-	public static final field Waiting Lcom/ditchoom/webrtc/ice/CandidatePairState;
-	public static fun getEntries ()Lkotlin/enums/EnumEntries;
-	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/CandidatePairState;
-	public static fun values ()[Lcom/ditchoom/webrtc/ice/CandidatePairState;
-}
-
 public abstract interface class com/ditchoom/webrtc/ice/CandidateParse {
 }
 
@@ -336,13 +325,6 @@ public final class com/ditchoom/webrtc/ice/IceConnectionState$Connected : com/di
 	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/IceConnectionState$Connected;Lcom/ditchoom/webrtc/ice/CandidatePair;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceConnectionState$Connected;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getSelected ()Lcom/ditchoom/webrtc/ice/CandidatePair;
-	public fun hashCode ()I
-	public fun toString ()Ljava/lang/String;
-}
-
-public final class com/ditchoom/webrtc/ice/IceConnectionState$Disconnected : com/ditchoom/webrtc/ice/IceConnectionState {
-	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/IceConnectionState$Disconnected;
-	public fun equals (Ljava/lang/Object;)Z
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }

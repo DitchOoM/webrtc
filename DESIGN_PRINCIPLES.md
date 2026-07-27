@@ -154,10 +154,25 @@ sealed interface IceCandidate {
 variants where it isn't a free field. Grep `IceCandidate` in `webrtc-ice`.
 
 The discipline runs **inside** a core too. The ICE `PairEntry` bundles a check's transaction with its
-purpose — `InFlightCheck(transaction, CheckPurpose)` — so a purpose (nomination / consent / ordinary)
-cannot exist without a live check, and "a nomination is in flight" is **derived** from the checklist
-rather than stored in a latch that can wedge stale. A stored `nominating`/`consentCheck`/`nominationInFlight`
-soup is exactly what let an earlier version hang; the derived, unified model makes that bug unrepresentable.
+purpose — `InFlightCheck(transaction, CheckPurpose)` — so a purpose (nomination / ordinary) cannot exist
+without a live check, and "a nomination is in flight" is **derived** from the checklist rather than stored
+in a latch that can wedge stale. A stored `nominating`/`nominationInFlight` soup is exactly what let an
+earlier version hang; the derived, unified model makes that bug unrepresentable.
+
+The same section is also a lesson in what *not* to unify. RFC 7675 consent checks used to be a third
+`CheckPurpose`, riding the same per-pair transaction slot — and that one conflation cost three defects at
+once: the retransmit chain outlived the revocation window it defended, the single slot let an in-flight
+check block the next one from ever starting, and marking the pair `InProgress` for a consent check parked
+it in a checking state forever. A consent check is not a pair check: it does not retransmit, does not
+change pair state, and asks a different question. It now has its own outstanding-id set and its own clock.
+Sharing a representation is only a simplification when the things genuinely *are* the same thing.
+
+Consent's terminal is modelled the same way. A generation's nomination is a sealed
+`Selection = None | Nominated | Revoked`, not a `selected: PairEntry?` beside a `consentRevoked: Boolean`,
+because those two fields can spell "nominated and revoked at once". The guard that enforces "first
+nomination wins" tested only the null, so when consent expiry nulled the selected pair the guard came
+undone and the next inbound check re-nominated the pair whose consent had just died. Three cases force
+every call site to say which of *never*, *now* and *no longer* it means.
 
 ## 5. Nullability is a deliberate signal
 

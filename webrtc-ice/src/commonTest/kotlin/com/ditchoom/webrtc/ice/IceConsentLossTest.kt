@@ -29,19 +29,24 @@ import kotlin.time.ExperimentalTime
  * **Consent-freshness convergence under loss (RFC 7675, CO-3).** The mirror-opposite of
  * [IceLifecycleTest.consent_expiry_fails_the_connection_when_the_peer_goes_silent]: there the peer goes
  * silent and consent *must* fail; here **both peers stay alive** on a lossy link and consent must *not*
- * fail — a single dropped consent check does not fail the pair (RFC 7675; [IceAgent] "a lost consent check
- * doesn't fail the pair"), and re-consent converges on the next interval.
+ * fail — a dropped consent check never fails the pair (a consent check is not a pair check at all; see
+ * `IceAgent.sendConsentCheck`), and the next paced check reconverges.
  *
  * The knobs make the invariant sharp: a **compressed** `consentInterval` (many refresh cycles in the
  * window) with a `consentTimeout` long enough to survive several consecutive dropped refreshes. Over a
  * long observation window at 5/10/20 % loss across a seed sweep, the connection must stay
  * Connected/Completed and **never** reach `Failed(ConsentExpired)`.
  *
+ * Robustness here comes from *independent chances*, not from retransmission: RFC 7675 §4.1 sends each
+ * check once and paces the next at 0.8–1.2× the interval, so a compressed interval inside a long timeout
+ * buys many evenly-spread probes. [IceConsentTerminalTest] asserts that spacing directly; this fixture
+ * asserts what it is for — that consecutive drops do not accumulate into a revocation.
+ *
  * This test also carries the directive-#6 no-leak assertion for the exact regression class the storm
  * exposed: a shared [CountingBufferFactory] is threaded through the vnet, and allocation growth over the
- * window must scale with the messages sent (consent checks + their retransmits), not with the ~50 ms Ta
- * timer ticks — a per-tick leak would blow far past the bound. Loss is seeded (directive #2); the watchdog
- * is `runTest` virtual time, never a wall-clock budget (directive #4).
+ * window must scale with the messages sent (one buffer per consent check), not with the ~50 ms Ta timer
+ * ticks — a per-tick leak would blow far past the bound. Loss is seeded (directive #2); the watchdog is
+ * `runTest` virtual time, never a wall-clock budget (directive #4).
  */
 class IceConsentLossTest {
     @Test
@@ -59,11 +64,12 @@ class IceConsentLossTest {
                         val factory = CountingBufferFactory(BufferFactory.Default)
                         val vnet = Vnets.flatImpaired(trial, ImpairmentConfig(loss = loss), seed = seed, bufferFactory = factory)
                         val clock = IceDriver.clockOf { testScheduler.currentTime }
-                        // Fast consent with many closely-spaced check retransmits (small RTO): a consent
-                        // response reliably lands well inside the timeout even at 20 % loss, so re-consent
-                        // converges rather than the pair aging out on an unlucky run of drops. The timeout is
-                        // comfortably larger than a check's useful retransmit span; the window spans several
-                        // timeouts (so a fragile pair *would* expire within it).
+                        // Fast consent inside a long timeout: ~10 independently-paced checks fit in each
+                        // revocation window, so at 20 % loss the chance of every one of them going unanswered
+                        // is negligible and re-consent converges rather than the pair aging out on an unlucky
+                        // run of drops. The small check RTO applies to *connectivity* checks (establishment
+                        // under loss), not to consent, which is transmitted once per interval. The window
+                        // spans several timeouts, so a fragile pair *would* expire within it.
                         val config =
                             IceConfig(
                                 consentInterval = CONSENT_INTERVAL,

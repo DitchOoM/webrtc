@@ -1,27 +1,14 @@
 package com.ditchoom.webrtc.ice
 
-/**
- * The state of a candidate pair on the checklist (RFC 8445 §6.1.2.6). A pair walks
- * `Frozen → Waiting → InProgress → (Succeeded | Failed)`; [Succeeded] means a connectivity check
- * completed both ways (a valid pair). Modeled as a sealed-style enum so a `when` over it is exhaustive
- * and an illegal transition is caught by the agent's own guard, never encoded as a boolean soup.
- */
-public enum class CandidatePairState {
-    /** Waiting on its foundation — a same-foundation pair is being checked first (the frozen algorithm). */
-    Frozen,
-
-    /** Unfrozen and eligible to be checked when the pacing timer (Ta) next fires. */
-    Waiting,
-
-    /** A connectivity check has been sent and is awaiting a response or retransmission. */
-    InProgress,
-
-    /** The check succeeded — the pair is valid and may be nominated. */
-    Succeeded,
-
-    /** The check failed (timed out, or an unrecoverable error response). */
-    Failed,
-}
+// `CandidatePairState` used to live here: a public enum for the RFC 8445 §6.1.2.6 checklist states.
+// It is gone, and deliberately so. It was public API with **no consumer** — it appeared on no public
+// signature and was referenced only from inside `IceAgent` — while the agent had to carry the pair's
+// in-flight transaction in a *separate* nullable field beside it. Those two fields desynchronised and
+// shipped a bug (a timed-out consent check dropped the transaction without touching the state, parking
+// the pair `InProgress` with nothing in flight, forever). The checklist state is now `IceAgent`'s
+// private sealed `CheckState`, which carries the in-flight check inside the one case that has one, so
+// the desync is unrepresentable. Nothing public replaces it: the checklist is the agent's own business,
+// and `IceConnectionState` + `IcePath` are what a consumer actually observes.
 
 /**
  * A **candidate pair** (RFC 8445 §6.1.2): a local candidate paired with a remote one, the unit a

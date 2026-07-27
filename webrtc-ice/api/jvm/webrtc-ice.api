@@ -14,17 +14,6 @@ public final class com/ditchoom/webrtc/ice/CandidatePair {
 	public fun toString ()Ljava/lang/String;
 }
 
-public final class com/ditchoom/webrtc/ice/CandidatePairState : java/lang/Enum {
-	public static final field Failed Lcom/ditchoom/webrtc/ice/CandidatePairState;
-	public static final field Frozen Lcom/ditchoom/webrtc/ice/CandidatePairState;
-	public static final field InProgress Lcom/ditchoom/webrtc/ice/CandidatePairState;
-	public static final field Succeeded Lcom/ditchoom/webrtc/ice/CandidatePairState;
-	public static final field Waiting Lcom/ditchoom/webrtc/ice/CandidatePairState;
-	public static fun getEntries ()Lkotlin/enums/EnumEntries;
-	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/CandidatePairState;
-	public static fun values ()[Lcom/ditchoom/webrtc/ice/CandidatePairState;
-}
-
 public abstract interface class com/ditchoom/webrtc/ice/CandidateParse {
 }
 

@@ -6,6 +6,27 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Removed — **BREAKING**: the public `CandidatePairState` enum (#83)
+
+`webrtc-ice` no longer exports `CandidatePairState`. It was public API with **no consumer** — it named
+no public signature and was referenced only from inside `IceAgent` — while the agent kept the pair's
+in-flight STUN transaction in a *separate nullable field beside it*. Those two fields desynchronised,
+and the desync shipped a bug: `clearTransaction` dropped the transaction without touching the state, so
+a consent check that timed out left its pair `InProgress` **with nothing in flight, permanently**. The
+parked pair then counted as pending in `maybeComplete` (so the agent could never reach `Completed`) and
+made `onInboundCheck` take its `InProgress` arm forever — which is what hid the consent-resurrection
+bug (#75) for as long as it existed.
+
+The checklist state is now `IceAgent`'s private sealed `CheckState`, whose `InProgress(check)` case
+carries the transaction, so retiring a check cannot be written without also saying what the pair
+becomes. Nothing public replaces it: the checklist is the agent's own business, and `IceConnectionState`
++ `IcePath` are what a consumer actually observes. The `valid` flag went with it — written only in
+lockstep with the state, read only under `allDone` where it could never disagree.
+
+`Generation.remoteCredentials` also stopped being a nullable read through two `!!` (#84); it is a sealed
+`RemotePeer` (`Unsignaled | Signaled`), matching the shape the session layer already uses for the same
+fact. That one is internal — no API change.
+
 ### Fixed — RFC 7675 consent: expiry is terminal (#75), and checks pace instead of retransmitting (#73)
 
 Two defects in the same seam, filed separately and fixed together because **the second was hiding the

@@ -9,6 +9,7 @@ import com.ditchoom.buffer.crypto.signatures
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.webrtc.dtls.DtlsConfig
 import com.ditchoom.webrtc.ice.DatagramBinder
+import com.ditchoom.webrtc.ice.IceConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sdp.SdpType
 import kotlinx.coroutines.CoroutineScope
@@ -48,6 +49,22 @@ class PeerConnectionLossRoundTripTest {
     private val timeout = 180.seconds
     private val epoch = Instant.fromEpochSeconds(0)
 
+    /**
+     * RFC 7675 consent revocation is **disabled** for this gate, and the reason is a budget conflict rather
+     * than convenience. This fixture allows [timeout] for establishment to converge, on the stated grounds
+     * that a 20 % loss run can legitimately take a long time; consent revocation is a *liveness* deadline
+     * that fires after 30 s of no answered check. Those two budgets contradict each other — a run that takes
+     * the 32 s this fixture explicitly permits is one whose ICE layer has already, and correctly, declared
+     * the path dead. Left at the default, the gate silently tests consent tuning as well as establishment
+     * and is flaky at both: measured over seeds 30–90 at 20 % loss it fails 2/60 either way, and which seeds
+     * are unlucky moves with any timing change.
+     *
+     * So establishment robustness is gated here, and RFC 7675 liveness is gated where it belongs — in
+     * `IceConsentLossTest` (consent must survive loss) and `IceConsentTerminalTest` (consent pacing, and
+     * revocation being terminal), both of which set consent budgets matched to their own impairment.
+     */
+    private val noConsentRevocation = IceConfig(consentTimeout = timeout * 2)
+
     @Test
     fun full_stack_establishment_survives_loss_across_seeds() {
         if (!engineCryptoAvailable()) return // browsers have no blocking DTLS engine — see class doc
@@ -79,6 +96,7 @@ class PeerConnectionLossRoundTripTest {
                 binder = binder,
                 gathering = { it.gatherHost("10.0.0.1", 4000) },
                 dtls = aliceDtls,
+                config = PeerConnectionConfig(iceConfig = noConsentRevocation),
             )
         val bob =
             NativePeerConnection(
@@ -88,6 +106,7 @@ class PeerConnectionLossRoundTripTest {
                 binder = binder,
                 gathering = { it.gatherHost("10.0.0.2", 5000) },
                 dtls = bobDtls,
+                config = PeerConnectionConfig(iceConfig = noConsentRevocation),
             )
 
         trickle(backgroundScope, from = alice, to = bob)

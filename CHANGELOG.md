@@ -6,6 +6,42 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Fixed — RFC 7675 consent: expiry is terminal (#75), and checks pace instead of retransmitting (#73)
+
+Two defects in the same seam, filed separately and fixed together because **the second was hiding the
+first**, and either one alone leaves the agent worse off than both.
+
+- **Consent checks are no longer retransmitting STUN transactions** (#73). RFC 7675 §4.1 sends a fresh
+  Binding request with a new transaction id *"transmitted once only"* and paces the next independently.
+  Running them through `StunTransaction` instead produced one exponential backoff chain — at the RFC
+  defaults, 7 requests spanning **39.5 s against a 30 s revocation window** — which front-loaded every
+  probe (0, 0.5, 1.5, 3.5, 7.5, 15.5 s) and then left the last ~16 s before revocation with nothing in
+  flight at all. A path that went down and *recovered* inside its own revocation window was declared dead
+  anyway, because our retransmit schedule had stopped asking. Checks now go out at a jittered
+  0.8–1.2 × `consentInterval` per §4.1, several may be outstanding at once (a path whose RTT exceeds the
+  interval must still be able to refresh consent), and the outstanding-id set is bounded by the revocation
+  window. `IceRelayLossTest`'s long-standing `Failed(ConsentExpired)` at `loss=0.20 seed=810004` was this.
+- **Consent expiry is terminal for the generation** (#75). Expiry used to null the selected pair and go
+  `Failed(ConsentExpired)` while leaving the checklist entry `Succeeded` — so `selectPair`'s "first
+  nomination wins" guard, which tested only the null, came undone and the next inbound check put the agent
+  straight back to `Connected` **on the pair whose consent had just died**. RFC 7675 §5.1 is explicit that
+  this is not allowed: *"the same ICE credentials MUST NOT be used on the affected 5-tuple again ... a new
+  session, or an ICE restart, is needed"*. A revoked generation now runs no checks, takes no nomination,
+  answers nothing, clocks nothing, and is not retained across a restart; recovery is `restartIce()`, and
+  that path is tested end to end.
+- **The interaction is the reason they are one change.** `startCheck` marks a pair `InProgress`, so while a
+  consent check was outstanding — which, with a 39.5 s chain, was essentially always — an inbound check hit
+  the `InProgress` arm and was swallowed. Fixing the pacing alone leaves the pair `Succeeded` and **activates**
+  the resurrection; this was confirmed by staging the two fixes and watching the #75 fixture go from green
+  to red in between. It also explains why #75 stayed invisible for so long: the resurrection republishes
+  `path` as `Nominated`, so a fixture reading the pair afterwards sees a healthy agent.
+
+Internally, a generation's nomination is now a sealed `Selection` (`None` | `Nominated` | `Revoked`) rather
+than a nullable pair beside a boolean, so "nominated and revoked at once" is unrepresentable and every call
+site must say which of *never*, *now* and *no longer* it means. `CheckPurpose.Consent` is gone: a consent
+check is not a pair check. No public API changed. `IceConnectionState.Disconnected` is documented as never
+emitted — consent loss is not recoverable in place, so the state has nothing left to describe.
+
 ### Added — ICE restart / renegotiation through JSEP (RFC 8445 §9), with the session surviving it
 
 - **`RtcPeerConnection.restartIce()`** — W3C-faithful: records the intent, and the **next** `createOffer()`

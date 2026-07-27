@@ -60,6 +60,10 @@ fun main() {
     // docs/HARNESS_IPV6_DIAGNOSTICS_DESIGN.md. Without this line the seed that drove a failure is in no artifact.
     val binds = cfg.bindings.joinToString(", ") { "${it.family}=${it.localIp}" }
     println("[harness] role=${cfg.role} session=${cfg.session} policy=${cfg.icePolicy} local=[$binds]:${cfg.localPort} dtls13=${cfg.enableDtls13} seed=${cfg.seed}")
+    // The consent schedule this run actually installed. s9's whole verdict is "we outlived a revocation
+    // window", so the window it outlived has to be in the artifact — otherwise a lane that silently ran on
+    // the RFC defaults would report the same PASS while proving nothing (see phaseConsentIdle).
+    println("[harness] consent: interval=${cfg.consentInterval} timeout=${cfg.consentTimeout} idle=${cfg.consentIdle}")
     val code = runBlocking { runPeer(cfg) }
     println("[harness] exit=$code")
     exitProcess(code)
@@ -152,7 +156,16 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
                 dtls = dtls,
                 config =
                     PeerConnectionConfig(
-                        iceConfig = IceConfig(bufferFactory = net),
+                        // RFC 7675 consent timing rides the same injected seam production uses. Left at the
+                        // RFC's own defaults unless a lane compresses them (s9 — issue #80): revocation
+                        // takes 30 s at the defaults, and no lane used to hold a session open even that
+                        // long, which is exactly how a consent bug shipped and stayed invisible.
+                        iceConfig =
+                            IceConfig(
+                                bufferFactory = net,
+                                consentInterval = cfg.consentInterval,
+                                consentTimeout = cfg.consentTimeout,
+                            ),
                         // Resolve a peer's `<uuid>.local` host candidate (RFC 8828) over real multicast. Only
                         // fires when a `.local` candidate actually arrives (the same-LAN mDNS lane, where the
                         // browser advertises obfuscated hosts and shares our link); on the NAT'd lanes no

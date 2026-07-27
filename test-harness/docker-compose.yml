@@ -279,6 +279,14 @@ services:
       WEBRTC_DTLS13: "${PEER_DTLS13:-true}"
       # Distinct per-lane, per-role seed (run-interop.sh derives SEED_A/SEED_B per scenario+family). Drives
       # EVERY entropy source, so the logged seed reproduces this lane as a seeded vnet fixture. Offerer=SEED_A.
+      # ── RFC 7675 consent freshness (s9/idle, issue #80) ──
+      # Consent timing is a PeerConnectionConfig.iceConfig seam, so a lane can outlive a whole revocation
+      # window in seconds instead of the RFC's 30. Unset = the library's production defaults (5 s / 30 s).
+      # WEBRTC_IDLE_MS is the s9 hold; it MUST exceed WEBRTC_CONSENT_TIMEOUT_MS or the phase fails itself,
+      # since a hold inside the window would watch nothing while still reporting green.
+      WEBRTC_CONSENT_INTERVAL_MS: "${PEER_CONSENT_INTERVAL_MS:-}"
+      WEBRTC_CONSENT_TIMEOUT_MS: "${PEER_CONSENT_TIMEOUT_MS:-}"
+      WEBRTC_IDLE_MS: "${PEER_IDLE_MS:-}"
       WEBRTC_SEED: "${SEED_A:-}"
     networks:
       lan_a: { ipv4_address: "${PEER_A_IP}" }
@@ -323,6 +331,14 @@ services:
       # never restarts on its own initiative, it detects the peer's restart from the new credentials.
       WEBRTC_ICE_RESTART: "${PEER_ICE_RESTART:-0}"
       WEBRTC_DTLS13: "${PEER_DTLS13:-true}"  # see peer_a
+      # ── RFC 7675 consent freshness (s9/idle, issue #80) ──
+      # Consent timing is a PeerConnectionConfig.iceConfig seam, so a lane can outlive a whole revocation
+      # window in seconds instead of the RFC's 30. Unset = the library's production defaults (5 s / 30 s).
+      # WEBRTC_IDLE_MS is the s9 hold; it MUST exceed WEBRTC_CONSENT_TIMEOUT_MS or the phase fails itself,
+      # since a hold inside the window would watch nothing while still reporting green.
+      WEBRTC_CONSENT_INTERVAL_MS: "${PEER_CONSENT_INTERVAL_MS:-}"
+      WEBRTC_CONSENT_TIMEOUT_MS: "${PEER_CONSENT_TIMEOUT_MS:-}"
+      WEBRTC_IDLE_MS: "${PEER_IDLE_MS:-}"
       WEBRTC_SEED: "${SEED_B:-}"             # answerer=SEED_B (see peer_a)
     networks:
       lan_b: { ipv4_address: "${PEER_B_IP}" }
@@ -389,6 +405,14 @@ services:
       WEBRTC_DTLS13: "${PEER_DTLS13:-true}"
       # Distinct per-lane, per-role seed (run-interop.sh derives SEED_A/SEED_B per scenario+family). Drives
       # EVERY entropy source, so the logged seed reproduces this lane as a seeded vnet fixture. Offerer=SEED_A.
+      # ── RFC 7675 consent freshness (s9/idle, issue #80) ──
+      # Consent timing is a PeerConnectionConfig.iceConfig seam, so a lane can outlive a whole revocation
+      # window in seconds instead of the RFC's 30. Unset = the library's production defaults (5 s / 30 s).
+      # WEBRTC_IDLE_MS is the s9 hold; it MUST exceed WEBRTC_CONSENT_TIMEOUT_MS or the phase fails itself,
+      # since a hold inside the window would watch nothing while still reporting green.
+      WEBRTC_CONSENT_INTERVAL_MS: "${PEER_CONSENT_INTERVAL_MS:-}"
+      WEBRTC_CONSENT_TIMEOUT_MS: "${PEER_CONSENT_TIMEOUT_MS:-}"
+      WEBRTC_IDLE_MS: "${PEER_IDLE_MS:-}"
       WEBRTC_SEED: "${SEED_A:-}"
     networks:
       lan_a: { ipv4_address: "${PEER_A_IP}" }

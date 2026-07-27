@@ -1,5 +1,6 @@
 package com.ditchoom.webrtc.harness
 
+import com.ditchoom.webrtc.ice.IceConfig
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -56,6 +57,23 @@ internal sealed interface IceRestartPhase {
     data class ExpectCarrier(
         val carrierIp: String,
     ) : IceRestartPhase
+}
+
+/**
+ * Whether the s9 consent-idle phase runs, and for how long the session is held open (issue #80).
+ *
+ * A sealed choice rather than a `Duration` whose zero doubles as "off": the two mean genuinely different
+ * runs, and a duration of zero is also what a mistyped env var produces — which would silently turn the one
+ * phase whose whole content is *elapsed time* into a no-op that still reports PASS.
+ */
+internal sealed interface ConsentIdlePhase {
+    /** s9 does not run. */
+    data object Off : ConsentIdlePhase
+
+    /** s9 runs, holding the association open for [duration] with no application data crossing it. */
+    data class Hold(
+        val duration: Duration,
+    ) : ConsentIdlePhase
 }
 
 /**
@@ -139,6 +157,24 @@ internal data class HarnessConfig(
      * `run-interop.sh` sets it only for the native⇄native / jvm⇄native `carrier-switch` lanes.
      */
     val iceRestart: IceRestartPhase,
+    /**
+     * RFC 7675 §4.1 consent timing, injected into `PeerConnectionConfig.iceConfig` — the seam that lets a
+     * lane exercise consent *revocation* without adding the RFC's own 30 s window to every CI run.
+     *
+     * §4.1 says an implementation MUST NOT configure a period below 4 s. That is a deployment bound the
+     * sans-io core deliberately cannot enforce (it is a caller-injected seam precisely so a scenario can
+     * compress the schedule and still assert observable state), and this harness is a scenario. Unset —
+     * every invocation that is not `run-interop.sh` — leaves the production RFC defaults in place.
+     */
+    val consentInterval: Duration,
+    val consentTimeout: Duration,
+    /**
+     * Run the consent-idle phase, in which the offerer holds the session open, sending nothing, for longer
+     * than [consentTimeout] — so a peer that does not answer our RFC 7675 checks revokes and the phase
+     * fails. See `phaseConsentIdle`. Unlike s5/s8 this needs nothing of the answerer but silence, so it
+     * runs on the foreign lanes too, which is the whole point of it.
+     */
+    val consentIdle: ConsentIdlePhase,
 ) {
     /** Whether phase [id] (`s1`, `s2`, …) is in this run's subset — everything runs when none was named. */
     fun runsScenario(id: String): Boolean = scenarios.isEmpty() || id in scenarios
@@ -207,8 +243,26 @@ internal data class HarnessConfig(
                                 ?.let { IceRestartPhase.ExpectCarrier(it) }
                                 ?: IceRestartPhase.AnyNewPath
                     },
+                // Unset = the library's own RFC 7675 defaults (5 s / 30 s). run-interop.sh compresses them
+                // so a lane can outlive a whole revocation window in seconds rather than half a minute.
+                consentInterval = env("WEBRTC_CONSENT_INTERVAL_MS")?.toLongOrNull()?.milliseconds ?: RFC_CONSENT.consentInterval,
+                consentTimeout = env("WEBRTC_CONSENT_TIMEOUT_MS")?.toLongOrNull()?.milliseconds ?: RFC_CONSENT.consentTimeout,
+                // A hold of zero (or a missing/mistyped var) is Off, not a zero-length hold: see
+                // [ConsentIdlePhase].
+                consentIdle =
+                    (env("WEBRTC_IDLE_MS")?.toLongOrNull() ?: 0L)
+                        .takeIf { it > 0L }
+                        ?.let { ConsentIdlePhase.Hold(it.milliseconds) }
+                        ?: ConsentIdlePhase.Off,
             )
         }
+
+        /**
+         * The library's own RFC 7675 §4.1 defaults, READ OFF [IceConfig] rather than restated as numbers
+         * here. An unset env var must mean "production", and a copied 30_000 would go on saying so long
+         * after the library changed its mind.
+         */
+        private val RFC_CONSENT = IceConfig()
 
         /** `1` / `true` (any case) enable a flag; anything else — including absent — leaves it off. */
         private fun String?.isTruthy(): Boolean = this == "1" || this.equals("true", ignoreCase = true)

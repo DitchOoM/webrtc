@@ -50,13 +50,15 @@ import kotlin.time.Instant
 //   s5/reverse    the ANSWERER originates a channel (our lanes only — foreign peers stay dumb reflectors)
 //   s7/close-one  ONE channel closed mid-session (RFC 8831 §6.7 stream reset): its neighbour keeps
 //                 echoing, the peer's channel closed, and the recycled stream id opens and works again
+//   s9/idle       the session is held open, silent, past a whole RFC 7675 revocation window — so the peer
+//                 has to be answering our consent checks, or the pair is declared dead and the phase fails
 //   s8/restart    the network moves under the session: the harness switches this peer onto a SECOND
 //                 carrier and ICE restarts (RFC 8445 §9) — the pair moves, the association does not
 //   s6/close      the `DONE` handshake, then a graceful association SHUTDOWN (RFC 4960 §9.2)
 //
 // The ids are stable log labels, not a chronology: `s6` tears the association down, so it is by
-// construction LAST and every phase added afterwards sorts before it. `s8` is the newest phase, not the
-// final one.
+// construction LAST and every phase added afterwards sorts before it. `s9` is the newest phase and runs
+// before `s8`, which is the one that deliberately breaks the path it is standing on.
 //
 // THE ONE ASYMMETRY THAT SHAPES ALL OF IT: our side is always the offerer, and the far side may be a
 // browser — where we cannot inject behaviour beyond the W3C `RTCDataChannel` API. So the answerer is a
@@ -410,6 +412,15 @@ internal suspend fun runSemanticsPhases(
             add(Phase("s4") { phaseMultiplex(bg, pc) })
             if (cfg.reverseChannel) add(Phase("s5") { phaseReverse(ctl, reflector) })
             add(Phase("s7") { phaseCloseOneChannel(pc) })
+            // s9 sits here, on a path that every other property has just been proven over and that s8 has
+            // not yet broken. It costs its hold in wall clock and nothing else — the peer needs no cue and
+            // does nothing but stay silent — so it runs on the foreign lanes too, which is where the
+            // interop statement actually lives.
+            when (val idle = cfg.consentIdle) {
+                ConsentIdlePhase.Off -> Unit
+                is ConsentIdlePhase.Hold ->
+                    add(Phase("s9", idle.duration + PHASE_TIMEOUT) { phaseConsentIdle(pc, ctl, idle, cfg.consentTimeout, clock) })
+            }
             // s8 runs here, LAST of the mid-session phases: s6 (below, in Main.kt) closes the whole
             // association, so nothing can follow it. See the id note in this file's header. It is also the
             // right place for it independently — it is the one phase that BREAKS the path it runs on, so
@@ -778,6 +789,89 @@ private suspend fun phaseCloseOneChannel(pc: NativePeerConnection): Verdict {
                 "$ECHO_WAIT — its per-stream state outlived the reset",
         )
     }
+}
+
+// ── s9: RFC 7675 consent freshness over a real peer (issue #80) ───────────────────────────────────────
+
+/**
+ * Hold the session open, sending nothing, for longer than a whole RFC 7675 revocation window — then prove
+ * it still works.
+ *
+ * **The hole this fills.** Every other phase finishes in well under one consent interval; measured across a
+ * full local matrix, only two lanes kept a session alive long enough to put even a single consent check on
+ * the wire, and none came close to a revocation window. So nothing in CI had ever established that a
+ * long-lived session stays up, or that Chrome / Firefox / WebKit / Pion / werift answer the RFC 7675 §4.1
+ * Binding requests we pace at them. That is precisely the gap a consent-pacing defect (issue #73) shipped
+ * through: checks that could outlast the window they exist to defend, invisible because no session lived
+ * that long.
+ *
+ * **Why it is a real assertion and not a sleep.** During the hold the association is silent — the dcSCTP
+ * subset has no HEARTBEAT on purpose (RFC §11.2), because ICE consent freshness owns path liveness — so the
+ * only thing keeping the pair alive is the consent exchange itself. If the peer does not answer, our agent
+ * revokes at [consentTimeout] and the session goes [PeerConnectionState.Failed], which this phase sees and
+ * reports. It also proves the NAT mapping survives on nothing but consent traffic, which is the same
+ * property from the middlebox's side.
+ *
+ * **What it does not prove, stated rather than implied.** It cannot tell "the peer answered our checks"
+ * apart from "we sent none and therefore never revoked" — a silent path and a silent agent look identical
+ * from here. That half is the deterministic gate's: `IceConsentTerminalTest` pins the §4.1 pacing under
+ * virtual time, and `PeerConnectionRestartTest` pins that a session whose peer stops answering really does
+ * reach a terminal failure. This phase is the other half — that a *real* foreign stack answers what those
+ * fixtures prove we send.
+ *
+ * The lane must therefore have compressed the window below the hold, or the phase is watching nothing at
+ * all; that is a failure here rather than a silent pass, because an env var that did not reach the peer is
+ * exactly how this phase would rot into a 10-second sleep that always says PASS.
+ */
+private suspend fun phaseConsentIdle(
+    pc: NativePeerConnection,
+    ctl: ControlChannel,
+    idle: ConsentIdlePhase.Hold,
+    consentTimeout: Duration,
+    clock: () -> Instant,
+): Verdict {
+    if (idle.duration <= consentTimeout) {
+        return Verdict(
+            false,
+            "the hold (${idle.duration}) does not outlast the consent window (${consentTimeout}), so nothing could " +
+                "have been revoked and nothing is proven — set WEBRTC_IDLE_MS above WEBRTC_CONSENT_TIMEOUT_MS",
+        )
+    }
+    val before =
+        livePair(pc.connectionState.value)
+            ?: return Verdict(false, "the session is not riding a known pair (${pc.connectionState.value}) — there is nothing to keep alive")
+    val ctlStream = ctl.streamId
+    println("[harness] s9/idle: holding ${idle.duration} of silence over ${describe(before)} (consent window $consentTimeout)")
+
+    // Watch for the session leaving Connected. Returning null here IS the measurement: the full hold really
+    // elapsed on the real clock with the session live throughout.
+    val startedAt = clock()
+    val lost = withTimeoutOrNull(idle.duration) { pc.connectionState.first { it !is PeerConnectionState.Connected } }
+    val held = clock() - startedAt
+    if (lost != null) {
+        return Verdict(
+            false,
+            "the session dropped to $lost after $held of silence — the peer stopped answering our RFC 7675 §4.1 " +
+                "consent checks (or stopped sending its own, which revokes it on its side and then on ours)",
+        )
+    }
+
+    // Still Connected is necessary but not sufficient: the pair has to still CARRY something. A control
+    // round trip is the smallest proof, and it also re-establishes that the NAT mapping the consent traffic
+    // has been holding open is the one the data path is still using.
+    if (ctl.streamId != ctlStream) {
+        return Verdict(false, "the control channel moved from stream $ctlStream to ${ctl.streamId} across the idle — the association was rebuilt")
+    }
+    if (!ctl.exchange("ALIVE s9", "ALIVE s9")) {
+        return Verdict(false, "the session says Connected after $held of silence, but the control channel no longer round-trips")
+    }
+    val after = livePair(pc.connectionState.value)
+    val pairNote = if (after == before) "on the same pair" else "having re-nominated onto ${after?.let(::describe) ?: "no known pair"}"
+    return Verdict(
+        true,
+        "held $held of silence — longer than the $consentTimeout revocation window — and the session stayed up $pairNote: " +
+            "the peer answers our RFC 7675 consent checks, and the path (and its NAT mapping) survived on nothing else",
+    )
 }
 
 // ── s8: ICE restart across a mid-session carrier switch (RFC 8445 §9) ─────────────────────────────────

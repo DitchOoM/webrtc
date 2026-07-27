@@ -54,10 +54,12 @@ class IceNominationLossTest {
                     // and draining the checklist — i.e. nomination converged despite the dropped checks.
                     val completed = withTimeoutOrNull(TIMEOUT) { alice.state.first { it is IceConnectionState.Completed } }
                     assertNotNull(completed, "controlling agent nominated and completed under loss ($diag)")
-                    assertNotNull(withTimeoutOrNull(TIMEOUT) { bob.awaitConnected() }, "controlled agent connected under loss ($diag)")
+                    val bobConverged =
+                        assertNotNull(withTimeoutOrNull(TIMEOUT) { bob.awaitConnected() }, "controlled agent connected under loss ($diag)")
 
-                    val alicePair = assertNotNull(alice.selectedPair, "alice selected a pair ($diag)")
-                    val bobPair = assertNotNull(bob.selectedPair, "bob selected a pair ($diag)")
+                    // Off the converged states, not a post-hoc read — see IceDriver.nominatedPair.
+                    val alicePair = completed.nominatedPair
+                    val bobPair = bobConverged.nominatedPair
                     assertEquals(alicePair.local.base, bobPair.remote.address, "mirror pairs ($diag)")
                     assertEquals(bobPair.local.base, alicePair.remote.address, "mirror pairs ($diag)")
                     assertTrue(alice.agent.role != bob.agent.role, "roles stay symmetric ($diag)")

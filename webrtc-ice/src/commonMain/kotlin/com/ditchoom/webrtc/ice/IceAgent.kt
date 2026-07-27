@@ -65,6 +65,15 @@ public data class IceConfig(
  * owns all I/O; the same machine therefore establishes a full session under `runTest` virtual time on
  * every platform, and a 90-second field saga replays in milliseconds.
  *
+ * **Generations.** All checklist state lives in one [Generation] object, and an ICE restart (RFC 8445
+ * §9) *swaps* it rather than clearing fields: the outgoing generation is **retained** — credentials,
+ * checklist, nominated pair — until the new one nominates. Making the generation an object rather than
+ * a dozen fields is what makes retention correct by construction; a hand-written snapshot that forgets
+ * one field is exactly the bug that survives review. Retention buys §9's three guarantees at once:
+ * data continues on the old pair ([IcePath.Restarting]), a rolled-back restart offer restores real
+ * credentials ([IceEvent.RollbackRestart]), and the peer's checks against the old credentials are still
+ * answered so its consent (RFC 7675) does not expire mid-restart.
+ *
  * Entropy is injected once (the [random] seam, directive #2): it seeds the tie-breaker, the local
  * credentials, and every STUN transaction id, so a scenario replays bit-for-bit — the precondition a
  * timeline shrinker needs. Production wires `CryptoRandom`; tests wire a seeded [Random].
@@ -74,46 +83,34 @@ public class IceAgent(
     private val random: Random,
     private val config: IceConfig = IceConfig(),
 ) {
-    private var _role: IceRole = initialRole
-    private var _localCredentials: IceCredentials = IceCredentials.random(random)
-    private var tieBreaker: TieBreaker = TieBreaker.random(random)
+    private var current: Generation = newGeneration(initialRole)
+    private var retained: RetainedGeneration = RetainedGeneration.None
 
-    /** This agent's role (may flip once on a role conflict, RFC 8445 §7.3.1.1). */
-    public val role: IceRole get() = _role
+    // What the driver has last been told. Kept apart from the generation's own fields so a restart
+    // (which installs a fresh generation already sitting at New) still emits the transition, and a
+    // rollback (which reinstalls an old generation) re-publishes whatever that generation was at.
+    private var publishedState: IceConnectionState = IceConnectionState.New
+    private var publishedPath: IcePath = IcePath.Unnominated
+
+    /** This agent's role. It may flip once on a role conflict (RFC 8445 §7.3.1.1), but an ICE restart
+     *  never redetermines it (§9 → §6.1.1) — the new generation inherits it by construction. */
+    public val role: IceRole get() = current.role
 
     /** The credentials this agent advertises in its SDP (regenerated on [IceEvent.Restart]). */
-    public val localCredentials: IceCredentials get() = _localCredentials
-
-    private var remoteCredentials: IceCredentials? = null
-    private val localCandidates = mutableListOf<IceCandidate>()
-    private val remoteCandidates = mutableListOf<IceCandidate>()
-    private val checklist = mutableListOf<PairEntry>()
-    private val byTransaction = HashMap<TransactionId, PairEntry>()
-
-    private var _state: IceConnectionState = IceConnectionState.New
+    public val localCredentials: IceCredentials get() = current.localCredentials
 
     /** The current connection state (RFC 8445 §6.1.2.6). */
-    public val state: IceConnectionState get() = _state
+    public val state: IceConnectionState get() = current.state
 
-    private var selected: PairEntry? = null
-
-    // Derived, not a stored latch: a nominating check is in flight iff some pair currently holds one.
-    // Making it a projection of the checklist means it can never wedge stale (the bug a stored flag hit).
-    private val nominationInFlight: Boolean
-        get() = checklist.any { it.inFlight?.purpose == CheckPurpose.Nomination }
-
-    // A role conflict is resolved AT MOST ONCE per ICE generation (RFC 8445 §7.3.1.1): the inbound-check
-    // path and the 487-response path must not both flip the role, or a glare oscillates. Reset on restart.
-    private var roleConflictResolved = false
-
-    private var nextPacingAt: Instant? = null
-    private var nextConsentAt: Instant? = null
-    private var lastConsentResponseAt: Instant? = null
-    private var establishmentDeadline: Instant? = null
+    /** Where application traffic rides right now (RFC 8445 §9 — see [IcePath]). */
+    public val path: IcePath get() = pathNow()
 
     /**
      * The earliest instant the driver must call `handle(TimerFired)` — the min of the pacing tick, every
      * in-flight check's retransmit deadline, and the consent refresh/expiry. Null means no timer armed.
+     *
+     * Only the *current* generation is clocked: a retained generation is frozen for the restart window
+     * (it carries data, it does not run checks), so it contributes no deadline.
      */
     public fun nextDeadline(now: Instant): Instant? {
         var earliest: Instant? = null
@@ -121,19 +118,23 @@ public class IceAgent(
         fun consider(instant: Instant?) {
             if (instant != null && (earliest == null || instant < earliest!!)) earliest = instant
         }
-        if (remoteCredentials != null && checklist.any { it.state == CandidatePairState.Waiting }) consider(nextPacingAt)
-        for (entry in checklist) consider(entry.transaction?.nextDeadline())
-        val chosen = selected
+        if (current.remoteCredentials != null &&
+            current.checklist.any { it.state == CandidatePairState.Waiting }
+        ) {
+            consider(current.nextPacingAt)
+        }
+        for (entry in current.checklist) consider(entry.transaction?.nextDeadline())
+        val chosen = current.selected
         if (chosen != null) {
             // Only arm the next consent refresh when no consent check is already in flight — otherwise
             // nextConsentAt sits in the past (we can't send a second) and the driver would spin without
             // advancing virtual time; the in-flight transaction's own deadline carries the schedule.
-            if (chosen.transaction == null) consider(nextConsentAt)
-            consider(lastConsentResponseAt?.plus(config.consentTimeout))
-        } else if (_state !is IceConnectionState.Failed) {
+            if (chosen.transaction == null) consider(current.nextConsentAt)
+            consider(current.lastConsentResponseAt?.plus(config.consentTimeout))
+        } else if (current.state !is IceConnectionState.Failed) {
             // The liveness backstop keeps a deadline armed even when nothing else is (a wedged nomination,
             // a peer that never nominates, or an empty checklist), so the driver always reaches a terminal.
-            consider(establishmentDeadline)
+            consider(current.establishmentDeadline)
         }
         return earliest
     }
@@ -149,7 +150,8 @@ public class IceAgent(
             is IceEvent.SetRemoteCredentials -> onSetRemoteCredentials(event.credentials, now, out)
             is IceEvent.DatagramReceived -> onDatagram(event, now, out)
             IceEvent.TimerFired -> onTimer(now, out)
-            IceEvent.Restart -> onRestart(now, out)
+            IceEvent.Restart -> onRestart(out)
+            IceEvent.RollbackRestart -> onRollbackRestart(now, out)
         }
         return out
     }
@@ -161,8 +163,8 @@ public class IceAgent(
         now: Instant,
         out: MutableList<IceOutput>,
     ) {
-        if (localCandidates.any { it.address == candidate.address && it.type == candidate.type }) return
-        localCandidates += candidate
+        if (current.localCandidates.any { it.address == candidate.address && it.type == candidate.type }) return
+        current.localCandidates += candidate
         formPairs(now, out)
     }
 
@@ -171,8 +173,8 @@ public class IceAgent(
         now: Instant,
         out: MutableList<IceOutput>,
     ) {
-        if (remoteCandidates.any { it.address == candidate.address && it.type == candidate.type }) return
-        remoteCandidates += candidate
+        if (current.remoteCandidates.any { it.address == candidate.address && it.type == candidate.type }) return
+        current.remoteCandidates += candidate
         formPairs(now, out)
     }
 
@@ -181,7 +183,7 @@ public class IceAgent(
         now: Instant,
         out: MutableList<IceOutput>,
     ) {
-        remoteCredentials = credentials
+        current.remoteCredentials = credentials
         formPairs(now, out)
     }
 
@@ -191,21 +193,26 @@ public class IceAgent(
         now: Instant,
         out: MutableList<IceOutput>,
     ) {
-        if (remoteCredentials == null) return
-        for (local in localCandidates) {
-            for (remote in remoteCandidates) {
+        val generation = current
+        if (generation.remoteCredentials == null) return
+        for (local in generation.localCandidates) {
+            for (remote in generation.remoteCandidates) {
                 if (!compatible(local, remote)) continue
-                if (checklist.any { it.pair.local == local && it.pair.remote == remote }) continue
-                checklist += PairEntry(CandidatePair(local, remote))
+                if (generation.checklist.any { it.pair.local == local && it.pair.remote == remote }) continue
+                generation.checklist += PairEntry(CandidatePair(local, remote))
             }
         }
         pruneRedundant()
         sortChecklist()
-        if (checklist.isNotEmpty() && nextPacingAt == null) nextPacingAt = now
+        if (generation.checklist.isNotEmpty() && generation.nextPacingAt == null) generation.nextPacingAt = now
         // Arm the liveness backstop once we have credentials and something to try (even if pairing yields
         // an empty checklist — the "zero compatible candidates" case must still fail, not hang).
-        if (localCandidates.isNotEmpty() && establishmentDeadline == null) establishmentDeadline = now + config.establishmentTimeout
-        if (_state is IceConnectionState.New && checklist.isNotEmpty()) transition(IceConnectionState.Checking, out)
+        if (generation.localCandidates.isNotEmpty() && generation.establishmentDeadline == null) {
+            generation.establishmentDeadline = now + config.establishmentTimeout
+        }
+        if (generation.state is IceConnectionState.New && generation.checklist.isNotEmpty()) {
+            transition(IceConnectionState.Checking, out)
+        }
     }
 
     // A redundant pair (RFC 8445 §6.1.2.4): same base and same remote address — keep the highest priority.
@@ -213,28 +220,29 @@ public class IceAgent(
     // selected is kept regardless, so pruning can never delete an in-flight/selected pair or orphan its
     // transaction (a trickled higher-priority candidate must not evict a pair already doing work).
     private fun pruneRedundant() {
+        val generation = current
         val keptKeys = HashSet<Pair<TransportAddress, TransportAddress>>()
         val kept = mutableListOf<PairEntry>()
-        for (entry in checklist) {
+        for (entry in generation.checklist) {
             val started = entry.state != CandidatePairState.Waiting && entry.state != CandidatePairState.Frozen
-            if (entry === selected || started) {
+            if (entry === generation.selected || started) {
                 kept += entry
                 keptKeys += entry.pair.local.base to entry.pair.remote.address
             }
         }
-        for (entry in checklist.filter { it !in kept }.sortedByDescending { it.pair.priority(_role) }) {
+        for (entry in generation.checklist.filter { it !in kept }.sortedByDescending { it.pair.priority(generation.role) }) {
             if (keptKeys.add(entry.pair.local.base to entry.pair.remote.address)) kept += entry
         }
-        checklist.clear()
-        checklist += kept
+        generation.checklist.clear()
+        generation.checklist += kept
     }
 
-    private fun sortChecklist() = checklist.sortByDescending { it.pair.priority(_role) }
+    private fun sortChecklist() = current.checklist.sortByDescending { it.pair.priority(current.role) }
 
     // Ensure a pacing tick is scheduled — call whenever a pair (re)enters Waiting outside formPairs
     // (e.g. a 487 retry), so a checklist that had gone idle picks the pair back up.
     private fun armPacing(now: Instant) {
-        if (nextPacingAt == null) nextPacingAt = now
+        if (current.nextPacingAt == null) current.nextPacingAt = now
     }
 
     private fun compatible(
@@ -248,32 +256,42 @@ public class IceAgent(
         now: Instant,
         out: MutableList<IceOutput>,
     ) {
+        val generation = current
         // 1. Retransmit or fail every check whose transaction deadline has arrived.
-        for (entry in checklist.toList()) {
+        for (entry in generation.checklist.toList()) {
             val txn = entry.transaction ?: continue
             val deadline = txn.nextDeadline() ?: continue
             if (deadline <= now) driveTransaction(entry, txn.handle(StunTransactionEvent.TimerExpired, now), now, out)
         }
         // 2. Pace one new ordinary check per Ta, highest priority first (RFC 8445 §6.1.4.2).
-        val pacingAt = nextPacingAt
-        if (remoteCredentials != null && pacingAt != null && now >= pacingAt) {
-            val next = checklist.firstOrNull { it.state == CandidatePairState.Waiting }
+        val pacingAt = generation.nextPacingAt
+        if (generation.remoteCredentials != null && pacingAt != null && now >= pacingAt) {
+            val next = generation.checklist.firstOrNull { it.state == CandidatePairState.Waiting }
             if (next != null) startCheck(next, CheckPurpose.Connectivity, now, out)
-            nextPacingAt = if (checklist.any { it.state == CandidatePairState.Waiting }) now + config.ta else null
+            generation.nextPacingAt =
+                if (generation.checklist.any { it.state == CandidatePairState.Waiting }) now + config.ta else null
         }
         // 3. Nomination retry (controlling): if a nominating check failed and left no nomination in flight,
         // nominate the best remaining valid pair — otherwise a valid-but-unnominated pair would hang.
-        if (_role == IceRole.Controlling && selected == null && !nominationInFlight) {
-            val best = checklist.filter { it.state == CandidatePairState.Succeeded }.maxByOrNull { it.pair.priority(_role) }
+        if (generation.role == IceRole.Controlling && generation.selected == null && !generation.nominationInFlight) {
+            val best =
+                generation.checklist
+                    .filter { it.state == CandidatePairState.Succeeded }
+                    .maxByOrNull { it.pair.priority(generation.role) }
             if (best != null) startCheck(best, CheckPurpose.Nomination, now, out)
         }
         // 4. Consent freshness on the selected pair (RFC 7675).
         driveConsent(now, out)
         // 5. Liveness backstop: never hang — fail with a typed reason if unselected by the deadline.
-        val backstop = establishmentDeadline
-        if (selected == null && backstop != null && now >= backstop && _state !is IceConnectionState.Failed) {
-            establishmentDeadline = null
-            val reason = if (checklist.isEmpty()) IceFailureReason.NoCandidatePairs else IceFailureReason.AllPairsFailed(checklist.size)
+        val backstop = generation.establishmentDeadline
+        if (generation.selected == null && backstop != null && now >= backstop && generation.state !is IceConnectionState.Failed) {
+            generation.establishmentDeadline = null
+            val reason =
+                if (generation.checklist.isEmpty()) {
+                    IceFailureReason.NoCandidatePairs
+                } else {
+                    IceFailureReason.AllPairsFailed(generation.checklist.size)
+                }
             transition(IceConnectionState.Failed(reason), out)
         }
         maybeComplete(out)
@@ -283,20 +301,22 @@ public class IceAgent(
         now: Instant,
         out: MutableList<IceOutput>,
     ) {
-        val chosen = selected ?: return
-        val lastResponse = lastConsentResponseAt
+        val generation = current
+        val chosen = generation.selected ?: return
+        val lastResponse = generation.lastConsentResponseAt
         // `>=`, not `>`: nextDeadline arms exactly `lastResponse + consentTimeout`, so at that instant the
         // check must fire — a strict `>` would leave the deadline in the past and spin the driver.
         if (lastResponse != null && now - lastResponse >= config.consentTimeout) {
             clearTransaction(chosen) // stop retransmitting a consent check on the now-dead pair
-            selected = null
+            generation.selected = null
             transition(IceConnectionState.Failed(IceFailureReason.ConsentExpired), out)
+            publishPath(out) // the pair is dead: app data has nowhere to go, and must not keep flowing there
             return
         }
-        val consentAt = nextConsentAt
+        val consentAt = generation.nextConsentAt
         if (consentAt != null && now >= consentAt && chosen.transaction == null) {
             startCheck(chosen, CheckPurpose.Consent, now, out)
-            nextConsentAt = now + config.consentInterval
+            generation.nextConsentAt = now + config.consentInterval
         }
     }
 
@@ -323,32 +343,36 @@ public class IceAgent(
         now: Instant,
         out: MutableList<IceOutput>,
     ) {
+        val generation = current
         // Authenticate with our own password (RFC 8445 §7.3): USERNAME `<ourUfrag>:<theirUfrag>` + MI.
         // Then read attributes ONLY from the MI-covered prefix (RFC 8489 §14.5): a MITM who does not know
         // the password can splice attributes (e.g. USE-CANDIDATE) after a valid MI and fix the unkeyed
         // FINGERPRINT — both checks still pass — so trusting the tail would let it hijack nomination/role.
-        if (!request.verifyMessageIntegrity(localKey())) return
+        if (!request.verifyMessageIntegrity(keyOf(generation.localCredentials.password))) {
+            answerRetainedGenerationCheck(request, localBase, source, out)
+            return
+        }
         val covered = request.attributesCoveredByMessageIntegrity() ?: return
         val username = covered.firstOrNull { it.type == StunAttributeType.Username }?.asText() ?: return
-        if (username.substringBefore(':') != _localCredentials.ufrag.value) return
-        val localCandidate = localCandidates.firstOrNull { it.base == localBase } ?: return
+        if (username.substringBefore(':') != generation.localCredentials.ufrag.value) return
+        val localCandidate = generation.localCandidates.firstOrNull { it.base == localBase } ?: return
 
         // Role-conflict resolution (RFC 8445 §7.3.1.1): the agent with the larger tie-breaker ends up
         // CONTROLLING in both directions — the controlling agent keeps its role (487s the peer) or switches
         // to controlled; the controlled agent switches to controlling or 487s the peer.
         val peerControlling = covered.firstOrNull { it.type == IceAttributes.ICE_CONTROLLING }?.asTieBreaker()
         val peerControlled = covered.firstOrNull { it.type == IceAttributes.ICE_CONTROLLED }?.asTieBreaker()
-        if (!roleConflictResolved && _role == IceRole.Controlling && peerControlling != null) {
-            roleConflictResolved = true
-            if (tieBreaker >= peerControlling) {
+        if (!generation.roleConflictResolved && generation.role == IceRole.Controlling && peerControlling != null) {
+            generation.roleConflictResolved = true
+            if (generation.tieBreaker >= peerControlling) {
                 out += transmit(localBase, source, roleConflictResponse(request.transactionId))
                 return
             }
-            switchRole(IceRole.Controlled, out)
-        } else if (!roleConflictResolved && _role == IceRole.Controlled && peerControlled != null) {
-            roleConflictResolved = true
-            if (tieBreaker >= peerControlled) {
-                switchRole(IceRole.Controlling, out)
+            switchRole(IceRole.Controlled)
+        } else if (!generation.roleConflictResolved && generation.role == IceRole.Controlled && peerControlled != null) {
+            generation.roleConflictResolved = true
+            if (generation.tieBreaker >= peerControlled) {
+                switchRole(IceRole.Controlling)
             } else {
                 out += transmit(localBase, source, roleConflictResponse(request.transactionId))
                 return
@@ -357,7 +381,7 @@ public class IceAgent(
 
         // Learn a peer-reflexive remote candidate for an unknown source (RFC 8445 §7.3.1.3).
         val remoteCandidate =
-            remoteCandidates.firstOrNull { it.address == source }
+            generation.remoteCandidates.firstOrNull { it.address == source }
                 ?: learnPeerReflexive(
                     source,
                     covered.firstOrNull { it.type == IceAttributes.PRIORITY }?.asPriority(),
@@ -367,14 +391,14 @@ public class IceAgent(
                 )
 
         // Reply with a success response echoing the mapped (source) address (RFC 8445 §7.3.1.2).
-        out += transmit(localBase, source, bindingSuccess(request.transactionId, source))
+        out += transmit(localBase, source, bindingSuccess(request.transactionId, source, generation.localCredentials.password))
 
-        val entry = checklist.firstOrNull { it.pair.local == localCandidate && it.pair.remote == remoteCandidate }
+        val entry = generation.checklist.firstOrNull { it.pair.local == localCandidate && it.pair.remote == remoteCandidate }
         val nominatedByPeer = covered.firstOrNull { it.type == IceAttributes.USE_CANDIDATE } != null
         if (entry == null) return
 
         // A triggered check (RFC 8445 §7.3.1.4): (re)schedule this pair, promptly.
-        if (nominatedByPeer && _role == IceRole.Controlled) entry.nominatedByPeer = true
+        if (nominatedByPeer && generation.role == IceRole.Controlled) entry.nominatedByPeer = true
         when (entry.state) {
             CandidatePairState.Succeeded -> if (entry.nominatedByPeer) selectPair(entry, now, out)
             CandidatePairState.InProgress -> Unit
@@ -384,13 +408,38 @@ public class IceAgent(
         maybeComplete(out)
     }
 
+    /**
+     * A check that does not authenticate against the current generation may still belong to the
+     * **retained** one: the peer has not learned our new credentials yet (its answer is still in
+     * signaling) and is refreshing consent on the pair we are deliberately still carrying data over. Its
+     * consent clock (RFC 7675 §5.1) would otherwise expire mid-restart and tear down exactly the session
+     * RFC 8445 §9 promises to keep alive, so we answer it — and *only* answer it. No checklist entry, no
+     * peer-reflexive learning, no role conflict: the retained generation is frozen, not running checks.
+     */
+    private fun answerRetainedGenerationCheck(
+        request: StunMessage,
+        localBase: TransportAddress,
+        source: TransportAddress,
+        out: MutableList<IceOutput>,
+    ) {
+        val previous = (retained as? RetainedGeneration.Retained)?.generation ?: return
+        val password = previous.localCredentials.password
+        if (!request.verifyMessageIntegrity(keyOf(password))) return
+        val covered = request.attributesCoveredByMessageIntegrity() ?: return
+        val username = covered.firstOrNull { it.type == StunAttributeType.Username }?.asText() ?: return
+        if (username.substringBefore(':') != previous.localCredentials.ufrag.value) return
+        if (previous.localCandidates.none { it.base == localBase }) return
+        out += transmit(localBase, source, bindingSuccess(request.transactionId, source, password))
+    }
+
     private fun onInboundResponse(
         message: StunMessage,
         source: TransportAddress,
         now: Instant,
         out: MutableList<IceOutput>,
     ) {
-        val entry = byTransaction[message.transactionId] ?: return
+        val generation = current
+        val entry = generation.byTransaction[message.transactionId] ?: return
         val txn = entry.transaction ?: return
         val purpose = entry.inFlight?.purpose // capture before driveTransaction clears it on Completed
         driveTransaction(entry, txn.handle(StunTransactionEvent.ResponseReceived(message), now), now, out)
@@ -405,9 +454,9 @@ public class IceAgent(
             if (message.firstOrNull(StunAttributeType.ErrorCode)?.asErrorCode()?.code == ROLE_CONFLICT) {
                 // Switch only if this conflict hasn't already been resolved by the inbound-check path
                 // (else we'd flip back and oscillate); either way, retry the pair under the settled role.
-                if (!roleConflictResolved) {
-                    roleConflictResolved = true
-                    switchRole(_role.opposite, out)
+                if (!generation.roleConflictResolved) {
+                    generation.roleConflictResolved = true
+                    switchRole(generation.role.opposite)
                 }
                 entry.state = CandidatePairState.Waiting
                 armPacing(now) // re-arm pacing so the retry is actually scheduled (it may have gone idle)
@@ -429,18 +478,18 @@ public class IceAgent(
         entry.valid = true
 
         if (wasConsent) {
-            lastConsentResponseAt = now
+            generation.lastConsentResponseAt = now
             return
         }
-        if (wasNominating && _role == IceRole.Controlling) {
+        if (wasNominating && generation.role == IceRole.Controlling) {
             selectPair(entry, now, out)
             return
         }
-        if (_role == IceRole.Controlled && entry.nominatedByPeer) {
+        if (generation.role == IceRole.Controlled && entry.nominatedByPeer) {
             selectPair(entry, now, out)
             return
         }
-        if (_role == IceRole.Controlling && selected == null && !nominationInFlight) {
+        if (generation.role == IceRole.Controlling && generation.selected == null && !generation.nominationInFlight) {
             startCheck(entry, CheckPurpose.Nomination, now, out)
         }
         maybeComplete(out)
@@ -454,7 +503,8 @@ public class IceAgent(
         now: Instant,
         out: MutableList<IceOutput>,
     ) {
-        val remote = remoteCredentials ?: return
+        val generation = current
+        val remote = generation.remoteCredentials ?: return
         val txid = TransactionId.random(random)
         val prflxPriority = IceCandidate.computePriority(CandidateType.PeerReflexive, entry.pair.local.component)
         val builder =
@@ -463,19 +513,19 @@ public class IceAgent(
                 .add(
                     RawAttribute.ofText(
                         StunAttributeType.Username,
-                        "${remote.ufrag.value}:${_localCredentials.ufrag.value}",
+                        "${remote.ufrag.value}:${generation.localCredentials.ufrag.value}",
                         config.bufferFactory,
                     ),
                 ).add(IceAttributes.priority(prflxPriority, config.bufferFactory))
                 .add(
-                    if (_role == IceRole.Controlling) {
-                        IceAttributes.controlling(tieBreaker, config.bufferFactory)
+                    if (generation.role == IceRole.Controlling) {
+                        IceAttributes.controlling(generation.tieBreaker, config.bufferFactory)
                     } else {
-                        IceAttributes.controlled(tieBreaker, config.bufferFactory)
+                        IceAttributes.controlled(generation.tieBreaker, config.bufferFactory)
                     },
                 )
         if (purpose == CheckPurpose.Nomination &&
-            _role == IceRole.Controlling
+            generation.role == IceRole.Controlling
         ) {
             builder.add(IceAttributes.useCandidate(config.bufferFactory))
         }
@@ -484,7 +534,7 @@ public class IceAgent(
         val transaction = StunTransaction(txid, datagram, config.checkPolicy)
         entry.inFlight = InFlightCheck(transaction, purpose)
         entry.state = CandidatePairState.InProgress
-        byTransaction[txid] = entry
+        generation.byTransaction[txid] = entry
         driveTransaction(entry, transaction.handle(StunTransactionEvent.Start, now), now, out)
     }
 
@@ -510,7 +560,7 @@ public class IceAgent(
 
     private fun clearTransaction(entry: PairEntry) {
         val inFlight = entry.inFlight ?: return
-        byTransaction.remove(inFlight.transaction.transactionId)
+        current.byTransaction.remove(inFlight.transaction.transactionId)
         entry.inFlight = null
     }
 
@@ -518,17 +568,18 @@ public class IceAgent(
         entry: PairEntry,
         out: MutableList<IceOutput>,
     ) {
+        val generation = current
         entry.state = CandidatePairState.Failed
         entry.valid = false // a failed pair is no longer valid — don't let a stale latch veto AllPairsFailed
         val allDone =
-            checklist.none {
+            generation.checklist.none {
                 it.state == CandidatePairState.Waiting ||
                     it.state == CandidatePairState.InProgress ||
                     it.state == CandidatePairState.Frozen
             }
-        if (selected == null && allDone && checklist.isNotEmpty() && checklist.none { it.valid }) {
-            establishmentDeadline = null
-            transition(IceConnectionState.Failed(IceFailureReason.AllPairsFailed(checklist.size)), out)
+        if (generation.selected == null && allDone && generation.checklist.isNotEmpty() && generation.checklist.none { it.valid }) {
+            generation.establishmentDeadline = null
+            transition(IceConnectionState.Failed(IceFailureReason.AllPairsFailed(generation.checklist.size)), out)
         }
     }
 
@@ -537,21 +588,28 @@ public class IceAgent(
         now: Instant,
         out: MutableList<IceOutput>,
     ) {
-        if (selected != null) return // first nomination wins; never regress a Connected/Completed component
-        selected = entry
-        establishmentDeadline = null
-        lastConsentResponseAt = now
-        nextConsentAt = now + config.consentInterval
-        out += IceOutput.SelectedPairChanged(entry.pair)
+        val generation = current
+        if (generation.selected != null) return // first nomination wins; never regress a Connected/Completed component
+        generation.selected = entry
+        generation.establishmentDeadline = null
+        generation.lastConsentResponseAt = now
+        generation.nextConsentAt = now + config.consentInterval
+        // The new generation has converged, so the retained one has no job left: its sockets are the
+        // driver's to retire, which it does off this very transition (Restarting → Nominated).
+        retained = RetainedGeneration.None
+        publishPath(out)
         transition(IceConnectionState.Connected(entry.pair), out)
         maybeComplete(out)
     }
 
     private fun maybeComplete(out: MutableList<IceOutput>) {
-        val chosen = selected ?: return
-        val pending = checklist.any { it.state == CandidatePairState.Waiting || it.state == CandidatePairState.InProgress }
-        val current = _state
-        if (!pending && current is IceConnectionState.Connected) transition(IceConnectionState.Completed(chosen.pair), out)
+        val generation = current
+        val chosen = generation.selected ?: return
+        val pending =
+            generation.checklist.any { it.state == CandidatePairState.Waiting || it.state == CandidatePairState.InProgress }
+        if (!pending && generation.state is IceConnectionState.Connected) {
+            transition(IceConnectionState.Completed(chosen.pair), out)
+        }
     }
 
     private fun learnPeerReflexive(
@@ -571,48 +629,87 @@ public class IceAgent(
                 priority = priorityHint ?: IceCandidate.computePriority(CandidateType.PeerReflexive, component),
                 relatedAddress = source,
             )
-        remoteCandidates += prflx
+        current.remoteCandidates += prflx
         formPairs(now, out)
         return prflx
     }
 
     // ---- role, restart, state -----------------------------------------------------------------------
 
-    private fun switchRole(
-        to: IceRole,
-        out: MutableList<IceOutput>,
-    ) {
-        if (_role == to) return
-        _role = to
+    private fun switchRole(to: IceRole) {
+        if (current.role == to) return
+        current.role = to
         sortChecklist()
     }
 
-    private fun onRestart(
+    /**
+     * RFC 8445 §9. Installs a fresh generation and retains the outgoing one; nothing is cleared. The new
+     * generation **inherits the role** — §9 forbids redetermining it, and inheriting by construction is
+     * stronger than asserting it afterwards.
+     */
+    private fun onRestart(out: MutableList<IceOutput>) {
+        val outgoing = current
+        // A restart on top of an in-flight restart keeps the ORIGINAL retained generation: that is the one
+        // still carrying application data. The intermediate generation never nominated, so it owns nothing
+        // to preserve, and overwriting the retention with it would drop the live pair on the floor.
+        if (retained is RetainedGeneration.None) retained = RetainedGeneration.Retained(outgoing)
+        current = newGeneration(outgoing.role)
+        transition(IceConnectionState.New, out)
+        publishPath(out)
+    }
+
+    /** The ICE half of `setLocalDescription(rollback)` — see [IceEvent.RollbackRestart]. */
+    private fun onRollbackRestart(
         now: Instant,
         out: MutableList<IceOutput>,
     ) {
-        _localCredentials = IceCredentials.random(random)
-        tieBreaker = TieBreaker.random(random)
-        remoteCredentials = null
-        remoteCandidates.clear()
-        localCandidates.clear()
-        checklist.clear()
-        byTransaction.clear()
-        selected = null
-        roleConflictResolved = false
-        nextPacingAt = null
-        nextConsentAt = null
-        lastConsentResponseAt = null
-        establishmentDeadline = null
-        transition(IceConnectionState.New, out)
+        val previous = (retained as? RetainedGeneration.Retained)?.generation ?: return
+        retained = RetainedGeneration.None
+        current = previous
+        // The retained generation was frozen for the restart window — it carried data but ran no consent
+        // checks, so its RFC 7675 clock stopped with it. Restart that clock from `now` rather than letting
+        // the frozen interval count against a pair we are about to actively probe again.
+        if (previous.selected != null) {
+            previous.lastConsentResponseAt = now
+            previous.nextConsentAt = now + config.consentInterval
+        }
+        publishState(out)
+        publishPath(out)
+    }
+
+    private fun newGeneration(role: IceRole): Generation =
+        Generation(
+            role = role,
+            localCredentials = IceCredentials.random(random),
+            tieBreaker = TieBreaker.random(random),
+        )
+
+    private fun pathNow(): IcePath {
+        val chosen = current.selected
+        if (chosen != null) return IcePath.Nominated(chosen.pair)
+        val previous = (retained as? RetainedGeneration.Retained)?.generation?.selected ?: return IcePath.Unnominated
+        return IcePath.Restarting(previous.pair)
+    }
+
+    private fun publishPath(out: MutableList<IceOutput>) {
+        val path = pathNow()
+        if (publishedPath == path) return
+        publishedPath = path
+        out += IceOutput.PathChanged(path)
     }
 
     private fun transition(
         newState: IceConnectionState,
         out: MutableList<IceOutput>,
     ) {
-        if (_state == newState) return
-        _state = newState
+        current.state = newState
+        publishState(out)
+    }
+
+    private fun publishState(out: MutableList<IceOutput>) {
+        val newState = current.state
+        if (publishedState == newState) return
+        publishedState = newState
         out += IceOutput.ConnectionStateChanged(newState)
     }
 
@@ -621,11 +718,12 @@ public class IceAgent(
     private fun bindingSuccess(
         transactionId: TransactionId,
         mapped: TransportAddress,
+        password: IcePassword,
     ): ReadBuffer =
         StunMessageBuilder
             .of(StunClass.SuccessResponse, StunMethod.Binding, transactionId, config.bufferFactory)
             .add(RawAttribute.ofXorMappedAddress(mapped, transactionId, config.bufferFactory))
-            .addMessageIntegrity(localKey())
+            .addMessageIntegrity(keyOf(password))
             .addFingerprint()
             .encode(config.bufferFactory)
 
@@ -633,7 +731,7 @@ public class IceAgent(
         StunMessageBuilder
             .of(StunClass.ErrorResponse, StunMethod.Binding, transactionId, config.bufferFactory)
             .add(RawAttribute.ofErrorCode(StunErrorCode(ROLE_CONFLICT, "Role Conflict"), config.bufferFactory))
-            .addMessageIntegrity(localKey())
+            .addMessageIntegrity(keyOf(current.localCredentials.password))
             .addFingerprint()
             .encode(config.bufferFactory)
 
@@ -643,11 +741,9 @@ public class IceAgent(
         data: ReadBuffer,
     ): IceOutput.Transmit = IceOutput.Transmit(fromBase, to, data)
 
-    private fun localKey(): ReadBuffer = passwordKey(_localCredentials.password)
+    private fun remoteKey(): ReadBuffer = keyOf(current.remoteCredentials!!.password)
 
-    private fun remoteKey(): ReadBuffer = passwordKey(remoteCredentials!!.password)
-
-    private fun passwordKey(password: IcePassword): ReadBuffer {
+    private fun keyOf(password: IcePassword): ReadBuffer {
         val text = password.value
         val buffer = config.bufferFactory.allocate(maxOf(1, text.length * MAX_UTF8_PER_CHAR), ByteOrder.BIG_ENDIAN)
         buffer.writeString(text, Charset.UTF8)
@@ -687,6 +783,57 @@ public class IceAgent(
         var valid: Boolean = false
 
         val transaction: StunTransaction? get() = inFlight?.transaction
+    }
+
+    /**
+     * One **ICE generation** (RFC 8445 §9): the credentials the agent advertises plus every piece of
+     * state derived from them. A restart swaps the whole object, so "what a restart resets" is answered
+     * by membership here rather than by a list of assignments that can silently fall out of date.
+     *
+     * [role] lives here so a rollback restores the role the retained generation actually settled on, but
+     * a restart *inherits* it rather than redetermining it (§9 → §6.1.1).
+     */
+    private class Generation(
+        var role: IceRole,
+        val localCredentials: IceCredentials,
+        val tieBreaker: TieBreaker,
+    ) {
+        var remoteCredentials: IceCredentials? = null
+        val localCandidates: MutableList<IceCandidate> = mutableListOf()
+        val remoteCandidates: MutableList<IceCandidate> = mutableListOf()
+        val checklist: MutableList<PairEntry> = mutableListOf()
+        val byTransaction: HashMap<TransactionId, PairEntry> = HashMap()
+        var state: IceConnectionState = IceConnectionState.New
+        var selected: PairEntry? = null
+
+        // A role conflict is resolved AT MOST ONCE per ICE generation (RFC 8445 §7.3.1.1): the inbound-check
+        // path and the 487-response path must not both flip the role, or a glare oscillates.
+        var roleConflictResolved: Boolean = false
+        var nextPacingAt: Instant? = null
+        var nextConsentAt: Instant? = null
+        var lastConsentResponseAt: Instant? = null
+        var establishmentDeadline: Instant? = null
+
+        // Derived, not a stored latch: a nominating check is in flight iff some pair currently holds one.
+        // Making it a projection of the checklist means it can never wedge stale (the bug a stored flag hit).
+        val nominationInFlight: Boolean
+            get() = checklist.any { it.inFlight?.purpose == CheckPurpose.Nomination }
+    }
+
+    /**
+     * Whether an ICE restart is in flight, and if so the generation still carrying application data. A
+     * sealed pair rather than a nullable field because the two cases drive different behaviour on three
+     * separate paths (path publication, rollback, and answering the peer's old-credential checks) — the
+     * situation where a null would be read as "nothing to do" on one of them and mean the opposite.
+     */
+    private sealed interface RetainedGeneration {
+        /** No restart in flight — the current generation is the only one. */
+        data object None : RetainedGeneration
+
+        /** A restart is in flight; [generation] is the outgoing one, frozen but still carrying data. */
+        data class Retained(
+            val generation: Generation,
+        ) : RetainedGeneration
     }
 
     private companion object {

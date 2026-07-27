@@ -96,16 +96,22 @@ class IceRelayLossTest {
                         alice.connectTo(bob)
                         bob.connectTo(alice)
 
-                        assertNotNull(withTimeoutOrNull(TIMEOUT) { alice.awaitConnected() }, "alice connects via the relay ($diag)")
-                        assertNotNull(withTimeoutOrNull(TIMEOUT) { bob.awaitConnected() }, "bob connects via the relay ($diag)")
+                        val aliceConverged =
+                            assertNotNull(withTimeoutOrNull(TIMEOUT) { alice.awaitConnected() }, "alice connects via the relay ($diag)")
+                        val bobConverged =
+                            assertNotNull(withTimeoutOrNull(TIMEOUT) { bob.awaitConnected() }, "bob connects via the relay ($diag)")
                         // Behind mutually-isolated symmetric NATs, host↔host / host↔srflx / srflx↔srflx pairs can
                         // never validate — so any converged pair *must* traverse the TURN relay on at least one end.
                         // The lossless template pins both locals to Relayed (relay↔relay); under loss's nomination
                         // nondeterminism a host↔relay pair (host → the peer's relayed address, routed through the
                         // TURN server) can win instead, which is still a genuine relay-assisted path. So we assert
                         // the weaker-but-still-load-bearing invariant: the relay is on the path.
-                        assertTrue(traversesRelay(alice.selectedPair!!), "alice's converged pair traverses the relay ($diag)")
-                        assertTrue(traversesRelay(bob.selectedPair!!), "bob's converged pair traverses the relay ($diag)")
+                        // Read each pair off the state that *proved* convergence: at 20% loss over a
+                        // double-hopped relay a converged agent can go on to lose RFC 7675 consent while
+                        // its partner is still converging (loss=0.20 seed=810004 does), and a post-hoc
+                        // read would be asserting about a pair the agent no longer has.
+                        assertTrue(traversesRelay(aliceConverged.nominatedPair), "alice's converged pair traverses the relay ($diag)")
+                        assertTrue(traversesRelay(bobConverged.nominatedPair), "bob's converged pair traverses the relay ($diag)")
                     } finally {
                         // cancelAndJoin (not cancel): on Kotlin/JS cancellation is asynchronous, so a bare
                         // cancel() can leave a cancelled coroutine's `delay`-backed Node timer pending past the

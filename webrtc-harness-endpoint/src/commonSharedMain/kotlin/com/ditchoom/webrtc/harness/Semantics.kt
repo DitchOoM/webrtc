@@ -45,18 +45,19 @@ import kotlin.time.Instant
 //                 abandoned message does not WEDGE the stream (the peer processed our FORWARD-TSN)
 //   s4/multiplex  three concurrent channels, mixed profiles — per-stream demux over one association
 //   s5/reverse    the ANSWERER originates a channel (our lanes only — foreign peers stay dumb reflectors)
+//   s7/close-one  ONE channel closed mid-session (RFC 8831 §6.7 stream reset): its neighbour keeps
+//                 echoing, the peer's channel closed, and the recycled stream id opens and works again
 //   s6/close      the `DONE` handshake, then a graceful association SHUTDOWN (RFC 4960 §9.2)
+//
+// The ids are stable log labels, not a chronology: `s6` tears the association down, so it is by
+// construction LAST and every phase added afterwards sorts before it. `s7` is the newest phase, not the
+// final one.
 //
 // THE ONE ASYMMETRY THAT SHAPES ALL OF IT: our side is always the offerer, and the far side may be a
 // browser — where we cannot inject behaviour beyond the W3C `RTCDataChannel` API. So the answerer is a
 // dumb, scenario-agnostic REFLECTOR (echo every message back on the channel it arrived on) and EVERY
 // scenario decision and assertion lives here, in our Kotlin. Channel labels are self-describing for logs,
 // getStats and pcaps, but drive NO behaviour on the reflector.
-//
-// Per-channel close (RFC 6525 RE-CONFIG stream reset) is not one of the phases here. It was absent
-// originally because `webrtc-sctp` did not implement it (decision D1a); it now does, proven by unit and
-// vnet fixtures, so what is missing is only the interop phase — s6 still proves the ASSOCIATION-level
-// graceful shutdown, and a per-channel close phase is a harness change of its own.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /** The control channel's label — kept historical so every existing lane's logs read exactly as before. */
@@ -70,6 +71,23 @@ internal const val REVERSE_CUE: String = "REVERSE"
 
 /** The label the ANSWERER opens for s5; the offerer waits for an incoming channel with exactly it. */
 internal const val REVERSE_LABEL: String = "s5/reverse"
+
+/**
+ * s7's three channels: the one closed mid-session, the neighbour that must survive it, and the channel
+ * reopened on the recycled id. Self-describing for logs, `getStats` and pcaps — and `run-interop.sh` greps
+ * the first two out of a BROWSER's own log, which is the only place the far side's view is visible.
+ */
+private const val CLOSE_ONE_VICTIM_LABEL = "s7/victim"
+private const val CLOSE_ONE_KEEP_LABEL = "s7/keep"
+private const val CLOSE_ONE_REOPEN_LABEL = "s7/reopen"
+
+/**
+ * How many times s7 tries to open a channel onto the closed stream id before calling the peer's half of
+ * the reset absent. Each attempt is separated by a full neighbour round trip, so this is a bound on
+ * OBSERVED progress (directive #4), not a wall-clock budget: one RTT is normally enough, and three
+ * covers an impaired path that lost the peer's RE-CONFIG and had to retransmit it.
+ */
+private const val RECYCLE_PROBES = 3
 
 /** How many small messages a burst phase sends. */
 private const val BURST = 50
@@ -321,6 +339,9 @@ internal suspend fun runSemanticsPhases(
             add(Phase("s3") { phasePartialReliable(pc, ctl) })
             add(Phase("s4") { phaseMultiplex(bg, pc) })
             if (cfg.reverseChannel) add(Phase("s5") { phaseReverse(ctl, reflector) })
+            // s7 runs here, LAST of the mid-session phases: s6 (below, in Main.kt) closes the whole
+            // association, so nothing can follow it. See the id note in this file's header.
+            add(Phase("s7") { phaseCloseOneChannel(pc) })
         }
 
     for (phase in phases) {
@@ -589,6 +610,109 @@ private suspend fun phaseReverse(
         reflector.awaitEvent(PHASE_TIMEOUT) { it.label == REVERSE_LABEL }
             ?: return Verdict(false, "the answerer never opened an incoming \"$REVERSE_LABEL\" channel within $PHASE_TIMEOUT")
     return Verdict(true, "reflected ${event.bytes}B on the answerer-originated \"$REVERSE_LABEL\" channel (our DCEP responder path)")
+}
+
+// ── s7: per-channel close (RFC 8831 §6.7 close = RFC 6525 stream reset) ──────────────────────────────
+
+/**
+ * Close ONE data channel mid-session and keep using its neighbour. Until the RE-CONFIG work landed, the
+ * only close this stack could perform was the association-wide SHUTDOWN of s6 — so what a green s6 proved
+ * was that ONE session ends cleanly, never that ONE channel of many can. This phase proves the latter,
+ * against a foreign stack, asserting three separate properties in order:
+ *
+ *  1. **the neighbour survives.** `s7/keep` still round-trips after `s7/victim` is closed. This is the
+ *     failure mode that makes per-channel close worth proving on the wire at all: a reset that took the
+ *     association (or the wrong stream) with it would still look like a "successful close" locally.
+ *  2. **the PEER's channel closed.** Observable to us as the victim's stream id becoming REUSABLE. RFC
+ *     8831 §6.7 closes a channel by resetting BOTH directions, and our stack hands an id to a new open
+ *     only once both RFC 6525 exchanges have completed — the second being the peer's own outgoing reset,
+ *     which it sends *because its data channel closed*. So a new channel landing on the victim's id is
+ *     the offerer-side proof of the far side's close: exactly the kind of thing a dumb reflector can
+ *     never report to us, and the reason every assertion lives here (decision D4).
+ *  3. **a recycled id still works.** The reopened channel echoes. A peer that kept the old stream's SSN
+ *     state would read the new channel's first ordered message (SSN 0) as a duplicate and drop it, so an
+ *     echo is what proves the reset actually cleared the far side's per-stream state — the property that
+ *     keeps a long-lived session from walking off the end of the 16-bit stream space.
+ *
+ * The deterministic siblings are `DataChannelCloseTest` (the SCTP stack pair, virtual time) and
+ * `PeerConnectionRoundTripTest.closing_one_channel_keeps_its_neighbour_and_recycles_the_stream_id` (the
+ * whole stack over the vnet). This phase is that same sequence run against an independent implementation.
+ */
+private suspend fun phaseCloseOneChannel(pc: NativePeerConnection): Verdict {
+    val victim = pc.createDataChannel(DataChannelConfig(label = CLOSE_ONE_VICTIM_LABEL))
+    val keep = pc.createDataChannel(DataChannelConfig(label = CLOSE_ONE_KEEP_LABEL))
+    val victimId = victim.id
+
+    // Baseline BEFORE the close: both channels must already round-trip. Without it, a silent neighbour
+    // below would be reported as "the close broke it" when the truth could be "it never worked".
+    if (!echoesBack(victim, "s7v#0")) {
+        return Verdict(false, "\"$CLOSE_ONE_VICTIM_LABEL\" (stream $victimId) never echoed BEFORE the close — there was nothing live to close")
+    }
+    if (!echoesBack(keep, "s7k#0")) {
+        return Verdict(false, "\"$CLOSE_ONE_KEEP_LABEL\" (stream ${keep.id}) never echoed BEFORE the close — there was no live neighbour to preserve")
+    }
+
+    println("[harness] s7/close-one: closing \"$CLOSE_ONE_VICTIM_LABEL\" (stream $victimId), keeping \"$CLOSE_ONE_KEEP_LABEL\" (stream ${keep.id})")
+    victim.close()
+
+    // (1) The neighbour survives. This round trip is also a full RTT of real, observed progress on the
+    // association — which is what gives the peer's half of the reset time to arrive before the first
+    // probe below, without a sleep anywhere (directive #4).
+    if (!echoesBack(keep, "s7k#1")) {
+        return Verdict(
+            false,
+            "closing \"$CLOSE_ONE_VICTIM_LABEL\" (stream $victimId) took its neighbour with it — " +
+                "\"$CLOSE_ONE_KEEP_LABEL\" (stream ${keep.id}) stopped echoing within $ECHO_WAIT",
+        )
+    }
+
+    // (2) The peer reset its half — i.e. its channel closed — which is what frees the id for reuse.
+    var probes = 0
+    var reopened: Connection<ReadBuffer>? = null
+    while (reopened == null && probes < RECYCLE_PROBES) {
+        probes++
+        val candidate = pc.createDataChannel(DataChannelConfig(label = CLOSE_ONE_REOPEN_LABEL))
+        println("[harness] s7/close-one: reopen probe $probes/$RECYCLE_PROBES landed on stream ${candidate.id} (want the closed $victimId)")
+        if (candidate.id == victimId) {
+            reopened = candidate
+        } else if (probes < RECYCLE_PROBES && !echoesBack(keep, "s7k#${probes + 1}")) {
+            // A probe that misses is not itself a failure — the peer's RE-CONFIG may still be in flight —
+            // but an association that stopped delivering while we wait is, and it is a different defect.
+            return Verdict(false, "the association stopped delivering while waiting for stream $victimId to be handed back (after $probes probe(s))")
+        }
+    }
+    if (reopened == null) {
+        return Verdict(
+            false,
+            "stream $victimId was never handed back across $RECYCLE_PROBES opens: the peer never reset its own half of " +
+                "\"$CLOSE_ONE_VICTIM_LABEL\", so its data channel did not close (RFC 8831 §6.7 resets BOTH directions)",
+        )
+    }
+
+    // (3) …and the id is genuinely usable again, on the wire, not just in our bookkeeping.
+    return if (echoesBack(reopened, "s7r#0")) {
+        Verdict(
+            true,
+            "closed \"$CLOSE_ONE_VICTIM_LABEL\" mid-session: its neighbour kept echoing, the peer reset its own half " +
+                "(stream $victimId came back after $probes probe(s)), and a new channel on the recycled id echoed",
+        )
+    } else {
+        Verdict(
+            false,
+            "stream $victimId was recycled and reopened as \"$CLOSE_ONE_REOPEN_LABEL\", but the peer never echoed on it within " +
+                "$ECHO_WAIT — its per-stream state outlived the reset",
+        )
+    }
+}
+
+/** Send [text] on [channel] and require exactly [text] back — the smallest proof a channel is live. */
+private suspend fun echoesBack(
+    channel: Connection<ReadBuffer>,
+    text: String,
+    wait: Duration = ECHO_WAIT,
+): Boolean {
+    channel.send(textBuffer(text))
+    return withTimeoutOrNull(wait) { channel.receive().firstOrNull() }?.peekText() == text
 }
 
 // ── shared helpers ───────────────────────────────────────────────────────────────────────────────────

@@ -18,7 +18,9 @@
 # Data-channel SEMANTICS (docs/DC_SEMANTICS_INTEROP_DESIGN.md): every lane additionally runs the
 # offerer-driven phase sequence over the SAME association it establishes — s1 large/fragmented (byte-identity
 # + the negotiated a=max-message-size boundary), s2 unordered, s3 partial-reliable (PR-SCTP + FORWARD-TSN
-# no-wedge), s4 multiplexed, s5 reverse-direction (our lanes only), s6 DONE + graceful association SHUTDOWN.
+# no-wedge), s4 multiplexed, s5 reverse-direction (our lanes only), s7 per-channel close (RFC 8831 §6.7
+# stream reset: neighbour survives, the peer's channel closed, the recycled stream id works), s6 DONE +
+# graceful association SHUTDOWN — s6 ends the association, so it is always last and s7 sorts before it.
 # The answerer is a scenario-agnostic reflector in every family, so this costs no new CI lanes. They landed
 # NON-GATING-first and are now FULLY PROMOTED: a failed phase FAILS its lane, on EVERY lane. The holdout
 # list ($SEMANTICS_NON_GATING, see below) is empty — the last two entries, the werift lanes, were promoted
@@ -239,7 +241,8 @@ NON_GATING=" impaired-loss-delay ${HARNESS_NON_GATING:-} "
 
 # ── data-channel SEMANTICS (docs/DC_SEMANTICS_INTEROP_DESIGN.md, Phase-1 close-out item #2) ──────────
 # Every lane's offerer runs the phase sequence (s1 large/fragmented, s2 unordered, s3 partial-reliable,
-# s4 multiplexed, s5 reverse, s6 graceful close) over the SAME association it already establishes, and
+# s4 multiplexed, s5 reverse, s7 per-channel close, s6 graceful association close) over the SAME
+# association it already establishes, and
 # every answerer becomes a universal reflector that exits on the offerer's DONE. No new lanes: each
 # existing lane gains the whole matrix. HARNESS_SEMANTICS=0 restores the pure establish-and-echo harness.
 #
@@ -323,11 +326,22 @@ semantics_report() {
     grep -qE 'dc-negotiated:.*label="s2/unordered".*ordered=false' <<< "$b_log_local" || missing="$missing s2/unordered(ordered=false)"
     grep -qE 'dc-negotiated:.*label="s3/rexmit".*maxRetransmits=0' <<< "$b_log_local" || missing="$missing s3/rexmit(maxRetransmits=0)"
     grep -qE 'dc-negotiated:.*label="s3/timed".*maxPacketLifeTime=[0-9]' <<< "$b_log_local" || missing="$missing s3/timed(maxPacketLifeTime)"
+    # s7 (per-channel close), the same "only the peer can report it" half: the engine must say ITS
+    # `s7/victim` channel closed mid-session, and must then accept `s7/reopen` on the very stream id the
+    # closed channel had. Our offerer proves the id came back to it; only the browser can confirm it
+    # honoured a fresh DCEP OPEN on that recycled id rather than treating it as the old, still-known stream.
+    grep -qE 'dc close: *"s7/victim"' <<< "$b_log_local" || missing="$missing s7/victim(dc-close)"
+    local victim_id reopen_id
+    victim_id=$(sed -n 's/.*dc-negotiated:.*label="s7\/victim" id=\([0-9]*\).*/\1/p' <<< "$b_log_local" | head -1)
+    reopen_id=$(sed -n 's/.*dc-negotiated:.*label="s7\/reopen" id=\([0-9]*\).*/\1/p' <<< "$b_log_local" | head -1)
+    if [ -z "$victim_id" ] || [ "$victim_id" != "$reopen_id" ]; then
+        missing="$missing s7/reopen(recycled-id: victim=${victim_id:-<none>} reopen=${reopen_id:-<none>})"
+    fi
     if [ -n "$missing" ]; then
         echo "::warning::⚠️ [$name] the browser never reported these negotiated DCEP properties:$missing — NON-GATING"
         sem_warned_names="$sem_warned_names $name"
     else
-        echo "[semantics] ✅ [$name] the browser reports our unordered + partial-reliable channel types as negotiated"
+        echo "[semantics] ✅ [$name] the browser reports our unordered + partial-reliable channel types as negotiated, its own s7/victim close, and s7/reopen on the recycled stream id $victim_id"
     fi
 }
 

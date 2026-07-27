@@ -111,7 +111,11 @@ comes for free on every existing lane and CI grows no jobs. Design note: `docs/D
 | `s3` | `s3/rexmit`, `s3/timed` | **PR-SCTP** (`MaxRetransmits(0)` / `MaxLifetime`) is accepted, and an abandoned message does **not wedge** the stream — the peer advanced past it, i.e. processed our **FORWARD-TSN** |
 | `s4` | `s4/a`,`s4/b`,`s4/c` | **multiplexing**: three concurrent channels with mixed profiles, each echo returning on its own stream (RFC 8832 §6 demux) |
 | `s5` | `s5/reverse` | the **answerer** originates a channel and we reflect it — our DCEP responder path (odd stream-id parity). Our lanes only; foreign peers never originate |
+| `s7` | `s7/victim`, `s7/keep`, `s7/reopen` | **per-channel close** (RFC 8831 §6.7 = an RFC 6525 stream reset, *not* a shutdown): one channel is closed mid-session and (a) its **neighbour keeps echoing**, (b) the **peer's channel closed** — proven by the victim's stream id becoming reusable, which our stack only does once **both** directions have been reset, the second being the peer's own reset, and (c) the **recycled id works**: a new channel on it echoes, so the peer's per-stream SSN state really was cleared |
 | `s6` | `harness` | the `DONE` handshake, then a **graceful association SHUTDOWN** (RFC 4960 §9.2) — the peer sees a clean close, not a vanished association |
+
+The ids are stable log labels, not a chronology: `s6` ends the association, so it necessarily runs **last**
+and every phase added after it sorts before it — `s7` is the newest phase, not the final one.
 
 **The answerer stays dumb in every family.** Its whole contract is: *for every incoming channel, echo every
 message back on that channel, verbatim; exit on `DONE`* (with `ping`→`pong` kept as the one historical
@@ -126,7 +130,8 @@ Grading is one greppable line from the offerer:
 
 ```
 [harness] phase s1: PASS (+412ms) 204800B echoed byte-identical, and so did a boundary probe at exactly the negotiated 262144B
-[harness] semantics-summary: total=6 passed=6 failed=0 failed-phases=[]
+[harness] phase s7: PASS (+3ms) closed "s7/victim" mid-session: its neighbour kept echoing, the peer reset its own half (stream 17 came back after 1 probe(s)), and a new channel on the recycled id echoed
+[harness] semantics-summary: total=7 passed=7 failed=0 failed-phases=[]
 ```
 
 A failed phase is **recorded and the sequence continues**, so one run reports everything that is broken.
@@ -139,11 +144,12 @@ A failed phase is **recorded and the sequence continues**, so one run reports ev
 | `HARNESS_SEMANTICS_NON_GATING` | *(empty)* | named lanes whose semantics stay informational. Empty — every lane gates. `node-interop`/`jvm-node` were the last holdouts (werift never reached `Connected`, so there was nothing to grade); the SCTP INIT deadlock behind that (#43) is fixed and both are promoted |
 | `HARNESS_SEMANTICS_TIMEOUT_MS` | `120000` | watchdog for the whole sequence, on top of the establishment watchdog |
 
-Not covered *yet*: **per-channel close**. It needs an RFC 6525 RE-CONFIG stream reset, which `webrtc-sctp`
-originally did not implement — so `s6` proves the association-level shutdown instead. The library now
-implements the full stream-reset exchange (request/response, deferred processing, stream-id recycling),
-covered by unit and vnet fixtures; adding an interop phase that closes one channel and keeps using its
-neighbour is the remaining harness work.
+**Per-channel close** was the one gap here for as long as `webrtc-sctp` had no RFC 6525 RE-CONFIG (so `s6`
+proved only the association-level shutdown). The library now implements the whole stream-reset exchange
+(request/response, deferred processing, stream-id recycling), and `s7` is its interop proof against the
+foreign stacks. Its deterministic siblings are `DataChannelCloseTest` (the SCTP stack pair) and
+`PeerConnectionRoundTripTest.closing_one_channel_keeps_its_neighbour_and_recycles_the_stream_id` (the whole
+stack over the vnet) — the L1↔L2 parity `TESTING.md` asks for.
 
 ## Interop: the Pion lane (W7 Phase 2a)
 

@@ -232,8 +232,10 @@ async function answererInPage(cfg) {
     dc.onopen = () => { log('dc open:', JSON.stringify(dc.label), 'readyState=' + dc.readyState); snapshotStats('dc-open'); };
     dc.onclosing = () => log('dc closing:', JSON.stringify(dc.label), 'readyState=' + dc.readyState);
     // Mirror-close: if the offerer closes its half, close ours too (the reflector holds no state past the
-    // channel). Today that is only observable at association teardown — per-channel close needs RFC 6525
-    // RE-CONFIG, which our stack does not implement yet (decision D1a).
+    // channel). Since our stack gained RFC 6525 RE-CONFIG this fires MID-SESSION, on the s7 phase, and
+    // this `dc close:` line is the browser's own report that its channel closed — the half of s7's proof
+    // only the peer can give (run-interop.sh greps it, and the engine's outgoing reset is what hands the
+    // stream id back to our side).
     dc.onclose = () => {
       log('dc close:', JSON.stringify(dc.label), 'readyState=' + dc.readyState);
       try { dc.close(); } catch { /* already closed */ }

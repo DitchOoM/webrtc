@@ -126,15 +126,32 @@ public class IceAgent(
      * (it carries data, it does not run checks), so it contributes no deadline.
      */
     public fun nextDeadline(now: Instant): Instant? {
-        // A generation whose consent was revoked is finished (RFC 7675 §5.1), so it clocks nothing — and
-        // this is the single choke point that makes that true. Without it a late trickled candidate could
-        // re-arm pacing on a dead generation, and any deadline left armed on a generation whose `onTimer`
-        // does nothing is a driver that spins without advancing time.
-        if (current.consentRevoked) return null
+        // Revocation is terminal, so it short-circuits before anything else is even considered — a late
+        // trickled candidate must not re-arm pacing on a dead generation, and a deadline left armed on a
+        // generation whose `onTimer` does nothing is a driver that spins without advancing time. Written
+        // as the first arm of the exhaustive `when` below rather than a guard above it, so adding a
+        // Selection case is a compile error here instead of a silently-skipped clock.
         var earliest: Instant? = null
 
         fun consider(instant: Instant?) {
             if (instant != null && (earliest == null || instant < earliest!!)) earliest = instant
+        }
+        when (val selection = current.selection) {
+            is Selection.Revoked -> return null
+            Selection.None ->
+                // The liveness backstop keeps a deadline armed even when nothing else is (a wedged
+                // nomination, a peer that never nominates, or an empty checklist), so the driver always
+                // reaches a terminal.
+                if (current.state !is IceConnectionState.Failed) consider(current.establishmentDeadline)
+            is Selection.Nominated -> {
+                // Consent has two independent deadlines and neither gates the other (RFC 7675 §4.1): the
+                // next check goes out on its own cadence whether or not an earlier one is still
+                // unanswered, and revocation is measured from the last *response*. Gating the cadence on
+                // an in-flight check — which is what modelling consent as a retransmitting transaction
+                // forced — is what let one backoff chain span the whole window and leave it undefended.
+                consider(selection.consent.nextCheckAt)
+                consider(selection.consent.lastResponseAt + config.consentTimeout)
+            }
         }
         if (current.remoteCredentials != null &&
             current.checklist.any { it.state == CandidatePairState.Waiting }
@@ -142,20 +159,6 @@ public class IceAgent(
             consider(current.nextPacingAt)
         }
         for (entry in current.checklist) consider(entry.transaction?.nextDeadline())
-        val chosen = current.selected
-        if (chosen != null) {
-            // Consent has two independent deadlines and neither gates the other (RFC 7675 §4.1): the next
-            // check goes out on its own cadence whether or not an earlier one is still unanswered, and
-            // revocation is measured from the last *response*. Gating the cadence on an in-flight check —
-            // which is what modelling consent as a retransmitting transaction forced — is what let a single
-            // backoff chain span the whole revocation window and leave it undefended.
-            consider(current.nextConsentAt)
-            consider(current.lastConsentResponseAt?.plus(config.consentTimeout))
-        } else if (current.state !is IceConnectionState.Failed) {
-            // The liveness backstop keeps a deadline armed even when nothing else is (a wedged nomination,
-            // a peer that never nominates, or an empty checklist), so the driver always reaches a terminal.
-            consider(current.establishmentDeadline)
-        }
         return earliest
     }
 
@@ -333,25 +336,24 @@ public class IceAgent(
         out: MutableList<IceOutput>,
     ) {
         val generation = current
-        val chosen = generation.selected ?: return
-        val lastResponse = generation.lastConsentResponseAt
-        // `>=`, not `>`: nextDeadline arms exactly `lastResponse + consentTimeout`, so at that instant the
-        // check must fire — a strict `>` would leave the deadline in the past and spin the driver.
-        if (lastResponse != null && now - lastResponse >= config.consentTimeout) {
-            generation.outstandingConsent.clear() // no answer to these can matter now
-            // Every check in the generation, not just the one on the dead pair: consent is revoked for
-            // these credentials, so no outstanding transaction can lead anywhere, and leaving one armed
-            // would leave a deadline behind on a generation that will never service it again.
+        val nominated = generation.selection as? Selection.Nominated ?: return
+        val consent = nominated.consent
+        // `>=`, not `>`: nextDeadline arms exactly `lastResponseAt + consentTimeout`, so at that instant
+        // the check must fire — a strict `>` would leave the deadline in the past and spin the driver.
+        if (now - consent.lastResponseAt >= config.consentTimeout) {
+            // Swapping the case *is* discarding the clock — the outstanding ids go with it, because
+            // Selection.Revoked has nowhere to hold them. What still needs saying out loud is the
+            // checklist: consent is revoked for these credentials, so no outstanding transaction can lead
+            // anywhere, and one left armed would leave a deadline on a generation nothing will service.
             for (entry in generation.checklist) clearTransaction(entry)
-            generation.selection = Selection.Revoked(chosen)
+            generation.selection = Selection.Revoked(nominated.entry)
             transition(IceConnectionState.Failed(IceFailureReason.ConsentExpired), out)
             publishPath(out) // the pair is dead: app data has nowhere to go, and must not keep flowing there
             return
         }
-        val consentAt = generation.nextConsentAt
-        if (consentAt != null && now >= consentAt) {
-            sendConsentCheck(chosen, out)
-            generation.nextConsentAt = now + nextConsentDelay()
+        if (now >= consent.nextCheckAt) {
+            sendConsentCheck(nominated, out)
+            consent.nextCheckAt = now + nextConsentDelay()
         }
     }
 
@@ -370,16 +372,17 @@ public class IceAgent(
      * *is the peer still there* — and now touches only the clock that answers it.
      */
     private fun sendConsentCheck(
-        entry: PairEntry,
+        nominated: Selection.Nominated,
         out: MutableList<IceOutput>,
     ) {
-        val generation = current
+        val entry = nominated.entry
         val txid = TransactionId.random(random)
-        val outstanding = generation.outstandingConsent
+        val outstanding = nominated.consent.outstanding
         // An unanswered check older than the revocation window can never refresh consent — the pair is
         // revoked by then — so the set is bounded by how many checks fit in that window. Evicting the
         // oldest keeps it from being an unbounded ledger on a peer that never answers.
-        while (outstanding.size >= maxOutstandingConsentChecks()) outstanding.remove(outstanding.first())
+        val ceiling = maxOutstandingConsentChecks()
+        while (outstanding.size >= ceiling) outstanding.remove(outstanding.first())
         outstanding += txid
         out += transmit(entry.pair.local.base, entry.pair.remote.address, bindingRequest(entry, txid, nominate = false))
     }
@@ -413,19 +416,19 @@ public class IceAgent(
         source: TransportAddress,
         now: Instant,
     ): Boolean {
-        val generation = current
-        val chosen = generation.selected ?: return false
-        if (message.transactionId !in generation.outstandingConsent) return false
+        val nominated = current.selection as? Selection.Nominated ?: return false
+        val consent = nominated.consent
+        if (message.transactionId !in consent.outstanding) return false
         // It is ours; from here the only question is whether it proves the peer is still there. An error
         // response does not (a 487 is a role statement, not liveness), and neither does one that fails to
         // authenticate or arrives from somewhere other than the pair's remote address (RFC 8445 §7.2.5.2.1).
         if (message.messageType.stunClass != StunClass.SuccessResponse) return true
         if (!message.verifyMessageIntegrity(remoteKey())) return true
-        if (source != chosen.pair.remote.address) return true
+        if (source != nominated.entry.pair.remote.address) return true
         // This response proves the path, so every check it overtook is moot — including ones still
         // outstanding, whose answers would tell us nothing this one has not already.
-        generation.outstandingConsent.clear()
-        generation.lastConsentResponseAt = now
+        consent.outstanding.clear()
+        consent.lastResponseAt = now
         return true
     }
 
@@ -729,11 +732,11 @@ public class IceAgent(
         // this guard and let the next inbound check re-nominate the pair whose consent had just died —
         // and because the resurrection republished `path` as Nominated it erased its own evidence.
         if (generation.selection !is Selection.None) return
-        generation.selection = Selection.Nominated(entry)
+        // The check that nominated this pair was answered, so the consent clock starts here with a real
+        // round trip behind it (RFC 7675 §4.1) — which is why [Consent.lastResponseAt] need not be nullable.
+        generation.selection =
+            Selection.Nominated(entry, Consent(lastResponseAt = now, nextCheckAt = now + nextConsentDelay()))
         generation.establishmentDeadline = null
-        // The check that nominated this pair was answered, so consent starts fresh here (RFC 7675 §4.1).
-        generation.lastConsentResponseAt = now
-        generation.nextConsentAt = now + nextConsentDelay()
         // The new generation has converged, so the retained one has no job left: its sockets are the
         // driver's to retire, which it does off this very transition (Restarting → Nominated).
         retained = RetainedGeneration.None
@@ -814,12 +817,14 @@ public class IceAgent(
         retained = RetainedGeneration.None
         current = previous
         // The retained generation was frozen for the restart window — it carried data but ran no consent
-        // checks, so its RFC 7675 clock stopped with it. Restart that clock from `now` rather than letting
-        // the frozen interval count against a pair we are about to actively probe again.
-        if (previous.selected != null) {
-            previous.outstandingConsent.clear() // answers to checks sent before the freeze prove nothing now
-            previous.lastConsentResponseAt = now
-            previous.nextConsentAt = now + nextConsentDelay()
+        // checks, so its RFC 7675 clock stopped with it. Give it a *fresh* clock rather than resetting the
+        // old one field by field: the frozen interval must not count against a pair we are about to probe
+        // again, and answers to checks sent before the freeze prove nothing now. Building a new [Consent]
+        // states both at once — and cannot forget a field the way a list of assignments can.
+        val nominated = previous.selection as? Selection.Nominated
+        if (nominated != null) {
+            previous.selection =
+                Selection.Nominated(nominated.entry, Consent(lastResponseAt = now, nextCheckAt = now + nextConsentDelay()))
         }
         publishState(out)
         publishPath(out)
@@ -953,6 +958,8 @@ public class IceAgent(
         val checklist: MutableList<PairEntry> = mutableListOf()
         val byTransaction: HashMap<TransactionId, PairEntry> = HashMap()
         var state: IceConnectionState = IceConnectionState.New
+
+        /** What this generation has nominated, and — for [Selection.Nominated] — its consent clock. */
         var selection: Selection = Selection.None
 
         /** The pair currently carrying application data, or null when none is — never nominated, or
@@ -969,14 +976,7 @@ public class IceAgent(
         // path and the 487-response path must not both flip the role, or a glare oscillates.
         var roleConflictResolved: Boolean = false
         var nextPacingAt: Instant? = null
-        var nextConsentAt: Instant? = null
-        var lastConsentResponseAt: Instant? = null
         var establishmentDeadline: Instant? = null
-
-        // Transaction ids of consent checks sent but not yet answered (RFC 7675 §4.1). Insertion-ordered
-        // and bounded by the revocation window, so the oldest can be evicted: a check unanswered for
-        // longer than that window could not refresh consent even if it were answered.
-        val outstandingConsent: LinkedHashSet<TransactionId> = LinkedHashSet()
 
         // Derived, not a stored latch: a nominating check is in flight iff some pair currently holds one.
         // Making it a projection of the checklist means it can never wedge stale (the bug a stored flag hit).
@@ -1000,9 +1000,10 @@ public class IceAgent(
         /** Nothing nominated yet in this generation; it may still nominate. */
         data object None : Selection
 
-        /** [entry] is nominated and carrying data, with consent fresh (RFC 7675). */
-        data class Nominated(
+        /** [entry] is nominated and carrying data, and [consent] is the RFC 7675 clock keeping it. */
+        class Nominated(
             val entry: PairEntry,
+            val consent: Consent,
         ) : Selection
 
         /**
@@ -1010,11 +1011,36 @@ public class IceAgent(
          * consent is lost, the same ICE credentials MUST NOT be used on the affected 5-tuple again. That
          * means that a new session, or an ICE restart, is needed."* [entry] is kept rather than dropped so
          * the dead pair stays nameable in diagnostics; it is never re-selected.
+         *
+         * It carries **no [Consent]**, and that is the point: revocation does not *clear* the clock, it
+         * leaves it unrepresentable. An outstanding check on a revoked pair cannot be forgotten about,
+         * because there is nowhere to put one.
          */
-        data class Revoked(
+        class Revoked(
             val entry: PairEntry,
         ) : Selection
     }
+
+    /**
+     * The RFC 7675 consent clock for a nominated pair — and it lives **inside** [Selection.Nominated]
+     * rather than beside it on [Generation], because every field here is meaningless without a pair to
+     * refresh consent *on*. Held as three loose fields it re-created in miniature exactly the soup
+     * [Selection] exists to remove: a `nextCheckAt` armed with nothing selected, an outstanding-id ledger
+     * surviving revocation, and a `lastResponseAt` that had to be nullable — forcing a null check on a
+     * state that cannot occur, since nomination *is* a proven round trip.
+     *
+     * Now [lastResponseAt] is non-null by construction, revocation drops the clock with the case that
+     * owned it, and a rollback builds a fresh one instead of resetting three fields and hoping the list
+     * is complete.
+     */
+    private class Consent(
+        /** When the peer last proved it is still there. Never null: [selectPair] starts it at nomination. */
+        var lastResponseAt: Instant,
+        /** When the next check goes out — paced independently of any still-outstanding one (§4.1). */
+        var nextCheckAt: Instant,
+        /** Transaction ids sent but not yet answered; insertion-ordered, bounded by the revocation window. */
+        val outstanding: LinkedHashSet<TransactionId> = LinkedHashSet(),
+    )
 
     /**
      * Whether an ICE restart is in flight, and if so the generation still carrying application data. A

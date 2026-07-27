@@ -44,6 +44,34 @@ public sealed interface SctpOutput {
     ) : SctpOutput
 
     /**
+     * The peer reset its **outgoing** streams — this endpoint's incoming half (RFC 6525 §5.2.2). The
+     * reset has already been applied to the reassembly state by the time this is emitted: partial
+     * messages on those streams are discarded and their expected Stream Sequence Number is back at 0.
+     *
+     * RFC 8831 §6.7 makes this the peer closing a data channel. The driver closes the corresponding
+     * channels and resets its own outgoing half in turn ([SctpEvent.ResetStreams]); only when both
+     * directions have been reset is the channel closed and its stream id free to reuse.
+     */
+    public data class IncomingStreamsReset(
+        public val scope: StreamResetScope,
+    ) : SctpOutput
+
+    /**
+     * An [SctpEvent.ResetStreams] request this endpoint originated has been answered (RFC 6525 §5.1.1).
+     * One of these is emitted for every request the association survives to resolve — including the
+     * requests it can never put on the wire ([StreamResetOutcome.Unsupported]) — so the only way a close
+     * goes unanswered is an association that fails first, which the driver hears about as [Aborted].
+     *
+     * [scope] is the request's own scope, not the peer's interpretation of it. On
+     * [StreamResetOutcome.Performed] the outgoing SSN state for those streams has been reset here too;
+     * on any other outcome nothing changed and the stream ids remain spent.
+     */
+    public data class OutgoingStreamsReset(
+        public val scope: StreamResetScope,
+        public val outcome: StreamResetOutcome,
+    ) : SctpOutput
+
+    /**
      * The association reached a terminal failure (RFC 4960 §8.1 error threshold, a received ABORT, or a
      * malformed handshake). Carries the typed [reason] (never a string — directive #3). The driver
      * tears down the DataChannels.

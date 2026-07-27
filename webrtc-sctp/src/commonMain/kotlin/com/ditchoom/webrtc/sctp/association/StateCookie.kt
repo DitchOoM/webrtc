@@ -34,14 +34,19 @@ internal data class StateCookie(
     val peerInitialTsn: Tsn,
     val peerRwnd: UInt,
     val peerForwardTsn: Boolean,
+    // Whether the INIT that minted this cookie advertised RE-CONFIG (RFC 6525 §5.1). It has to ride in
+    // the cookie for the same reason [peerForwardTsn] does: the responder keeps no TCB between the INIT
+    // and the COOKIE ECHO, so an extension the INIT advertised is forgotten by the time the association
+    // comes up unless the cookie carries it — and an endpoint that forgot MUST NOT send RE-CONFIG.
+    val peerReConfig: Boolean,
     val ourTag: VerificationTag,
     val ourInitialTsn: Tsn,
     val localTieTag: VerificationTag,
     val peerTieTag: VerificationTag,
 ) {
     companion object {
-        /** Encoded size in bytes: magic + 4 tags + 2 TSNs + rwnd (4 each) and the 1-byte forward-TSN flag. */
-        const val SIZE_BYTES: Int = 33
+        /** Encoded size: magic + 4 tags + 2 TSNs + rwnd (4 each) and the two 1-byte extension flags. */
+        const val SIZE_BYTES: Int = 34
 
         /** "DitchOom Cookie" — the constant that marks a cookie as one we minted. */
         const val MAGIC: UInt = 0xD1C40C1Eu

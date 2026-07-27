@@ -353,6 +353,7 @@ public final class com/ditchoom/webrtc/sctp/ReConfigRequestSequenceNumber {
 	public fun hashCode ()I
 	public static fun hashCode-impl (I)I
 	public static final fun next-crVZwhA (I)I
+	public static final fun previous-crVZwhA (I)I
 	public fun toString ()Ljava/lang/String;
 	public static fun toString-impl (I)Ljava/lang/String;
 	public final synthetic fun unbox-impl ()I
@@ -1142,6 +1143,17 @@ public final class com/ditchoom/webrtc/sctp/association/SctpEvent$DatagramReceiv
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/sctp/association/SctpEvent$ResetStreams : com/ditchoom/webrtc/sctp/association/SctpEvent {
+	public fun <init> (Lcom/ditchoom/webrtc/sctp/association/StreamResetScope;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sctp/association/StreamResetScope;
+	public final fun copy (Lcom/ditchoom/webrtc/sctp/association/StreamResetScope;)Lcom/ditchoom/webrtc/sctp/association/SctpEvent$ResetStreams;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/association/SctpEvent$ResetStreams;Lcom/ditchoom/webrtc/sctp/association/StreamResetScope;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpEvent$ResetStreams;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getScope ()Lcom/ditchoom/webrtc/sctp/association/StreamResetScope;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/sctp/association/SctpEvent$SendMessage : com/ditchoom/webrtc/sctp/association/SctpEvent {
 	public fun <init> (Lcom/ditchoom/webrtc/sctp/association/SctpSendOptions;Lcom/ditchoom/buffer/ReadBuffer;)V
 	public final fun component1 ()Lcom/ditchoom/webrtc/sctp/association/SctpSendOptions;
@@ -1225,6 +1237,17 @@ public final class com/ditchoom/webrtc/sctp/association/SctpOutput$Aborted : com
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/sctp/association/SctpOutput$IncomingStreamsReset : com/ditchoom/webrtc/sctp/association/SctpOutput {
+	public fun <init> (Lcom/ditchoom/webrtc/sctp/association/StreamResetScope;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sctp/association/StreamResetScope;
+	public final fun copy (Lcom/ditchoom/webrtc/sctp/association/StreamResetScope;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$IncomingStreamsReset;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/association/SctpOutput$IncomingStreamsReset;Lcom/ditchoom/webrtc/sctp/association/StreamResetScope;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$IncomingStreamsReset;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getScope ()Lcom/ditchoom/webrtc/sctp/association/StreamResetScope;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/sctp/association/SctpOutput$MessageReceived : com/ditchoom/webrtc/sctp/association/SctpOutput {
 	public synthetic fun <init> (IIZLcom/ditchoom/buffer/ReadBuffer;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1-cFBZvdc ()I
@@ -1238,6 +1261,19 @@ public final class com/ditchoom/webrtc/sctp/association/SctpOutput$MessageReceiv
 	public final fun getPayloadProtocolId-N_xLETs ()I
 	public final fun getStreamId-cFBZvdc ()I
 	public final fun getUnordered ()Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/SctpOutput$OutgoingStreamsReset : com/ditchoom/webrtc/sctp/association/SctpOutput {
+	public fun <init> (Lcom/ditchoom/webrtc/sctp/association/StreamResetScope;Lcom/ditchoom/webrtc/sctp/association/StreamResetOutcome;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sctp/association/StreamResetScope;
+	public final fun component2 ()Lcom/ditchoom/webrtc/sctp/association/StreamResetOutcome;
+	public final fun copy (Lcom/ditchoom/webrtc/sctp/association/StreamResetScope;Lcom/ditchoom/webrtc/sctp/association/StreamResetOutcome;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$OutgoingStreamsReset;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/association/SctpOutput$OutgoingStreamsReset;Lcom/ditchoom/webrtc/sctp/association/StreamResetScope;Lcom/ditchoom/webrtc/sctp/association/StreamResetOutcome;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$OutgoingStreamsReset;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getOutcome ()Lcom/ditchoom/webrtc/sctp/association/StreamResetOutcome;
+	public final fun getScope ()Lcom/ditchoom/webrtc/sctp/association/StreamResetScope;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -1317,6 +1353,55 @@ public final class com/ditchoom/webrtc/sctp/association/SctpSendOptions {
 	public final fun getPayloadProtocolId-N_xLETs ()I
 	public final fun getReliability ()Lcom/ditchoom/webrtc/sctp/association/SctpReliability;
 	public final fun getStreamId-cFBZvdc ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/association/StreamResetOutcome {
+}
+
+public final class com/ditchoom/webrtc/sctp/association/StreamResetOutcome$Performed : com/ditchoom/webrtc/sctp/association/StreamResetOutcome {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/association/StreamResetOutcome$Performed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/StreamResetOutcome$Refused : com/ditchoom/webrtc/sctp/association/StreamResetOutcome {
+	public fun <init> (Lcom/ditchoom/webrtc/sctp/ReConfigResult;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sctp/ReConfigResult;
+	public final fun copy (Lcom/ditchoom/webrtc/sctp/ReConfigResult;)Lcom/ditchoom/webrtc/sctp/association/StreamResetOutcome$Refused;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/association/StreamResetOutcome$Refused;Lcom/ditchoom/webrtc/sctp/ReConfigResult;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/StreamResetOutcome$Refused;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getResult ()Lcom/ditchoom/webrtc/sctp/ReConfigResult;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/StreamResetOutcome$Unsupported : com/ditchoom/webrtc/sctp/association/StreamResetOutcome {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/association/StreamResetOutcome$Unsupported;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/association/StreamResetScope {
+}
+
+public final class com/ditchoom/webrtc/sctp/association/StreamResetScope$AllStreams : com/ditchoom/webrtc/sctp/association/StreamResetScope {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/association/StreamResetScope$AllStreams;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/StreamResetScope$Streams : com/ditchoom/webrtc/sctp/association/StreamResetScope {
+	public fun <init> (Ljava/util/Set;)V
+	public final fun component1 ()Ljava/util/Set;
+	public final fun copy (Ljava/util/Set;)Lcom/ditchoom/webrtc/sctp/association/StreamResetScope$Streams;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/association/StreamResetScope$Streams;Ljava/util/Set;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/StreamResetScope$Streams;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getIds ()Ljava/util/Set;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }

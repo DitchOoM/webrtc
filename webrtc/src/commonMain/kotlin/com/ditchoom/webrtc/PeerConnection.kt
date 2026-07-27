@@ -637,53 +637,64 @@ public class NativePeerConnection(
             }
             _connectionState.value = PeerConnectionState.Connected(sessionPath(d.path.value))
 
-            // Structured children of this coroutine (cancelled by close() → establishJob.cancel), so no
-            // monitor leaks: forward incoming channels, and surface a post-Connected loss as a terminal
-            // state (RFC 7675 consent expiry → Failed(Ice); SCTP teardown → Closed, its typed reason
-            // already delivered to the data-channel caller as SctpClosedException).
-            coroutineScope {
-                // The ICE path moving mid-session is exactly what an RFC 8445 §9 restart does, and until
-                // now nothing above ICE could see it: `runEstablishment` awaited nomination once and then
-                // never looked again. Note this monitor *only* maps a live session's path — it never
-                // resurrects a Failed or Closed session, so the terminal-state monitors below still win.
-                launch {
-                    d.path.collect { path ->
-                        val live = _connectionState.value
-                        if (live !is PeerConnectionState.Connected && live !is PeerConnectionState.Restarting) return@collect
-                        _connectionState.value =
-                            when (path) {
-                                // Nothing nominated in either generation — the pair is gone, not moved. The
-                                // ICE failure monitor owns that terminal; do not pre-empt it with a guess.
-                                IcePath.Unnominated -> return@collect
-                                is IcePath.Nominated -> PeerConnectionState.Connected(SelectedPath.Known(path.pair))
-                                is IcePath.Restarting -> PeerConnectionState.Restarting(SelectedPath.Known(path.previous))
-                            }
-                    }
-                }
-                launch {
-                    try {
-                        while (true) incomingChannels.trySend(liveStack.acceptBidirectional())
-                    } catch (_: kotlinx.coroutines.channels.ClosedReceiveChannelException) {
-                        // stack closed — no more incoming channels
-                    }
-                }
-                launch {
-                    val lost = d.state.first { it is IceConnectionState.Failed } as IceConnectionState.Failed
-                    if (!closed) fail(PeerConnectionFailureReason.Ice(lost.reason))
-                }
-                launch {
-                    liveStack.state.first { it == SctpAssociationState.Closed }
-                    if (!closed && _connectionState.value is PeerConnectionState.Connected) {
-                        _connectionState.value = PeerConnectionState.Closed
-                    }
-                }
-            }
+            monitorLiveSession(d, liveStack)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e // close() cancelled us — structured cancellation, not a failure
         } catch (e: WebRtcException) {
             fail(e.failure) // a real DTLS/SCTP-establishment failure (W4) — typed, never a hang
         } catch (e: Exception) {
             fail(PeerConnectionFailureReason.Unknown(e.message ?: e::class.simpleName ?: "establishment error"))
+        }
+    }
+
+    /**
+     * Watch a *live* session until something ends it. Structured children of the establishment coroutine
+     * (cancelled by close() → establishJob.cancel), so no monitor outlives the session that owns it.
+     *
+     * Extracted from [runEstablishment] rather than left inline: establishment is a linear sequence that
+     * ends here, and these four are a concurrent set that begins here — one function doing both was the
+     * thing that made it hard to see that the ICE path was never being watched at all.
+     */
+    private suspend fun monitorLiveSession(
+        d: IceAgentDriver,
+        liveStack: SctpDataChannelStack,
+    ) {
+        coroutineScope {
+            // The ICE path moving mid-session is exactly what an RFC 8445 §9 restart does, and until
+            // now nothing above ICE could see it: `runEstablishment` awaited nomination once and then
+            // never looked again. Note this monitor *only* maps a live session's path — it never
+            // resurrects a Failed or Closed session, so the terminal-state monitors below still win.
+            launch {
+                d.path.collect { path ->
+                    val live = _connectionState.value
+                    if (live !is PeerConnectionState.Connected && live !is PeerConnectionState.Restarting) return@collect
+                    _connectionState.value =
+                        when (path) {
+                            // Nothing nominated in either generation — the pair is gone, not moved. The
+                            // ICE failure monitor owns that terminal; do not pre-empt it with a guess.
+                            IcePath.Unnominated -> return@collect
+                            is IcePath.Nominated -> PeerConnectionState.Connected(SelectedPath.Known(path.pair))
+                            is IcePath.Restarting -> PeerConnectionState.Restarting(SelectedPath.Known(path.previous))
+                        }
+                }
+            }
+            launch {
+                try {
+                    while (true) incomingChannels.trySend(liveStack.acceptBidirectional())
+                } catch (_: kotlinx.coroutines.channels.ClosedReceiveChannelException) {
+                    // stack closed — no more incoming channels
+                }
+            }
+            launch {
+                val lost = d.state.first { it is IceConnectionState.Failed } as IceConnectionState.Failed
+                if (!closed) fail(PeerConnectionFailureReason.Ice(lost.reason))
+            }
+            launch {
+                liveStack.state.first { it == SctpAssociationState.Closed }
+                if (!closed && _connectionState.value is PeerConnectionState.Connected) {
+                    _connectionState.value = PeerConnectionState.Closed
+                }
+            }
         }
     }
 

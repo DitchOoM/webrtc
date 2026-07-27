@@ -11,6 +11,7 @@ import com.ditchoom.webrtc.stun.IpAddress
 import com.ditchoom.webrtc.stun.StunDecodeResult
 import com.ditchoom.webrtc.stun.StunMessage
 import com.ditchoom.webrtc.stun.TransportAddress
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
@@ -39,7 +40,7 @@ public fun interface DatagramBinder {
 
 /**
  * The point-to-point application-data seam over the ICE-selected pair — the RFC 7983 non-STUN half of
- * the nominated socket. [send] rides `selectedPair.local.base → selectedPair.remote.address`; [receive]
+ * the nominated socket. [send] rides the [IcePath]'s `local.base → remote.address`; [receive]
  * yields the demuxed non-STUN datagrams (DTLS/SCTP). This is **the boundary where DTLS slots in** (W4):
  * it is deliberately shaped identically to `webrtc-sctp`'s `SctpDatagramTransport` so the SCTP stack (or
  * a real DTLS record layer wrapping it) drops in as a swap, without `webrtc-ice` depending on `webrtc-sctp`.
@@ -88,14 +89,21 @@ public class IceAgentDriver(
 
     // The sans-io agent this driver clocks — internal, never public: every `handle` call must go through
     // the single [driveLoop], so exposing the raw core would let a caller race it and corrupt checklist
-    // state. Consumers use the re-exposed [state]/[selectedPair]/[localCandidates]/[localCredentials].
+    // state. Consumers use the re-exposed [state]/[path]/[localCandidates]/[localCredentials].
     internal val agent: IceAgent = IceAgent(role, agentRandom, config)
 
     /** This agent's local ICE credentials (ufrag/pwd) — signal them to the peer. */
     public val localCredentials: IceCredentials get() = agent.localCredentials
 
-    private val inbox = Channel<IceEvent>(Channel.UNLIMITED)
+    private val inbox = Channel<Command>(Channel.UNLIMITED)
     private val channels = HashMap<TransportAddress, DatagramChannel>()
+
+    // The sockets and candidates of the generation currently being gathered, and — across a restart —
+    // those of the outgoing one, which stay BOUND until the new generation nominates (RFC 8445 §9). The
+    // agent retains the old pair; the driver must retain the socket underneath it, or continuity would
+    // be a promise made over a closed channel.
+    private var gathering = GatheredGeneration()
+    private var retiring: RetiringGeneration = RetiringGeneration.None
 
     // Per-family gather ordinal → the [CandidatePreferencePolicy] interfaceIndex, so a multi-homed host's
     // same-family candidates get distinct local preferences (RFC 8445 §5.1.2.2 "SHOULD be unique"). Gathering
@@ -118,15 +126,57 @@ public class IceAgentDriver(
     /** The ICE connection state (RFC 8445 §6.1.2.6), for the session layer to await/observe. */
     public val state: StateFlow<IceConnectionState> get() = _state
 
-    private var _selectedPair: CandidatePair? = null
+    private val _path = MutableStateFlow<IcePath>(IcePath.Unnominated)
 
-    /** The nominated pair application traffic uses, or null before nomination. */
-    public val selectedPair: CandidatePair? get() = _selectedPair
+    /**
+     * Where application traffic rides (RFC 8445 §9 — see [IcePath]). A [StateFlow], not a snapshot, so
+     * the session layer can observe a *mid-session* pair change — the thing a plain `selectedPair`
+     * getter could never report, and the reason a restart used to be invisible above ICE.
+     */
+    public val path: StateFlow<IcePath> get() = _path
 
-    private val _localCandidates = mutableListOf<IceCandidate>()
+    /** A snapshot of the local candidates gathered in the current ICE generation. */
+    public val localCandidates: List<IceCandidate> get() = gathering.candidates.toList()
 
-    /** A snapshot of the local candidates gathered so far. */
-    public val localCandidates: List<IceCandidate> get() = _localCandidates.toList()
+    /**
+     * Whether the pair currently carrying data still rides one of [interfaces] — the question an automatic
+     * ICE-restart policy asks when the interface set changes (RFC 8445 §9).
+     *
+     * It lives here because this is the one place both address vocabularies are in scope: buffer-flow's
+     * [SocketAddress] on the [NetworkMonitor] side, webrtc-stun's `TransportAddress` on the candidate side.
+     * A session-layer implementation would end up comparing *rendered* addresses, and a v6 literal does not
+     * render identically on the two sides (`SocketAddress.toString` brackets it; the candidate does not).
+     *
+     * True when nothing is nominated or a restart is already in flight — in neither case is there a live
+     * path to lose, so neither is a reason to restart.
+     */
+    public fun pathRidesOneOf(interfaces: List<LocalInterface>): Boolean {
+        val local =
+            when (val current = _path.value) {
+                IcePath.Unnominated -> return true
+                is IcePath.Restarting -> return true
+                is IcePath.Nominated -> current.pair.local
+            }
+        // Compare the IP only. A [NetworkMonitor] enumerates *interfaces*; it has no idea which ephemeral
+        // port ICE happened to bind on one, so its addresses carry no meaningful port. Comparing whole
+        // TransportAddresses (whose equality includes the port) would never match, `pathRidesOneOf` would
+        // answer false for every change, and the narrow policy would degrade into exactly the restart-on-
+        // any-change churn it exists to prevent — silently, since a false answer looks like a real finding.
+        val socketIp = localSocketOf(local).ip
+        return interfaces.any { it.address.toTransportAddressOrNull()?.ip == socketIp }
+    }
+
+    /**
+     * The address of the **local socket** a candidate actually occupies — which is not always its `base`.
+     * A relayed candidate's base is its address *on the TURN server*, so it never matches a local
+     * interface; the socket we hold is its `relatedAddress`. Host, server-reflexive and peer-reflexive
+     * candidates all base on the local socket already.
+     */
+    private fun localSocketOf(candidate: IceCandidate): TransportAddress =
+        when (candidate) {
+            is IceCandidate.Relayed -> candidate.relatedAddress
+            is IceCandidate.Host, is IceCandidate.ServerReflexive, is IceCandidate.PeerReflexive -> candidate.base
+        }
 
     private val gathered = Channel<IceCandidate>(Channel.UNLIMITED)
 
@@ -155,7 +205,7 @@ public class IceAgentDriver(
         val ifaceIndex = nextInterfaceIndex(hostAddress.ip)
         val hostPreference = CandidatePreferencePolicy.Default.localPreference(hostAddress.ip, ifaceIndex)
         val host = IceCandidate.host(hostAddress, localPreference = hostPreference)
-        channels[host.base] = channel
+        bind(host.base, channel)
         gather(host)
 
         if (stunServer != null) {
@@ -221,7 +271,7 @@ public class IceAgentDriver(
                 priority = IceCandidate.computePriority(CandidateType.Relayed, ComponentId.Rtp, relayPreference),
                 relatedAddress = socketAddress.toTransportAddress(),
             )
-        channels[relay.base] = allocation
+        bind(relay.base, allocation)
         forward(relay.base, allocation)
         gather(relay)
         return relay
@@ -240,17 +290,46 @@ public class IceAgentDriver(
     /** Tear down the socket backing [candidate] (a link/interface going away — the candidate-flap seam). */
     public fun drop(candidate: IceCandidate) {
         channels.remove(candidate.base)?.close()
-        _localCandidates.remove(candidate)
+        gathering.forget(candidate)
+        (retiring as? RetiringGeneration.Pending)?.generation?.forget(candidate)
     }
 
-    /** Begin an ICE restart (RFC 8445 §9): the driver re-gathers and re-signals after this. */
+    /**
+     * Begin an ICE restart (RFC 8445 §9), returning once the agent has actually applied it — so the
+     * returned [IceCredentials] are the **new** generation's.
+     *
+     * The suspending form exists because [IceEvent.Restart] rides the same serialized inbox as every
+     * other event: credentials read immediately after a bare [restart] are still the old ones, and an
+     * offer built from them would advertise credentials the agent no longer honours. Re-gather **after**
+     * this returns; the sockets of the outgoing generation stay bound until the new one nominates.
+     */
+    public suspend fun restartAndAwait(): IceCredentials {
+        val applied = CompletableDeferred<IceCredentials>()
+        inbox.trySend(Command.Restart(applied))
+        return applied.await()
+    }
+
+    /**
+     * Abandon the in-flight restart generation and restore the retained one — the ICE half of
+     * `setLocalDescription(rollback)`. Returns once applied. A no-op when no restart is in flight.
+     */
+    public suspend fun rollbackRestart() {
+        val applied = CompletableDeferred<IceCredentials>()
+        inbox.trySend(Command.Rollback(applied))
+        applied.await()
+    }
+
+    /**
+     * Begin an ICE restart without waiting for it to be applied. Prefer [restartAndAwait] anywhere the
+     * new credentials are about to be read or signaled.
+     */
     public fun restart() {
         post(IceEvent.Restart)
     }
 
     /** Post a raw event into the serialized inbox (trickle/restart/signaling seam). */
     public fun post(event: IceEvent) {
-        inbox.trySend(event)
+        inbox.trySend(Command.Event(event))
     }
 
     /**
@@ -260,7 +339,16 @@ public class IceAgentDriver(
     public fun appDataTransport(): IceDataTransport =
         object : IceDataTransport {
             override suspend fun send(packet: ReadBuffer) {
-                val pair = _selectedPair ?: return
+                // Exhaustive, no `else` and no elvis: each arm states a decision rather than falling out
+                // of a null. `Restarting` deliberately keeps sending on the retained pair — that is the
+                // RFC 8445 §9 continuity guarantee, and it is now written down instead of being a
+                // side effect of a field nobody updated.
+                val pair =
+                    when (val current = _path.value) {
+                        IcePath.Unnominated -> return // nothing nominated yet: DTLS/SCTP have not started
+                        is IcePath.Nominated -> current.pair
+                        is IcePath.Restarting -> current.previous
+                    }
                 channels[pair.local.base]?.send(packet, to = pair.remote.address.toSocketAddress())
             }
 
@@ -280,10 +368,57 @@ public class IceAgentDriver(
         gathered.close()
     }
 
+    private fun bind(
+        base: TransportAddress,
+        channel: DatagramChannel,
+    ) {
+        channels[base] = channel
+        gathering.bases += base
+    }
+
     private fun gather(candidate: IceCandidate) {
-        _localCandidates += candidate
+        gathering.candidates += candidate
         post(IceEvent.AddLocalCandidate(candidate))
         gathered.trySend(candidate)
+    }
+
+    /**
+     * Move the current generation's sockets into retirement — they stay bound and keep carrying data
+     * until the new generation nominates. A restart *on top of* an in-flight restart discards the
+     * intermediate generation immediately: it never nominated, so nothing rides it, and the original
+     * retained generation is the one still carrying application data (matching [IceAgent]'s retention).
+     */
+    private fun beginRestartGeneration() {
+        when (retiring) {
+            RetiringGeneration.None -> retiring = RetiringGeneration.Pending(gathering)
+            is RetiringGeneration.Pending -> closeAll(gathering)
+        }
+        gathering = GatheredGeneration()
+    }
+
+    /** The new generation nominated: retire every socket the outgoing one owned and nothing else. */
+    private fun completeRestartGeneration() {
+        val pending = (retiring as? RetiringGeneration.Pending)?.generation ?: return
+        retiring = RetiringGeneration.None
+        closeAll(pending, keep = gathering.bases)
+    }
+
+    /** Rollback: discard the generation that never converged and restore the one still carrying data. */
+    private fun rollbackRestartGeneration() {
+        val pending = (retiring as? RetiringGeneration.Pending)?.generation ?: return
+        retiring = RetiringGeneration.None
+        closeAll(gathering, keep = pending.bases)
+        gathering = pending
+    }
+
+    private fun closeAll(
+        generation: GatheredGeneration,
+        keep: Set<TransportAddress> = emptySet(),
+    ) {
+        for (base in generation.bases) {
+            if (base in keep) continue
+            channels.remove(base)?.close()
+        }
     }
 
     private fun forward(
@@ -292,14 +427,16 @@ public class IceAgentDriver(
     ) {
         scope.launch {
             while (true) {
+                // A socket closed under an in-flight read can throw rather than return Closed — see
+                // [receiveOrClosed], which is also why this loop is not the only site that needed it.
                 val datagram =
-                    when (val result = channel.receive()) {
+                    when (val result = channel.receiveOrClosed()) {
                         is DatagramReadResult.Received -> result.datagram
                         is DatagramReadResult.Closed -> return@launch
                     }
                 // RFC 7983 demux: STUN → the ICE agent; anything else is application data (DTLS/SCTP).
                 if (isStun(datagram.payload)) {
-                    inbox.trySend(IceEvent.DatagramReceived(base, datagram.peer.toTransportAddress(), datagram.payload))
+                    post(IceEvent.DatagramReceived(base, datagram.peer.toTransportAddress(), datagram.payload))
                 } else {
                     appInbound.trySend(datagram.payload)
                 }
@@ -312,7 +449,7 @@ public class IceAgentDriver(
     private suspend fun driveLoop() {
         while (true) {
             val deadline = agent.nextDeadline(clock())
-            val event =
+            val command =
                 if (deadline == null) {
                     inbox.receiveCatching().getOrNull() ?: return
                 } else {
@@ -320,13 +457,28 @@ public class IceAgentDriver(
                     // *after* it was handed an element, silently losing a trickled candidate posted at a
                     // deadline. select leaves an un-taken element in the channel for the next iteration.
                     val wait = (deadline - clock()).coerceAtLeast(Duration.ZERO)
-                    select<IceEvent?> {
+                    select<Command?> {
                         inbox.onReceiveCatching { it.getOrNull() }
                         onTimeout(wait) { null }
                     }
                 }
-            val outputs = if (event != null) agent.handle(event, clock()) else agent.handle(IceEvent.TimerFired, clock())
-            apply(outputs)
+            when (command) {
+                null -> apply(agent.handle(IceEvent.TimerFired, clock()))
+                is Command.Event -> {
+                    if (command.event == IceEvent.Restart) beginRestartGeneration()
+                    apply(agent.handle(command.event, clock()))
+                }
+                is Command.Restart -> {
+                    beginRestartGeneration()
+                    apply(agent.handle(IceEvent.Restart, clock()))
+                    command.applied.complete(agent.localCredentials)
+                }
+                is Command.Rollback -> {
+                    rollbackRestartGeneration()
+                    apply(agent.handle(IceEvent.RollbackRestart, clock()))
+                    command.applied.complete(agent.localCredentials)
+                }
+            }
         }
     }
 
@@ -335,8 +487,54 @@ public class IceAgentDriver(
             when (output) {
                 is IceOutput.Transmit -> channels[output.fromBase]?.send(output.data, to = output.to.toSocketAddress())
                 is IceOutput.ConnectionStateChanged -> _state.value = output.state
-                is IceOutput.SelectedPairChanged -> _selectedPair = output.pair
+                is IceOutput.PathChanged -> {
+                    // A nomination ends the restart window, and only then is it safe to close the outgoing
+                    // generation's sockets — closing any earlier would tear down the channel data is on.
+                    if (output.path is IcePath.Nominated) completeRestartGeneration()
+                    _path.value = output.path
+                }
             }
         }
+    }
+
+    /**
+     * What the serialized inbox carries. Restart and rollback are *commands* rather than plain events
+     * because the caller must know when they took effect — the coroutine seam belongs here in the
+     * driver, not inside the sans-io [IceEvent] vocabulary, which stays free of `Deferred`s.
+     */
+    private sealed interface Command {
+        data class Event(
+            val event: IceEvent,
+        ) : Command
+
+        data class Restart(
+            val applied: CompletableDeferred<IceCredentials>,
+        ) : Command
+
+        data class Rollback(
+            val applied: CompletableDeferred<IceCredentials>,
+        ) : Command
+    }
+
+    /** The sockets and candidates gathered for one ICE generation — what a restart swaps, in the driver. */
+    private class GatheredGeneration {
+        val bases: MutableSet<TransportAddress> = mutableSetOf()
+        val candidates: MutableList<IceCandidate> = mutableListOf()
+
+        fun forget(candidate: IceCandidate) {
+            candidates.remove(candidate)
+            bases.remove(candidate.base)
+        }
+    }
+
+    /** Whether an outgoing generation's sockets are being held open across a restart (RFC 8445 §9). */
+    private sealed interface RetiringGeneration {
+        /** No restart in flight — every bound socket belongs to the current generation. */
+        data object None : RetiringGeneration
+
+        /** [generation]'s sockets stay bound and carrying data until the new generation nominates. */
+        data class Pending(
+            val generation: GatheredGeneration,
+        ) : RetiringGeneration
     }
 }

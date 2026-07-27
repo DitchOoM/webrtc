@@ -30,6 +30,27 @@ import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
 /**
+ * The pair a converged [IceConnectionState] nominated.
+ *
+ * Fixtures under loss must read the pair off the state that *proved* convergence, not off a later
+ * snapshot: a peer can converge and then legitimately lose RFC 7675 consent while the fixture is still
+ * waiting on its partner. Before [IcePath] that post-hoc read silently returned a stale pair, so the
+ * assertion passed over an agent that had already failed — `IceRelayLossTest` at loss=0.20 seed=810004
+ * does exactly this. It is the same accident, in the fixtures, that [IcePath] removes from the driver.
+ */
+internal val IceConnectionState.nominatedPair: CandidatePair
+    get() =
+        when (this) {
+            is IceConnectionState.Connected -> selected
+            is IceConnectionState.Completed -> selected
+            IceConnectionState.New,
+            IceConnectionState.Checking,
+            IceConnectionState.Disconnected,
+            is IceConnectionState.Failed,
+            -> error("not a converged state: $this")
+        }
+
+/**
  * The **driver** the sans-io [IceAgent] lacks by design (RFC §5.1: cores own truth, drivers own I/O).
  * It wires one agent to the [Vnet]: a single merged inbox carries datagrams (from per-socket forwarder
  * loops) and externally posted [IceEvent]s, and one loop pumps `handle(event, now)` — so every
@@ -73,8 +94,23 @@ internal class IceDriver(
     private val _state = MutableStateFlow<IceConnectionState>(IceConnectionState.New)
     val state: StateFlow<IceConnectionState> get() = _state
 
-    private var _selectedPair: CandidatePair? = null
-    val selectedPair: CandidatePair? get() = _selectedPair
+    private val _path = MutableStateFlow<IcePath>(IcePath.Unnominated)
+
+    /** Where application traffic rides (RFC 8445 §9 — see [IcePath]). */
+    val path: StateFlow<IcePath> get() = _path
+
+    /**
+     * The pair currently carrying application data, whichever generation owns it, or null when nothing
+     * is nominated. A single meaning, unlike the field this replaced: during a restart it is explicitly
+     * the *retained* pair, read off [IcePath] rather than left behind by an update that never happened.
+     */
+    val selectedPair: CandidatePair?
+        get() =
+            when (val current = _path.value) {
+                IcePath.Unnominated -> null
+                is IcePath.Nominated -> current.pair
+                is IcePath.Restarting -> current.previous
+            }
 
     /** Local candidates this agent has gathered — signal them to the peer with [connectTo]. */
     val localCandidates = mutableListOf<IceCandidate>()
@@ -231,7 +267,12 @@ internal class IceDriver(
     fun sctpTransport(): SctpDatagramTransport =
         object : SctpDatagramTransport {
             override suspend fun send(packet: ReadBuffer) {
-                val pair = _selectedPair ?: return
+                val pair =
+                    when (val current = _path.value) {
+                        IcePath.Unnominated -> return
+                        is IcePath.Nominated -> current.pair
+                        is IcePath.Restarting -> current.previous
+                    }
                 channels[pair.local.base]?.send(packet, to = pair.remote.address.toSocketAddress())
             }
 
@@ -268,7 +309,7 @@ internal class IceDriver(
             when (output) {
                 is IceOutput.Transmit -> channels[output.fromBase]?.send(output.data, to = output.to.toSocketAddress())
                 is IceOutput.ConnectionStateChanged -> _state.value = output.state
-                is IceOutput.SelectedPairChanged -> _selectedPair = output.pair
+                is IceOutput.PathChanged -> _path.value = output.path
             }
         }
     }

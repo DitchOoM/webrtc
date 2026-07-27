@@ -24,6 +24,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
@@ -129,10 +130,10 @@ class IceAgentDriverTest {
             connect(bob, alice)
             assertNotNull(withTimeoutOrNull(timeout) { alice.awaitConnected() }, "alice ICE connected")
             assertNotNull(withTimeoutOrNull(timeout) { bob.awaitConnected() }, "bob ICE connected")
+            val nominated = assertIs<IcePath.Nominated>(alice.path.value, "alice's path is a nominated pair")
             assertTrue(
-                alice.selectedPair!!
-                    .local.address.ip is IpAddress.V6,
-                "the production driver nominates the IPv6 pair, got ${alice.selectedPair!!.local.address.ip}",
+                nominated.pair.local.address.ip is IpAddress.V6,
+                "the production driver nominates the IPv6 pair, got ${nominated.pair.local.address.ip}",
             )
         }
 

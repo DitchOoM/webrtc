@@ -73,10 +73,16 @@ checked in, CHANGELOG entry, standing-directive greps green.
 > Central" — is **lifted**: webrtc pins socket 3.15.0 / buffer 6.22.0 from Central. §11.1/§11.3/§11.4 are
 > all resolved.
 >
-> **Remaining, none of it blocking and no open issues:** renegotiation (no `restartIce()`; only
-> `SdpType.Rollback` is handled) is the one real functional gap; mDNS is resolve-only, so we do not
-> advertise our own `.local`; media (RTP/SRTP) is **P2**, untouched. The dcSCTP subset choices and RFC
-> 6525's four non-originated request types are deliberate non-goals, not gaps.
+> **Renegotiation is now done:** `restartIce()` through JSEP with the SCTP association and every open data
+> channel surviving the restart (RFC 8445 §9), peer-initiated restart detection, ICE-side rollback, an
+> injected `IceRestartPolicy.OnNetworkChange`, and an `s8/restart` interop lane over our own peers.
+>
+> **Remaining, none of it blocking and no open issues:** no production `NetworkMonitor` actual (so
+> `IceRestartPolicy` defaults to `Manual`); trickled candidates are not `ufrag`-tagged (RFC 8838 §3.1), so
+> a restart leans on in-order signaling + peer-reflexive learning; foreign-peer renegotiation is not
+> exercised in the interop lanes; mDNS is resolve-only, so we do not advertise our own `.local`; media
+> (RTP/SRTP) is **P2**, untouched. The dcSCTP subset choices, RFC 6525's four non-originated request types,
+> and refusing a *new* DTLS association on renegotiation are deliberate non-goals, not gaps.
 
 ### W0 — Foundations (cross-repo) · status: ✅ merged
 Two upstream PRs + repo bootstrap. **Resolves RFC §11.1 first.**
@@ -166,7 +172,7 @@ lands); partial-reliability (RFC 3758) for maxRetransmits/maxPacketLifeTime.
   platforms; SCTP invariants (no intra-stream reorder, no unacked-drop, DCEP converges) in fuzz
   set; loop-until-dry fuzz campaign run once with all finds fixed or filed.
 
-### W6 — `webrtc` root: JSEP + PeerConnection + browser actuals · status: ✅ **merged** — SDP codec + JSEP machine (PR #5), then the `PeerConnection` session API, the browser/wasmJs `peerConnectionSupport()` delegation, and the typed-error sweep. **Known remaining gap, tracked as post-Phase-1 work:** renegotiation — there is no `restartIce()`, and only `SdpType.Rollback` is handled in `set{Local,Remote}Description`. · *needs W5*
+### W6 — `webrtc` root: JSEP + PeerConnection + browser actuals · status: ✅ **merged** — SDP codec + JSEP machine (PR #5), then the `PeerConnection` session API, the browser/wasmJs `peerConnectionSupport()` delegation, and the typed-error sweep. **Renegotiation landed post-Phase-1:** `restartIce()` (W3C-deferred: intent recorded, the next `createOffer()` carries a fresh ICE generation), `PeerConnectionState.Restarting`, peer-initiated restart detection from a changed ufrag+pwd on a remote *offer*, the ICE half of `setLocalDescription(Rollback)`, and an injected `IceRestartPolicy` — with the SCTP association and every open data channel surviving the restart (RFC 8445 §9 / RFC 8842 §5.5). · *needs W5*
 `webrtc-sdp` (hand-written text codec, T0 + fuzz) and the **sans-io JSEP offer/answer machine** are
 done and merged. The **`PeerConnection` session API**, the browser/wasmJs `peerConnectionSupport()`
 `RTCPeerConnection` delegation, and the `SocketException`-hierarchy error sweep remain — they need the

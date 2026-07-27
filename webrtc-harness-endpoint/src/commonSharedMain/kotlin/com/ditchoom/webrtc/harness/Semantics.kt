@@ -9,6 +9,9 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.Connection
 import com.ditchoom.webrtc.NativePeerConnection
+import com.ditchoom.webrtc.PeerConnectionState
+import com.ditchoom.webrtc.SelectedPath
+import com.ditchoom.webrtc.ice.CandidatePair
 import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.association.SctpReliability
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
@@ -47,10 +50,12 @@ import kotlin.time.Instant
 //   s5/reverse    the ANSWERER originates a channel (our lanes only — foreign peers stay dumb reflectors)
 //   s7/close-one  ONE channel closed mid-session (RFC 8831 §6.7 stream reset): its neighbour keeps
 //                 echoing, the peer's channel closed, and the recycled stream id opens and works again
+//   s8/restart    the network moves under the session: the harness switches this peer onto a SECOND
+//                 carrier and ICE restarts (RFC 8445 §9) — the pair moves, the association does not
 //   s6/close      the `DONE` handshake, then a graceful association SHUTDOWN (RFC 4960 §9.2)
 //
 // The ids are stable log labels, not a chronology: `s6` tears the association down, so it is by
-// construction LAST and every phase added afterwards sorts before it. `s7` is the newest phase, not the
+// construction LAST and every phase added afterwards sorts before it. `s8` is the newest phase, not the
 // final one.
 //
 // THE ONE ASYMMETRY THAT SHAPES ALL OF IT: our side is always the offerer, and the far side may be a
@@ -82,6 +87,20 @@ private const val CLOSE_ONE_KEEP_LABEL = "s7/keep"
 private const val CLOSE_ONE_REOPEN_LABEL = "s7/reopen"
 
 /**
+ * s8's witness channel: opened immediately BEFORE the ICE restart, so the phase proves the association
+ * carries a channel *across* a restart and not merely one that predates the whole exchange. Its neighbour
+ * in the assertion is the control channel, open since before phase 0.
+ */
+private const val RESTART_WITNESS_LABEL = "s8/witness"
+
+/**
+ * The line `run-interop.sh` watches for before it flips this peer onto the second carrier. The phase then
+ * parks on the mailbox until the harness acknowledges the switch, so neither side ever guesses at timing
+ * (directive #4). Change it here and in `run-interop.sh`'s `$CARRIER_SWITCH_CUE` together.
+ */
+private const val CARRIER_SWITCH_CUE = "s8/restart: awaiting the carrier switch"
+
+/**
  * How many times s7 tries to open a channel onto the closed stream id before calling the peer's half of
  * the reset absent. Each attempt is separated by a full neighbour round trip, so this is a bound on
  * OBSERVED progress (directive #4), not a wall-clock budget: one RTT is normally enough, and three
@@ -98,6 +117,20 @@ private const val MAX_PEEK_BYTES = 64
 
 /** Per-phase watchdog: bounds ONE phase so a wedged phase cannot eat the whole semantics budget. */
 private val PHASE_TIMEOUT = 45.seconds
+
+/**
+ * s8's own watchdog. Longer than [PHASE_TIMEOUT] because the phase contains two nested waits no other
+ * phase has — the orchestrator's carrier switch, then a full offer/answer round plus ICE reconvergence —
+ * and each is separately bounded below. Still a watchdog: on a healthy path the phase finishes in the time
+ * one gathering + one checklist takes.
+ */
+private val RESTART_PHASE_TIMEOUT = 90.seconds
+
+/** How long s8 waits for the session to reconverge on a NEW pair after the re-offer is published. */
+private val RESTART_CONVERGE_WAIT = 30.seconds
+
+/** How long s8 waits for `restartIce()` to report that a renegotiation round is owed. */
+private val RENEGOTIATION_WAIT = 5.seconds
 
 /** How long a single echo is waited for inside a phase (strictly under [PHASE_TIMEOUT]). */
 private val ECHO_WAIT = 25.seconds
@@ -255,6 +288,9 @@ internal class ControlChannel(
 ) {
     private val inbox = Channel<String>(Channel.UNLIMITED)
 
+    /** The SCTP stream this channel was opened on. s8 asserts it is the same one after an ICE restart. */
+    val streamId: Long get() = channel.id
+
     /** Launch the single collector over the control channel's inbound flow. */
     fun start(scope: CoroutineScope) {
         scope.launch {
@@ -303,11 +339,44 @@ internal class ControlChannel(
     suspend fun done(): Boolean = exchange(DONE_MARKER, DONE_MARKER)
 }
 
-/** One entry of the offerer's compiled-in phase sequence. */
+/** One entry of the offerer's compiled-in phase sequence. [watchdog] bounds this phase alone. */
 private class Phase(
     val id: String,
+    val watchdog: Duration = PHASE_TIMEOUT,
     val body: suspend () -> Verdict,
 )
+
+/**
+ * What s8 needs from the offerer's signaling driver, which owns the rendezvous sockets and the
+ * offer/answer rounds — kept an interface so the phase asserts, and `Main.kt` signals, exactly as
+ * everywhere else in this file. The other phases need none of this: s8 is the only one whose property
+ * spans a renegotiation.
+ */
+internal interface RestartSignaling {
+    /**
+     * Suspend until the orchestrator reports it has moved this peer onto its second carrier (it publishes
+     * one record into the shared mailbox once the route is flipped). False = it never did, so there is no
+     * carrier switch to restart across and the phase must say so rather than restart into the same path.
+     */
+    suspend fun awaitCarrierSwitch(): Boolean
+
+    /** Create the next round's offer — which carries the fresh ICE generation — and publish it. */
+    suspend fun reoffer()
+
+    /**
+     * Suspend until this peer has GATHERED a candidate at the carrier address this run was configured with
+     * ([IceRestartPhase.ExpectCarrier.carrierIp], which the driver watches for as candidates arrive) — i.e.
+     * until the STUN binding coturn hands back is the new carrier's public address.
+     *
+     * This, not the selected pair's local end, is where the carrier shows up on the OFFERER's side. A pair
+     * is a local candidate against a remote one, and the local end that wins is routinely a host or relay
+     * candidate whose address the route change never touched (in practice the peer's own relay allocation
+     * wins against our host socket) — our public identity appears only in the reflexive candidate we
+     * gathered. An address that no generation before the switch could have learned is exactly what proves
+     * the new generation went out through the new carrier.
+     */
+    suspend fun awaitCarrierPublicAddress(): Boolean
+}
 
 /** A phase result before it is stamped with its elapsed time. */
 private class Verdict(
@@ -327,6 +396,7 @@ internal suspend fun runSemanticsPhases(
     pc: NativePeerConnection,
     ctl: ControlChannel,
     reflector: Reflector,
+    restart: RestartSignaling,
     cfg: HarnessConfig,
     clock: () -> Instant,
     remoteMaxMessageSize: Long?,
@@ -339,9 +409,14 @@ internal suspend fun runSemanticsPhases(
             add(Phase("s3") { phasePartialReliable(pc, ctl) })
             add(Phase("s4") { phaseMultiplex(bg, pc) })
             if (cfg.reverseChannel) add(Phase("s5") { phaseReverse(ctl, reflector) })
-            // s7 runs here, LAST of the mid-session phases: s6 (below, in Main.kt) closes the whole
-            // association, so nothing can follow it. See the id note in this file's header.
             add(Phase("s7") { phaseCloseOneChannel(pc) })
+            // s8 runs here, LAST of the mid-session phases: s6 (below, in Main.kt) closes the whole
+            // association, so nothing can follow it. See the id note in this file's header. It is also the
+            // right place for it independently — it is the one phase that BREAKS the path it runs on, so
+            // every other property is proven before the network moves.
+            if (cfg.iceRestart != IceRestartPhase.Off) {
+                add(Phase("s8", RESTART_PHASE_TIMEOUT) { phaseIceRestart(pc, ctl, restart, cfg.iceRestart) })
+            }
         }
 
     for (phase in phases) {
@@ -361,8 +436,8 @@ internal suspend fun runSemanticsPhases(
                 if (!ctl.begin(phase.id)) {
                     Verdict(false, "the BEGIN marker never round-tripped — the association is not delivering")
                 } else {
-                    withTimeoutOrNull(PHASE_TIMEOUT) { phase.body() }
-                        ?: Verdict(false, "phase watchdog fired after $PHASE_TIMEOUT")
+                    withTimeoutOrNull(phase.watchdog) { phase.body() }
+                        ?: Verdict(false, "phase watchdog fired after ${phase.watchdog}")
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e // the semantics budget expired around us — structured cancellation, not a verdict
@@ -704,6 +779,140 @@ private suspend fun phaseCloseOneChannel(pc: NativePeerConnection): Verdict {
         )
     }
 }
+
+// ── s8: ICE restart across a mid-session carrier switch (RFC 8445 §9) ─────────────────────────────────
+
+/**
+ * The network moves under a live session and the session survives it. `run-interop.sh` runs this lane on a
+ * `carrier-switch` topology — the offerer is dual-homed behind TWO NAT gateways — and flips its default
+ * route onto the second one mid-run, so the public identity every remote candidate is aimed at stops
+ * working. We then restart ICE, carry a SECOND offer/answer round over the same rendezvous mailbox, and
+ * assert the three properties that make a restart worth having over a reconnect:
+ *
+ *  1. **the association is untouched.** The control channel — the same object, on the same stream id, open
+ *     since before phase 0 — still round-trips afterwards, and so does [RESTART_WITNESS_LABEL], opened
+ *     immediately before the switch. RFC 8445 §9 promises exactly this ("data can continue to be sent
+ *     using existing data sessions"); a stack that quietly rebuilt DTLS/SCTP underneath would surface here
+ *     as a dead channel or a renumbered stream, and nowhere else.
+ *  2. **the pair moved to the NEW carrier.** Not merely "some different pair": the reconverged pair's local
+ *     address must be the second carrier's public address ([IceRestartPhase.ExpectCarrier]). That is the
+ *     only thing separating a genuine re-route from a reconvergence onto the carrier we just left — which,
+ *     since the old sockets stay bound through a restart, is a real possible outcome and not a hypothetical.
+ *  3. **nothing closed.** Both channels are still on the stream ids they had before the restart. s7 has
+ *     just established that a closed channel is observable here precisely as a recycled id, so an id that
+ *     did not move is a positive statement that neither channel was closed and reopened underneath us.
+ *
+ * The deterministic sibling is `PeerConnectionRestartTest` (whole stack, vnet, virtual time). This phase is
+ * that property over real kernels, real NATs and a real route change.
+ */
+private suspend fun phaseIceRestart(
+    pc: NativePeerConnection,
+    ctl: ControlChannel,
+    signaling: RestartSignaling,
+    expectation: IceRestartPhase,
+): Verdict {
+    val before =
+        livePair(pc.connectionState.value)
+            ?: return Verdict(false, "the session is not riding a known pair (${pc.connectionState.value}) — there is nothing to restart from")
+    val ctlStream = ctl.streamId
+
+    val witness = pc.createDataChannel(DataChannelConfig(label = RESTART_WITNESS_LABEL))
+    val witnessStream = witness.id
+    if (!echoesBack(witness, "s8w#0")) {
+        return Verdict(false, "\"$RESTART_WITNESS_LABEL\" (stream $witnessStream) never echoed BEFORE the restart — nothing live to carry across it")
+    }
+
+    // Park until the orchestrator has actually moved us onto the second carrier. Restarting before the
+    // route flips would reconverge on the carrier we are still on and prove nothing at all, so this is the
+    // phase's real precondition — an observed event, not an interval either side guesses at (directive #4).
+    println("[harness] $CARRIER_SWITCH_CUE (currently riding ${describe(before)})")
+    if (!signaling.awaitCarrierSwitch()) {
+        return Verdict(false, "the harness never reported a carrier switch — the peer was never moved, so a restart would reconverge on the same path")
+    }
+
+    pc.restartIce()
+    // The signal is half the API: a session cannot renegotiate on its own (it does not own the signaling
+    // channel), so a restart that recorded its intent but never asked for a round would strand the session
+    // on a path that has just stopped working — silently, which is the failure worth pinning.
+    if (withTimeoutOrNull(RENEGOTIATION_WAIT) { pc.renegotiationNeeded.first() } == null) {
+        return Verdict(false, "restartIce() never signaled that a renegotiation round is owed within $RENEGOTIATION_WAIT")
+    }
+    signaling.reoffer()
+
+    val reconverged =
+        withTimeoutOrNull(RESTART_CONVERGE_WAIT) {
+            pc.connectionState.first { it is PeerConnectionState.Connected && livePair(it) != before }
+        } ?: return Verdict(
+            false,
+            "the session never reconverged on a new pair within $RESTART_CONVERGE_WAIT — it is ${pc.connectionState.value}, " +
+                "still on ${describe(before)} after the carrier under it went away",
+        )
+    val after =
+        livePair(reconverged)
+            ?: return Verdict(false, "reconverged to $reconverged, which carries no pair to compare")
+
+    // (1) + (3): the association rode it out. Ids first — a renumbered stream is a rebuilt association, and
+    // saying so is more useful than the timeout the round trip would otherwise become.
+    if (ctl.streamId != ctlStream) {
+        return Verdict(false, "the control channel moved from stream $ctlStream to ${ctl.streamId} across the restart — the association was rebuilt, not restarted")
+    }
+    if (witness.id != witnessStream) {
+        return Verdict(false, "\"$RESTART_WITNESS_LABEL\" moved from stream $witnessStream to ${witness.id} across the restart — the association was rebuilt, not restarted")
+    }
+    if (!ctl.exchange("ALIVE s8", "ALIVE s8")) {
+        return Verdict(false, "the control channel (stream $ctlStream) stopped round-tripping across the restart — the association did not survive it")
+    }
+    if (!echoesBack(witness, "s8w#1")) {
+        return Verdict(false, "\"$RESTART_WITNESS_LABEL\" (stream $witnessStream) stopped echoing across the restart, though the control channel did not")
+    }
+
+    // (2) the pair moved — and, where the lane named the carrier it moved us to, our public address moved
+    // there with it (see RestartSignaling.awaitCarrierPublicAddress for why the pair alone cannot say so).
+    val moved = "ICE restarted onto ${describe(after)} (was ${describe(before)})"
+    val survived = "both channels kept their streams ($ctlStream, $witnessStream) and still round-trip"
+    return when (expectation) {
+        // Unreachable: the phase is only in the sequence when the config asked for it. Named rather than
+        // `else`-d so adding a case is a compile error here instead of a silent pass.
+        IceRestartPhase.Off ->
+            Verdict(false, "s8 ran with the restart phase disabled — the phase list and the config disagree")
+        IceRestartPhase.AnyNewPath ->
+            Verdict(true, "$moved; $survived")
+        is IceRestartPhase.ExpectCarrier ->
+            if (signaling.awaitCarrierPublicAddress()) {
+                Verdict(true, "$moved, reachable at the new carrier ${expectation.carrierIp}; $survived")
+            } else {
+                Verdict(
+                    false,
+                    "$moved, but the new generation never learned a candidate at the carrier ${expectation.carrierIp} " +
+                        "the harness switched us onto — the re-gather did not follow the route change",
+                )
+            }
+    }
+}
+
+/**
+ * The pair a session state is riding, or null when the state carries none — either it is not a live state,
+ * or the backend does not surface its pair ([SelectedPath.Opaque], the browser delegate). One meaning:
+ * "there is no pair to name here".
+ */
+private fun livePair(state: PeerConnectionState): CandidatePair? =
+    when (state) {
+        is PeerConnectionState.Connected -> knownPair(state.path)
+        is PeerConnectionState.Restarting -> knownPair(state.path)
+        PeerConnectionState.New, PeerConnectionState.Connecting, PeerConnectionState.Closed -> null
+        is PeerConnectionState.Failed -> null
+    }
+
+private fun knownPair(path: SelectedPath): CandidatePair? =
+    when (path) {
+        is SelectedPath.Known -> path.pair
+        SelectedPath.Opaque -> null
+    }
+
+/** A pair as one short log token — `srflx 172.30.0.31:40000 → srflx 172.30.0.32:40000`. */
+private fun describe(pair: CandidatePair): String =
+    "${pair.local.type.token} ${pair.local.address.ip}:${pair.local.address.port} → " +
+        "${pair.remote.type.token} ${pair.remote.address.ip}:${pair.remote.address.port}"
 
 /** Send [text] on [channel] and require exactly [text] back — the smallest proof a channel is live. */
 private suspend fun echoesBack(

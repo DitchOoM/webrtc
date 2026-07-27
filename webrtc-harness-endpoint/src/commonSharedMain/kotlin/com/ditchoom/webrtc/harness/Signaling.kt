@@ -54,6 +54,15 @@ internal enum class Slot(
     Answer("answer"),
     OffererCandidate("cand/offerer"),
     AnswererCandidate("cand/answerer"),
+
+    /**
+     * The one slot the ORCHESTRATOR writes rather than a peer: `run-interop.sh` publishes a record here
+     * (over the mailbox's HTTP face) once it has moved the offerer onto the second carrier, and s8 waits
+     * for it before restarting ICE. The mailbox is already reachable from both the harness and a running
+     * peer, so this needs no new channel into the container — and it makes the switch an OBSERVED event
+     * rather than a sleep either side would otherwise have to guess at (directive #4).
+     */
+    CarrierSwitch("carrier"),
 }
 
 // [RecordId] — the per-slot record index wrapper — lives in commonMain (SignalingTypes.kt): `@JvmInline`

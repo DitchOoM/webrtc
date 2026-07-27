@@ -193,7 +193,7 @@ private suspend fun receiveMatchingResponse(
 ): StunMessage? {
     while (true) {
         val datagram =
-            when (val result = socket.receive()) {
+            when (val result = socket.receiveOrClosed()) {
                 is DatagramReadResult.Received -> result.datagram
                 is DatagramReadResult.Closed -> return null
             }

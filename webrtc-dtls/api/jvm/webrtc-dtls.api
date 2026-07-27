@@ -99,6 +99,10 @@ public final class com/ditchoom/webrtc/dtls/DtlsFailureReason$RecordLayerError :
 	public static final field INSTANCE Lcom/ditchoom/webrtc/dtls/DtlsFailureReason$RecordLayerError;
 }
 
+public final class com/ditchoom/webrtc/dtls/DtlsFailureReason$RoleChangeOnRenegotiation : com/ditchoom/webrtc/dtls/DtlsFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/dtls/DtlsFailureReason$RoleChangeOnRenegotiation;
+}
+
 public final class com/ditchoom/webrtc/dtls/DtlsRole : java/lang/Enum {
 	public static final field Client Lcom/ditchoom/webrtc/dtls/DtlsRole;
 	public static final field Server Lcom/ditchoom/webrtc/dtls/DtlsRole;

@@ -68,8 +68,12 @@ private class WasmBrowserPeerConnection(
     private val dataChannelChannel = Channel<Connection<ReadBuffer>>(Channel.UNLIMITED)
     override val incomingDataChannels: Flow<Connection<ReadBuffer>> get() = dataChannelChannel.receiveAsFlow()
 
+    private val renegotiationChannel = Channel<Unit>(Channel.CONFLATED)
+    override val renegotiationNeeded: Flow<Unit> get() = renegotiationChannel.receiveAsFlow()
+
     init {
         jsOnIceCandidate(pc) { line -> candidateChannel.trySend(line.toString()) }
+        jsOnNegotiationNeeded(pc) { renegotiationChannel.trySend(Unit) }
         jsOnDataChannel(pc) { dc -> dataChannelChannel.trySend(WasmBrowserDataChannel(dc)) }
         jsOnConnectionStateChange(pc) { s -> _connectionState.value = mapConnectionState(s.toString()) }
         jsOnSignalingStateChange(pc) { s -> mapSignalingState(s.toString())?.let { _signalingState.value = it } }
@@ -99,6 +103,13 @@ private class WasmBrowserPeerConnection(
 
     override suspend fun addIceCandidate(candidate: String) {
         jsAddIceCandidate(pc, candidate.toJsString()).await<JsAny?>()
+    }
+
+    // 1:1 with the native stack, which is why restartIce() was specified as deferred-intent rather than
+    // immediate: `RTCPeerConnection.restartIce()` also just marks the next offer, and fires
+    // negotiationneeded. Nothing to emulate.
+    override suspend fun restartIce() {
+        jsRestartIce(pc)
     }
 
     override suspend fun close() {
@@ -148,7 +159,7 @@ private fun mapConnectionState(state: String): PeerConnectionState =
         // "disconnected" is a *transient* W3C ICE state that routinely recovers — report a non-terminal
         // Connecting, never Closed, so a collector doesn't tear down a recoverable session.
         "connecting", "disconnected" -> PeerConnectionState.Connecting
-        "connected" -> PeerConnectionState.Connected(null)
+        "connected" -> PeerConnectionState.Connected(SelectedPath.Opaque)
         "failed" -> PeerConnectionState.Failed(PeerConnectionFailureReason.Unknown("RTCPeerConnection connectionState=failed"))
         "closed" -> PeerConnectionState.Closed
         else -> PeerConnectionState.Connecting
@@ -324,6 +335,15 @@ private external fun jsAddIceCandidate(
     pc: JsRtcPeerConnection,
     cand: JsString,
 ): Promise<JsAny?>
+
+@JsFun("(pc, cb) => { pc.onnegotiationneeded = () => cb(); }")
+private external fun jsOnNegotiationNeeded(
+    pc: JsRtcPeerConnection,
+    cb: () -> Unit,
+)
+
+@JsFun("(pc) => { pc.restartIce(); }")
+private external fun jsRestartIce(pc: JsRtcPeerConnection)
 
 @JsFun("(pc) => { pc.close(); }")
 private external fun jsCloseRtcPeerConnection(pc: JsRtcPeerConnection)

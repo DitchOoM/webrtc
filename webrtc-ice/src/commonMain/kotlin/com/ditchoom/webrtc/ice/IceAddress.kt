@@ -22,24 +22,36 @@ import com.ditchoom.webrtc.stun.TransportAddress
  * is a well-formed literal; a parse failure here is a genuine socket-layer invariant break, not input.
  */
 internal fun SocketAddress.toTransportAddress(): TransportAddress =
+    toTransportAddressOrNull() ?: error("malformed literal from the socket layer: host=$host family=$family")
+
+/**
+ * The same conversion, for callers that are *comparing* rather than sending — where an address we cannot
+ * parse is simply not a match, and throwing would take down the collector that asked. The I/O path keeps
+ * [toTransportAddress], whose throw is the right response to a socket-layer invariant break.
+ */
+internal fun SocketAddress.toTransportAddressOrNull(): TransportAddress? =
     when (family) {
         AddressFamily.IPv4 -> {
             val octets = host.split(".")
-            require(octets.size == IPV4_OCTETS) { "malformed IPv4 literal: host=$host" }
-            // Validate each octet is a 0..255 number so a stray non-v4 literal is a clear rejection, not an
-            // uncaught NumberFormatException in the send hot path.
-            val bits =
-                octets.fold(0u) { acc, octet ->
+            if (octets.size != IPV4_OCTETS) {
+                null
+            } else {
+                // Each octet must be a 0..255 number, so a stray non-v4 literal is a clear rejection rather
+                // than an uncaught NumberFormatException in the send hot path.
+                var bits = 0u
+                var malformed = false
+                for (octet in octets) {
                     val value = octet.toUIntOrNull()
-                    require(value != null && value <= MAX_OCTET) { "not an IPv4 literal: $host" }
-                    (acc shl Byte.SIZE_BITS) or value
+                    if (value == null || value > MAX_OCTET) {
+                        malformed = true
+                        break
+                    }
+                    bits = (bits shl Byte.SIZE_BITS) or value
                 }
-            TransportAddress(IpAddress.V4(bits), port.toUShort())
+                if (malformed) null else TransportAddress(IpAddress.V4(bits), port.toUShort())
+            }
         }
-        AddressFamily.IPv6 -> {
-            val v6 = IpAddress.V6.parse(host) ?: error("malformed IPv6 literal from the socket layer: host=$host")
-            TransportAddress(v6, port.toUShort())
-        }
+        AddressFamily.IPv6 -> IpAddress.V6.parse(host)?.let { TransportAddress(it, port.toUShort()) }
     }
 
 /**

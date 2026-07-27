@@ -6,6 +6,59 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Added — ICE restart / renegotiation through JSEP (RFC 8445 §9), with the session surviving it
+
+- **`RtcPeerConnection.restartIce()`** — W3C-faithful: records the intent, and the **next** `createOffer()`
+  carries fresh ICE credentials and re-gathered candidates. The deferred shape is why the browser delegate
+  maps 1:1 onto `pc.restartIce()` instead of approximating it.
+- **The association survives the restart.** DTLS and SCTP do not renegotiate (RFC 8842 §5.5: continuity is
+  signaled by the *unchanged fingerprint*, not by the `a=setup` value, so a re-offer keeps `actpass`), every
+  open data channel stays open on its stream id, and application data keeps riding the old pair until the
+  new generation nominates — the RFC 8445 §9 guarantee, now stated and tested rather than accidental.
+- **`PeerConnectionState.Restarting(path)`** names the window, and `runEstablishment` gained a monitor on
+  the ICE path so a *mid-session* pair change is finally observable above ICE at all.
+- **Peer-initiated restarts** are detected from a remote **offer** whose ufrag *and* pwd both changed (§9
+  requires both) — without it our checklist stays bound to a password the peer no longer knows. Answers are
+  deliberately exempt: an answer to our own restart offer always carries new credentials, and treating that
+  as an independent restart makes both sides restart each other forever.
+- **`setLocalDescription(Rollback)` gained its ICE half** (`IceEvent.RollbackRestart`): an abandoned restart
+  offer restores the retained generation instead of leaving the agent advertising credentials no peer has
+  ever seen.
+- **`IceRestartPolicy`** (`Manual` | `OnNetworkChange(monitor)`) on `PeerConnectionConfig`, over the
+  webrtc-owned `NetworkMonitor` seam (declared since W3, wired to nothing until now — and deliberately not
+  socket's, which lives in socket *core* and vendors a second BoringSSL). Narrow by design: it restarts only
+  when the interface carrying the **selected pair's base** goes away, never on any interface-set change, so
+  a VPN or virtual adapter coming up cannot churn a healthy session. `Manual` is the default until a target
+  ships a real OS-interface actual.
+- **`RtcPeerConnection.renegotiationNeeded: Flow<Unit>`** (W3C `negotiationneeded`). A session cannot
+  renegotiate on its own — it does not own the signaling channel — so this is what makes the automatic
+  policy a feature rather than an intent recorded into a field nobody reads.
+- **`s8/restart` interop phase** over a new `carrier-switch` topology, against our own peers.
+
+### Changed — **SOURCE BREAKING**: `PeerConnectionState.Connected` carries a `SelectedPath`
+
+- `Connected(selectedPair: CandidatePair?)` → `Connected(path: SelectedPath)`, where `SelectedPath` is
+  `Known(pair)` | `Opaque`. The old null meant "this backend owns pair selection internally" — a fact about
+  the *browser delegate* that read at every call site as the far more alarming "there is no pair". Adding
+  `Restarting` to the same sealed hierarchy breaks every consumer `when` at compile time, which is the
+  intent: a caller that treats a restarting session as connected-and-fine will mis-handle the pair change.
+- `IceOutput.SelectedPairChanged(pair)` → `IceOutput.PathChanged(IcePath)` and
+  `IceAgentDriver.selectedPair: CandidatePair?` → `path: StateFlow<IcePath>`, where `IcePath` is
+  `Unnominated` | `Nominated(pair)` | `Restarting(previous)`. Data continuity across a restart used to work
+  *only because* the driver's selected-pair field was never cleared — the right behaviour arrived at by a
+  bug, which nothing stated and nothing tested.
+- New typed reason `DtlsFailureReason.RoleChangeOnRenegotiation`: a re-answer implying the opposite DTLS
+  role is asking for a new association, which we do not do underneath an ICE restart. Refused rather than
+  silently ignored, which would leave the peer handshaking against a role we never adopted.
+
+### Fixed — two loss fixtures were asserting over a stale pair
+
+- `IceRelayLossTest` (loss=0.20, seed=810004) converges and *then* legitimately loses RFC 7675 consent while
+  its partner is still converging. It passed anyway, because the post-hoc `selectedPair` read returned a pair
+  the agent no longer had. Verified against `main`: same seed, same `Failed(ConsentExpired)` — pre-existing
+  and masked, not introduced. Both it and `IceNominationLossTest` now read the pair off the state that
+  *proved* convergence.
+
 ### Added — W7 interop test-matrix expansion: a WebKit (Safari engine) browser lane
 - **`webkit-interop` + `jvm-webkit` scenarios** — our offerer (native and JVM) establishes a full WebRTC
   data channel over real NAT kernels against a real headless **WebKit** (Safari's engine, via Playwright's

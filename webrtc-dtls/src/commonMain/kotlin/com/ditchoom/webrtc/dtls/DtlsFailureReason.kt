@@ -36,6 +36,16 @@ public sealed interface DtlsFailureReason {
      */
     public object FingerprintMissing : DtlsFailureReason
 
+    /**
+     * *(driver)* A renegotiation asked us to flip DTLS roles. Per RFC 8842 §5.5 an endpoint that does not
+     * want a *new* DTLS association re-offers `a=setup:actpass` and keeps its fingerprint — the
+     * association's client/server roles are fixed for its lifetime, and an ICE restart deliberately runs
+     * underneath a DTLS/SCTP session that never renegotiates. A re-answer whose `a=setup` implies the
+     * opposite of the role we already resolved is therefore asking for a fresh association, which we do
+     * not support. Refused with a reason rather than silently ignored and left to hang.
+     */
+    public object RoleChangeOnRenegotiation : DtlsFailureReason
+
     /** *(engine)* A record-layer error after the handshake (decrypt failure / malformed record). */
     public object RecordLayerError : DtlsFailureReason
 

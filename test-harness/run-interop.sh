@@ -19,8 +19,9 @@
 # offerer-driven phase sequence over the SAME association it establishes — s1 large/fragmented (byte-identity
 # + the negotiated a=max-message-size boundary), s2 unordered, s3 partial-reliable (PR-SCTP + FORWARD-TSN
 # no-wedge), s4 multiplexed, s5 reverse-direction (our lanes only), s7 per-channel close (RFC 8831 §6.7
-# stream reset: neighbour survives, the peer's channel closed, the recycled stream id works), s6 DONE +
-# graceful association SHUTDOWN — s6 ends the association, so it is always last and s7 sorts before it.
+# stream reset: neighbour survives, the peer's channel closed, the recycled stream id works), s8 ICE restart
+# across a mid-session carrier switch (our lanes only — see the carrier-switch topology below), s6 DONE +
+# graceful association SHUTDOWN — s6 ends the association, so it is always last and s8 sorts before it.
 # The answerer is a scenario-agnostic reflector in every family, so this costs no new CI lanes. They landed
 # NON-GATING-first and are now FULLY PROMOTED: a failed phase FAILS its lane, on EVERY lane. The holdout
 # list ($SEMANTICS_NON_GATING, see below) is empty — the last two entries, the werift lanes, were promoted
@@ -171,7 +172,7 @@ docker run --rm --privileged --network host alpine:3.20 \
 # ── scenario matrix — name | nat_a | nat_b | ice_policy | netem(args or "-") | a_impl | b_impl | topo ──
 #   a_impl (offerer / "our side") ∈ native | jvm
 #   b_impl (answerer)             ∈ native | pion | node | chrome | firefox | webkit
-#   topo (NAT layering)           ∈ single | cgnat | hairpin      (defaults to single when omitted)
+#   topo (NAT layering)           ∈ single | cgnat | hairpin | carrier-switch   (default: single)
 # Covers each of the four NAT profiles, the symmetric→relay fallback, an explicit relay-only lane, an
 # impaired data path (all native ⇄ native), the W7 Phase-2 interop lanes where the answerer is a real Pion
 # (Go) peer or a real werift (pure-TypeScript, JS-engine) peer [2(a)] or a real headless browser — Chrome /
@@ -188,7 +189,12 @@ docker run --rm --privileged --network host alpine:3.20 \
 # coturn (nat-setup.sh V6_FORCE_RELAY), so ICE must DISCOVER it has to fall back to the relay when direct/
 # srflx v6 is blocked; it reuses the same selected-pair=Relayed assertion. It runs on v6/dual only (there is
 # no v6 firewall on a v4 lane), while symmetric/mixed-sym/cgnat/hairpin run on v4 only (mapping artifacts —
-# see family_skipped). `impaired-loss-delay` is NON-GATING (informational
+# see family_skipped). `carrier-switch` is a THIRD topology dimension rather than a NAT layering: peer_a
+# gets a SECOND NAT gateway (nat_a2) on its own LAN, and the harness flips its default route onto it
+# mid-session (carrier_switch, below), so its public identity changes underneath a live session and ICE has
+# to restart (RFC 8445 §9). Only our own answerer can play it — a foreign reflector never re-answers — so
+# `restart-native` (native⇄native) and `jvm-restart` (jvm⇄native) are the only two lanes that run it, and
+# they are the only lanes with WEBRTC_ICE_RESTART on. `impaired-loss-delay` is NON-GATING (informational
 # — see $NON_GATING + the header): its kernel-random loss can't be provably flake-free, so the deterministic
 # DtlsSctpLossReproductionTest is the retained hard loss gate. Each expects BOTH peers to exit 0. The impl +
 # topo columns default to native/native/single when omitted. The pion AND node/werift lanes force DTLS 1.2
@@ -204,6 +210,8 @@ firewall-relay6      | port-restricted    | port-restricted    | all   | -      
 impaired-loss-delay  | port-restricted    | port-restricted    | all   | loss 5% delay 20ms 5ms distribution normal      | native | native  | single
 cgnat                | port-restricted    | port-restricted    | all   | -                                                | native | native  | cgnat
 hairpin              | port-restricted    | port-restricted    | relay | -                                                | native | native  | hairpin
+restart-native       | port-restricted    | port-restricted    | all   | -                                                | native | native  | carrier-switch
+jvm-restart          | port-restricted    | port-restricted    | all   | -                                                | jvm    | native  | carrier-switch
 pion-interop         | port-restricted    | port-restricted    | all   | -                                                | native | pion    | single
 node-interop         | port-restricted    | port-restricted    | all   | -                                                | native | node    | single
 chrome-interop       | port-restricted    | port-restricted    | all   | -                                                | native | chrome  | single
@@ -241,8 +249,8 @@ NON_GATING=" impaired-loss-delay ${HARNESS_NON_GATING:-} "
 
 # ── data-channel SEMANTICS (docs/DC_SEMANTICS_INTEROP_DESIGN.md, Phase-1 close-out item #2) ──────────
 # Every lane's offerer runs the phase sequence (s1 large/fragmented, s2 unordered, s3 partial-reliable,
-# s4 multiplexed, s5 reverse, s7 per-channel close, s6 graceful association close) over the SAME
-# association it already establishes, and
+# s4 multiplexed, s5 reverse, s7 per-channel close, s8 ICE restart on the carrier-switch lanes, s6 graceful
+# association close) over the SAME association it already establishes, and
 # every answerer becomes a universal reflector that exits on the offerer's DONE. No new lanes: each
 # existing lane gains the whole matrix. HARNESS_SEMANTICS=0 restores the pure establish-and-echo harness.
 #
@@ -254,6 +262,8 @@ NON_GATING=" impaired-loss-delay ${HARNESS_NON_GATING:-} "
 #
 # HARNESS_SEMANTICS_GATING=0 restores the old informational-everywhere behavior for a debugging run.
 export PEER_SEMANTICS="${HARNESS_SEMANTICS:-1}"
+# The default sequence budget; run_scenario re-exports it per lane (the carrier-switch lanes get more, for
+# s8's extra offer/answer round), so a caller-supplied HARNESS_SEMANTICS_TIMEOUT_MS still wins everywhere.
 export PEER_SEMANTICS_TIMEOUT_MS="${HARNESS_SEMANTICS_TIMEOUT_MS:-120000}"
 export PEER_SCENARIOS="${HARNESS_SCENARIOS:-}"   # e.g. "s1,s3" to debug a single phase
 sem_warned_names=""
@@ -350,7 +360,10 @@ semantics_report() {
 # pure filtering router, so they are v4-only. `firewall-relay6` is the inverse: it needs the routed-v6
 # firewall to force relay-discovery, so it is v6/dual-only. family_skipped drops each outside its family.
 # mdns-* is same-LAN v4-only (compose.mdns.yml defines only a v4 lan0); no v6 addresses, so skip off v4.
-V4_ONLY_SCENARIOS=" symmetric-relay mixed-sym-port cgnat hairpin mdns-chrome mdns-firefox "
+# (carrier-switch is v4-only for the same reason as the carrier lanes: nat_a2 is a v4 NAT with a v4 public
+# identity, and "the peer's public address changed" is a v4 mapping statement. The v6 analog — a routed
+# prefix moving — needs a second v6 router and is a follow-up, not a skip of an existing property.)
+V4_ONLY_SCENARIOS=" symmetric-relay mixed-sym-port cgnat hairpin restart-native jvm-restart mdns-chrome mdns-firefox "
 V6_ONLY_SCENARIOS=" firewall-relay6 "
 family_skipped() {
     local name=" $1 "
@@ -393,10 +406,54 @@ record_fail() {
     fi
 }
 
+# ── mid-session carrier switch (topo=carrier-switch) ────────────────────────────────────────────────
+# The line the offerer prints when it has reached s8 and is parked waiting to be moved onto its second
+# carrier. It MUST match CARRIER_SWITCH_CUE in Semantics.kt — the two halves of one handshake.
+CARRIER_SWITCH_CUE="s8/restart: awaiting the carrier switch"
+# How many half-second polls to wait for that cue. A watchdog on an observed line, not a budget for the
+# session: the offerer prints it only after phase 0 and s1–s7 have all run over the real path, so this has
+# to cover a whole slow-lane semantics sequence. Never a reason a healthy lane waits longer.
+CARRIER_SWITCH_POLLS=240
+
+# Move the offerer onto its second carrier, then tell it the move happened. Backgrounded by run_scenario
+# for the carrier-switch lanes only. Every step is observable: it waits for the peer's own cue (never a
+# sleep), flips the default route with the same `docker compose exec` the NAT/netem plumbing already uses,
+# and publishes ONE record into the shared rendezvous mailbox — which is both the only channel into a
+# running peer and one the peer is already polling. A failure here is left to s8 to report: the peer's
+# watchdog on the mailbox record is what turns "the harness never moved me" into a graded phase verdict,
+# and a warning from a background job could otherwise be the only trace of it.
+carrier_switch() {
+    local name="$1" service="$2" i=0
+    while [ "$i" -lt "$CARRIER_SWITCH_POLLS" ]; do
+        case "$(docker compose logs --no-log-prefix "$service" 2>/dev/null)" in
+            *"$CARRIER_SWITCH_CUE"*) break ;;
+        esac
+        i=$((i + 1)); sleep 0.5
+    done
+    if [ "$i" -ge "$CARRIER_SWITCH_POLLS" ]; then
+        echo "::warning::[$name] the offerer never asked to be moved onto the second carrier — s8 grades it"
+        return 0
+    fi
+    if ! docker compose exec -T "$service" ip route replace default via "$NAT_A2_LAN_IP" </dev/null; then
+        echo "::warning::[$name] could not move $service onto the second carrier ($NAT_A2_LAN_IP) — s8 grades it"
+        return 0
+    fi
+    echo "[carrier-switch] [$name] $service default route → nat_a2 ($NAT_A2_LAN_IP, public $NAT_A2_WAN_IP)"
+    # Acknowledge into the mailbox slot the peer polls (`<session>/carrier`). python3 is in the rendezvous
+    # image — the same call shape collect_diagnostics uses for /dump — so this needs no curl, no new
+    # container and no second front door.
+    docker compose exec -T rendezvous python3 -c \
+        "import json,urllib.request as u; d=json.dumps({'key':'${SESSION}/carrier','id':0,'payload':'switched'}).encode(); \
+         u.urlopen(u.Request('http://127.0.0.1:${RENDEZVOUS_HTTP_PORT}/put', d, {'Content-Type':'application/json'}))" </dev/null \
+        || echo "::warning::[$name] could not publish the carrier-switch record — s8 will time out waiting for it"
+}
+
 # ── capture-on-failure diagnostics (design §B) ──────────────────────────────────────────────────────
-# The carrier NATs active in THIS scenario (cgnat_*), derived from run_scenario's $infra (visible here by
-# bash dynamic scope). Empty in the single-NAT lanes.
-compose_active_carriers() { echo "${infra:-}" | tr ' ' '\n' | grep -E '^cgnat' || true; }
+# The EXTRA NATs active in THIS scenario beyond the two CPEs — the carrier NATs (cgnat_*) of the NAT444 /
+# hairpin lanes and peer A's second gateway (nat_a2) on the carrier-switch lane — derived from
+# run_scenario's $infra (visible here by bash dynamic scope). Empty in the single-NAT lanes. They get the
+# same treatment as nat_a/nat_b everywhere: packet capture, logs, firewall + conntrack state.
+compose_active_carriers() { echo "${infra:-}" | tr ' ' '\n' | grep -E '^(cgnat|nat_a2)' || true; }
 
 # Background a ring-buffered tcpdump on every NAT for the whole scenario — the pcap is the gold-standard
 # replay input (the real-wire packet + loss schedule that the seed alone can't reconstruct). Ring-bounded
@@ -469,11 +526,13 @@ collect_diagnostics() {
         echo "offerer=${a_service:-peer_a}  rc_a=${rc_a:-n/a}"
         echo "answerer=${b_service:-peer_b}  rc_b=${rc_b:-n/a}"
         echo "SEED_A=${SEED_A:-<peer default>}  SEED_B=${SEED_B:-<peer default>}"
-        echo "--- offerer selected ICE pair ---"
+        echo "--- offerer selected ICE pair(s) ---"
         # Prefer the single captured offerer log ($a_log, visible by dynamic scope) over a fresh
         # `docker compose logs` read — same anti-truncation reasoning as the relay assertion. Unset only for
         # pre-connection failures (infra/netem), where "(none logged)" is the correct answer anyway.
-        printf '%s\n' "${a_log:-}" | grep -F 'selectedPair=' || echo "(none logged)"
+        # Every live state is dumped, not just one: an s8 lane legitimately has two Connected pairs with a
+        # Restarting between them, and which pair it moved from is half of that failure's diagnosis.
+        printf '%s\n' "${a_log:-}" | grep -E '(Connected|Restarting)\(path=' || echo "(none logged)"
     } > "$dir/MANIFEST.txt" 2>&1
 }
 
@@ -531,6 +590,22 @@ run_scenario() {
     # the phase is enabled only on the native⇄native / jvm⇄native lanes and simply absent elsewhere.
     if [ "$b_impl" = "native" ]; then export PEER_REVERSE=1; else export PEER_REVERSE=0; fi
 
+    # s8 (ICE restart across a mid-session carrier switch) needs BOTH: an answerer of ours — a foreign
+    # reflector never re-answers, so it would leave our re-offer unanswered and the restart unconverged —
+    # and a topology with a second carrier to be moved onto. Naming the carrier's public address is what
+    # lets the phase assert WHERE the restart landed rather than only that the pair changed.
+    if [ "$topo" = "carrier-switch" ] && [ "$b_impl" = "native" ]; then
+        export PEER_ICE_RESTART=1 PEER_RESTART_CARRIER="$NAT_A2_WAN_IP"
+        # s8 adds a second offer/answer round and an ICE reconvergence, each separately watchdogged inside
+        # the peer. The sequence budget has to leave room for the FAILURE path too, or a graded phase
+        # verdict degrades into an ungraded "semantics: TIMEOUT" that says nothing about which half broke.
+        export PEER_SEMANTICS_TIMEOUT_MS="${HARNESS_SEMANTICS_TIMEOUT_MS:-180000}"
+    else
+        export PEER_ICE_RESTART=0
+        export PEER_SEMANTICS_TIMEOUT_MS="${HARNESS_SEMANTICS_TIMEOUT_MS:-120000}"
+        unset PEER_RESTART_CARRIER
+    fi
+
     # NAT layering (carrier-grade / hairpin). Point each CPE's upstream at the right carrier NAT, activate
     # that carrier NAT's compose profile, and add it to this scenario's infra so `up` starts it (a profiled
     # service only starts when named or its profile is active). `single` leaves the CPEs on pub directly —
@@ -544,6 +619,9 @@ run_scenario() {
         hairpin) # ONE shared carrier NAT → both peers share a single external identity → relay
             export NAT_A_CARRIER_GW="$CGNAT_SHARED_CAR_IP" NAT_B_CARRIER_GW="$CGNAT_SHARED_CAR_IP"
             profiles="$profiles hairpin"; infra="$infra cgnat" ;;
+        carrier-switch) # a SECOND gateway on peer A's own LAN, switched to mid-session (not a layer above)
+            unset NAT_A_CARRIER_GW NAT_B_CARRIER_GW
+            profiles="$profiles carrier-switch"; infra="$infra nat_a2" ;;
         *)       unset NAT_A_CARRIER_GW NAT_B_CARRIER_GW ;;
     esac
 
@@ -595,11 +673,25 @@ run_scenario() {
     # infra-up (profiles/seed/netem all set before compose-up-retry above), so there is nothing to recreate
     # here anyway — we only need the two peers created + started. v4 is unaffected (no return-route sidecars).
     docker compose up -d --no-build --no-recreate "$a_service" "$b_service"
+
+    # The carrier-switch lane's one moving part: a background watcher that moves the offerer onto nat_a2
+    # the moment it says it is ready (see carrier_switch). It has to be concurrent with the peers, because
+    # the whole property is that the network changes MID-session — but it never races them: the peer parks
+    # on the mailbox until the switch is acknowledged.
+    local switch_pid=""
+    if [ "$topo" = "carrier-switch" ]; then
+        carrier_switch "$name" "$a_service" &
+        switch_pid=$!
+    fi
+
     # Block until each peer has exited and read its exit code (see peer_exit_rc — order-independent, unlike
     # `docker compose wait`).
     local rc_a rc_b
     rc_a=$(peer_exit_rc "$a_service")
     rc_b=$(peer_exit_rc "$b_service")
+    # Reap the watcher (it has long since finished by the time both peers exit) so no `docker compose exec`
+    # of a torn-down stack outlives the scenario.
+    [ -n "$switch_pid" ] && wait "$switch_pid" 2>/dev/null
 
     # Capture each peer's full container log ONCE, now that both have exited (the waits above blocked on it).
     # The relay assertion below MUST grep this SAME captured text — NOT issue a second `docker compose logs`.
@@ -635,8 +727,11 @@ run_scenario() {
         # Herestring, not `printf | grep -q`: see semantics_report — with pipefail, a matching `grep -q`
         # SIGPIPEs the printf on a log larger than the pipe buffer and the match reads as a MISS. The
         # semantics phases grew every offerer log well past that, so this assertion had to stop using a pipe.
+        # `Connected(path=Known(pair=CandidatePair(…)))` — the state carries a sealed SelectedPath since the
+        # ICE-restart work (a browser delegate reports SelectedPath.Opaque rather than a null pair), so the
+        # rendering the assertion reads is `path=Known(pair=…)`, not the old `selectedPair=…`.
         if { [ "$topo" = "hairpin" ] || [ "$name" = "firewall-relay6" ]; } \
-                && ! grep -qE 'Connected\(selectedPair=CandidatePair\(.*Relayed' <<< "$a_log"; then
+                && ! grep -qE 'Connected\(path=Known\(pair=CandidatePair\(.*Relayed' <<< "$a_log"; then
             fail_scenario "$name" "established but the selected ICE pair is NOT a relay pair (this lane must traverse the coturn TURN relay)"; return
         fi
         if [ "$sem_missing" = "1" ]; then

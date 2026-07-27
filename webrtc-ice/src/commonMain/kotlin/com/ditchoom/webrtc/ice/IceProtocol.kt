@@ -42,11 +42,46 @@ public sealed interface IceEvent {
     public data object TimerFired : IceEvent
 
     /**
-     * Begin an ICE restart (RFC 8445 §9): regenerate local credentials + tie-breaker, flush the
-     * checklist and remote state. The driver then re-gathers and re-signals; the peer's new credentials
-     * arrive via [SetRemoteCredentials].
+     * Begin an ICE restart (RFC 8445 §9): start a **new generation** with fresh local credentials and
+     * tie-breaker, while **retaining** the outgoing one. The driver then re-gathers and re-signals; the
+     * peer's new credentials arrive via [SetRemoteCredentials]. Retention is what makes §9's *"during
+     * the restart, data can continue to be sent using existing data sessions"* a stated fact rather
+     * than an accident: the outgoing nominated pair survives as [IcePath.Restarting.previous] until the
+     * new generation nominates. The role is **not** redetermined (§9 → §6.1.1) — the new generation
+     * inherits it.
      */
     public data object Restart : IceEvent
+
+    /**
+     * Abandon the in-flight restart generation and restore the retained one — the ICE half of JSEP's
+     * `setLocalDescription(rollback)`. Without it a rolled-back restart offer would leave the agent
+     * advertising credentials no peer ever saw. A no-op when no restart is in flight.
+     */
+    public data object RollbackRestart : IceEvent
+}
+
+/**
+ * Where application traffic (DTLS/SCTP) rides, as a sealed set of the three genuinely distinct
+ * situations an ICE agent can be in. This replaces a `CandidatePair?`, which overloaded null with two
+ * unrelated meanings — "nothing nominated yet" and "restarting, keep using the old pair" — and so made
+ * the restart window unrepresentable except as a silently-stale field (DESIGN_PRINCIPLES §2).
+ */
+public sealed interface IcePath {
+    /** No pair nominated in this generation — app data has nowhere to go (DTLS/SCTP have not started). */
+    public data object Unnominated : IcePath
+
+    /** [pair] is nominated and carries app data. */
+    public data class Nominated(
+        public val pair: CandidatePair,
+    ) : IcePath
+
+    /**
+     * An ICE restart is in flight and the new generation has not nominated yet, so app data **continues
+     * on [previous]** — the retained generation's nominated pair, whose socket stays bound (RFC 8445 §9).
+     */
+    public data class Restarting(
+        public val previous: CandidatePair,
+    ) : IcePath
 }
 
 /**
@@ -71,11 +106,12 @@ public sealed interface IceOutput {
     ) : IceOutput
 
     /**
-     * The pair application traffic should now use changed to [pair] (its nominated valid pair). The
-     * DTLS/SCTP layer sends over `pair.local.base → pair.remote.address`.
+     * Where application traffic rides changed to [path]. The DTLS/SCTP layer sends over
+     * `pair.local.base → pair.remote.address` for both [IcePath.Nominated] and [IcePath.Restarting] —
+     * the two states differ in which generation owns the pair, not in whether data flows.
      */
-    public data class SelectedPairChanged(
-        public val pair: CandidatePair,
+    public data class PathChanged(
+        public val path: IcePath,
     ) : IceOutput
 }
 

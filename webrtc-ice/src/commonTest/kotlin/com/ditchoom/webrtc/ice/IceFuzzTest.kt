@@ -46,11 +46,19 @@ class IceFuzzTest {
                 alice.connectTo(bob)
                 bob.connectTo(alice)
 
-                assertNotNull(withTimeoutOrNull(TIMEOUT) { alice.awaitConnected() }, "seed $seed: connects despite loss (no hang)")
-                assertNotNull(withTimeoutOrNull(TIMEOUT) { bob.awaitConnected() }, "seed $seed: peer connects too")
+                val aliceConverged =
+                    assertNotNull(withTimeoutOrNull(TIMEOUT) { alice.awaitConnected() }, "seed $seed: connects despite loss (no hang)")
+                val bobConverged =
+                    assertNotNull(withTimeoutOrNull(TIMEOUT) { bob.awaitConnected() }, "seed $seed: peer connects too")
                 // Role-symmetry invariant: each agent's selected local base is the other's selected remote.
-                assertEquals(alice.selectedPair!!.local.base, bob.selectedPair!!.remote.address, "seed $seed: pairs mirror")
-                assertEquals(bob.selectedPair!!.local.base, alice.selectedPair!!.remote.address, "seed $seed: pairs mirror")
+                // Read off the states that PROVED convergence, not a post-hoc snapshot — see
+                // IceDriver.nominatedPair. Under loss alice can converge and then lose RFC 7675 consent
+                // while this fixture is still blocked in bob's awaitConnected(), and a later read would be
+                // asserting about a pair she no longer has.
+                val alicePair = aliceConverged.nominatedPair
+                val bobPair = bobConverged.nominatedPair
+                assertEquals(alicePair.local.base, bobPair.remote.address, "seed $seed: pairs mirror")
+                assertEquals(bobPair.local.base, alicePair.remote.address, "seed $seed: pairs mirror")
             }
         }
 

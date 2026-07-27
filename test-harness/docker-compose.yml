@@ -120,6 +120,33 @@ services:
       retries: 20
       start_period: 1s
 
+  # ── Second carrier for peer A (profile `carrier-switch`) — the ICE-restart lane ─────────────────────
+  # A second, independent NAT gateway on peer_a's OWN LAN: same nat image, same profile, but its own public
+  # identity (NAT_A2_WAN_IP). It is a PEER of nat_a, not a layer above it — peer_a is dual-homed in the
+  # sense that it has two ways off lan_a, and `run-interop.sh` flips its default route from one to the other
+  # mid-session so ICE has to restart onto a public address the far side has never seen (RFC 8445 §9, the
+  # `s8` phase). No NAT_CARRIER_GW and no `car` leg: nothing routes through it on the way to somewhere else.
+  nat_a2:
+    profiles: ["carrier-switch"]
+    build: { context: ., dockerfile: nat/Dockerfile }
+    cap_add: [NET_ADMIN, NET_RAW]   # NET_RAW: the ring-buffered tcpdump forensic capture (design §B)
+    sysctls: { net.ipv4.ip_forward: 1 }
+    environment:
+      NAT_PROFILE: "port-restricted"
+      NAT_WAN_IP: "${NAT_A2_WAN_IP}"
+      NAT_LAN_IP: "${NAT_A2_LAN_IP}"
+      PEER_IP: "${PEER_A_IP}"
+      ICE_PORT: "${ICE_PORT}"
+    networks:
+      pub: { ipv4_address: "${NAT_A2_WAN_IP}" }
+      lan_a: { ipv4_address: "${NAT_A2_LAN_IP}" }
+    healthcheck:
+      test: ["CMD-SHELL", "iptables -t nat -S | grep -q MASQUERADE"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 1s
+
   # ── Carrier-grade NATs (NAT444 / hairpin) — the EXTRA hop the CPE NATs route through ────────────────
   # Each is the SAME nat image as nat_a/nat_b, but wired car→pub (its LAN face is the carrier shared space,
   # its WAN face the public net) and WITHOUT a NAT_CARRIER_GW — it IS the public-facing translation. It
@@ -241,6 +268,12 @@ services:
       # are ours — a foreign peer is a dumb reflector and never originates — so run-interop.sh enables it
       # for the native<->native / jvm<->native lanes only. Both peers read it.
       WEBRTC_REVERSE: "${PEER_REVERSE:-0}"
+      # s8: the offerer restarts ICE (RFC 8445 §9) after run-interop.sh moves it onto the second carrier
+      # (topo=carrier-switch), and BOTH peers carry a second offer/answer round — so both read the flag,
+      # the answerer only to know a further offer may arrive. WEBRTC_RESTART_CARRIER names the public
+      # address the restarted session must land on, which is what makes s8 assert WHERE it moved to.
+      WEBRTC_ICE_RESTART: "${PEER_ICE_RESTART:-0}"
+      WEBRTC_RESTART_CARRIER: "${PEER_RESTART_CARRIER:-}"
       # Default 1.3-on (production). The Pion interop lane sets PEER_DTLS13=false (run-interop.sh) so this
       # offerer pins DTLS 1.2 — Pion's released v3 is 1.2-only.
       WEBRTC_DTLS13: "${PEER_DTLS13:-true}"
@@ -286,6 +319,9 @@ services:
       WEBRTC_SEMANTICS: "${PEER_SEMANTICS:-0}"
       WEBRTC_SEMANTICS_TIMEOUT_MS: "${PEER_SEMANTICS_TIMEOUT_MS:-120000}"
       WEBRTC_REVERSE: "${PEER_REVERSE:-0}"   # see peer_a — the answerer is the side that ORIGINATES in s5
+      # see peer_a — the answerer reads this only to know a SECOND offer/answer round may arrive (s8); it
+      # never restarts on its own initiative, it detects the peer's restart from the new credentials.
+      WEBRTC_ICE_RESTART: "${PEER_ICE_RESTART:-0}"
       WEBRTC_DTLS13: "${PEER_DTLS13:-true}"  # see peer_a
       WEBRTC_SEED: "${SEED_B:-}"             # answerer=SEED_B (see peer_a)
     networks:
@@ -346,6 +382,8 @@ services:
       # are ours — a foreign peer is a dumb reflector and never originates — so run-interop.sh enables it
       # for the native<->native / jvm<->native lanes only. Both peers read it.
       WEBRTC_REVERSE: "${PEER_REVERSE:-0}"
+      WEBRTC_ICE_RESTART: "${PEER_ICE_RESTART:-0}"          # see peer_a — the s8 ICE-restart phase
+      WEBRTC_RESTART_CARRIER: "${PEER_RESTART_CARRIER:-}"   # the carrier the restart must land on
       # Default 1.3-on (production). The jvm-pion lane sets PEER_DTLS13=false (run-interop.sh) so this
       # offerer pins DTLS 1.2 — Pion's released v3 is 1.2-only.
       WEBRTC_DTLS13: "${PEER_DTLS13:-true}"

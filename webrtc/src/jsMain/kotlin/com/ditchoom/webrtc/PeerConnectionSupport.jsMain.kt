@@ -107,8 +107,9 @@ private fun mapConnectionState(state: String): PeerConnectionState =
         // "disconnected" is a *transient* W3C ICE state that routinely recovers to "connected" — report a
         // non-terminal Connecting, never Closed, so a collector doesn't tear down a recoverable session.
         "connecting", "disconnected" -> PeerConnectionState.Connecting
-        // The browser exposes no pair object here, and no portable failure discriminant — hence null / Unknown.
-        "connected" -> PeerConnectionState.Connected(null)
+        // The browser selects the pair internally and exposes no pair object here, and no portable failure
+        // discriminant — hence Opaque / Unknown.
+        "connected" -> PeerConnectionState.Connected(SelectedPath.Opaque)
         "failed" -> PeerConnectionState.Failed(PeerConnectionFailureReason.Unknown("RTCPeerConnection connectionState=failed"))
         "closed" -> PeerConnectionState.Closed
         else -> PeerConnectionState.Connecting
@@ -149,7 +150,11 @@ private class BrowserPeerConnection(
     private val dataChannelChannel = Channel<Connection<ReadBuffer>>(Channel.UNLIMITED)
     override val incomingDataChannels: Flow<Connection<ReadBuffer>> get() = dataChannelChannel.receiveAsFlow()
 
+    private val renegotiationChannel = Channel<Unit>(Channel.CONFLATED)
+    override val renegotiationNeeded: Flow<Unit> get() = renegotiationChannel.receiveAsFlow()
+
     init {
+        pc.onnegotiationneeded = { _: dynamic -> renegotiationChannel.trySend(Unit) }
         pc.onicecandidate = { event: dynamic ->
             val candidate = event.candidate
             if (candidate != null) candidateChannel.trySend(candidate.candidate.unsafeCast<String>())
@@ -195,6 +200,13 @@ private class BrowserPeerConnection(
 
     override suspend fun addIceCandidate(candidate: String) {
         pc.addIceCandidate(iceCandidateInit(candidate)).unsafeCast<Promise<dynamic>>().await()
+    }
+
+    // 1:1 with the native stack, which is why restartIce() was specified as deferred-intent rather than
+    // immediate: `RTCPeerConnection.restartIce()` also just marks the next offer, and fires
+    // negotiationneeded. Nothing to emulate.
+    override suspend fun restartIce() {
+        pc.restartIce()
     }
 
     override suspend fun close() {

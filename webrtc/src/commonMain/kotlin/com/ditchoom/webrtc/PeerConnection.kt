@@ -12,9 +12,11 @@ import com.ditchoom.webrtc.ice.IceConfig
 import com.ditchoom.webrtc.ice.IceConnectionState
 import com.ditchoom.webrtc.ice.IceCredentials
 import com.ditchoom.webrtc.ice.IcePassword
+import com.ditchoom.webrtc.ice.IcePath
 import com.ditchoom.webrtc.ice.IceRole
 import com.ditchoom.webrtc.ice.MdnsResolution
 import com.ditchoom.webrtc.ice.MdnsResolver
+import com.ditchoom.webrtc.ice.NetworkMonitor
 import com.ditchoom.webrtc.ice.Ufrag
 import com.ditchoom.webrtc.ice.resolveHostCandidate
 import com.ditchoom.webrtc.sctp.association.SctpAssociationState
@@ -67,11 +69,42 @@ import kotlin.time.Instant
  * (RFC §5.2: gathering rides an injected driver). A test supplies host addresses over the vnet
  * (`{ it.gatherHost("10.0.0.1", 5000) }`); a production policy enumerates interfaces via socket's
  * `NetworkMonitor` and adds srflx/relay from the configured ICE servers (the real-UDP default lands with
- * the platform edge in W7). It runs once, when negotiation starts.
+ * the platform edge in W7).
+ *
+ * It runs **once per ICE generation** — when negotiation starts, and again on every ICE restart (RFC 8445
+ * §9), which exists precisely because the interfaces may have changed underneath the session. A policy
+ * that pins fixed ports must therefore hand out a fresh one each call: the outgoing generation's sockets
+ * stay bound until the new generation nominates, and an OS will not re-bind an address still in use.
  */
 public fun interface IceGatheringPolicy {
     /** Gather candidates on [driver] (host/srflx/relay) — each gathered candidate trickles out. */
     public suspend fun gather(driver: IceAgentDriver)
+}
+
+/**
+ * When a [NativePeerConnection] restarts ICE by itself (RFC 8445 §9). A sealed choice rather than a
+ * `Boolean` plus a nullable monitor, which could encode "automatic restarts enabled, nothing to watch".
+ *
+ * The monitor is the **webrtc-owned** [NetworkMonitor] seam, not socket's: neither `webrtc` nor
+ * `webrtc-ice` `commonMain` depends on socket at all (they target `buffer-flow` only, so the cores stay
+ * all-platform including browsers), and socket's monitor lives in socket *core*, which vendors a second
+ * BoringSSL — the documented duplicate-symbol break that already defers the `SocketException` bridge.
+ */
+public sealed interface IceRestartPolicy {
+    /** Only an explicit [RtcPeerConnection.restartIce] restarts. The default, and the browser's behaviour. */
+    public data object Manual : IceRestartPolicy
+
+    /**
+     * Watch [monitor] and restart automatically when the interface carrying the **selected pair's base**
+     * leaves the set — deliberately narrow. A blanket restart on *any* change would churn a perfectly
+     * healthy session every time a VPN or virtual adapter appears.
+     *
+     * Automatic and manual restarts route through the same intent path, and the monitor is injected, so
+     * a Wi-Fi→cellular flip is a scripted timeline event under `runTest` rather than a real radio.
+     */
+    public data class OnNetworkChange(
+        public val monitor: NetworkMonitor,
+    ) : IceRestartPolicy
 }
 
 /**
@@ -112,6 +145,12 @@ public data class PeerConnectionConfig(
      * [Duration.ZERO] for an immediate teardown.
      */
     public val gracefulShutdownTimeout: Duration = 2.seconds,
+    /**
+     * Whether the session restarts ICE on its own when the network moves under it (RFC 8445 §9).
+     * Defaults to [IceRestartPolicy.Manual] — the browser's behaviour, and the only honest default while
+     * no target ships a production [NetworkMonitor] actual enumerating real OS interfaces.
+     */
+    public val iceRestartPolicy: IceRestartPolicy = IceRestartPolicy.Manual,
 )
 
 /**
@@ -161,6 +200,18 @@ public interface RtcPeerConnection {
     /** Data channels the peer opened (W3C `ondatachannel`). */
     public val incomingDataChannels: Flow<Connection<ReadBuffer>>
 
+    /**
+     * Fires when the session needs the app to run a new offer/answer round (W3C `negotiationneeded`).
+     *
+     * A session cannot renegotiate on its own — it does not own the signaling channel — so anything that
+     * makes renegotiation necessary has to be *told* to the app or it simply never happens. Today that is
+     * [restartIce] and an [IceRestartPolicy.OnNetworkChange] detecting the selected pair's interface going
+     * away; without this the automatic policy would record an intent into a field nobody reads.
+     *
+     * Conflated: what matters is that a round is owed, not how many times it became owed.
+     */
+    public val renegotiationNeeded: Flow<Unit>
+
     /** Open a data channel (RFC 8832). Returns immediately; the channel becomes live once SCTP is up. */
     public suspend fun createDataChannel(config: DataChannelConfig = DataChannelConfig()): Connection<ReadBuffer>
 
@@ -188,6 +239,17 @@ public interface RtcPeerConnection {
 
     /** Add a trickled remote `candidate:` line (RFC 8838). A malformed line is ignored. */
     public suspend fun addIceCandidate(candidate: String)
+
+    /**
+     * Request an ICE restart (W3C `restartIce()`, RFC 8445 §9). Records the intent; the **next**
+     * [createOffer] carries fresh ICE credentials and re-gathered candidates. Deferred rather than
+     * immediate so the native stack and the browser delegate mean the same thing by the same name.
+     *
+     * The session survives it: DTLS and SCTP are untouched, every open data channel stays open, and data
+     * keeps flowing on the existing pair while the new one converges — the session state passes through
+     * [PeerConnectionState.Restarting] and back to [PeerConnectionState.Connected] on the new pair.
+     */
+    public suspend fun restartIce()
 
     /** Close the session and release every socket/stream. Idempotent. */
     public suspend fun close()
@@ -241,26 +303,43 @@ public class NativePeerConnection(
     private val incomingChannels = Channel<Connection<ReadBuffer>>(Channel.UNLIMITED)
     override val incomingDataChannels: Flow<Connection<ReadBuffer>> get() = incomingChannels.receiveAsFlow()
 
+    private val renegotiationChannel = Channel<Unit>(Channel.CONFLATED)
+    override val renegotiationNeeded: Flow<Unit> get() = renegotiationChannel.receiveAsFlow()
+
     // Negotiation state — touched only under [negotiationLock].
-    private var driver: IceAgentDriver? = null
-    private var stack: SctpDataChannelStack? = null
+    //
+    // Every field a renegotiation touches is a sealed case rather than a nullable, because on the restart
+    // path each of these nulls was about to acquire a second meaning ("not yet" vs "not any more"), and a
+    // null that means two things is read correctly at some call sites and not at others.
+    private var transport: IceTransport = IceTransport.NotStarted
+    private var dataChannels: DataChannelStack = DataChannelStack.NotUp
     private var establishJob: Job? = null
     private val pendingChannels = mutableListOf<PendingChannel>()
     private val pendingRemoteCandidates = mutableListOf<String>()
     private var closed = false
 
+    // What the next createOffer() must produce: a plain re-offer, or one carrying a fresh ICE generation.
+    private var negotiationIntent: NegotiationIntent = NegotiationIntent.Fresh
+
     // The remote endpoint's negotiated a=setup (RFC 8842), captured from the peer's description; the DTLS
     // (and hence SCTP) role is derived from it — NOT hardcoded from who offered — so we adopt the role the
     // peer's setup implies (offerer-passive vs offerer-active, answerer-active vs answerer-passive) instead
     // of assuming the browser default and deadlocking against a peer that answers passive / offers active.
-    private var remoteSetup: SetupRole? = null
+    private var remoteSetup: RemoteSetup = RemoteSetup.NotDeclared
 
     // The peer's a=fingerprint (RFC 8122), captured from its description. DTLS verifies the certificate
     // the peer presents against exactly this — it is the only thing binding the signaling channel we
     // trust to the data path we don't, so a session whose SDP carried none is refused, never trusted.
-    private var remoteFingerprint: Fingerprint? = null
+    private var remoteFingerprint: RemoteFingerprint = RemoteFingerprint.NotDeclared
+
+    // The peer's ICE credentials as last signaled. Kept (rather than merely forwarded to the driver)
+    // because a *change* in both ufrag and pwd is precisely how a peer announces its own ICE restart
+    // (RFC 8445 §9) — and there is nothing to compare against if we never remembered the previous pair.
+    private var remoteIceCredentials: RemoteIceCredentials = RemoteIceCredentials.NotReceived
 
     // Resolved once both descriptions are applied; runEstablishment awaits it before the DTLS handshake.
+    // Completing exactly once is what pins the DTLS role for the association's lifetime, so a
+    // renegotiation cannot flip client/server underneath a live handshake (RFC 8842 §5.5).
     private val roleResolved = CompletableDeferred<DtlsRole>()
 
     // ── RtcPeerConnection ──
@@ -268,23 +347,54 @@ public class NativePeerConnection(
     override suspend fun createOffer(): String =
         negotiationLock.withLock {
             val d = startIce(asOfferer = true)
+            // RFC 8842 §5.5: an offerer that does not want a NEW DTLS association still re-offers
+            // `a=setup:actpass` — continuity is signaled by the UNCHANGED fingerprint, not by the setup
+            // value — and `localParams` always advertises the certificate the factory actually holds. So a
+            // restart re-offer needs no DTLS handling at all beyond not disturbing it.
+            when (negotiationIntent) {
+                NegotiationIntent.Fresh -> Unit
+                NegotiationIntent.IceRestart -> applyIceRestart(d)
+            }
             jsep.createOffer(localParams(d, SetupRole.ActPass)).toText()
         }
 
     override suspend fun createAnswer(): String =
         negotiationLock.withLock {
-            val d = driver ?: startIce(asOfferer = false)
+            val d = startedTransport() ?: startIce(asOfferer = false)
             // The answerer chooses the a=setup that complements the offer's (RFC 8842 §5.1.2): an
             // actpass/passive offer → we are active (DTLS/SCTP client); an active offer → we are passive
             // (server). The chosen setup goes into the answer AND fixes our role.
             val ourSetup =
-                when (remoteSetup) {
-                    SetupRole.Active -> SetupRole.Passive
-                    else -> SetupRole.Active
+                when (val declared = remoteSetup) {
+                    is RemoteSetup.Declared -> if (declared.role == SetupRole.Active) SetupRole.Passive else SetupRole.Active
+                    RemoteSetup.NotDeclared -> SetupRole.Active
                 }
             resolveRole(ourSetup == SetupRole.Active)
             jsep.createAnswer(localParams(d, ourSetup)).toText()
         }
+
+    override suspend fun restartIce(): Unit =
+        negotiationLock.withLock {
+            // W3C-faithful: record the intent, let the next createOffer() carry it out. The deferred shape
+            // is what lets the browser delegate map 1:1 onto pc.restartIce() instead of approximating it.
+            requestIceRestart()
+        }
+
+    /**
+     * Perform the restart the intent asked for: swap the agent's ICE generation and re-gather onto the new
+     * one. Awaiting the swap is load-bearing — [IceEvent.Restart][com.ditchoom.webrtc.ice.IceEvent.Restart]
+     * rides the driver's serialized inbox, so credentials read straight after a bare `restart()` are the
+     * *old* ones and the offer we are about to build from them would advertise credentials the agent no
+     * longer honours.
+     */
+    private suspend fun applyIceRestart(d: IceAgentDriver) {
+        negotiationIntent = NegotiationIntent.Fresh
+        d.restartAndAwait()
+        // Once per ICE generation, not once per session: a restart exists precisely because the interfaces
+        // may have changed underneath us. The outgoing generation's sockets stay bound (and carrying data)
+        // until the new generation nominates, so this never re-binds an address it is still using.
+        scope.launch { gathering.gather(d) }
+    }
 
     override suspend fun setLocalDescription(
         type: SdpType,
@@ -292,6 +402,10 @@ public class NativePeerConnection(
     ) = negotiationLock.withLock {
         val description = if (type == SdpType.Rollback) null else parseOrThrow(sdp)
         applyJsep(JsepEvent.SetLocalDescription(type, description))
+        // Rollback discards the local offer, so the ICE generation that offer advertised must go with it —
+        // otherwise the agent is left honouring credentials no peer has ever seen. JSEP's
+        // HaveLocalOffer → Stable edge already existed; this is its ICE half.
+        if (type == SdpType.Rollback) startedTransport()?.rollbackRestart()
     }
 
     override suspend fun setRemoteDescription(
@@ -300,26 +414,40 @@ public class NativePeerConnection(
     ) = negotiationLock.withLock {
         val description = if (type == SdpType.Rollback) null else parseOrThrow(sdp)
         // A remote offer arriving first makes us the answerer — start ICE (controlled) before applying it.
-        if (type == SdpType.Offer && driver == null) startIce(asOfferer = false)
+        if (type == SdpType.Offer && transport is IceTransport.NotStarted) startIce(asOfferer = false)
         applyJsep(JsepEvent.SetRemoteDescription(type, description))
-        if (description != null) ingestRemote(description)
+        if (description != null) ingestRemote(type, description)
         // A remote ANSWER fixes the offerer's role: the answer's setup names the peer's role, so we take
         // its complement (answer active → peer is client → we are server; answer passive → we are client).
-        if (type == SdpType.Answer) resolveRole(asClient = remoteSetup != SetupRole.Active)
+        if (type == SdpType.Answer) resolveRole(asClient = !remoteSetupIsActive())
     }
 
-    // Resolve our DTLS/SCTP role exactly once (idempotent); runEstablishment awaits it.
+    private fun remoteSetupIsActive(): Boolean =
+        when (val declared = remoteSetup) {
+            is RemoteSetup.Declared -> declared.role == SetupRole.Active
+            RemoteSetup.NotDeclared -> false
+        }
+
+    /**
+     * Resolve our DTLS/SCTP role. The first resolution wins and pins the role for the association's
+     * lifetime; a *later* description implying the opposite role is a peer asking for a new DTLS
+     * association on renegotiation, which we do not support (RFC 8842 §5.5 — an endpoint that wants
+     * continuity keeps its fingerprint and re-offers `actpass`). Refuse it with a typed reason instead of
+     * silently ignoring it, which would leave the peer handshaking against a role we never adopted.
+     */
     private fun resolveRole(asClient: Boolean) {
-        roleResolved.complete(if (asClient) DtlsRole.Client else DtlsRole.Server)
+        val role = if (asClient) DtlsRole.Client else DtlsRole.Server
+        if (roleResolved.complete(role)) return
+        if (roleResolved.isCompleted && !roleResolved.isCancelled && roleResolved.getCompleted() != role) {
+            fail(PeerConnectionFailureReason.Dtls(DtlsFailureReason.RoleChangeOnRenegotiation))
+        }
     }
 
     override suspend fun addIceCandidate(candidate: String): Unit =
         negotiationLock.withLock {
-            val d = driver
-            if (d == null) {
-                pendingRemoteCandidates += candidate
-            } else {
-                addRemoteCandidateLine(d, candidate)
+            when (val current = transport) {
+                IceTransport.NotStarted -> pendingRemoteCandidates += candidate
+                is IceTransport.Started -> addRemoteCandidateLine(current.driver, candidate)
             }
         }
 
@@ -343,13 +471,12 @@ public class NativePeerConnection(
     override suspend fun createDataChannel(config: DataChannelConfig): Connection<ReadBuffer> =
         negotiationLock.withLock {
             if (closed) throw SctpClosedException(null)
-            val live = stack
-            if (live != null) return@withLock live.open(config)
-            // SCTP is not up yet (the offerer creates channels before negotiating) — hand back a proxy
-            // that binds to the real channel once the stack establishes.
-            val pending = PendingChannel(config)
-            pendingChannels += pending
-            pending
+            when (val channels = dataChannels) {
+                is DataChannelStack.Up -> channels.stack.open(config)
+                // SCTP is not up yet (the offerer creates channels before negotiating) — hand back a proxy
+                // that binds to the real channel once the stack establishes.
+                DataChannelStack.NotUp -> PendingChannel(config).also { pendingChannels += it }
+            }
         }
 
     override suspend fun close(): Unit =
@@ -367,7 +494,7 @@ public class NativePeerConnection(
             // see the association vanish rather than close. Bounded by
             // [PeerConnectionConfig.gracefulShutdownTimeout] and skipped unless something is established,
             // so `close()` still never hangs.
-            val live = stack
+            val live = (dataChannels as? DataChannelStack.Up)?.stack
             if (live != null) {
                 live.shutdown()
                 // Wait only where a shutdown can actually complete: an established association, or one
@@ -390,7 +517,7 @@ public class NativePeerConnection(
                     }
                 }
             }
-            driver?.close()
+            startedTransport()?.close()
             localCandidateChannel.close()
             incomingChannels.close()
             for (pending in pendingChannels) pending.fail(SctpClosedException(null))
@@ -403,11 +530,11 @@ public class NativePeerConnection(
     // Construct + launch the ICE driver for our resolved role, wire trickle-out and the establishment
     // progression, and flush any candidates that arrived early. Idempotent (returns the existing driver).
     private fun startIce(asOfferer: Boolean): IceAgentDriver {
-        driver?.let { return it }
+        startedTransport()?.let { return it }
         val iceRole = if (asOfferer) IceRole.Controlling else IceRole.Controlled
         val sctpRandom = Random(random.nextLong())
         val d = IceAgentDriver(iceRole, random, binder, scope, clock, config.iceConfig)
-        driver = d
+        transport = IceTransport.Started(d)
         d.start()
         _connectionState.value = PeerConnectionState.Connecting
         scope.launch { gathering.gather(d) }
@@ -415,9 +542,43 @@ public class NativePeerConnection(
             d.localCandidateGathered.collect { localCandidateChannel.trySend(IceCandidateLine.format(it)) }
         }
         establishJob = scope.launch { runEstablishment(d, sctpRandom) }
+        when (val policy = config.iceRestartPolicy) {
+            IceRestartPolicy.Manual -> Unit
+            is IceRestartPolicy.OnNetworkChange -> scope.launch { watchNetwork(d, policy.monitor) }
+        }
         for (line in pendingRemoteCandidates) addRemoteCandidateLine(d, line)
         pendingRemoteCandidates.clear()
         return d
+    }
+
+    private fun startedTransport(): IceAgentDriver? = (transport as? IceTransport.Started)?.driver
+
+    /**
+     * Restart automatically when the interface carrying the *current* path's base goes away — and only
+     * then. Restarting on any interface-set change would churn a healthy session every time a VPN or
+     * virtual adapter appears; restarting on none of them is the manual policy.
+     *
+     * It routes through the same [negotiationIntent] the explicit API sets, so automatic and manual
+     * restarts are one code path and both still wait for the app to drive the offer/answer round —
+     * a session cannot renegotiate without its signaling channel, whoever noticed the change.
+     */
+    private suspend fun watchNetwork(
+        d: IceAgentDriver,
+        monitor: NetworkMonitor,
+    ) {
+        monitor.changes.collect { interfaces ->
+            if (d.pathRidesOneOf(interfaces)) return@collect
+            negotiationLock.withLock { requestIceRestart() }
+        }
+    }
+
+    // Record the intent and tell the app it must run an offer/answer round. Both halves matter: without
+    // the intent nothing restarts, and without the signal an automatically-detected network change would
+    // sit in a field no caller ever reads. Callers of restartIce() get it too — harmless for them, and it
+    // means one rule ("renegotiate when this fires") rather than two.
+    private fun requestIceRestart() {
+        negotiationIntent = NegotiationIntent.IceRestart
+        renegotiationChannel.trySend(Unit)
     }
 
     // Await ICE nomination, secure the app-data seam with DTLS (plaintext for now), bring up the SCTP
@@ -441,11 +602,13 @@ public class NativePeerConnection(
             // A peer that advertised no a=fingerprint cannot be verified, so it is refused with a typed
             // reason (RFC 8827) rather than connected to insecurely or left to hang.
             val peerFingerprint =
-                negotiationLock.withLock { remoteFingerprint }
-                    ?: run {
+                when (val declared = negotiationLock.withLock { remoteFingerprint }) {
+                    is RemoteFingerprint.Declared -> declared.fingerprint
+                    RemoteFingerprint.NotDeclared -> {
                         fail(PeerConnectionFailureReason.Dtls(DtlsFailureReason.FingerprintMissing))
                         return
                     }
+                }
             val transport = dtls.secure(d.appDataTransport(), dtlsRole, peerFingerprint)
             val sctpRole = if (dtlsRole == DtlsRole.Client) SctpRole.Client else SctpRole.Server
             val liveStack =
@@ -456,7 +619,7 @@ public class NativePeerConnection(
                     liveStack.shutdown()
                     return
                 }
-                stack = liveStack
+                dataChannels = DataChannelStack.Up(liveStack)
                 for (pending in pendingChannels) scope.launch { pending.bind(liveStack) }
                 pendingChannels.clear()
             }
@@ -472,37 +635,66 @@ public class NativePeerConnection(
                 fail(PeerConnectionFailureReason.Sctp(SctpFailureReason.HandshakeTimeout))
                 return
             }
-            _connectionState.value = PeerConnectionState.Connected(d.selectedPair)
+            _connectionState.value = PeerConnectionState.Connected(sessionPath(d.path.value))
 
-            // Structured children of this coroutine (cancelled by close() → establishJob.cancel), so no
-            // monitor leaks: forward incoming channels, and surface a post-Connected loss as a terminal
-            // state (RFC 7675 consent expiry → Failed(Ice); SCTP teardown → Closed, its typed reason
-            // already delivered to the data-channel caller as SctpClosedException).
-            coroutineScope {
-                launch {
-                    try {
-                        while (true) incomingChannels.trySend(liveStack.acceptBidirectional())
-                    } catch (_: kotlinx.coroutines.channels.ClosedReceiveChannelException) {
-                        // stack closed — no more incoming channels
-                    }
-                }
-                launch {
-                    val lost = d.state.first { it is IceConnectionState.Failed } as IceConnectionState.Failed
-                    if (!closed) fail(PeerConnectionFailureReason.Ice(lost.reason))
-                }
-                launch {
-                    liveStack.state.first { it == SctpAssociationState.Closed }
-                    if (!closed && _connectionState.value is PeerConnectionState.Connected) {
-                        _connectionState.value = PeerConnectionState.Closed
-                    }
-                }
-            }
+            monitorLiveSession(d, liveStack)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e // close() cancelled us — structured cancellation, not a failure
         } catch (e: WebRtcException) {
             fail(e.failure) // a real DTLS/SCTP-establishment failure (W4) — typed, never a hang
         } catch (e: Exception) {
             fail(PeerConnectionFailureReason.Unknown(e.message ?: e::class.simpleName ?: "establishment error"))
+        }
+    }
+
+    /**
+     * Watch a *live* session until something ends it. Structured children of the establishment coroutine
+     * (cancelled by close() → establishJob.cancel), so no monitor outlives the session that owns it.
+     *
+     * Extracted from [runEstablishment] rather than left inline: establishment is a linear sequence that
+     * ends here, and these four are a concurrent set that begins here — one function doing both was the
+     * thing that made it hard to see that the ICE path was never being watched at all.
+     */
+    private suspend fun monitorLiveSession(
+        d: IceAgentDriver,
+        liveStack: SctpDataChannelStack,
+    ) {
+        coroutineScope {
+            // The ICE path moving mid-session is exactly what an RFC 8445 §9 restart does, and until
+            // now nothing above ICE could see it: `runEstablishment` awaited nomination once and then
+            // never looked again. Note this monitor *only* maps a live session's path — it never
+            // resurrects a Failed or Closed session, so the terminal-state monitors below still win.
+            launch {
+                d.path.collect { path ->
+                    val live = _connectionState.value
+                    if (live !is PeerConnectionState.Connected && live !is PeerConnectionState.Restarting) return@collect
+                    _connectionState.value =
+                        when (path) {
+                            // Nothing nominated in either generation — the pair is gone, not moved. The
+                            // ICE failure monitor owns that terminal; do not pre-empt it with a guess.
+                            IcePath.Unnominated -> return@collect
+                            is IcePath.Nominated -> PeerConnectionState.Connected(SelectedPath.Known(path.pair))
+                            is IcePath.Restarting -> PeerConnectionState.Restarting(SelectedPath.Known(path.previous))
+                        }
+                }
+            }
+            launch {
+                try {
+                    while (true) incomingChannels.trySend(liveStack.acceptBidirectional())
+                } catch (_: kotlinx.coroutines.channels.ClosedReceiveChannelException) {
+                    // stack closed — no more incoming channels
+                }
+            }
+            launch {
+                val lost = d.state.first { it is IceConnectionState.Failed } as IceConnectionState.Failed
+                if (!closed) fail(PeerConnectionFailureReason.Ice(lost.reason))
+            }
+            launch {
+                liveStack.state.first { it == SctpAssociationState.Closed }
+                if (!closed && _connectionState.value is PeerConnectionState.Connected) {
+                    _connectionState.value = PeerConnectionState.Closed
+                }
+            }
         }
     }
 
@@ -529,22 +721,54 @@ public class NativePeerConnection(
     }
 
     // Pull the peer's ICE credentials + any in-SDP (non-trickle) candidates out of a remote description.
-    private fun ingestRemote(description: SessionDescription) {
+    private suspend fun ingestRemote(
+        type: SdpType,
+        description: SessionDescription,
+    ) {
         val media = description.mediaDescriptions.firstOrNull()
         val ufrag = media?.iceUfrag() ?: description.iceUfrag()
         val pwd = media?.icePwd() ?: description.icePwd()
+        val d = startedTransport()
         if (ufrag != null && pwd != null) {
-            driver?.setRemoteCredentials(IceCredentials(Ufrag(ufrag), IcePassword(pwd)))
+            val incoming = IceCredentials(Ufrag(ufrag), IcePassword(pwd))
+            if (d != null && type == SdpType.Offer && peerRestarted(incoming)) {
+                // RFC 8445 §9: the peer restarted ICE. Restart our side too — otherwise our checklist stays
+                // bound to the old password and every check we send is silently discarded by an agent that
+                // no longer knows it. Our next answer/offer then carries our own new credentials.
+                applyIceRestart(d)
+            }
+            remoteIceCredentials = RemoteIceCredentials.Received(incoming)
+            d?.setRemoteCredentials(incoming)
         }
         // The peer's negotiated DTLS role (RFC 8842) — used to derive our own role (see resolveRole).
-        remoteSetup = media?.setup() ?: description.setup()
+        val setup = media?.setup() ?: description.setup()
+        if (setup != null) remoteSetup = RemoteSetup.Declared(setup)
         // RFC 8122 §5 / RFC 8827: the fingerprint may sit in the media section or be inherited from the
         // session level. Multiple lines are legal; we verify against the first (we accept exactly one
         // certificate, and a peer offering several digests for one cert gains nothing by the extras).
-        remoteFingerprint =
+        val fingerprint =
             (media?.fingerprints() ?: emptyList()).firstOrNull() ?: description.fingerprints().firstOrNull()
-        driver?.let { d -> media?.candidates()?.forEach { line -> addRemoteCandidateLine(d, line) } }
+        if (fingerprint != null) remoteFingerprint = RemoteFingerprint.Declared(fingerprint)
+        startedTransport()?.let { live -> media?.candidates()?.forEach { line -> addRemoteCandidateLine(live, line) } }
     }
+
+    /**
+     * Whether [incoming] announces the peer's own ICE restart. RFC 8445 §9 requires a restarting agent to
+     * change **both** the ufrag and the password, so both changing is the signal — and requiring both is
+     * what keeps a re-signaled description that merely repeats one of them from being mistaken for one.
+     * Nothing to compare against before the first description, which is a first negotiation, not a restart.
+     *
+     * Only ever asked of a remote **offer**. An answer to *our* restart offer necessarily carries new
+     * credentials — that is how the peer completes the restart we asked for — so treating that as an
+     * independent peer-initiated restart makes the two sides restart each other forever, each new
+     * generation provoking the next.
+     */
+    private fun peerRestarted(incoming: IceCredentials): Boolean =
+        when (val known = remoteIceCredentials) {
+            RemoteIceCredentials.NotReceived -> false
+            is RemoteIceCredentials.Received ->
+                known.credentials.ufrag != incoming.ufrag && known.credentials.password != incoming.password
+        }
 
     private fun localParams(
         d: IceAgentDriver,
@@ -565,6 +789,73 @@ public class NativePeerConnection(
             is SdpParseResult.Success -> result.description
             is SdpParseResult.Reject -> throw SdpFormatException(result.reason)
         }
+
+    private fun sessionPath(path: IcePath): SelectedPath =
+        when (path) {
+            IcePath.Unnominated -> SelectedPath.Opaque // unreachable here: we only ask once ICE has nominated
+            is IcePath.Nominated -> SelectedPath.Known(path.pair)
+            is IcePath.Restarting -> SelectedPath.Known(path.previous)
+        }
+
+    // ── negotiation state, as cases rather than nulls ──
+    //
+    // Each of these is a field a renegotiation writes twice, so each nullable would have had to carry both
+    // "not yet" and "not any more". Naming the cases costs a few lines and makes every read site say which
+    // one it meant (DESIGN §2).
+
+    /** Whether the ICE transport for this session exists yet. */
+    private sealed interface IceTransport {
+        data object NotStarted : IceTransport
+
+        data class Started(
+            val driver: IceAgentDriver,
+        ) : IceTransport
+    }
+
+    /** Whether the SCTP data-channel stack has established. */
+    private sealed interface DataChannelStack {
+        data object NotUp : DataChannelStack
+
+        data class Up(
+            val stack: SctpDataChannelStack,
+        ) : DataChannelStack
+    }
+
+    /** The peer's `a=setup` (RFC 8842), once it has actually declared one. */
+    private sealed interface RemoteSetup {
+        data object NotDeclared : RemoteSetup
+
+        data class Declared(
+            val role: SetupRole,
+        ) : RemoteSetup
+    }
+
+    /** The peer's `a=fingerprint` (RFC 8122) — absent means unverifiable, which is a refusal, not a default. */
+    private sealed interface RemoteFingerprint {
+        data object NotDeclared : RemoteFingerprint
+
+        data class Declared(
+            val fingerprint: Fingerprint,
+        ) : RemoteFingerprint
+    }
+
+    /** The peer's ICE credentials as last signaled — the baseline a peer-initiated restart is detected against. */
+    private sealed interface RemoteIceCredentials {
+        data object NotReceived : RemoteIceCredentials
+
+        data class Received(
+            val credentials: IceCredentials,
+        ) : RemoteIceCredentials
+    }
+
+    /** What the next [createOffer] must carry. */
+    private sealed interface NegotiationIntent {
+        /** An ordinary offer on the current ICE generation. */
+        data object Fresh : NegotiationIntent
+
+        /** An offer carrying a new ICE generation (RFC 8445 §9) — see [RtcPeerConnection.restartIce]. */
+        data object IceRestart : NegotiationIntent
+    }
 
     // A data channel handed back before SCTP is up: proxies to the real channel once [bind] completes.
     private inner class PendingChannel(

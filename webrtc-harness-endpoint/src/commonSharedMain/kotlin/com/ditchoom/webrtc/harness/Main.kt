@@ -331,8 +331,9 @@ private suspend fun runOfferer(
         return !cfg.semanticsRequired
     }
 
-    // s6/close — the DONE handshake, then a graceful ASSOCIATION shutdown (decision D1a: per-channel close
-    // needs RFC 6525 RE-CONFIG, which webrtc-sctp does not implement, so it stays a library follow-up).
+    // s6/close — the DONE handshake, then a graceful ASSOCIATION shutdown (decision D1a). Per-channel
+    // close via RFC 6525 stream reset now EXISTS in webrtc-sctp and is covered by its own unit + vnet
+    // fixtures; proving it against the foreign peers is a harness phase of its own, not a change to s6.
     // `DONE` returning proves the association was still healthy at teardown, and replaces the old
     // FLUSH_LINGER-vs-ECHO_TIMEOUT teardown race with an explicit agreement that the run is over.
     val closeStarted = clock()

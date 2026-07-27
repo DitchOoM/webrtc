@@ -53,9 +53,10 @@ import kotlin.time.Instant
 // scenario decision and assertion lives here, in our Kotlin. Channel labels are self-describing for logs,
 // getStats and pcaps, but drive NO behaviour on the reflector.
 //
-// Per-channel close (RFC 6525 RE-CONFIG stream reset) is deliberately absent: `webrtc-sctp` does not
-// implement it, so s6 proves the ASSOCIATION-level graceful shutdown that we do implement, and per-channel
-// close stays a library follow-up rather than a harness fiction (decision D1a).
+// Per-channel close (RFC 6525 RE-CONFIG stream reset) is not one of the phases here. It was absent
+// originally because `webrtc-sctp` did not implement it (decision D1a); it now does, proven by unit and
+// vnet fixtures, so what is missing is only the interop phase — s6 still proves the ASSOCIATION-level
+// graceful shutdown, and a per-channel close phase is a harness change of its own.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /** The control channel's label — kept historical so every existing lane's logs read exactly as before. */

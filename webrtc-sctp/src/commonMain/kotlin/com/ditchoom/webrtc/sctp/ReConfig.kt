@@ -54,6 +54,13 @@ public value class ReConfigRequestSequenceNumber(
 ) {
     /** The next sequence number, wrapping modulo 2³². */
     public fun next(): ReConfigRequestSequenceNumber = ReConfigRequestSequenceNumber(value + 1u)
+
+    /**
+     * The previous sequence number, wrapping modulo 2³². Needed for RFC 6525 §4.1's Response Sequence
+     * Number field, which a request that is *not* answering an incoming request fills with "the next
+     * expected Re-configuration Request Sequence Number minus 1".
+     */
+    public fun previous(): ReConfigRequestSequenceNumber = ReConfigRequestSequenceNumber(value - 1u)
 }
 
 /**

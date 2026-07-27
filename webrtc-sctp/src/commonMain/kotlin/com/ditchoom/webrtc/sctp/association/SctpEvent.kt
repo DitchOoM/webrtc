@@ -35,6 +35,24 @@ public sealed interface SctpEvent {
         public val payload: ReadBuffer,
     ) : SctpEvent
 
+    /**
+     * Reset this endpoint's **outgoing** streams (RFC 6525 §4.1) — which is how RFC 8831 §6.7 closes a
+     * data channel: the closing side resets its outgoing stream, the peer sees the incoming reset and
+     * resets its own outgoing half, and the channel is closed once both directions have been reset.
+     *
+     * Queued, not immediate: RFC 6525 §5.1.2 allows only one outstanding request at a time, so a reset
+     * asked for while another is in flight is accumulated and sent when that one is answered. The result
+     * arrives as an [SctpOutput.OutgoingStreamsReset] — including when the peer cannot do it at all
+     * ([StreamResetOutcome.Unsupported]), so a caller waiting on the close is never left without an answer.
+     *
+     * The upper layer must have stopped sending on these streams before asking: the request names the
+     * last TSN assigned at the moment it goes out, and data queued after that is data the peer will
+     * deliver on a stream whose SSN state has already been reset out from under it.
+     */
+    public data class ResetStreams(
+        public val scope: StreamResetScope,
+    ) : SctpEvent
+
     /** Begin a graceful shutdown (RFC 4960 §9.2): drain outstanding data, then SHUTDOWN handshake. */
     public data object Shutdown : SctpEvent
 

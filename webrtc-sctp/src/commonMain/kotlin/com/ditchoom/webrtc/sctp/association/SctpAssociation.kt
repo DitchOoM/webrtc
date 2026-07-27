@@ -11,7 +11,12 @@ import com.ditchoom.webrtc.sctp.DataChunkFlags
 import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.ErrorCauseCode
 import com.ditchoom.webrtc.sctp.ForwardTsnStream
+import com.ditchoom.webrtc.sctp.ReConfigParameter
+import com.ditchoom.webrtc.sctp.ReConfigParameterDecode
+import com.ditchoom.webrtc.sctp.ReConfigRequestSequenceNumber
+import com.ditchoom.webrtc.sctp.ReConfigResult
 import com.ditchoom.webrtc.sctp.SctpChunk
+import com.ditchoom.webrtc.sctp.SctpChunkType
 import com.ditchoom.webrtc.sctp.SctpDecodeResult
 import com.ditchoom.webrtc.sctp.SctpErrorCause
 import com.ditchoom.webrtc.sctp.SctpPacket
@@ -21,6 +26,7 @@ import com.ditchoom.webrtc.sctp.StreamId
 import com.ditchoom.webrtc.sctp.StreamSequenceNumber
 import com.ditchoom.webrtc.sctp.Tsn
 import com.ditchoom.webrtc.sctp.VerificationTag
+import com.ditchoom.webrtc.sctp.asSupportedExtensions
 import kotlin.random.Random
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
@@ -64,6 +70,7 @@ public class SctpAssociation(
     private var localInitialTsn: Tsn = Tsn(0u)
     private var nextTsn: Tsn = Tsn(0u)
     private var peerSupportsForwardTsn: Boolean = false
+    private var peerSupportsReConfig: Boolean = false
 
     private val orderedSendSsn = HashMap<StreamId, Int>()
     private val pendingSend = ArrayDeque<OutstandingData>()
@@ -89,6 +96,133 @@ public class SctpAssociation(
     private var localInit: SctpChunk.Init? = null
     private var cookieEcho: SctpChunk.CookieEcho? = null
 
+    // ── RFC 6525 stream reconfiguration — two state machines, each one field ──
+    private var outgoingReset: OutgoingReset = OutgoingReset.Ready(PendingReset.Nothing)
+    private var peerRequests: PeerRequests = PeerRequests.NoneYet(ReConfigRequestSequenceNumber(0u))
+    private var nextRequestSequence = ReConfigRequestSequenceNumber(0u)
+
+    /**
+     * What the upper layer has asked to reset but that is not yet on the wire — a **join semilattice**
+     * over [StreamResetScope], so accumulating requests while one is in flight (RFC 6525 §5.1.2 allows
+     * only one outstanding at a time) is total and order-independent.
+     *
+     * [Nothing] is a state of its own rather than an empty [StreamResetScope.Streams], because on the
+     * wire an empty stream list means *all* streams — the one confusion this whole type exists to make
+     * impossible. An empty request from the caller therefore lands here, as the no-op it reads as.
+     */
+    private sealed interface PendingReset {
+        /** Nothing queued. */
+        data object Nothing : PendingReset
+
+        /** [scope] is waiting to go out. */
+        data class Some(
+            val scope: StreamResetScope,
+        ) : PendingReset
+
+        /** This pending set joined with [scope]: "all streams" absorbs, named streams union. */
+        fun plus(scope: StreamResetScope): PendingReset =
+            when (this) {
+                Nothing -> if (scope is StreamResetScope.Streams && scope.ids.isEmpty()) Nothing else Some(scope)
+                is Some ->
+                    when {
+                        this.scope is StreamResetScope.AllStreams || scope is StreamResetScope.AllStreams ->
+                            Some(StreamResetScope.AllStreams)
+                        else -> {
+                            val a = (this.scope as StreamResetScope.Streams).ids
+                            val b = (scope as StreamResetScope.Streams).ids
+                            Some(StreamResetScope.Streams(a + b))
+                        }
+                    }
+            }
+    }
+
+    /**
+     * The requester half (RFC 6525 §5.1.2): at most one request may be outstanding, which is why this is
+     * one field with two states rather than a nullable "in flight" beside a queue. Both states carry the
+     * pending set, so a reset asked for at any moment has exactly one place to go.
+     */
+    private sealed interface OutgoingReset {
+        /** What has piled up behind whatever this state is doing. */
+        val pending: PendingReset
+
+        /** Nothing on the wire — [pending] goes out as soon as the association can send it. */
+        data class Ready(
+            override val pending: PendingReset,
+        ) : OutgoingReset
+
+        /**
+         * [request] is on the wire and unanswered. Retained whole so the retransmit timer re-emits it
+         * byte-identically (a re-derived request would carry a newer last-assigned TSN, which the peer
+         * would read as a *different* request at the same sequence number).
+         */
+        data class InFlight(
+            val sequence: ReConfigRequestSequenceNumber,
+            val scope: StreamResetScope,
+            val request: ReConfigParameter.OutgoingSsnReset,
+            override val pending: PendingReset,
+        ) : OutgoingReset
+    }
+
+    /**
+     * The responder half — what this endpoint knows about the peer's request numbering. Sealed rather
+     * than a `seen: Boolean` beside two nullables, because the three states have genuinely different
+     * data and the invariants between them are exactly what the RFC's rules are made of:
+     *
+     * - **[NoneYet]** — nothing received yet; [expected] is the RFC 6525 §5.1.1 seed (the peer's Initial TSN).
+     * - **[Answered]** — [last] was processed and answered with [response], which §5.2.1 requires be
+     *   *repeated verbatim* if the peer retransmits that same request rather than processed again.
+     * - **[Deferred]** — §5.2.2 deferred processing: [last] named a TSN we have not received up to, so it
+     *   is held and answered "In progress". The cached response is *derived*, not stored, so the
+     *   invariant "a deferred request is the one we answered In-progress" cannot drift.
+     */
+    private sealed interface PeerRequests {
+        /** The sequence number the peer's next *new* request must carry (RFC 6525 §5.2). */
+        val expected: ReConfigRequestSequenceNumber
+
+        data class NoneYet(
+            override val expected: ReConfigRequestSequenceNumber,
+        ) : PeerRequests
+
+        /** A request has been received, so both §5.2.1's repeat rule and §5.2's ordering rule apply. */
+        sealed interface Seen : PeerRequests {
+            val last: ReConfigRequestSequenceNumber
+
+            /** The answer to repeat verbatim if the peer retransmits [last] (§5.2.1). */
+            val response: ReConfigParameter.Response
+
+            override val expected: ReConfigRequestSequenceNumber get() = last.next()
+        }
+
+        data class Answered(
+            override val last: ReConfigRequestSequenceNumber,
+            override val response: ReConfigParameter.Response,
+        ) : Seen
+
+        data class Deferred(
+            override val last: ReConfigRequestSequenceNumber,
+            val scope: StreamResetScope,
+            val senderLastAssignedTsn: Tsn,
+        ) : Seen {
+            override val response: ReConfigParameter.Response
+                get() = ReConfigParameter.Response(last, ReConfigResult.InProgress)
+        }
+    }
+
+    /**
+     * Whether an inbound RFC 6525 request may be acted on. A sealed decision rather than a nullable
+     * response: "process this" and "do not process it, send this instead" are two outcomes, and a null
+     * standing for the first would be a second meaning for absence.
+     */
+    private sealed interface RequestAdmission {
+        /** The request is the expected next one — act on it. */
+        data object Process : RequestAdmission
+
+        /** Do not act; answer with [response] (a repeat under §5.2.1, or a bad-sequence reject under §5.2). */
+        data class Answer(
+            val response: ReConfigParameter.Response,
+        ) : RequestAdmission
+    }
+
     // ── Timers as absolute deadlines (RFC §5.1: nextDeadline is the whole clock contract) ──
     private var handshakeDeadline: Instant? = null
     private var handshakeRetransmits = 0
@@ -96,6 +230,8 @@ public class SctpAssociation(
     private var sackDeadline: Instant? = null
     private var shutdownDeadline: Instant? = null
     private var shutdownRetransmits = 0
+    private var reConfigDeadline: Instant? = null
+    private var reConfigRetransmits = 0
     private var consecutiveRtxErrors = 0
     private var packetsSinceSack = 0
 
@@ -104,7 +240,7 @@ public class SctpAssociation(
      * until here, then feeds [SctpEvent.TimerFired]; every due timer fires in that one call.
      */
     public fun nextDeadline(now: Instant): Instant? =
-        listOfNotNull(handshakeDeadline, t3Deadline, sackDeadline, shutdownDeadline).minOrNull()
+        listOfNotNull(handshakeDeadline, t3Deadline, sackDeadline, shutdownDeadline, reConfigDeadline).minOrNull()
 
     /** Feed one event; returns the side effects for the driver to apply (RFC §5.1). Never throws. */
     public fun handle(
@@ -116,6 +252,7 @@ public class SctpAssociation(
             SctpEvent.Associate -> onAssociate(now, out)
             is SctpEvent.DatagramReceived -> onDatagram(event.payload, now, out)
             is SctpEvent.SendMessage -> onSendMessage(event, now, out)
+            is SctpEvent.ResetStreams -> onResetStreams(event.scope, now, out)
             SctpEvent.Shutdown -> onShutdownRequested(now, out)
             SctpEvent.Abort -> onAbortRequested(out)
             SctpEvent.TimerFired -> onTimers(now, out)
@@ -140,11 +277,7 @@ public class SctpAssociation(
                 outboundStreams = config.outboundStreams,
                 inboundStreams = config.inboundStreams,
                 initialTsn = localInitialTsn,
-                parameters =
-                    listOf(
-                        SctpParameter.forwardTsnSupported(),
-                        SctpParameter.supportedExtensions(listOf(com.ditchoom.webrtc.sctp.SctpChunkType.ForwardTsn)),
-                    ),
+                parameters = listOf(SctpParameter.forwardTsnSupported(), supportedExtensions()),
             )
         localInit = init
         emitPacket(listOf(init), VerificationTag(0u), out)
@@ -180,6 +313,7 @@ public class SctpAssociation(
                     peerInitialTsn = init.initialTsn,
                     peerRwnd = init.advertisedReceiverWindow,
                     peerForwardTsn = init.supportsForwardTsn(),
+                    peerReConfig = init.parameters.advertiseReConfig(),
                     ourTag = advertised.ourTag,
                     ourInitialTsn = advertised.ourInitialTsn,
                     localTieTag = advertised.localTieTag,
@@ -197,7 +331,7 @@ public class SctpAssociation(
                     listOf(
                         SctpParameter.ofValue(com.ditchoom.webrtc.sctp.ParameterType.StateCookie, cookie),
                         SctpParameter.forwardTsnSupported(),
-                        SctpParameter.supportedExtensions(listOf(com.ditchoom.webrtc.sctp.SctpChunkType.ForwardTsn)),
+                        supportedExtensions(),
                     ),
             )
         emitPacket(listOf(initAck), init.initiateTag, out)
@@ -267,6 +401,7 @@ public class SctpAssociation(
         }
         peerVerificationTag = initAck.initiateTag
         peerSupportsForwardTsn = initAck.parameters.any { it.type == com.ditchoom.webrtc.sctp.ParameterType.ForwardTsnSupported }
+        peerSupportsReConfig = initAck.parameters.advertiseReConfig()
         establishControlBlocks(peerInitialTsn = initAck.initialTsn, peerRwnd = initAck.advertisedReceiverWindow)
         val echo = SctpChunk.CookieEcho(copyOf(cookieParam.value))
         cookieEcho = echo
@@ -308,6 +443,7 @@ public class SctpAssociation(
                     cancelHandshake()
                     cookieEcho = null
                     trySend(now, out)
+                    maybeSendReset(now, out)
                 }
             }
             // Actions C and "any case not shown in Table 2": discard the cookie, change no state, and
@@ -412,12 +548,14 @@ public class SctpAssociation(
         nextTsn = cookie.ourInitialTsn
         peerVerificationTag = cookie.peerTag
         peerSupportsForwardTsn = cookie.peerForwardTsn
+        peerSupportsReConfig = cookie.peerReConfig
         establishControlBlocks(peerInitialTsn = cookie.peerInitialTsn, peerRwnd = cookie.peerRwnd)
         emitPacket(listOf(SctpChunk.CookieAck), peerVerificationTag, out)
         transition(SctpAssociationState.Established, out)
         cancelHandshake()
         cookieEcho = null
         trySend(now, out)
+        maybeSendReset(now, out)
     }
 
     private fun onCookieAck(
@@ -429,6 +567,7 @@ public class SctpAssociation(
         cancelHandshake()
         cookieEcho = null
         trySend(now, out)
+        maybeSendReset(now, out)
     }
 
     private fun establishControlBlocks(
@@ -439,6 +578,12 @@ public class SctpAssociation(
         reassemblyQueue = ReassemblyQueue(peerInitialTsn, config)
         congestion = CongestionControl(config, peerRwnd)
         retransmissionQueue!!.setPeerReceiveWindow(peerRwnd)
+        // RFC 6525 §5.1.1: both endpoints seed their Re-configuration Request Sequence Number from their
+        // own Initial TSN, so each side can predict where the other's numbering starts before a single
+        // request has been exchanged — which is what lets §4.1's Response Sequence Number field be filled
+        // in ("next expected minus 1") on the very first request we originate.
+        nextRequestSequence = ReConfigRequestSequenceNumber(localInitialTsn.value)
+        peerRequests = PeerRequests.NoneYet(ReConfigRequestSequenceNumber(peerInitialTsn.value))
     }
 
     // ────────────────────────────────── receive path ──────────────────────────────────
@@ -483,17 +628,15 @@ public class SctpAssociation(
                 SctpChunk.ShutdownAck -> onShutdownAck(out)
                 is SctpChunk.ShutdownComplete -> onShutdownComplete(out)
                 is SctpChunk.Error -> Unit
-                // RE-CONFIG (RFC 6525) is decoded by the codec floor but not yet acted on: this
-                // association does not list chunk type 130 in its INIT Supported Extensions, so a
-                // conforming peer never sends one (RFC 6525 §5.1: an endpoint sends RE-CONFIG only to a
-                // peer that advertised support). Ignoring it is therefore the correct behaviour today,
-                // and matches how an unrecognized type-130 chunk would have been treated before —
-                // SkipAndContinue, per its high bits. The stream-reset state machine that answers these,
-                // and the advertisement that invites them, land together in a follow-up.
-                is SctpChunk.ReConfig -> Unit
+                is SctpChunk.ReConfig -> onReConfig(chunk, now, out)
                 is SctpChunk.Unrecognized -> Unit
             }
         }
+        // A deferred reset (RFC 6525 §5.2.2) completes on cumulative-TSN progress, and the only thing that
+        // advances the cumulative TSN is inbound DATA or FORWARD-TSN — both of which land in the loop
+        // above. Checked once here rather than per chunk so a packet bundling several DATA chunks does not
+        // re-evaluate it for each of them.
+        maybeCompleteDeferredReset(out)
         if (sackOwed) maybeSack(now, out)
     }
 
@@ -638,6 +781,296 @@ public class SctpAssociation(
         if (rq.outstandingBytes > 0 && t3Deadline == null) t3Deadline = now + rtt.rto
     }
 
+    // ─────────────────── stream reconfiguration (RFC 6525) — the requester half ───────────────────
+
+    private fun onResetStreams(
+        scope: StreamResetScope,
+        now: Instant,
+        out: MutableList<SctpOutput>,
+    ) {
+        outgoingReset =
+            when (val current = outgoingReset) {
+                is OutgoingReset.Ready -> OutgoingReset.Ready(current.pending.plus(scope))
+                is OutgoingReset.InFlight -> current.copy(pending = current.pending.plus(scope))
+            }
+        maybeSendReset(now, out)
+    }
+
+    /**
+     * Put the pending reset on the wire, if anything is pending and nothing else is outstanding (RFC 6525
+     * §5.1.2). Called both when the upper layer asks and whenever the previous request is answered, so a
+     * queue of channel closes drains one request at a time without the driver having to sequence them.
+     */
+    private fun maybeSendReset(
+        now: Instant,
+        out: MutableList<SctpOutput>,
+    ) {
+        val ready = outgoingReset as? OutgoingReset.Ready ?: return
+        val pending = ready.pending as? PendingReset.Some ?: return
+        if (_state != SctpAssociationState.Established) return
+        val scope = pending.scope
+        // A peer that never advertised RE-CONFIG cannot be sent one (RFC 6525 §5.1). Answer the caller
+        // rather than dropping the request: a channel close that is unanswerable still has to complete.
+        if (!peerSupportsReConfig) {
+            outgoingReset = OutgoingReset.Ready(PendingReset.Nothing)
+            out += SctpOutput.OutgoingStreamsReset(scope, StreamResetOutcome.Unsupported)
+            return
+        }
+        val sequence = nextRequestSequence
+        nextRequestSequence = sequence.next()
+        val request =
+            ReConfigParameter.OutgoingSsnReset(
+                requestSequenceNumber = sequence,
+                // RFC 6525 §4.1: when a request is not itself answering an incoming one it carries "the
+                // next expected Re-configuration Request Sequence Number minus 1".
+                responseSequenceNumber = peerRequests.expected.previous(),
+                // The last TSN we have assigned anywhere (RFC 6525 §4.1). Assignment happens when a
+                // message is *queued*, not when it is sent, so this covers data still sitting in the send
+                // buffer — the peer defers its reset until it has received all of it (§5.2.2), which is
+                // what stops a close from truncating data the caller already handed us.
+                senderLastAssignedTsn = Tsn(nextTsn.value - 1u),
+                streams = scope.streamList(),
+            )
+        outgoingReset = OutgoingReset.InFlight(sequence, scope, request, PendingReset.Nothing)
+        reConfigRetransmits = 0
+        emitPacket(listOf(SctpChunk.ReConfig.of(request)), peerVerificationTag, out)
+        armReConfig(now)
+    }
+
+    private fun onReConfigResponse(
+        response: ReConfigParameter.Response,
+        now: Instant,
+        out: MutableList<SctpOutput>,
+    ) {
+        val inFlight = outgoingReset as? OutgoingReset.InFlight ?: return
+        // A response for anything other than the request actually outstanding is stale (a duplicate of an
+        // already-completed one, or a peer answering a sequence number we never sent) — discard it rather
+        // than completing the live request on someone else's answer.
+        if (response.responseSequenceNumber != inFlight.sequence) return
+        if (response.result == ReConfigResult.InProgress) {
+            // RFC 6525 §5.2.2: the peer is holding the reset until its cumulative TSN catches up. The
+            // request stays outstanding and the timer is restarted from scratch — the peer sends the final
+            // response itself, and our retransmit is what recovers it if that response is lost.
+            reConfigRetransmits = 0
+            armReConfig(now)
+            return
+        }
+        outgoingReset = OutgoingReset.Ready(inFlight.pending)
+        cancelReConfig()
+        val outcome =
+            if (response.result.isSuccess) {
+                // Our outgoing SSN state for these streams is now reset on both sides, so the next ordered
+                // message on such a stream starts again at SSN 0 — which is what makes the stream id
+                // reusable for a brand-new data channel (RFC 8831 §6.7).
+                resetOutgoingSsn(inFlight.scope)
+                StreamResetOutcome.Performed
+            } else {
+                StreamResetOutcome.Refused(response.result)
+            }
+        out += SctpOutput.OutgoingStreamsReset(inFlight.scope, outcome)
+        maybeSendReset(now, out)
+    }
+
+    private fun resetOutgoingSsn(scope: StreamResetScope) {
+        when (scope) {
+            StreamResetScope.AllStreams -> orderedSendSsn.clear()
+            is StreamResetScope.Streams -> for (id in scope.ids) orderedSendSsn.remove(id)
+        }
+    }
+
+    // ─────────────────── stream reconfiguration (RFC 6525) — the responder half ───────────────────
+
+    private fun onReConfig(
+        chunk: SctpChunk.ReConfig,
+        now: Instant,
+        out: MutableList<SctpOutput>,
+    ) {
+        // Before the TCB exists there is no SSN state to reset and no sequence space to check against, so
+        // a RE-CONFIG arriving mid-handshake is dropped rather than answered on guessed state.
+        if (reassemblyQueue == null) return
+        val responses = ArrayList<ReConfigParameter>()
+        for (decoded in chunk.reConfigParameters()) {
+            when (decoded) {
+                is ReConfigParameterDecode.Interpreted -> onReConfigParameter(decoded.parameter, responses, now, out)
+                // Not an RFC 6525 §4 parameter at all — an unknown TLV riding in a RE-CONFIG chunk. The
+                // chunk's own type bits already say what to do with something unrecognized: skip it.
+                ReConfigParameterDecode.NotReConfig -> Unit
+                // The type IS an RFC 6525 one but its body is malformed, so its Request Sequence Number
+                // cannot be trusted — and a response is *addressed* by that number. There is nothing
+                // truthful to answer, so it is dropped; the peer's own retransmit timer is what surfaces
+                // the problem to it (RFC 6525 §5.1.1), and inventing a sequence number would corrupt the
+                // one piece of state both sides must agree on.
+                is ReConfigParameterDecode.Malformed -> Unit
+            }
+        }
+        if (responses.isNotEmpty()) emitReConfig(responses, out)
+    }
+
+    private fun onReConfigParameter(
+        parameter: ReConfigParameter,
+        responses: MutableList<ReConfigParameter>,
+        now: Instant,
+        out: MutableList<SctpOutput>,
+    ) {
+        when (parameter) {
+            is ReConfigParameter.OutgoingSsnReset -> onIncomingStreamReset(parameter, responses, out)
+            is ReConfigParameter.Response -> onReConfigResponse(parameter, now, out)
+            // The four requests this subset decodes but will not perform (see ReConfig.kt's header): an
+            // Incoming SSN Reset would have us reset streams the peer does not own the sequencing of, an
+            // SSN/TSN reset would have to unwind the retransmission queue and FORWARD-TSN together, and
+            // adding streams is meaningless when INIT already advertised 1024 of them. Each is REFUSED,
+            // explicitly and in sequence, rather than ignored — an ignored request is retransmitted until
+            // the peer's error counter aborts the whole association.
+            is ReConfigParameter.IncomingSsnReset -> refuse(parameter.requestSequenceNumber, responses)
+            is ReConfigParameter.SsnTsnReset -> refuse(parameter.requestSequenceNumber, responses)
+            is ReConfigParameter.AddOutgoingStreams -> refuse(parameter.requestSequenceNumber, responses)
+            is ReConfigParameter.AddIncomingStreams -> refuse(parameter.requestSequenceNumber, responses)
+        }
+    }
+
+    private fun refuse(
+        sequence: ReConfigRequestSequenceNumber,
+        responses: MutableList<ReConfigParameter>,
+    ) {
+        when (val admission = admit(sequence)) {
+            is RequestAdmission.Answer -> responses += admission.response
+            RequestAdmission.Process -> {
+                val response = ReConfigParameter.Response(sequence, ReConfigResult.Denied)
+                responses += response
+                peerRequests = PeerRequests.Answered(sequence, response)
+            }
+        }
+    }
+
+    /**
+     * The peer is resetting **its** outgoing streams — this endpoint's incoming half, and RFC 8831 §6.7's
+     * "the peer closed a data channel".
+     */
+    private fun onIncomingStreamReset(
+        request: ReConfigParameter.OutgoingSsnReset,
+        responses: MutableList<ReConfigParameter>,
+        out: MutableList<SctpOutput>,
+    ) {
+        when (val admission = admit(request.requestSequenceNumber)) {
+            is RequestAdmission.Answer -> {
+                responses += admission.response
+                return
+            }
+            RequestAdmission.Process -> Unit
+        }
+        val reassembly = reassemblyQueue ?: return
+        val scope = request.scope()
+        // RFC 6525 §5.2.2: a reset whose Sender's Last Assigned TSN is still above our cumulative point
+        // would tear the SSN state out from under data that is in flight and about to be reassembled. Hold
+        // it and answer "In progress"; it completes in maybeCompleteDeferredReset when the gap fills.
+        if (reassembly.cumulativeTsn.sackPrecedes(request.senderLastAssignedTsn)) {
+            val deferred = PeerRequests.Deferred(request.requestSequenceNumber, scope, request.senderLastAssignedTsn)
+            peerRequests = deferred
+            responses += deferred.response
+            return
+        }
+        performIncomingReset(scope, out)
+        val response = ReConfigParameter.Response(request.requestSequenceNumber, ReConfigResult.SuccessPerformed)
+        responses += response
+        peerRequests = PeerRequests.Answered(request.requestSequenceNumber, response)
+    }
+
+    private fun maybeCompleteDeferredReset(out: MutableList<SctpOutput>) {
+        val deferred = peerRequests as? PeerRequests.Deferred ?: return
+        val reassembly = reassemblyQueue ?: return
+        if (reassembly.cumulativeTsn.sackPrecedes(deferred.senderLastAssignedTsn)) return
+        performIncomingReset(deferred.scope, out)
+        val response = ReConfigParameter.Response(deferred.last, ReConfigResult.SuccessPerformed)
+        // Replace the cached "In progress" so a retransmit of this same request now gets the final answer
+        // (RFC 6525 §5.2.1) — otherwise the peer would be told In-progress forever by its own retries.
+        peerRequests = PeerRequests.Answered(deferred.last, response)
+        emitReConfig(listOf(response), out)
+    }
+
+    private fun performIncomingReset(
+        scope: StreamResetScope,
+        out: MutableList<SctpOutput>,
+    ) {
+        reassemblyQueue?.resetStreams(scope)
+        out += SctpOutput.IncomingStreamsReset(scope)
+    }
+
+    /**
+     * RFC 6525 §5.2 / §5.2.1's two sequence rules, in one place: a repeat of the last request is answered
+     * with the same response instead of being performed twice, and a request out of sequence is rejected
+     * as such.
+     *
+     * One deliberate leniency: the **first** request the peer ever sends is accepted whatever its
+     * sequence number, and the numbering is adopted from it. §5.1.1 says both endpoints seed from their
+     * Initial TSN and every implementation we interoperate with does (pion, werift, dcSCTP), so the seed
+     * is what [PeerRequests.NoneYet] holds — but if a peer seeded differently, rejecting its first request
+     * would fail every channel close for the life of the association, with nothing to renegotiate. There
+     * is nothing to protect here that DTLS has not already authenticated, so the strict check starts once
+     * the peer has told us where it is counting from.
+     */
+    private fun admit(sequence: ReConfigRequestSequenceNumber): RequestAdmission =
+        when (val requests = peerRequests) {
+            is PeerRequests.NoneYet -> RequestAdmission.Process
+            is PeerRequests.Seen ->
+                when (sequence) {
+                    requests.last -> RequestAdmission.Answer(requests.response)
+                    requests.expected -> RequestAdmission.Process
+                    else -> RequestAdmission.Answer(badSequence(sequence))
+                }
+        }
+
+    private fun badSequence(sequence: ReConfigRequestSequenceNumber) =
+        ReConfigParameter.Response(sequence, ReConfigResult.ErrorBadSequenceNumber)
+
+    private fun emitReConfig(
+        parameters: List<ReConfigParameter>,
+        out: MutableList<SctpOutput>,
+    ) {
+        emitPacket(listOf(SctpChunk.ReConfig(parameters.map { it.toParameter() })), peerVerificationTag, out)
+    }
+
+    private fun onReConfigTimeout(
+        now: Instant,
+        out: MutableList<SctpOutput>,
+    ) {
+        val inFlight =
+            outgoingReset as? OutgoingReset.InFlight ?: run {
+                reConfigDeadline = null
+                return
+            }
+        reConfigRetransmits += 1
+        // RFC 6525 §5.1.1 puts a retransmitted request under the association's error threshold, the same
+        // as DATA and SHUTDOWN: a peer that advertised RE-CONFIG and then answers none of them across a
+        // full exponential backoff is not a peer whose association is worth keeping.
+        if (reConfigRetransmits > config.maxAssociationRetransmits) {
+            fail(SctpFailureReason.RetransmissionLimitReached, out)
+            return
+        }
+        rtt.backoff()
+        emitPacket(listOf(SctpChunk.ReConfig.of(inFlight.request)), peerVerificationTag, out)
+        armReConfig(now)
+    }
+
+    private fun armReConfig(now: Instant) {
+        reConfigDeadline = now + rtt.rto
+    }
+
+    private fun cancelReConfig() {
+        reConfigDeadline = null
+        reConfigRetransmits = 0
+    }
+
+    // The wire's stream list for a scope: RFC 6525 §4.1 encodes "every stream" as the empty list.
+    private fun StreamResetScope.streamList(): List<StreamId> =
+        when (this) {
+            StreamResetScope.AllStreams -> emptyList()
+            is StreamResetScope.Streams -> ids.toList()
+        }
+
+    // …and the inverse, which is the only place an empty inbound stream list is allowed to mean "all".
+    private fun ReConfigParameter.OutgoingSsnReset.scope(): StreamResetScope =
+        if (resetsAllStreams) StreamResetScope.AllStreams else StreamResetScope.Streams(streams.toSet())
+
     // ────────────────────────────────── SACK scheduling ──────────────────────────────────
 
     private fun maybeSack(
@@ -744,6 +1177,7 @@ public class SctpAssociation(
         t3Deadline?.let { if (now >= it) onT3Timeout(now, out) }
         sackDeadline?.let { if (now >= it) emitSack(out) }
         shutdownDeadline?.let { if (now >= it) onShutdownTimeout(now, out) }
+        reConfigDeadline?.let { if (now >= it) onReConfigTimeout(now, out) }
     }
 
     private fun onHandshakeTimeout(
@@ -848,6 +1282,7 @@ public class SctpAssociation(
         t3Deadline = null
         sackDeadline = null
         shutdownDeadline = null
+        cancelReConfig()
     }
 
     // ────────────────────────────────── helpers ──────────────────────────────────
@@ -878,6 +1313,12 @@ public class SctpAssociation(
         pendingSend.clear()
         pendingSendBytes = 0
         orderedSendSsn.clear()
+        // Both reconfiguration halves belong to the association that is going away: a pending or in-flight
+        // request names TSNs and sequence numbers of a TCB that no longer exists, and a peer restart
+        // (§5.2.4 action A) re-seeds both sequence spaces in establishControlBlocks.
+        outgoingReset = OutgoingReset.Ready(PendingReset.Nothing)
+        peerRequests = PeerRequests.NoneYet(ReConfigRequestSequenceNumber(0u))
+        peerSupportsReConfig = false
     }
 
     private fun transition(
@@ -961,6 +1402,17 @@ public class SctpAssociation(
         copy.setLimit(len)
         return copy
     }
+
+    // The Supported Extensions parameter (RFC 5061 §4.2.7) both the INIT and the INIT ACK carry. RE-CONFIG
+    // is listed alongside FORWARD-TSN because RFC 6525 §5.1 makes the advertisement the *invitation*: an
+    // endpoint sends a RE-CONFIG chunk only to a peer that listed chunk type 130 here.
+    private fun supportedExtensions(): SctpParameter =
+        SctpParameter.supportedExtensions(listOf(SctpChunkType.ForwardTsn, SctpChunkType.ReConfig))
+
+    // Whether a peer's INIT/INIT-ACK parameters advertise RE-CONFIG. `any` rather than `first`: the
+    // parameter is not required to be unique, and a peer that sends two must not have the second ignored.
+    private fun List<SctpParameter>.advertiseReConfig(): Boolean =
+        any { it.asSupportedExtensions()?.contains(SctpChunkType.ReConfig) == true }
 
     private fun randomTag(): VerificationTag {
         val v = random.nextInt().toUInt()

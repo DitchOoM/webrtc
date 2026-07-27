@@ -19,6 +19,8 @@ import com.ditchoom.webrtc.sctp.association.SctpFailureReason
 import com.ditchoom.webrtc.sctp.association.SctpOutput
 import com.ditchoom.webrtc.sctp.association.SctpReliability
 import com.ditchoom.webrtc.sctp.association.SctpSendOptions
+import com.ditchoom.webrtc.sctp.association.StreamResetOutcome
+import com.ditchoom.webrtc.sctp.association.StreamResetScope
 import com.ditchoom.webrtc.sctp.dcep.ChannelType
 import com.ditchoom.webrtc.sctp.dcep.DataChannelDecodeResult
 import com.ditchoom.webrtc.sctp.dcep.DataChannelMessage
@@ -53,8 +55,10 @@ import kotlin.time.Instant
  * inbox, so the non-thread-safe core is only ever touched from one coroutine.
  *
  * Stream ids follow RFC 8832 §6: a [SctpRole.Client] opener uses even ids and sends the INIT; a
- * [SctpRole.Server] uses odd ids. Channel close via SCTP stream reset (RFC 6525 RE-CONFIG) is not in
- * this subset — [Connection.close] tears down the local halves and is noted as a W7 follow-up.
+ * [SctpRole.Server] uses odd ids. Closing one channel is an **SCTP stream reset** (RFC 6525 RE-CONFIG,
+ * RFC 8831 §6.7): [Connection.close] resets the outgoing stream, the peer answers by resetting its own
+ * outgoing half, and only once both directions are reset is the stream id recycled for a future open —
+ * which is what keeps a long-lived session from walking off the end of the 16-bit stream space.
  */
 public class SctpDataChannelStack(
     private val transport: SctpDatagramTransport,
@@ -70,15 +74,30 @@ public class SctpDataChannelStack(
     private val inbox = Channel<DriveItem>(Channel.UNLIMITED)
     private val outbound = Channel<ReadBuffer>(Channel.UNLIMITED)
     private val accepted = Channel<DataChannelConnection>(Channel.UNLIMITED)
-    private val channels = HashMap<Int, DataChannelConnection>()
+    private val channels = HashMap<StreamId, DataChannelConnection>()
     private val pendingOpens = ArrayDeque<OpenCommand>()
 
     // Inbound user messages that arrived before their channel's DCEP OPEN registered the stream — held
     // briefly (bounded) and flushed when the OPEN lands, so an unordered first message that SCTP delivers
     // ahead of the still-in-order OPEN is not silently lost. Bounded to defeat a peer that never OPENs.
-    private val pendingInbound = HashMap<Int, ArrayDeque<PendingInbound>>()
+    private val pendingInbound = HashMap<StreamId, ArrayDeque<PendingInbound>>()
     private var nextStreamId: Int = if (role == SctpRole.Client) 0 else 1
     private var closed = false
+
+    // Stream ids mid-close: RFC 8831 §6.7 closes a data channel by resetting BOTH directions, and the two
+    // resets are independent RFC 6525 exchanges that complete in either order. An id sits here holding
+    // whichever half has landed; when the other one arrives the entry is dropped and the id recycled.
+    private val resetHalves = HashMap<StreamId, ResetHalf>()
+
+    // Stream ids whose channel is fully closed on both sides and which may back a new open. Reusing an id
+    // is only safe after both resets: the SSN state the peer holds for it is gone, so a new channel's
+    // first ordered message at SSN 0 is not read as a duplicate of the old channel's.
+    private val reusableStreamIds = ArrayDeque<StreamId>()
+
+    // Scratch for the reciprocal resets one drive-loop item produced (RFC 8831 §6.7's "when the peer sees
+    // that an incoming stream was reset, it also resets its corresponding outgoing stream"). Collected
+    // during apply() and issued after it, so the association is never re-entered mid-output-list.
+    private val reciprocalResets = LinkedHashSet<StreamId>()
 
     // Streams we OPENed on which nothing has yet come back. RFC 8832 §6: "before the DATA_CHANNEL_ACK
     // message or any other message has been received on a data channel, all other messages containing
@@ -90,7 +109,7 @@ public class SctpDataChannelStack(
     // EVERY later channel on that association is lost too — how this was found; see the interop soak.)
     // Only the OPENING side is constrained: on a peer-opened channel we have by definition already
     // received a message on it (the OPEN itself).
-    private val unconfirmedOutbound = HashSet<Int>()
+    private val unconfirmedOutbound = HashSet<StreamId>()
 
     // Senders parked by backpressure: their message is already queued in the association, but the send
     // buffer was above the high-water mark when it went in, so their deferred stays incomplete until the
@@ -113,6 +132,14 @@ public class SctpDataChannelStack(
     /** Queued-but-unsent user bytes, and how many senders are parked on backpressure — test-visible only. */
     internal val bufferedBytes: Int get() = association.bufferedBytes
     internal val parkedSenders: Int get() = awaitingDrain.size
+
+    /**
+     * Stream ids whose channel closed in both directions and that a future open will reuse — test-visible
+     * only. It is the one direct read of "the close finished on the wire": a channel id lands here exactly
+     * when its second RFC 6525 reset completes, which no consumer-facing signal reports (the flow closing
+     * only means the *local* half is done).
+     */
+    internal val recycledStreamIds: List<StreamId> get() = reusableStreamIds.toList()
 
     /** Launch the driver: the transport reader, and the single serialized association drive loop. */
     public fun start() {
@@ -243,7 +270,7 @@ public class SctpDataChannelStack(
                 // on the drive loop, because that is where the confirmation set is mutated; sendMessage
                 // runs on the caller's coroutine and must not read it.
                 val options =
-                    if (command.options.streamId.value in unconfirmedOutbound) {
+                    if (command.options.streamId in unconfirmedOutbound) {
                         command.options.copy(delivery = DeliveryOrder.Ordered)
                     } else {
                         command.options
@@ -258,10 +285,7 @@ public class SctpDataChannelStack(
                     awaitingDrain.addLast(command)
                 }
             }
-            is CloseChannelCommand -> {
-                channels.remove(command.streamId.value)
-                unconfirmedOutbound -= command.streamId.value
-            }
+            is CloseChannelCommand -> onCloseChannel(command.streamId)
             ShutdownCommand -> apply(association.handle(SctpEvent.Shutdown, now()))
         }
     }
@@ -274,11 +298,38 @@ public class SctpDataChannelStack(
         while (awaitingDrain.isNotEmpty()) awaitingDrain.removeFirst().deferred.complete(Unit)
     }
 
+    // Drop a locally closed channel and reset its outgoing stream — RFC 8831 §6.7's close. Only for a
+    // channel still in the routing map: a second close(), or one racing the peer's own reset of the same
+    // stream, must not put a duplicate request on the wire, and must never re-reset an id already recycled.
+    private fun onCloseChannel(streamId: StreamId) {
+        val known = channels.remove(streamId) != null
+        forgetStream(streamId)
+        if (known) resetOutgoing(setOf(streamId))
+    }
+
+    // Everything keyed by a stream id that does not survive its channel. `pendingInbound` above all: data
+    // held for a stream id that is later RECYCLED would otherwise be flushed into the next, unrelated
+    // channel that reuses the id.
+    private fun forgetStream(streamId: StreamId) {
+        unconfirmedOutbound -= streamId
+        pendingInbound.remove(streamId)
+    }
+
+    private fun resetOutgoing(streams: Set<StreamId>) {
+        apply(association.handle(SctpEvent.ResetStreams(StreamResetScope.Streams(streams)), now()))
+    }
+
     private fun dispatchOpen(command: OpenCommand) {
-        val streamId = StreamId(nextStreamId)
-        nextStreamId += 2
+        // Prefer an id whose channel closed cleanly on both sides over burning a fresh one (RFC 8832 §6
+        // gives each side only half of a 16-bit space, and `nextStreamId` never comes back down).
+        val streamId =
+            if (reusableStreamIds.isEmpty()) {
+                StreamId(nextStreamId).also { nextStreamId += 2 }
+            } else {
+                reusableStreamIds.removeFirst()
+            }
         val connection = registerChannel(streamId, command.config, incoming = false)
-        unconfirmedOutbound += streamId.value
+        unconfirmedOutbound += streamId
         val open =
             DataChannelMessage.Open(
                 channelType = channelTypeOf(command.config),
@@ -311,9 +362,72 @@ public class SctpDataChannelStack(
                 // has forgotten each stream, so continuing would be a lie. Tear down with a typed reason
                 // and let the session renegotiate (RFC 4960 §5.2.4 action A — see SctpOutput.PeerRestarted).
                 SctpOutput.PeerRestarted -> tearDown(SctpFailureReason.PeerRestarted)
+                is SctpOutput.IncomingStreamsReset -> onIncomingStreamsReset(output.scope)
+                is SctpOutput.OutgoingStreamsReset -> onOutgoingStreamsReset(output.scope, output.outcome)
+            }
+        }
+        flushReciprocalResets()
+    }
+
+    // The peer closed one or more data channels (RFC 8831 §6.7). Close our side, and reset our own
+    // outgoing half in return — but only for a channel we still had open. A reset for a stream we already
+    // closed is the peer *answering* our close, and reciprocating there would bounce resets forever.
+    private fun onIncomingStreamsReset(scope: StreamResetScope) {
+        for (streamId in scope.resolve()) {
+            val connection = channels.remove(streamId)
+            forgetStream(streamId)
+            if (connection != null) {
+                connection.closeLocal()
+                reciprocalResets += streamId
+            }
+            noteResetHalf(streamId, ResetHalf.Peers)
+        }
+    }
+
+    private fun onOutgoingStreamsReset(
+        scope: StreamResetScope,
+        outcome: StreamResetOutcome,
+    ) {
+        for (streamId in scope.resolve()) {
+            when (outcome) {
+                StreamResetOutcome.Performed -> noteResetHalf(streamId, ResetHalf.Ours)
+                // The peer refused, or cannot reset at all. It still holds SSN state for the stream, so the
+                // channel is closed locally (already done) but the id is spent for the rest of the session.
+                is StreamResetOutcome.Refused, StreamResetOutcome.Unsupported -> resetHalves.remove(streamId)
             }
         }
     }
+
+    // Record one direction of a channel's close; when both have landed the id is free to open again.
+    private fun noteResetHalf(
+        streamId: StreamId,
+        half: ResetHalf,
+    ) {
+        val seen = resetHalves.put(streamId, half)
+        if (seen != null && seen != half) {
+            resetHalves.remove(streamId)
+            // Only ids of OUR parity are ours to hand out again (RFC 8832 §6) — a peer-opened stream is
+            // the peer's to reuse, and claiming it would collide with its next open.
+            if (!streamIsPeerParity(streamId)) reusableStreamIds.addLast(streamId)
+        }
+    }
+
+    private fun flushReciprocalResets() {
+        if (reciprocalResets.isEmpty()) return
+        val streams = reciprocalResets.toSet()
+        // Cleared BEFORE re-entering the association, so the outputs that reset produces (and the apply()
+        // nested inside this one) start from an empty scratch set rather than re-issuing these ids.
+        reciprocalResets.clear()
+        resetOutgoing(streams)
+    }
+
+    // The concrete stream ids a scope names here: "all streams" means every channel still open plus every
+    // one already half-closed, since both are ids whose reset bookkeeping is still live.
+    private fun StreamResetScope.resolve(): Collection<StreamId> =
+        when (this) {
+            StreamResetScope.AllStreams -> channels.keys + resetHalves.keys
+            is StreamResetScope.Streams -> ids
+        }
 
     private fun onStateChanged(state: SctpAssociationState) {
         _state.value = state
@@ -327,20 +441,20 @@ public class SctpDataChannelStack(
         // (RFC 8832 §6) — so anything inbound on the stream confirms it, not the ACK alone. A peer that
         // never ACKs but replies with user data still releases us; one that answers nothing keeps us on
         // ordered delivery forever, which is a safe degradation rather than a stall.
-        unconfirmedOutbound -= message.streamId.value
+        unconfirmedOutbound -= message.streamId
         if (message.payloadProtocolId == PayloadProtocolId.WebRtcDcep) {
             onDcep(message)
             return
         }
         val payload = if (isEmptyPpid(message.payloadProtocolId)) ReadBuffer.EMPTY_BUFFER else message.payload
-        val connection = channels[message.streamId.value]
+        val connection = channels[message.streamId]
         if (connection != null) {
             connection.deliver(payload)
         } else {
             // User data (an unordered first message) beat its ordered DCEP OPEN — hold it, bounded, until
             // the OPEN registers the channel; drop beyond the cap (a peer sending data on a stream it
             // never OPENs).
-            val queue = pendingInbound.getOrPut(message.streamId.value) { ArrayDeque() }
+            val queue = pendingInbound.getOrPut(message.streamId) { ArrayDeque() }
             if (queue.size < MAX_PENDING_INBOUND) queue.addLast(PendingInbound(message.payloadProtocolId, payload))
         }
     }
@@ -351,7 +465,7 @@ public class SctpDataChannelStack(
                 // RFC 8832 §6: the peer owns the opposite stream-id parity. Reject an OPEN on our own
                 // parity (a misbehaving/duplicate peer OPEN would otherwise overwrite a local channel),
                 // and reject a duplicate OPEN on an already-registered stream.
-                if (streamIsPeerParity(message.streamId) && message.streamId.value !in channels) {
+                if (streamIsPeerParity(message.streamId) && message.streamId !in channels) {
                     val config = configOf(decoded)
                     registerChannel(message.streamId, config, incoming = true)
                 }
@@ -382,9 +496,9 @@ public class SctpDataChannelStack(
         incoming: Boolean,
     ): DataChannelConnection {
         val connection = DataChannelConnection(streamId, config, this)
-        channels[streamId.value] = connection
+        channels[streamId] = connection
         // Flush any user data that arrived before this OPEN, in arrival order.
-        pendingInbound.remove(streamId.value)?.forEach { held ->
+        pendingInbound.remove(streamId)?.forEach { held ->
             connection.deliver(if (isEmptyPpid(held.ppid)) ReadBuffer.EMPTY_BUFFER else held.payload)
         }
         if (incoming) accepted.trySend(connection)
@@ -442,6 +556,9 @@ public class SctpDataChannelStack(
         channels.clear()
         pendingInbound.clear()
         unconfirmedOutbound.clear()
+        resetHalves.clear()
+        reusableStreamIds.clear()
+        reciprocalResets.clear()
         for (command in pendingOpens) command.deferred.completeExceptionally(cause)
         pendingOpens.clear()
         accepted.close()
@@ -561,6 +678,20 @@ internal class CloseChannelCommand(
 
 internal data object ShutdownCommand : Command
 
+/**
+ * Which direction of a data channel's two-sided close (RFC 8831 §6.7) has been reset. An enum rather
+ * than a sealed hierarchy because neither case carries data — the identity of the half *is* the whole
+ * fact — and rather than a `Boolean`, because `ourHalfDone = true` at a call site reads as a flag while
+ * a half that has *landed* is one of two named things.
+ */
+internal enum class ResetHalf {
+    /** Our outgoing stream reset completed — the peer acknowledged it. */
+    Ours,
+
+    /** The peer reset its outgoing stream, which is our incoming half. */
+    Peers,
+}
+
 // One inbound user message held until its channel's DCEP OPEN registers the stream (see pendingInbound).
 internal class PendingInbound(
     val ppid: PayloadProtocolId,
@@ -616,9 +747,15 @@ public class DataChannelConnection internal constructor(
 
     override fun receive(): Flow<ReadBuffer> = inbound.receiveAsFlow()
 
+    /**
+     * Close this data channel: stop delivering inbound messages, and reset the outgoing SCTP stream so
+     * the peer's channel closes too (RFC 8831 §6.7 / RFC 6525). Returns as soon as the close is posted —
+     * the reset itself is an exchange on the wire, and the stream id becomes reusable only once the peer
+     * has reset its half in return. Idempotent: a second call posts nothing.
+     */
     override suspend fun close() {
         closeLocal()
-        stack.closeChannel(streamId) // drop from the routing map (no RFC 6525 stream reset in this subset — W7)
+        stack.closeChannel(streamId)
     }
 
     internal fun deliver(payload: ReadBuffer) {

@@ -139,9 +139,11 @@ A failed phase is **recorded and the sequence continues**, so one run reports ev
 | `HARNESS_SEMANTICS_NON_GATING` | *(empty)* | named lanes whose semantics stay informational. Empty — every lane gates. `node-interop`/`jvm-node` were the last holdouts (werift never reached `Connected`, so there was nothing to grade); the SCTP INIT deadlock behind that (#43) is fixed and both are promoted |
 | `HARNESS_SEMANTICS_TIMEOUT_MS` | `120000` | watchdog for the whole sequence, on top of the establishment watchdog |
 
-Not covered, deliberately: **per-channel close**. That needs an RFC 6525 RE-CONFIG stream reset, which
-`webrtc-sctp` does not implement — so `s6` proves the association-level shutdown we *do* implement, and
-per-channel close stays a library follow-up rather than a harness fiction.
+Not covered *yet*: **per-channel close**. It needs an RFC 6525 RE-CONFIG stream reset, which `webrtc-sctp`
+originally did not implement — so `s6` proves the association-level shutdown instead. The library now
+implements the full stream-reset exchange (request/response, deferred processing, stream-id recycling),
+covered by unit and vnet fixtures; adding an interop phase that closes one channel and keeps using its
+neighbour is the remaining harness work.
 
 ## Interop: the Pion lane (W7 Phase 2a)
 

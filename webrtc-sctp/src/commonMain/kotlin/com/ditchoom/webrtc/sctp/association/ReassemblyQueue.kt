@@ -123,6 +123,38 @@ internal class ReassemblyQueue(
         return reassembleDeliverable()
     }
 
+    /**
+     * Apply an inbound stream reset (RFC 6525 §5.2.2): the peer reset its outgoing streams, so every
+     * trace of the affected streams' *sequencing* state goes with it — the next ordered message on such a
+     * stream arrives with Stream Sequence Number 0 again.
+     *
+     * Three things are dropped, not just the SSN counter:
+     * - the expected-SSN cursor, so a later message at SSN 0 is delivered rather than held forever
+     *   waiting for the SSNs the reset just erased;
+     * - reassembled-but-undelivered ordered messages, which belong to the pre-reset SSN space and can
+     *   never become deliverable now that the cursor is gone;
+     * - partial fragment runs, whose remaining fragments the peer will never send.
+     *
+     * The cumulative TSN is deliberately untouched: a stream reset re-sequences streams, it does not
+     * renumber TSNs (that is the SSN/TSN reset of §4.3, which this subset refuses).
+     */
+    fun resetStreams(scope: StreamResetScope) {
+        when (scope) {
+            StreamResetScope.AllStreams -> {
+                nextOrderedSsn.clear()
+                orderedReady.clear()
+                fragments.clear()
+            }
+            is StreamResetScope.Streams -> {
+                for (id in scope.ids) {
+                    nextOrderedSsn.remove(id)
+                    orderedReady.remove(id)
+                }
+                fragments.entries.removeAll { it.value.streamId in scope.ids }
+            }
+        }
+    }
+
     /** The SACK to send now (RFC 4960 §3.3.4): cumulative ack, gap blocks, duplicate TSNs; clears dups. */
     fun buildSack(): SctpChunk.Sack {
         val gaps = ArrayList<com.ditchoom.webrtc.sctp.GapAckBlock>()

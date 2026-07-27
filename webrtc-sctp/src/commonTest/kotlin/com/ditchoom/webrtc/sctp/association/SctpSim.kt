@@ -57,12 +57,26 @@ internal class SctpSim(
     val abortsA = ArrayList<SctpFailureReason>()
     val abortsB = ArrayList<SctpFailureReason>()
 
+    /** RFC 6525 stream resets: the peer's resets each endpoint applied, and its own requests' outcomes. */
+    val incomingResetsA = ArrayList<StreamResetScope>()
+    val incomingResetsB = ArrayList<StreamResetScope>()
+    val outgoingResetsA = ArrayList<SctpOutput.OutgoingStreamsReset>()
+    val outgoingResetsB = ArrayList<SctpOutput.OutgoingStreamsReset>()
+
+    /**
+     * Feed [event] to one endpoint and route its side effects. Returns those side effects as well, so a
+     * fixture can assert on what a *single* event produced (e.g. "the second reset request emitted no
+     * chunk, because one was already outstanding") without giving up the conductor's routing — which is
+     * why this returns rather than the test calling `handle` directly and stranding the packets.
+     */
     fun post(
         toA: Boolean,
         event: SctpEvent,
-    ) {
+    ): List<SctpOutput> {
         val assoc = if (toA) a else b
-        apply(toA, assoc.handle(event, now))
+        val outputs = assoc.handle(event, now)
+        apply(toA, outputs)
+        return outputs
     }
 
     fun associateA() = post(toA = true, SctpEvent.Associate)
@@ -138,6 +152,8 @@ internal class SctpSim(
                 is SctpOutput.MessageReceived -> (if (fromA) inboxA else inboxB) += output
                 is SctpOutput.Aborted -> (if (fromA) abortsA else abortsB) += output.reason
                 SctpOutput.PeerRestarted -> (if (fromA) restartsA else restartsB).let { it.add(Unit) }
+                is SctpOutput.IncomingStreamsReset -> (if (fromA) incomingResetsA else incomingResetsB) += output.scope
+                is SctpOutput.OutgoingStreamsReset -> (if (fromA) outgoingResetsA else outgoingResetsB) += output
                 is SctpOutput.StateChanged -> Unit
             }
         }

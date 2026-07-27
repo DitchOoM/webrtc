@@ -115,8 +115,17 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
         // resolution fired; every other lane leaves it uncompleted and never waits on it. See issue #48.
         val mdnsResolved = CompletableDeferred<Unit>()
 
+        // Which ICE generation the next gather belongs to. The stack re-invokes this policy once per
+        // RFC 8445 §9 restart (s8), and the OUTGOING generation's sockets deliberately stay bound until the
+        // new one nominates — that is the continuity guarantee — so re-gathering onto the same pinned port
+        // would be asking the kernel to re-bind an address that is still open. A real stack takes a fresh
+        // ephemeral port per generation; the harness pins its ports so the NAT rules can name them, so it
+        // STEPS them instead: generation g binds localPort + g*stride, keeping every lane's first
+        // generation byte-identical to what it has always used and every later one readable in a pcap.
+        var iceGeneration = 0
         val gathering =
             IceGatheringPolicy { driver ->
+                val portStep = iceGeneration++ * GENERATION_PORT_STRIDE
                 // One host(+srflx)+relay per configured family. A dual-stack lane advertises BOTH v4 and v6
                 // candidates, exercising the RFC 6724 candidate-priority ordering (webrtc-ice, PR #37); a
                 // single-stack lane advertises exactly one. Real WebRTC stacks (pion, the browsers) gather
@@ -126,10 +135,10 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
                     val stun = resolveAddress(b.stunHost, cfg.stunPort)
                     val turn = resolveAddress(b.turnHost, cfg.turnPort)
                     if (cfg.icePolicy != IcePolicy.RelayOnly) {
-                        driver.gatherHost(b.localIp, cfg.localPort, stunServer = stun)
+                        driver.gatherHost(b.localIp, cfg.localPort + portStep, stunServer = stun)
                     }
                     // Relay is always gathered — the fallback path, and the only path under relayOnly.
-                    driver.gatherRelay(turn, cfg.turnUser, cfg.turnPass, b.localIp, cfg.relayPort)
+                    driver.gatherRelay(turn, cfg.turnUser, cfg.turnPass, b.localIp, cfg.relayPort + portStep)
                 }
             }
 
@@ -269,32 +278,57 @@ private suspend fun runOfferer(
     forensics.recordSdp(Origin.Local, Sdp(offer))
     pc.setLocalDescription(SdpType.Offer, offer)
 
-    // One PUT socket, single-consumer: the offer first (record 0), then trickled candidates in order.
+    // One PUT socket, single-consumer: the offer first (round 0), then trickled candidates in order.
     val outbox = Channel<OutboundRecord>(Channel.UNLIMITED)
-    outbox.trySend(OutboundRecord(Slot.Offer, RecordId(0), offer))
+    outbox.trySend(OutboundRecord(Slot.Offer, RecordId(INITIAL_ROUND), offer))
     bg.launch { for (r in outbox) sigOut.put(r.slot, r.recordId, r.payload) }
+
+    // The public address s8 requires this peer to be reachable at once the harness has moved it (null on
+    // every lane that names no carrier — a genuine absence, not a disabled flag). It can only ever be
+    // learned by a generation gathered AFTER the switch, which is what makes seeing it a proof.
+    val expectedCarrier =
+        when (val restart = cfg.iceRestart) {
+            IceRestartPhase.Off, IceRestartPhase.AnyNewPath -> null
+            is IceRestartPhase.ExpectCarrier -> restart.carrierIp
+        }
+    val publicAddressSeen = CompletableDeferred<Unit>()
+
     bg.launch {
         var i = 0
         pc.localIceCandidates.collect {
             forensics.recordCandidate(Origin.Local, CandidateLine(it))
+            if (expectedCarrier != null && connectionAddressOf(it) == expectedCarrier) publicAddressSeen.complete(Unit)
             outbox.trySend(OutboundRecord(Slot.OffererCandidate, RecordId(i++), it))
         }
     }
 
-    // One poll socket, single-consumer: the answer, then the answerer's trickled candidates.
+    // Completed by the poll loop below the moment the ORCHESTRATOR reports it has moved this peer onto its
+    // second carrier (s8). The harness writes that record into the same mailbox the peers already share,
+    // so the switch is an observed event on both sides instead of a sleep either would have to guess at.
+    // Left uncompleted — and never awaited — on every lane that does not run s8.
+    val carrierSwitched = CompletableDeferred<Unit>()
+
+    // One poll socket, single-consumer: each round's answer, then the answerer's trickled candidates.
     bg.launch {
-        var answered = false
+        var answers = 0
         var seen = 0
         while (isActive) {
-            if (!answered) {
-                val a = sigIn.poll(Slot.Answer, RecordId(0))
+            // The answer to round `answers`. A restart lane signals TWO rounds (cfg.negotiationRounds):
+            // round 0 negotiates the session, round 1 is the re-answer to s8's ICE-restart offer. Once
+            // every round this run can have has been answered we stop asking — which on a single-round
+            // lane leaves exactly the one-shot poll sequence this loop has always had.
+            if (answers < cfg.negotiationRounds) {
+                val a = sigIn.poll(Slot.Answer, RecordId(answers))
                 if (a.isNotEmpty()) {
                     forensics.recordSdp(Origin.Remote, Sdp(a.first()))
-                    remoteMaxMessageSize.complete(maxMessageSizeOf(a.first()))
+                    // The peer's ceiling is read off its FIRST answer only: a later round renegotiates ICE,
+                    // not the SCTP association s1 already sized itself against.
+                    if (answers == INITIAL_ROUND) remoteMaxMessageSize.complete(maxMessageSizeOf(a.first()))
                     pc.setRemoteDescription(SdpType.Answer, a.first())
-                    answered = true
+                    answers++
                 }
-            } else {
+            }
+            if (answers > 0) {
                 val cands = sigIn.poll(Slot.AnswererCandidate, RecordId(seen))
                 seen += cands.size
                 for (c in cands) {
@@ -302,9 +336,36 @@ private suspend fun runOfferer(
                     pc.addIceCandidate(c)
                 }
             }
+            // The orchestrator's carrier-switch record — polled here, on the ONE consumer of this socket,
+            // rather than from the phase itself (a second consumer would race this loop's receive()).
+            if (cfg.iceRestart != IceRestartPhase.Off &&
+                !carrierSwitched.isCompleted &&
+                sigIn.poll(Slot.CarrierSwitch, RecordId(0)).isNotEmpty()
+            ) {
+                carrierSwitched.complete(Unit)
+            }
             delay(POLL_INTERVAL)
         }
     }
+
+    // What s8 needs that only this role can provide: the harness's carrier-switch cue, and a SECOND
+    // offer/answer round. Both ride the outbox/poll pair already open here, so the single-consumer
+    // discipline of the two signaling sockets is untouched and s8 stays free of signaling machinery.
+    val restartSignaling =
+        object : RestartSignaling {
+            override suspend fun awaitCarrierSwitch(): Boolean =
+                withTimeoutOrNull(CARRIER_SWITCH_WAIT) { carrierSwitched.await() } != null
+
+            override suspend fun reoffer() {
+                val restartOffer = pc.createOffer()
+                forensics.recordSdp(Origin.Local, Sdp(restartOffer))
+                pc.setLocalDescription(SdpType.Offer, restartOffer)
+                outbox.trySend(OutboundRecord(Slot.Offer, RecordId(RESTART_ROUND), restartOffer))
+            }
+
+            override suspend fun awaitCarrierPublicAddress(): Boolean =
+                withTimeoutOrNull(PUBLIC_ADDRESS_WAIT) { publicAddressSeen.await() } != null
+        }
 
     if (!awaitEstablished(pc)) return false
 
@@ -323,7 +384,7 @@ private suspend fun runOfferer(
     // and the run continues (D2), and the summary line below is what run-interop.sh grades.
     val report =
         withTimeoutOrNull(cfg.semanticsTimeout) {
-            runSemanticsPhases(bg, pc, ctl, reflector, cfg, clock, remoteMaxMessageSize.await())
+            runSemanticsPhases(bg, pc, ctl, reflector, restartSignaling, cfg, clock, remoteMaxMessageSize.await())
         }
     if (report == null) {
         println("[harness] semantics: TIMEOUT — the phase sequence did not finish within ${cfg.semanticsTimeout}")
@@ -365,6 +426,14 @@ private suspend fun runOfferer(
     return if (cfg.semanticsRequired) report.allPassed else true
 }
 
+/**
+ * The **connection address** of a `candidate:` line (RFC 8839 §5.1 field 5, 1-based) — the address a peer
+ * sends to — or null when the line is too short to have one. Deliberately not the `raddr`: our reflexive
+ * candidate's related address is the LAN address the route change never touched, so matching on it would
+ * declare the carrier switch proven before it had happened.
+ */
+private fun connectionAddressOf(candidateLine: String): String? = candidateLine.split(' ').getOrNull(4)
+
 /** The peer's advertised `a=max-message-size` (RFC 8841 §6) from its answer, or null if it advertised none. */
 private fun maxMessageSizeOf(sdp: String): Long? =
     when (val parsed = SessionDescription.parseText(sdp)) {
@@ -383,18 +452,12 @@ private suspend fun runAnswerer(
     // Await the offer (bounded by the outer watchdog), then answer.
     var offer: String? = null
     while (offer == null) {
-        val o = sigIn.poll(Slot.Offer, RecordId(0))
+        val o = sigIn.poll(Slot.Offer, RecordId(INITIAL_ROUND))
         if (o.isNotEmpty()) offer = o.first() else delay(POLL_INTERVAL)
     }
-    forensics.recordSdp(Origin.Remote, Sdp(offer))
-    pc.setRemoteDescription(SdpType.Offer, offer)
-    val answer = pc.createAnswer()
-    forensics.recordSdp(Origin.Local, Sdp(answer))
-    pc.setLocalDescription(SdpType.Answer, answer)
-
     val outbox = Channel<OutboundRecord>(Channel.UNLIMITED)
-    outbox.trySend(OutboundRecord(Slot.Answer, RecordId(0), answer))
     bg.launch { for (r in outbox) sigOut.put(r.slot, r.recordId, r.payload) }
+    answerRound(pc, forensics, outbox, INITIAL_ROUND, offer)
     bg.launch {
         var i = 0
         pc.localIceCandidates.collect {
@@ -403,10 +466,22 @@ private suspend fun runAnswerer(
         }
     }
 
-    // The offer poll above is done, so this launched loop is the only consumer of sigIn (no receive race).
+    // The offer poll above is done, so this launched loop is the only consumer of sigIn (no receive race)
+    // — which is also why any LATER round is answered from inside it rather than from a loop of its own.
     bg.launch {
+        var rounds = INITIAL_ROUND + 1
         var seen = 0
         while (isActive) {
+            // A further offer means the peer restarted ICE (RFC 8445 §9, the offerer's s8): re-answer it
+            // on the SAME session — the association and every open channel are untouched by a restart.
+            // Only a lane that can have a second round ever asks for one (cfg.negotiationRounds).
+            if (rounds < cfg.negotiationRounds) {
+                val o = sigIn.poll(Slot.Offer, RecordId(rounds))
+                if (o.isNotEmpty()) {
+                    answerRound(pc, forensics, outbox, rounds, o.first())
+                    rounds++
+                }
+            }
             val cands = sigIn.poll(Slot.OffererCandidate, RecordId(seen))
             seen += cands.size
             for (c in cands) {
@@ -470,6 +545,28 @@ private suspend fun runAnswerer(
         }
     println("[harness] close-summary: observed=${terminal ?: "<nothing within $CLOSE_OBSERVE_WAIT>"} clean=${terminal is PeerConnectionState.Closed}")
     return true
+}
+
+/**
+ * Apply one round's [offer] and publish the answer under the SAME record id, so both peers' rounds line up
+ * in the mailbox. Round 0 negotiates the session; a later round carries the offerer's ICE restart (RFC 8445
+ * §9). It is deliberately the identical code either way — a restart is a renegotiation of an existing
+ * session, not a second session, so the answerer has nothing to do beyond answering again.
+ */
+private suspend fun answerRound(
+    pc: NativePeerConnection,
+    forensics: Forensics,
+    outbox: Channel<OutboundRecord>,
+    round: Int,
+    offer: String,
+) {
+    forensics.recordSdp(Origin.Remote, Sdp(offer))
+    pc.setRemoteDescription(SdpType.Offer, offer)
+    val answer = pc.createAnswer()
+    forensics.recordSdp(Origin.Local, Sdp(answer))
+    pc.setLocalDescription(SdpType.Answer, answer)
+    if (round != INITIAL_ROUND) println("[harness] answerer: re-answered round $round — the peer restarted ICE")
+    outbox.trySend(OutboundRecord(Slot.Answer, RecordId(round), answer))
 }
 
 /**
@@ -554,6 +651,26 @@ private data class OutboundRecord(val slot: Slot, val recordId: RecordId, val pa
 private data class StateTransition(val at: Duration, val state: PeerConnectionState)
 
 private val POLL_INTERVAL = 200.milliseconds
+
+// Offer/answer ROUNDS are mailbox record ids, one per round, on the Offer and Answer slots alike: round 0
+// is the initial negotiation every lane runs, round 1 the ICE-restart re-offer only an s8 lane signals.
+// Naming them keeps the two slots' ids meaning the same thing on both sides of the exchange.
+private const val INITIAL_ROUND = 0
+private const val RESTART_ROUND = 1
+
+// How far the pinned ICE ports step per ICE generation (host at localPort+g*stride, relay one above it).
+// Two, because a generation binds exactly those two sockets per family.
+private const val GENERATION_PORT_STRIDE = 2
+
+// How long s8 waits for the orchestrator's carrier-switch record before giving up on the switch. A
+// watchdog on an observable event (the record's arrival in the mailbox), not a budget for the switch to
+// take: `docker compose exec ip route replace` is instant, and the phase's own PHASE_TIMEOUT bounds it
+// again from outside. Generous because it also covers the harness's log-polling detection of our cue.
+private val CARRIER_SWITCH_WAIT = 30.seconds
+
+// How long s8 waits for the restarted generation to learn our new public address from coturn. One STUN
+// round trip on a healthy path; the window covers a re-gather that has to retransmit its Binding request.
+private val PUBLIC_ADDRESS_WAIT = 15.seconds
 
 // Echo/flush windows for the IMPAIRED lane: with the harness's fast SCTP RTO (500ms initial, 100ms min),
 // a lost pong (or SACK) is recovered in well under a second per retransmit, so these need only cover a

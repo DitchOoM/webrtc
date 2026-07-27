@@ -121,8 +121,10 @@ jobs:
           - { runner: ubuntu-24.04-arm, name: Arm64, konan: linuxArm64 }
         ipfamily: [v4, v6, dual]
     runs-on: ${{ matrix.arch.runner }}
-    # 13 scenarios now (7 NAT profiles + pion + node + jvm-native + jvm-pion + jvm-node + firewall-relay6),
-    # each a fresh stack. node-interop/jvm-node are fast (Node + one npm dep, no browser engine download).
+    # 15 scenarios now (7 NAT profiles + pion + node + jvm-native + jvm-pion + jvm-node + firewall-relay6 +
+    # the two carrier-switch ICE-restart lanes, restart-native/jvm-restart — v4 only, family-skipped
+    # elsewhere), each a fresh stack. node-interop/jvm-node are fast (Node + one npm dep, no browser engine
+    # download); the restart lanes cost one extra offer/answer round each.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6

@@ -34,6 +34,31 @@ internal data class FamilyBinding(
 )
 
 /**
+ * Whether the s8 ICE-restart phase runs, and what the restarted session has to land on.
+ *
+ * A sealed choice rather than a flag beside a nullable address: those two fields can also spell "the phase
+ * is off, but here is the carrier it must land on", which is not a run anyone can have. Each case here is
+ * exactly one run.
+ */
+internal sealed interface IceRestartPhase {
+    /** s8 does not run — every foreign-peer lane (a dumb reflector cannot re-answer) and every lane with
+     *  only one carrier to sit behind. */
+    data object Off : IceRestartPhase
+
+    /** s8 runs and asserts only that the restart reconverged on a DIFFERENT pair. */
+    data object AnyNewPath : IceRestartPhase
+
+    /**
+     * s8 runs and additionally asserts the new pair's local address is [carrierIp] — the public address of
+     * the carrier the orchestrator moved us onto mid-session (`topo=carrier-switch`). Without this the
+     * phase would pass on any pair change at all, including one that reconverged on the carrier we left.
+     */
+    data class ExpectCarrier(
+        val carrierIp: String,
+    ) : IceRestartPhase
+}
+
+/**
  * The peer's whole configuration, read from `WEBRTC_*` environment variables the compose harness sets.
  * Pure data; no seams here — the seams (clock/random/binder) are constructed in [runPeer] from this.
  */
@@ -107,9 +132,23 @@ internal data class HarnessConfig(
      * state and finishes in milliseconds on a clean path (directive #4).
      */
     val semanticsTimeout: Duration,
+    /**
+     * Run the ICE-restart phase, in which the OFFERER restarts ICE mid-session (RFC 8445 §9) after the
+     * harness has moved it onto a second carrier, and both sides carry a second offer/answer round. Like
+     * [reverseChannel] it needs an answerer of ours — a foreign reflector never re-answers — so
+     * `run-interop.sh` sets it only for the native⇄native / jvm⇄native `carrier-switch` lanes.
+     */
+    val iceRestart: IceRestartPhase,
 ) {
     /** Whether phase [id] (`s1`, `s2`, …) is in this run's subset — everything runs when none was named. */
     fun runsScenario(id: String): Boolean = scenarios.isEmpty() || id in scenarios
+
+    /**
+     * How many offer/answer rounds this run signals. One normally; two when s8 re-offers with a fresh ICE
+     * generation. It bounds the mailbox polling on BOTH sides, so a lane that cannot restart keeps exactly
+     * the single-round poll sequence it has always had.
+     */
+    val negotiationRounds: Int get() = if (iceRestart == IceRestartPhase.Off) 1 else 2
 
     companion object {
         fun fromEnv(): HarnessConfig {
@@ -157,6 +196,17 @@ internal data class HarnessConfig(
                 semanticsRequired = env("WEBRTC_SEMANTICS_REQUIRED").isTruthy(),
                 reverseChannel = env("WEBRTC_REVERSE").isTruthy(),
                 semanticsTimeout = (env("WEBRTC_SEMANTICS_TIMEOUT_MS")?.toLongOrNull() ?: 120_000L).milliseconds,
+                // Off unless the lane both enables the phase and (optionally) names the carrier the switch
+                // moves us onto — the carrier-switch lanes name it, so the phase can prove WHERE the
+                // restart landed rather than only that something changed.
+                iceRestart =
+                    when {
+                        !env("WEBRTC_ICE_RESTART").isTruthy() -> IceRestartPhase.Off
+                        else ->
+                            env("WEBRTC_RESTART_CARRIER")
+                                ?.let { IceRestartPhase.ExpectCarrier(it) }
+                                ?: IceRestartPhase.AnyNewPath
+                    },
             )
         }
 

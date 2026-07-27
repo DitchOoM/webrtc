@@ -62,6 +62,25 @@ NATs (`cgnat_a`/`cgnat_b`/`cgnat`) are the same `nat/` image, wired `car→pub` 
 | **cgnat** (NAT444) | per-side `cgnat_a` + `cgnat_b`, distinct public IPs, port-restricted cone | a genuine double NAT; the composed cone mapping stays consistent, so it traverses via `srflx` (relay is the `policy=all` safety net) |
 | **hairpin** | ONE shared `cgnat` both CPEs route through, symmetric | both peers share a single external identity; stock netfilter won't hairpin `car→car`, so — like `symmetric-relay` — traversal must ride the **coturn TURN relay**. To *prove* that (not just hope for it), this lane pins **`ice_policy=relay`** (like `relay-only`), so only relay candidates are gathered and a green run cannot have used a direct/srflx path; `run_scenario` additionally asserts the offerer's selected pair is a relay pair from its `Connected` trace |
 
+### The carrier switch — the `carrier-switch` topology (ICE restart)
+
+The lanes above all give `peer_a` exactly one way off its LAN. This one gives it **two**: `nat_a2` is a
+second, fully independent NAT gateway on `lan_a` with its own public IP (`172.30.0.33`). The peer
+establishes through `nat_a` as usual, and mid-run the orchestrator flips its default route to `nat_a2` —
+so the public address every remote candidate is aimed at stops working under a live session, exactly as it
+does when a phone walks off Wi-Fi onto cellular. Note this is not a NAT *layer* like `cgnat`: nothing
+routes through `nat_a2` on the way somewhere else, it is a sibling of `nat_a`.
+
+The switch is **observed, never timed**. The offerer prints a cue when it reaches `s8` and then parks;
+`run-interop.sh` watches for that cue, does the `ip route replace` with the same `docker compose exec` the
+NAT/netem plumbing already uses, and publishes one record into the shared rendezvous mailbox — the only
+channel there is into a running peer, and one it is already polling. Neither side ever sleeps.
+
+Two lanes run it: **`restart-native`** (native ⇄ native) and **`jvm-restart`** (JVM offerer ⇄ native).
+Foreign peers are out of scope by construction — a dumb reflector never re-answers, so it would leave the
+re-offer unanswered and the restart unconverged. Both are v4-only (a v6 analog needs a second v6 router,
+and "our public address changed" is a v4 mapping statement). Both lanes **gate**.
+
 **IPv6 / dual-stack: the *stack* now supports it; the *real-network harness lanes* are still IPv4-only.**
 As of Phase 1.5-A (PR #37), webrtc-ice does full IPv6 / dual-stack gathering, un-fenced address conversion,
 and RFC 8445 §5.1.2 → RFC 6724 v6 candidate priority — **exercised in CI** by the deterministic
@@ -85,10 +104,11 @@ sym×port lane, an explicit `relay-only` lane, an `impaired` (netem) lane, the t
 (NAT444) lanes — **`cgnat`** (double NAT) and **`hairpin`** (shared carrier NAT → relay; above) — the
 native-offerer interop lanes — **`pion-interop`**, **`chrome-interop`**, **`firefox-interop`**,
 **`webkit-interop`** — and the **JVM-offerer** lanes — **`jvm-native`**, **`jvm-pion`**, **`jvm-chrome`**,
-**`jvm-firefox`**, **`jvm-webkit`** (below). Each row is
+**`jvm-firefox`**, **`jvm-webkit`** (below) — and the two ICE-restart lanes, **`restart-native`** and
+**`jvm-restart`** (above). Each row is
 `name | nat_a | nat_b | policy | netem | a_impl | b_impl | topo`, where `a_impl` (offerer) ∈ `native|jvm`,
-`b_impl` (answerer) ∈ `native|pion|chrome|firefox|webkit`, and `topo` (NAT layering) ∈
-`single|cgnat|hairpin` (defaults to `single`). A scenario **passes** iff both peers exit `0` — and
+`b_impl` (answerer) ∈ `native|pion|chrome|firefox|webkit`, and `topo` (the extra network dimension) ∈
+`single|cgnat|hairpin|carrier-switch` (defaults to `single`). A scenario **passes** iff both peers exit `0` — and
 each exits `0` only after it CONNECTED *and* the `ping`/`pong` crossed the encrypted data channel. Every
 run tears the whole stack down (containers + networks + volumes) on exit.
 
@@ -112,10 +132,11 @@ comes for free on every existing lane and CI grows no jobs. Design note: `docs/D
 | `s4` | `s4/a`,`s4/b`,`s4/c` | **multiplexing**: three concurrent channels with mixed profiles, each echo returning on its own stream (RFC 8832 §6 demux) |
 | `s5` | `s5/reverse` | the **answerer** originates a channel and we reflect it — our DCEP responder path (odd stream-id parity). Our lanes only; foreign peers never originate |
 | `s7` | `s7/victim`, `s7/keep`, `s7/reopen` | **per-channel close** (RFC 8831 §6.7 = an RFC 6525 stream reset, *not* a shutdown): one channel is closed mid-session and (a) its **neighbour keeps echoing**, (b) the **peer's channel closed** — proven by the victim's stream id becoming reusable, which our stack only does once **both** directions have been reset, the second being the peer's own reset, and (c) the **recycled id works**: a new channel on it echoes, so the peer's per-stream SSN state really was cleared |
+| `s8` | `harness`, `s8/witness` | **ICE restart across a carrier switch** (RFC 8445 §9): the harness moves the offerer onto a second NAT mid-session, and the session (a) **reconverges on a new pair**, (b) is **reachable at the new carrier** — proven by the restarted generation gathering a candidate at that public address, which no earlier generation could have learned, and (c) **keeps its association**: the control channel and a channel opened just before the switch both still round-trip, **on the same stream ids**, so nothing was closed and nothing was renumbered. Carrier-switch lanes only |
 | `s6` | `harness` | the `DONE` handshake, then a **graceful association SHUTDOWN** (RFC 4960 §9.2) — the peer sees a clean close, not a vanished association |
 
 The ids are stable log labels, not a chronology: `s6` ends the association, so it necessarily runs **last**
-and every phase added after it sorts before it — `s7` is the newest phase, not the final one.
+and every phase added after it sorts before it — `s8` is the newest phase, not the final one.
 
 **The answerer stays dumb in every family.** Its whole contract is: *for every incoming channel, echo every
 message back on that channel, verbatim; exit on `DONE`* (with `ping`→`pong` kept as the one historical
@@ -131,7 +152,8 @@ Grading is one greppable line from the offerer:
 ```
 [harness] phase s1: PASS (+412ms) 204800B echoed byte-identical, and so did a boundary probe at exactly the negotiated 262144B
 [harness] phase s7: PASS (+3ms) closed "s7/victim" mid-session: its neighbour kept echoing, the peer reset its own half (stream 17 came back after 1 probe(s)), and a new channel on the recycled id echoed
-[harness] semantics-summary: total=7 passed=7 failed=0 failed-phases=[]
+[harness] phase s8: PASS (+1680ms) ICE restarted onto relay 172.30.0.10:64986 → srflx 172.30.0.32:40002 (was relay 172.30.0.10:60677 → srflx 172.30.0.32:40000), reachable at the new carrier 172.30.0.33; both channels kept their streams (1, 21) and still round-trip
+[harness] semantics-summary: total=8 passed=8 failed=0 failed-phases=[]
 ```
 
 A failed phase is **recorded and the sequence continues**, so one run reports everything that is broken.
@@ -291,7 +313,7 @@ daemon is root even where you aren't); CI sets it with `sudo sysctl`. It's harml
 | Path | Purpose |
 |---|---|
 | `harness.env` | single source of truth: subnets, IPs, ports, TURN creds, timeouts |
-| `docker-compose.yml` | the topology (4 networks, coturn, rendezvous, 2 CPE NATs, 3 profile-gated carrier NATs, 2 peers) |
+| `docker-compose.yml` | the topology (4 networks, coturn, rendezvous, 2 CPE NATs, 3 profile-gated carrier NATs, peer A's profile-gated second gateway `nat_a2`, 2 peers) |
 | `run-interop.sh` | orchestrator: scenario matrix, per-scenario stack, pass/fail, teardown |
 | `compose-up-retry.sh` | `up --wait` with transient-pull retries |
 | `coturn/` | `turnserver.conf` + entrypoint (subst from `harness.env`) |

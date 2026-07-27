@@ -11,6 +11,7 @@ import com.ditchoom.webrtc.stun.IpAddress
 import com.ditchoom.webrtc.stun.StunDecodeResult
 import com.ditchoom.webrtc.stun.StunMessage
 import com.ditchoom.webrtc.stun.TransportAddress
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -151,14 +152,32 @@ public class IceAgentDriver(
      * path to lose, so neither is a reason to restart.
      */
     public fun pathRidesOneOf(interfaces: List<LocalInterface>): Boolean {
-        val base =
+        val local =
             when (val current = _path.value) {
                 IcePath.Unnominated -> return true
                 is IcePath.Restarting -> return true
-                is IcePath.Nominated -> current.pair.local.base
+                is IcePath.Nominated -> current.pair.local
             }
-        return interfaces.any { it.address.toTransportAddressOrNull() == base }
+        // Compare the IP only. A [NetworkMonitor] enumerates *interfaces*; it has no idea which ephemeral
+        // port ICE happened to bind on one, so its addresses carry no meaningful port. Comparing whole
+        // TransportAddresses (whose equality includes the port) would never match, `pathRidesOneOf` would
+        // answer false for every change, and the narrow policy would degrade into exactly the restart-on-
+        // any-change churn it exists to prevent — silently, since a false answer looks like a real finding.
+        val socketIp = localSocketOf(local).ip
+        return interfaces.any { it.address.toTransportAddressOrNull()?.ip == socketIp }
     }
+
+    /**
+     * The address of the **local socket** a candidate actually occupies — which is not always its `base`.
+     * A relayed candidate's base is its address *on the TURN server*, so it never matches a local
+     * interface; the socket we hold is its `relatedAddress`. Host, server-reflexive and peer-reflexive
+     * candidates all base on the local socket already.
+     */
+    private fun localSocketOf(candidate: IceCandidate): TransportAddress =
+        when (candidate) {
+            is IceCandidate.Relayed -> candidate.relatedAddress
+            is IceCandidate.Host, is IceCandidate.ServerReflexive, is IceCandidate.PeerReflexive -> candidate.base
+        }
 
     private val gathered = Channel<IceCandidate>(Channel.UNLIMITED)
 
@@ -409,8 +428,26 @@ public class IceAgentDriver(
     ) {
         scope.launch {
             while (true) {
+                // A socket closed *while a receive is in flight* can surface as a throw rather than a
+                // DatagramReadResult.Closed — a real-UDP actual may reach into a selector it has just shut.
+                // Retiring the outgoing generation's sockets on an ICE restart is the first thing in this
+                // stack that closes a socket under a live read, so this path went from unreachable to
+                // routine; an escaped throw here takes the *consumer's* scope down with it, which is how it
+                // showed up: as the whole peer process dying mid-restart.
+                //
+                // Any read error means this base is finished, so the loop ends. It never hangs as a result:
+                // the pair simply stops receiving, and ICE's own consent/backstop machinery reaches a typed
+                // terminal (directive: observable state, never a wedge).
+                val result =
+                    try {
+                        channel.receive()
+                    } catch (e: CancellationException) {
+                        throw e // structured cancellation, not a socket condition
+                    } catch (_: Exception) {
+                        return@launch
+                    }
                 val datagram =
-                    when (val result = channel.receive()) {
+                    when (result) {
                         is DatagramReadResult.Received -> result.datagram
                         is DatagramReadResult.Closed -> return@launch
                     }

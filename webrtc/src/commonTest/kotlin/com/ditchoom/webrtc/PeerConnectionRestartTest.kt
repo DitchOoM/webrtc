@@ -199,13 +199,13 @@ class PeerConnectionRestartTest {
             // No explicit restartIce() anywhere in this fixture: the policy notices, and tells the app a
             // round is owed. It cannot renegotiate by itself — it does not own the signaling channel — so
             // "restarts automatically" means exactly this handshake, and the signal is the load-bearing half.
-            val monitor = ScriptedMonitor(listOf(iface("wifi", ALICE_IP, ALICE_FIRST_PORT)))
+            val monitor = ScriptedMonitor(listOf(iface("wifi", ALICE_IP)))
             val f = connectedPeers(aliceRestartPolicy = IceRestartPolicy.OnNetworkChange(monitor))
             val channel = f.alice.createDataChannel(DataChannelConfig(label = "restart/auto"))
             assertEquals("before", echo(channel, "before"))
             val pairBefore = knownPair(f.alice.connectionState.value)
 
-            monitor.emit(listOf(iface("cellular", "10.0.0.9", 4900)))
+            monitor.emit(listOf(iface("cellular", "10.0.0.9")))
 
             assertNotNull(
                 withTimeoutOrNull(timeout) { f.alice.renegotiationNeeded.first() },
@@ -230,13 +230,13 @@ class PeerConnectionRestartTest {
             // The guard against restart churn. A VPN or virtual adapter coming up changes the interface set
             // on a perfectly healthy session; a policy that restarted on *any* change would tear a working
             // path down for it, repeatedly, on exactly the mobile devices this feature exists to serve.
-            val monitor = ScriptedMonitor(listOf(iface("wifi", ALICE_IP, ALICE_FIRST_PORT)))
+            val monitor = ScriptedMonitor(listOf(iface("wifi", ALICE_IP)))
             val f = connectedPeers(aliceRestartPolicy = IceRestartPolicy.OnNetworkChange(monitor))
             val channel = f.alice.createDataChannel(DataChannelConfig(label = "restart/churn"))
             assertEquals("before", echo(channel, "before"))
             val pairBefore = knownPair(f.alice.connectionState.value)
 
-            monitor.emit(listOf(iface("wifi", ALICE_IP, ALICE_FIRST_PORT), iface("vpn", "10.0.0.77", 4700)))
+            monitor.emit(listOf(iface("wifi", ALICE_IP), iface("vpn", "10.0.0.77")))
 
             assertNull(
                 withTimeoutOrNull(QUIET) { f.alice.renegotiationNeeded.first() },
@@ -313,11 +313,16 @@ class PeerConnectionRestartTest {
         }
     }
 
+    /**
+     * An interface as a real [NetworkMonitor] would report it: an address with **no meaningful port**.
+     * Enumerating interfaces tells you nothing about which ephemeral port ICE bound on one, so a fixture
+     * that helpfully supplies the matching port would prove the policy works only for a monitor that
+     * cannot exist.
+     */
     private fun iface(
         id: String,
         ip: String,
-        port: Int,
-    ) = LocalInterface(NetworkId(id), SocketAddress.ofLiteral(ip, port))
+    ) = LocalInterface(NetworkId(id), SocketAddress.ofLiteral(ip, NO_PORT))
 
     private suspend fun TestScope.connectedPeers(aliceRestartPolicy: IceRestartPolicy = IceRestartPolicy.Manual): Peers {
         val net = TestNet()
@@ -432,6 +437,9 @@ class PeerConnectionRestartTest {
         const val ALICE_IP = "10.0.0.1"
         const val BOB_IP = "10.0.0.2"
         const val ALICE_FIRST_PORT = 4000
+
+        /** What an interface enumeration reports for a port: nothing. */
+        const val NO_PORT = 0
         const val BOB_FIRST_PORT = 5000
 
         /**

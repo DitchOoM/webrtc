@@ -86,6 +86,35 @@ class IceForwarderThrowOnCloseTest {
             assertTrue(backgroundScope.isActive, "the consumer's scope survived: the throw never escaped the forwarder")
         }
 
+    @Test
+    fun a_turn_allocation_whose_socket_throws_on_close_does_not_take_the_scope_down() =
+        runTest {
+            // The second instance of the same defect, and the one the jvm-restart interop lane actually died
+            // on. TurnAllocation.startLoop() reads `underlying` in a coroutine launched into the consumer's
+            // scope, and TurnAllocation.close() closes `underlying` out from under it — so retiring the
+            // outgoing generation's relay socket on nomination fires the throw by design, not by accident.
+            val meetup = Vnets.meetup(backgroundScope)
+            val hostile = ThrowOnCloseChannel(meetup.vnet.bind(vnetAddress("10.0.0.2", 6000)))
+            val allocation =
+                TurnAllocation(
+                    hostile,
+                    meetup.turnAddress,
+                    Vnets.TURN_USERNAME,
+                    Vnets.TURN_PASSWORD,
+                    Random(903),
+                    backgroundScope,
+                )
+            assertNotNull(withTimeoutOrNull(timeout) { allocation.allocate() }, "the relay allocated over the vnet TURN server")
+
+            allocation.close() // closes `underlying` under the live demux read — the retirement path
+
+            assertNotNull(
+                withTimeoutOrNull(timeout) { hostile.threw.await() },
+                "the allocation's socket raised from its in-flight receive",
+            )
+            assertTrue(backgroundScope.isActive, "the consumer's scope survived the TURN demux loop's throw")
+        }
+
     /**
      * A [DatagramChannel] that raises from an in-flight [receive] once closed, the way a selector-backed
      * real-UDP actual does — instead of politely returning [DatagramReadResult.Closed].

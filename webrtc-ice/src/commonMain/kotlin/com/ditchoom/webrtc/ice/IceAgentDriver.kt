@@ -11,7 +11,6 @@ import com.ditchoom.webrtc.stun.IpAddress
 import com.ditchoom.webrtc.stun.StunDecodeResult
 import com.ditchoom.webrtc.stun.StunMessage
 import com.ditchoom.webrtc.stun.TransportAddress
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -428,26 +427,10 @@ public class IceAgentDriver(
     ) {
         scope.launch {
             while (true) {
-                // A socket closed *while a receive is in flight* can surface as a throw rather than a
-                // DatagramReadResult.Closed — a real-UDP actual may reach into a selector it has just shut.
-                // Retiring the outgoing generation's sockets on an ICE restart is the first thing in this
-                // stack that closes a socket under a live read, so this path went from unreachable to
-                // routine; an escaped throw here takes the *consumer's* scope down with it, which is how it
-                // showed up: as the whole peer process dying mid-restart.
-                //
-                // Any read error means this base is finished, so the loop ends. It never hangs as a result:
-                // the pair simply stops receiving, and ICE's own consent/backstop machinery reaches a typed
-                // terminal (directive: observable state, never a wedge).
-                val result =
-                    try {
-                        channel.receive()
-                    } catch (e: CancellationException) {
-                        throw e // structured cancellation, not a socket condition
-                    } catch (_: Exception) {
-                        return@launch
-                    }
+                // A socket closed under an in-flight read can throw rather than return Closed — see
+                // [receiveOrClosed], which is also why this loop is not the only site that needed it.
                 val datagram =
-                    when (result) {
+                    when (val result = channel.receiveOrClosed()) {
                         is DatagramReadResult.Received -> result.datagram
                         is DatagramReadResult.Closed -> return@launch
                     }

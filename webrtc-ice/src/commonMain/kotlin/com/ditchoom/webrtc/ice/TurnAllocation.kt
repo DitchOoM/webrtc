@@ -155,7 +155,7 @@ public class TurnAllocation(
         scope.launch {
             while (true) {
                 val datagram =
-                    when (val result = underlying.receive()) {
+                    when (val result = underlying.receiveOrClosed()) {
                         is DatagramReadResult.Received -> result.datagram
                         is DatagramReadResult.Closed -> return@launch
                     }

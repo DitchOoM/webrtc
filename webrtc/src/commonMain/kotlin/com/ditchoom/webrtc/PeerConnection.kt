@@ -248,6 +248,19 @@ public interface RtcPeerConnection {
      * The session survives it: DTLS and SCTP are untouched, every open data channel stays open, and data
      * keeps flowing on the existing pair while the new one converges — the session state passes through
      * [PeerConnectionState.Restarting] and back to [PeerConnectionState.Connected] on the new pair.
+     *
+     * **It is also the way back from a lost path.** RFC 7675 §5.1 says of revoked consent that *"a new
+     * session, or an ICE restart, is needed"*, and this is that restart: called on a session sitting in
+     * [PeerConnectionState.Failed] with an [PeerConnectionFailureReason.Ice] cause, it re-runs
+     * establishment on the new generation — through [PeerConnectionState.Connecting], since there is no
+     * surviving pair to ride — and **the association comes with it**. RFC 8842 §5.5: a restart
+     * renegotiates ICE and nothing else, so DTLS is not re-handshaken, SCTP is not rebuilt, and every open
+     * data channel keeps its stream id and its state. The consumer does not build a new peer connection.
+     *
+     * A failure a fresh candidate pair cannot mend — the DTLS handshake or its RFC 8122 fingerprint check,
+     * the SCTP association, a cause this backend cannot name — stays [PeerConnectionState.Failed] with the
+     * cause it already had. The ICE generation is still swapped (the offer must not claim a restart it did
+     * not perform), but the session does not come back.
      */
     public suspend fun restartIce()
 
@@ -305,6 +318,12 @@ public class NativePeerConnection(
 
     private val renegotiationChannel = Channel<Unit>(Channel.CONFLATED)
     override val renegotiationNeeded: Flow<Unit> get() = renegotiationChannel.receiveAsFlow()
+
+    // Asks the establishment loop for another attempt, on an ICE generation that has just been restarted
+    // — the session half of RFC 7675 §5.1's "a new session, or an ICE restart, is needed". CONFLATED
+    // because the request carries exactly one bit ("try again"), and a second restart arriving before the
+    // loop woke up is the same bit; buffered because the loop may not be parked on it yet when it is sent.
+    private val resumeEstablishment = Channel<Unit>(Channel.CONFLATED)
 
     // Negotiation state — touched only under [negotiationLock].
     //
@@ -386,15 +405,108 @@ public class NativePeerConnection(
      * rides the driver's serialized inbox, so credentials read straight after a bare `restart()` are the
      * *old* ones and the offer we are about to build from them would advertise credentials the agent no
      * longer honours.
+     *
+     * It is also where a **failed** session comes back (see [RtcPeerConnection.restartIce]). Both callers
+     * route through here — our own [restartIce] and a peer-initiated restart detected in [ingestRemote] —
+     * so a peer that restarts because *its* consent died revives our side too, without the app on this end
+     * having to notice anything.
      */
     private suspend fun applyIceRestart(d: IceAgentDriver) {
         negotiationIntent = NegotiationIntent.Fresh
         d.restartAndAwait()
+        // Read AFTER the swap, not before. `restartAndAwait` suspends on the driver's inbox, and a session
+        // can fail across a suspension — so a decision taken before it can be stale by the time it is
+        // acted on, and the stale answer is the bad one: a restart that failed to notice a failure leaves
+        // the establishment loop parked with nobody ever going to wake it. Reading after cannot be wrong
+        // the other way, because the swap itself publishes only ICE states and a path change, and neither
+        // moves a *session* out of Failed (the path monitor deliberately ignores non-live states).
+        val recovery = recoveryFor(_connectionState.value)
         // Once per ICE generation, not once per session: a restart exists precisely because the interfaces
         // may have changed underneath us. The outgoing generation's sockets stay bound (and carrying data)
         // until the new generation nominates, so this never re-binds an address it is still using.
         scope.launch { gathering.gather(d) }
+        when (recovery) {
+            Recovery.NotNeeded, Recovery.Impossible -> Unit
+            Recovery.Resume ->
+                // A restart renegotiates ICE and nothing else (RFC 8842 §5.5), so it recovers a session by
+                // re-riding the association it already has. SCTP outlives an ICE outage by design, but not
+                // forever: past Association.Max.Retrans there is nothing left to re-ride, and the ICE
+                // failure already published stays the honest last word rather than being overwritten by a
+                // Connecting that leads nowhere.
+                if (associationIsLive()) {
+                    // W3C: a restart on a failed connection returns it to `connecting`. Not `Restarting` —
+                    // that state names a window in which data keeps flowing on the retained pair, and a
+                    // revoked generation is never retained (RFC 7675 §5.1 forbids transmitting on it), so
+                    // there is no pair to flow on. Published here rather than by the establishment loop so
+                    // that a *second* failure on the new generation can be reported: `fail` is
+                    // first-cause-wins and would otherwise be swallowed by the terminal we are leaving.
+                    _connectionState.value = PeerConnectionState.Connecting
+                    resumeEstablishment.trySend(Unit)
+                }
+        }
     }
+
+    /**
+     * Whether an ICE restart can bring the session back — and, when it can, that the session is actually
+     * waiting for one. Derived from the state each time it is asked, never stored, so it cannot go stale
+     * behind a transition.
+     */
+    private enum class Recovery {
+        /** The session is live, or has not started: this is an ordinary RFC 8445 §9 restart, nothing more. */
+        NotNeeded,
+
+        /**
+         * ICE failed — consent revoked on the selected pair (RFC 7675 §5.1), or a checklist that never
+         * converged — and a *new generation* is that RFC's own named remedy. Establishment resumes.
+         */
+        Resume,
+
+        /**
+         * The session failed for something a fresh candidate pair cannot mend: DTLS (including the RFC 8122
+         * fingerprint verdicts), SCTP, or a cause this backend cannot name — or it is closed.
+         *
+         * Discriminating on the reason is load-bearing rather than tidy. A re-answer that flips the DTLS
+         * role is *refused* on purpose (RFC 8842 §5.5), and the association underneath such a session is
+         * usually still up — so resuming it would walk straight back to [PeerConnectionState.Connected] and
+         * quietly undo the refusal.
+         */
+        Impossible,
+    }
+
+    private fun recoveryFor(state: PeerConnectionState): Recovery =
+        when (state) {
+            is PeerConnectionState.Failed ->
+                when (state.reason) {
+                    is PeerConnectionFailureReason.Ice -> Recovery.Resume
+                    is PeerConnectionFailureReason.Dtls,
+                    is PeerConnectionFailureReason.Sctp,
+                    is PeerConnectionFailureReason.Unknown,
+                    -> Recovery.Impossible
+                }
+            PeerConnectionState.Closed -> Recovery.Impossible
+            PeerConnectionState.New,
+            PeerConnectionState.Connecting,
+            is PeerConnectionState.Connected,
+            is PeerConnectionState.Restarting,
+            -> Recovery.NotNeeded
+        }
+
+    /**
+     * Whether there is still a data transport for a resumed establishment to ride. Callers hold
+     * [negotiationLock].
+     *
+     * **Defensive, and labelled as such: no fixture kills it.** Reaching the false arm needs the app to sit
+     * on a failed session until SCTP gives up on its own — Association.Max.Retrans, which at the RFC's own
+     * RTO defaults is around six minutes against a thirty-second consent window. It is kept because the lie
+     * it prevents is one only this layer is placed to tell: the new ICE pair really is up, and nothing else
+     * here knows there are no streams left riding it.
+     */
+    private fun associationIsLive(): Boolean =
+        when (val channels = dataChannels) {
+            // Never established — the resumed attempt builds DTLS and SCTP for the first time.
+            DataChannelStack.NotUp -> true
+            is DataChannelStack.Up -> channels.stack.state.value != SctpAssociationState.Closed
+        }
 
     override suspend fun setLocalDescription(
         type: SdpType,
@@ -558,6 +670,14 @@ public class NativePeerConnection(
      * then. Restarting on any interface-set change would churn a healthy session every time a VPN or
      * virtual adapter appears; restarting on none of them is the manual policy.
      *
+     * Two reasons to restart, one predicate. The pair we ride is no longer on any live interface — or the
+     * session is already sitting in an ICE failure a fresh generation is the remedy for.
+     * [IceAgentDriver.pathRidesOneOf] answers *true* for an unnominated path, correctly, because "no live
+     * path to lose" is no reason to churn a session that is still converging; but a consent-revoked session
+     * is also unnominated, and there it means the opposite. Asking [recoveryFor] first is what tells those
+     * two apart — the mobile case this policy exists for is exactly "Wi-Fi went away, consent died with it,
+     * and here comes cellular".
+     *
      * It routes through the same [negotiationIntent] the explicit API sets, so automatic and manual
      * restarts are one code path and both still wait for the app to drive the offer/answer round —
      * a session cannot renegotiate without its signaling channel, whoever noticed the change.
@@ -567,7 +687,7 @@ public class NativePeerConnection(
         monitor: NetworkMonitor,
     ) {
         monitor.changes.collect { interfaces ->
-            if (d.pathRidesOneOf(interfaces)) return@collect
+            if (recoveryFor(_connectionState.value) != Recovery.Resume && d.pathRidesOneOf(interfaces)) return@collect
             negotiationLock.withLock { requestIceRestart() }
         }
     }
@@ -581,120 +701,196 @@ public class NativePeerConnection(
         renegotiationChannel.trySend(Unit)
     }
 
-    // Await ICE nomination, secure the app-data seam with DTLS (plaintext for now), bring up the SCTP
-    // data-channel stack, open every queued data channel, then watch for a post-Connected loss. The
-    // liveness invariant (RFC §5.3 #5): the session reaches Connected or a typed terminal failure, never
-    // hangs — so the whole body is guarded and a DTLS/SCTP-establishment throw becomes a typed Failed.
+    /**
+     * The session's establishment coroutine, for the whole life of the session rather than for one ICE
+     * generation: it runs an attempt, and then — if a restart asks for one — runs another.
+     *
+     * It is a loop because RFC 7675 §5.1's remedy for a revoked pair is *"a new session, or an ICE
+     * restart"*, and offering only the first of those is what made a lost path unrecoverable. A single-shot
+     * attempt could not resume: it had already returned by the time the app called [restartIce], so there
+     * was nothing left to tell.
+     */
     private suspend fun runEstablishment(
         d: IceAgentDriver,
         sctpRandom: Random,
     ) {
-        try {
-            val terminal =
-                d.state.first {
-                    it is IceConnectionState.Connected || it is IceConnectionState.Completed || it is IceConnectionState.Failed
-                }
-            if (terminal is IceConnectionState.Failed) {
-                fail(PeerConnectionFailureReason.Ice(terminal.reason))
-                return
+        while (true) {
+            // The liveness invariant (RFC §5.3 #5): an attempt reaches Connected or a typed terminal
+            // failure, never hangs — so the whole body is guarded and a DTLS/SCTP throw becomes a typed
+            // Failed rather than an establishment coroutine that dies silently.
+            try {
+                attemptEstablishment(d, sctpRandom)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e // close() cancelled us — structured cancellation, not a failure
+            } catch (e: WebRtcException) {
+                fail(e.failure) // a real DTLS/SCTP-establishment failure (W4) — typed, never a hang
+            } catch (e: Exception) {
+                fail(PeerConnectionFailureReason.Unknown(e.message ?: e::class.simpleName ?: "establishment error"))
             }
-            val dtlsRole = roleResolved.await()
-            // A peer that advertised no a=fingerprint cannot be verified, so it is refused with a typed
-            // reason (RFC 8827) rather than connected to insecurely or left to hang.
-            val peerFingerprint =
-                when (val declared = negotiationLock.withLock { remoteFingerprint }) {
-                    is RemoteFingerprint.Declared -> declared.fingerprint
-                    RemoteFingerprint.NotDeclared -> {
-                        fail(PeerConnectionFailureReason.Dtls(DtlsFailureReason.FingerprintMissing))
-                        return
-                    }
-                }
-            val transport = dtls.secure(d.appDataTransport(), dtlsRole, peerFingerprint)
-            val sctpRole = if (dtlsRole == DtlsRole.Client) SctpRole.Client else SctpRole.Server
-            val liveStack =
-                SctpDataChannelStack(transport, scope, clock, sctpRole, config.sctpConfig, sctpRandom).also { it.start() }
-
-            negotiationLock.withLock {
-                if (closed) {
-                    liveStack.shutdown()
-                    return
-                }
-                dataChannels = DataChannelStack.Up(liveStack)
-                for (pending in pendingChannels) scope.launch { pending.bind(liveStack) }
-                pendingChannels.clear()
-            }
-
-            // Declare Connected only once SCTP has actually established (the data-channel transport is
-            // usable) — not merely because ICE nominated a pair. The stack's *initial* state is Closed, so
-            // first wait for the handshake to get underway (leave Closed), then for it to resolve to
-            // Established or tear back down; a pre-Established teardown is a typed failure, never a hang.
-            liveStack.state.first { it != SctpAssociationState.Closed }
-            liveStack.state.first { it == SctpAssociationState.Established || it == SctpAssociationState.Closed }
-            if (closed) return
-            if (liveStack.state.value != SctpAssociationState.Established) {
-                fail(PeerConnectionFailureReason.Sctp(SctpFailureReason.HandshakeTimeout))
-                return
-            }
-            _connectionState.value = PeerConnectionState.Connected(sessionPath(d.path.value))
-
-            monitorLiveSession(d, liveStack)
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e // close() cancelled us — structured cancellation, not a failure
-        } catch (e: WebRtcException) {
-            fail(e.failure) // a real DTLS/SCTP-establishment failure (W4) — typed, never a hang
-        } catch (e: Exception) {
-            fail(PeerConnectionFailureReason.Unknown(e.message ?: e::class.simpleName ?: "establishment error"))
+            // Park until an ICE restart asks for another attempt on a fresh generation. Nothing else can
+            // wake this: a session that failed for a reason ICE cannot mend simply stays parked, and
+            // close() cancels the whole coroutine.
+            resumeEstablishment.receive()
         }
     }
 
     /**
-     * Watch a *live* session until something ends it. Structured children of the establishment coroutine
-     * (cancelled by close() → establishJob.cancel), so no monitor outlives the session that owns it.
+     * One attempt on the ICE generation currently installed: await nomination, obtain the data transport
+     * (existing or new), declare the session live, and watch it until ICE loses the path.
+     *
+     * Returns rather than throws on every typed outcome — the caller's loop is what decides whether there
+     * is another attempt, and it must not have to tell "failed" apart from "closed" by catching.
+     */
+    private suspend fun attemptEstablishment(
+        d: IceAgentDriver,
+        sctpRandom: Random,
+    ) {
+        val terminal =
+            d.state.first {
+                it is IceConnectionState.Connected || it is IceConnectionState.Completed || it is IceConnectionState.Failed
+            }
+        if (terminal is IceConnectionState.Failed) {
+            fail(PeerConnectionFailureReason.Ice(terminal.reason))
+            return
+        }
+        val liveStack = dataTransport(d, sctpRandom) ?: return
+        if (closed) return
+        _connectionState.value = PeerConnectionState.Connected(sessionPath(d.path.value))
+        monitorLiveSession(d, liveStack)
+    }
+
+    /**
+     * The data-channel stack this attempt rides — the one already established, or a new one over a fresh
+     * DTLS handshake. Null means the attempt is over: a typed failure has been published, or the session
+     * closed underneath it.
+     *
+     * The `Up` arm is the whole of RFC 8842 §5.5 at this layer. An ICE restart — including one recovering a
+     * session whose consent was revoked — renegotiates ICE and **nothing else**: DTLS is never
+     * re-handshaken and the association is never rebuilt, so every open data channel keeps its stream id,
+     * its ordering state and its queued data across the outage. Rebuilding here instead would look almost
+     * identical from the outside and silently renumber every channel.
+     */
+    private suspend fun dataTransport(
+        d: IceAgentDriver,
+        sctpRandom: Random,
+    ): SctpDataChannelStack? =
+        when (val existing = negotiationLock.withLock { dataChannels }) {
+            is DataChannelStack.Up -> existing.stack
+            DataChannelStack.NotUp -> secureAndAssociate(d, sctpRandom)
+        }
+
+    /**
+     * Secure the app-data seam with DTLS, bring the SCTP data-channel stack up over it, and bind every data
+     * channel the app opened before there was an association to open it on. Null on a typed failure or a
+     * concurrent close, both already published.
+     */
+    private suspend fun secureAndAssociate(
+        d: IceAgentDriver,
+        sctpRandom: Random,
+    ): SctpDataChannelStack? {
+        val dtlsRole = roleResolved.await()
+        // A peer that advertised no a=fingerprint cannot be verified, so it is refused with a typed
+        // reason (RFC 8827) rather than connected to insecurely or left to hang.
+        val peerFingerprint =
+            when (val declared = negotiationLock.withLock { remoteFingerprint }) {
+                is RemoteFingerprint.Declared -> declared.fingerprint
+                RemoteFingerprint.NotDeclared -> {
+                    fail(PeerConnectionFailureReason.Dtls(DtlsFailureReason.FingerprintMissing))
+                    return null
+                }
+            }
+        val secured = dtls.secure(d.appDataTransport(), dtlsRole, peerFingerprint)
+        val sctpRole = if (dtlsRole == DtlsRole.Client) SctpRole.Client else SctpRole.Server
+        val liveStack =
+            SctpDataChannelStack(secured, scope, clock, sctpRole, config.sctpConfig, sctpRandom).also { it.start() }
+
+        negotiationLock.withLock {
+            if (closed) {
+                liveStack.shutdown()
+                return null
+            }
+            dataChannels = DataChannelStack.Up(liveStack)
+            for (pending in pendingChannels) scope.launch { pending.bind(liveStack) }
+            pendingChannels.clear()
+        }
+        // Accepting the peer's channels belongs to the ASSOCIATION, not to an ICE generation: it must keep
+        // running across a restart and across the recovery from a lost path, so it is launched once, here,
+        // with the stack it serves. Under the establishment coroutine it would have to be torn down and
+        // rebuilt on every attempt, which is how an incoming DCEP OPEN gets dropped in the gap.
+        scope.launch { pumpIncomingChannels(liveStack) }
+
+        // Declare the transport usable only once SCTP has actually established — not merely because ICE
+        // nominated a pair. The stack's *initial* state is Closed, so first wait for the handshake to get
+        // underway (leave Closed), then for it to resolve to Established or tear back down; a
+        // pre-Established teardown is a typed failure, never a hang.
+        liveStack.state.first { it != SctpAssociationState.Closed }
+        liveStack.state.first { it == SctpAssociationState.Established || it == SctpAssociationState.Closed }
+        if (closed) return null
+        if (liveStack.state.value != SctpAssociationState.Established) {
+            fail(PeerConnectionFailureReason.Sctp(SctpFailureReason.HandshakeTimeout))
+            return null
+        }
+        return liveStack
+    }
+
+    /** Publish every channel the peer opens, for as long as the association lives. */
+    private suspend fun pumpIncomingChannels(liveStack: SctpDataChannelStack) {
+        try {
+            while (true) incomingChannels.trySend(liveStack.acceptBidirectional())
+        } catch (_: kotlinx.coroutines.channels.ClosedReceiveChannelException) {
+            // the association tore down — no more incoming channels, ever
+        }
+    }
+
+    /**
+     * Watch a *live* session until ICE loses the path under it, then return. Its watchers are structured
+     * children (cancelled by close() → establishJob.cancel, and by the return below), so no monitor
+     * outlives the generation that owns it.
      *
      * Extracted from [runEstablishment] rather than left inline: establishment is a linear sequence that
-     * ends here, and these four are a concurrent set that begins here — one function doing both was the
-     * thing that made it hard to see that the ICE path was never being watched at all.
+     * ends here, and these are a concurrent set that begins here — one function doing both was the thing
+     * that made it hard to see that the ICE path was never being watched at all.
      */
     private suspend fun monitorLiveSession(
         d: IceAgentDriver,
         liveStack: SctpDataChannelStack,
     ) {
         coroutineScope {
-            // The ICE path moving mid-session is exactly what an RFC 8445 §9 restart does, and until
-            // now nothing above ICE could see it: `runEstablishment` awaited nomination once and then
-            // never looked again. Note this monitor *only* maps a live session's path — it never
-            // resurrects a Failed or Closed session, so the terminal-state monitors below still win.
-            launch {
-                d.path.collect { path ->
-                    val live = _connectionState.value
-                    if (live !is PeerConnectionState.Connected && live !is PeerConnectionState.Restarting) return@collect
-                    _connectionState.value =
-                        when (path) {
-                            // Nothing nominated in either generation — the pair is gone, not moved. The
-                            // ICE failure monitor owns that terminal; do not pre-empt it with a guess.
-                            IcePath.Unnominated -> return@collect
-                            is IcePath.Nominated -> PeerConnectionState.Connected(SelectedPath.Known(path.pair))
-                            is IcePath.Restarting -> PeerConnectionState.Restarting(SelectedPath.Known(path.previous))
+            val watchers =
+                listOf(
+                    // The ICE path moving mid-session is exactly what an RFC 8445 §9 restart does, and until
+                    // now nothing above ICE could see it: `runEstablishment` awaited nomination once and then
+                    // never looked again. Note this monitor *only* maps a live session's path — it never
+                    // resurrects a Failed or Closed session, so the terminals below still win.
+                    launch {
+                        d.path.collect { path ->
+                            val live = _connectionState.value
+                            if (live !is PeerConnectionState.Connected && live !is PeerConnectionState.Restarting) return@collect
+                            _connectionState.value =
+                                when (path) {
+                                    // Nothing nominated in either generation — the pair is gone, not moved. The
+                                    // ICE failure terminal owns that; do not pre-empt it with a guess.
+                                    IcePath.Unnominated -> return@collect
+                                    is IcePath.Nominated -> PeerConnectionState.Connected(SelectedPath.Known(path.pair))
+                                    is IcePath.Restarting -> PeerConnectionState.Restarting(SelectedPath.Known(path.previous))
+                                }
                         }
-                }
-            }
-            launch {
-                try {
-                    while (true) incomingChannels.trySend(liveStack.acceptBidirectional())
-                } catch (_: kotlinx.coroutines.channels.ClosedReceiveChannelException) {
-                    // stack closed — no more incoming channels
-                }
-            }
-            launch {
-                val lost = d.state.first { it is IceConnectionState.Failed } as IceConnectionState.Failed
-                if (!closed) fail(PeerConnectionFailureReason.Ice(lost.reason))
-            }
-            launch {
-                liveStack.state.first { it == SctpAssociationState.Closed }
-                if (!closed && _connectionState.value is PeerConnectionState.Connected) {
-                    _connectionState.value = PeerConnectionState.Closed
-                }
-            }
+                    },
+                    launch {
+                        liveStack.state.first { it == SctpAssociationState.Closed }
+                        if (!closed && _connectionState.value is PeerConnectionState.Connected) {
+                            _connectionState.value = PeerConnectionState.Closed
+                        }
+                    },
+                )
+            // A live session ends, for this ICE generation, when ICE loses the path — consent revoked on the
+            // selected pair (RFC 7675 §5.1), or every pair failed. Awaited HERE rather than in a sibling
+            // `launch` so this function RETURNS on it: what happens next is the establishment loop's to
+            // decide (a restart may resume it), and it cannot decide anything while parked in a
+            // `coroutineScope` that only close() could ever end.
+            val lost = d.state.first { it is IceConnectionState.Failed } as IceConnectionState.Failed
+            if (!closed) fail(PeerConnectionFailureReason.Ice(lost.reason))
+            for (watcher in watchers) watcher.cancel()
         }
     }
 

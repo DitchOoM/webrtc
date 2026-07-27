@@ -100,6 +100,22 @@ sealed interface PeerConnectionState {
 The illegal combinations are now unrepresentable — there is no value of `PeerConnectionState` that is
 both connected and failed. This is the single most important rule for the state-machine cores.
 
+**A null that means two things is worse than a boolean, because it reads as one thing.** The ICE-restart
+work found the canonical instance. `Connected(selectedPair: CandidatePair?)` used null for "this backend
+selects the pair internally" (the browser delegate) — a fact about the *backend*, which every call site
+read as "there is no pair". One layer down, `IceAgentDriver.selectedPair: CandidatePair?` was quietly
+carrying a third meaning: RFC 8445 §9 says data continues on the old pair during a restart, and it did —
+because the field was never cleared. Correct behaviour, arrived at by a bug, which nothing stated and
+nothing tested. Naming the cases (`SelectedPath.Known | Opaque`; `IcePath.Unnominated | Nominated |
+Restarting`) turned the send path into an exhaustive `when` with no `else` and no elvis, where each arm
+*states a decision* instead of falling out of a null.
+
+And when a new situation shows up, **add a state, do not add a flag to an existing one**. "Connected, and
+also mid-ICE-restart" is exactly the combination a caller must tell apart — the pair underneath is about to
+change — so it is `Restarting(path)` beside `Connected(path)`, not `Connected(path, restarting = true)`.
+That it breaks every consumer's `when` at compile time is the feature: a caller that would have ignored the
+flag is now made to look.
+
 **The same rule applies to data models, not just lifecycle states.** An ICE candidate has fields that
 are valid for some kinds and meaningless for others: a *host* candidate has no server-reflexive
 "related address", and a *relay* candidate's base **is** its address rather than a separate local

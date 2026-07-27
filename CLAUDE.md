@@ -31,12 +31,24 @@ Two consequences for a session starting here: **the old "do not merge webrtc tra
 and W2 (vnet) remains a socket deliverable rather than a webrtc wave. See `EXECUTION_PLAN.md` §2 for the
 per-wave record.
 
-**What is genuinely left** (none of it blocking, no open issues): ICE restart / renegotiation through
-JSEP is the one real functional gap — there is no `restartIce()` and only `SdpType.Rollback` is handled;
-mDNS is resolve-only (we do not advertise our own `.local`, so host IPs are exposed where a browser would
-obfuscate); and media (RTP/SRTP) is Phase 2, untouched. Deliberate non-goals, not gaps: the dcSCTP subset
-(no multihoming, no RFC 8260 interleaving, no HEARTBEAT — ICE consent freshness owns path liveness) and
-RFC 6525's four non-originated request types, which are decoded and explicitly refused.
+**ICE restart / renegotiation through JSEP now works** (RFC 8445 §9): `restartIce()` records intent and
+the next `createOffer()` carries a fresh ICE generation, the peer's own restart is detected from an offer
+whose ufrag *and* pwd both changed, `setLocalDescription(Rollback)` restores the retained generation, and
+`PeerConnectionState.Restarting` names the window. The session **survives** it — DTLS and SCTP never
+renegotiate (RFC 8842 §5.5: unchanged fingerprint, re-offered `actpass`), and data keeps riding the old
+pair until the new one nominates. An injected `IceRestartPolicy.OnNetworkChange` restarts automatically
+when the selected pair's interface goes away.
+
+**What is genuinely left** (none of it blocking, no open issues): no production `NetworkMonitor` actual
+enumerating real OS interfaces, so `IceRestartPolicy` defaults to `Manual` (platform-edge work, per
+target — it needs no socket-core dependency); trickled candidates carry no `ufrag`, so a restart relies on
+in-order signaling plus ICE peer-reflexive learning rather than generation-tagged candidates (RFC 8838
+§3.1); foreign-peer renegotiation is not exercised in the interop lanes; mDNS is resolve-only (we do not
+advertise our own `.local`, so host IPs are exposed where a browser would obfuscate); and media (RTP/SRTP)
+is Phase 2, untouched. Deliberate non-goals, not gaps: the dcSCTP subset (no multihoming, no RFC 8260
+interleaving, no HEARTBEAT — ICE consent freshness owns path liveness), RFC 6525's four non-originated
+request types (decoded and explicitly refused), and establishing a *new* DTLS association on
+renegotiation (a re-answer implying the opposite role is refused with a typed reason).
 
 ## Standing directives (every session, every wave)
 

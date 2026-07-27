@@ -17,7 +17,7 @@ socket repo.
 | 2026-07-11 | Every protocol core sans-io + caller-clocked | The quiche `Instant::now()` lesson, inverted — the whole stack must run under `runTest` virtual time. RFC §5.1. |
 | 2026-07-11 | `webrtc-libwebrtc` bootstrap backend **parked, not planned** | Legitimate only if time-to-first-ship dominates; three behaviors to reconcile and throwaway wrapper code otherwise. Revisit only with an explicit deadline driver. |
 | 2026-07-13 | **Codec track complete; transport track gated on a deterministic UDP `commonMain`** | W1/W6-sdp/W5-sctp (the pure codecs) are merged. W2+ needs an unconnected, deterministic UDP `DatagramChannel` in `commonMain`, runnable under `runTest` — W0's open socket promotion, being built in the socket sibling. |
-| 2026-07-15 | **Transport prerequisites landed in socket; W3 is next (dev-unblocked, merge-gated)** | socket merged the `socket-udp` UDP `commonMain` seam (PR #239) + the deterministic vnet/sim harness (#225). So **W2 is a socket deliverable, not a webrtc wave** — webrtc consumes it. Develop W3 (`webrtc-ice`) now against a socket `publishToMavenLocal`; **do not merge webrtc transport code until `socket-udp` is on Central** (it is not — latest socket 3.10.1 predates #239, whose deploy failed). |
+| resolved 2026-07-27 · logged 2026-07-15 | **Transport prerequisites landed in socket; W3 is next (dev-unblocked, merge-gated)** — **THE MERGE GATE IS LIFTED:** `socket-udp` has long been on Central and webrtc pins socket **3.15.0** / buffer **6.22.0** from it. The prohibition below is history, not policy. | socket merged the `socket-udp` UDP `commonMain` seam (PR #239) + the deterministic vnet/sim harness (#225). So **W2 is a socket deliverable, not a webrtc wave** — webrtc consumes it. Develop W3 (`webrtc-ice`) now against a socket `publishToMavenLocal`; **do not merge webrtc transport code until `socket-udp` is on Central** (it is not — latest socket 3.10.1 predates #239, whose deploy failed). |
 | resolved 2026-07-15 | RFC §11.1 — simulation-engine home → **lives in the socket sibling** (the #225 deterministic-simulation harness), not a standalone `ditchoom-simulation` | webrtc consumes socket's vnet; no separate sim module needed |
 | resolved 2026-07-15 | RFC §11.2 — SCTP subset scope → **dcSCTP-style data-channel subset: no multihoming, no stream interleaving** (single path, one cwnd) | full RFC 9260 is not needed for RTCDataChannel semantics; resolved as W5 started |
 | resolved 2026-07-16 | RFC §11.3 — DTLS version → **min 1.2 / max 1.3, and 1.3 is ON by default** (`DtlsConfig.enableDtls13 = true`) | We do not hand-roll the record/handshake layer — BoringSSL owns it — so both versions are a `SSL_CTX_set_min_proto_version(DTLS1_2_VERSION)` / `set_max_proto_version(DTLS1_3_VERSION)` config choice, not extra code. **The field has moved to 1.3** (verified 2026-07-16, not assumed): Firefox ships DTLS 1.3 for WebRTC in **Release** ([bug 1884140](https://bugzilla.mozilla.org/show_bug.cgi?id=1884140)); Chrome/BoringSSL has it **on by default** ([chromium 382915276](https://issues.chromium.org/issues/382915276)), the libwebrtc default having flipped during 2025 — BoringSSL itself now defaults to 1.3. So defaulting to 1.2 would be *pessimising against the actual field*. Min stays **1.2** purely for breadth: **Pion's released v3 is still DTLS 1.2 only** ([pion/dtls](https://github.com/pion/dtls), 1.3 in progress on a frozen `main`, [NLnet/NGI0-funded](https://nlnet.nl/project/PION-DTLS1.3/)), and version negotiation falls back for it automatically. **Both paths are empirically proven** on the W4-native backend (buffer-crypto's BoringSSL `63893acb`/API 42 exposes both): `two_stacks_complete_a_dtls_handshake_under_virtual_time` asserts a negotiated **1.3**, and `two_stacks_fall_back_to_dtls_1_2_when_1_3_is_disabled` asserts **1.2** — neither is assumed. **Consequence for `boringssl-kmp` (see the W4-sequencing row):** its canonical pin is quiche-anchored `44b3df6f` = **BoringSSL API 21, which has no `DTLS1_3_VERSION`** and whose own RFC locks in a "DTLS 1.2 baseline" — so that route would ship JVM/Android/Apple a **1.2-only** stack as browsers standardise on 1.3. That is a genuine strike against it and is worth raising upstream (the quiche anchor is the cause). No DTLS 1.0/1.1 (RFC §10 non-goal). **Phase-2 footgun to remember:** the DTLS-SRTP exporter differs between (D)TLS 1.2 and 1.3 (empty-context vs no-context) and caused a real [Chrome↔Firefox interop bug](https://issues.webrtc.org/issues/401460270) — irrelevant to Phase 1 (data channels ride the record layer, no exporter). |
@@ -65,16 +65,18 @@ How the work actually gets driven, based on what has worked in buffer/socket:
 Legend: **Exit** = merge criteria. All waves also require: ktlint/detekt clean, `.api` files
 checked in, CHANGELOG entry, standing-directive greps green.
 
-> **Status snapshot (2026-07-15):** the pure-codec / socket-free track is **complete** — W1 (`webrtc-stun`),
-> W6-partial (`webrtc-sdp`), and W5-codec-floor (`webrtc-sctp`) are all merged to `main` (all
-> `skip-release`; nothing on Central yet). The transport prerequisites now **exist in the socket
-> sibling**: the UDP `DatagramChannel` `commonMain` seam (`socket-udp`, socket PR #239, 2026-07-15) and
-> the deterministic vnet/sim harness (socket #225). **So W2 (vnet) is a socket deliverable, not a webrtc
-> wave** — webrtc consumes it. **Dev on the transport track (W3 next) is unblocked** against a socket
-> `publishToMavenLocal` build; **but `socket-udp` is not yet on Central** (latest published socket is
-> 3.10.1, which predates #239; #239's deploy failed), so webrtc transport code must **not merge to
-> `main`** until socket lands a green `socket-udp` release. §11.1 (sim home) is answered (lives in
-> socket); resolve §11.4 before W3 and §11.3 before W4.
+> **Status snapshot (2026-07-27): every wave W0–W7 is merged and Phase 1 is substantively complete.**
+> `com.ditchoom:webrtc` + `webrtc-testsuite` are on Maven Central at **v0.5.0**, interop is green against
+> Chrome / Firefox / WebKit / Pion / werift over real NAT kernels on `{x64, arm64} × {v4, v6, dual}`, and
+> DTLS is pure Kotlin on every target (W4b). W2 (vnet) remains a **socket** deliverable that webrtc
+> consumes. The 2026-07-15 merge gate — "webrtc transport code must not merge until `socket-udp` is on
+> Central" — is **lifted**: webrtc pins socket 3.15.0 / buffer 6.22.0 from Central. §11.1/§11.3/§11.4 are
+> all resolved.
+>
+> **Remaining, none of it blocking and no open issues:** renegotiation (no `restartIce()`; only
+> `SdpType.Rollback` is handled) is the one real functional gap; mDNS is resolve-only, so we do not
+> advertise our own `.local`; media (RTP/SRTP) is **P2**, untouched. The dcSCTP subset choices and RFC
+> 6525's four non-originated request types are deliberate non-goals, not gaps.
 
 ### W0 — Foundations (cross-repo) · status: ✅ merged
 Two upstream PRs + repo bootstrap. **Resolves RFC §11.1 first.**
@@ -118,7 +120,7 @@ signaling seam. Seeded `Random` for tie-breaker/ufrag/pwd/foundations from day o
   smoke lane (pinned seeds) + JVM deep-run lane wired with shrinker; ICE state invariants in the
   fuzz invariant set; typed `IceFailureReason` surface complete.
 
-### W4 — `webrtc-dtls` · status: ◑ **engine BUILT + proven on `w4-webrtc-dtls` (K/N Linux, runtime-validated); wiring + TB fixture + PR remain** · *§11.3 + W4-sequencing resolved (see the decision log)*
+### W4 — `webrtc-dtls` · status: ✅ **merged — and since SUPERSEDED by the W4b flip below**, which made DTLS pure Kotlin on every target and demoted BoringSSL to a `linuxTest` differential oracle. The scope note below is the wave as it was executed; read W4b for what shipped. · *§11.3 + W4-sequencing resolved (see the decision log)*
 **Scope was corrected mid-wave.** The plan's premise — "BoringSSL backends *reusing quiche build
 infra*: cinterop (Apple/Linux), JNI (Android), FFM (JVM)" — proved **false**: buffer-crypto exposes
 reusable BoringSSL **only** on K/N Linux (JVM/Android are pure JCA, Apple is CommonCrypto), and
@@ -133,12 +135,12 @@ key exporter surface (unused until P2). Self-signed cert + `a=fingerprint` gener
 - **Done:** two-stack handshake under virtual time (both **1.3** and, with `enableDtls13=false`,
   **1.2** — asserted, not assumed); app-data round-trip; libssl/libcrypto single-copy link tripwire.
   7/7 green on linuxX64 in 2 ms.
-- **Exit (remaining):** wire `BoringSslDtls` into `webrtc` root replacing `PlaintextDtls`; the real
-  ICE+DTLS+SCTP end-to-end TB fixture (native-gated — this is the W5/W6 exit gate it un-gates);
-  retransmission fixture (dropped flight); wrapper-free/no-leak invariant. **Apple/Android have no
-  DTLS backend this wave** — say so in the PR (V6_MAC_VALIDATION).
+- **Exit — met:** the DTLS engine was wired into the `webrtc` root in place of `PlaintextDtls`, the
+  real ICE+DTLS+SCTP end-to-end fixture landed (un-gating W5/W6), and the retransmission + no-leak
+  invariants are covered. The wave's one caveat — "**Apple/Android have no DTLS backend this wave**" —
+  was retired by W4b: every target now has a real handshake.
 
-### W4b — pure-Kotlin DTLS 1.3 over `buffer-crypto` · status: ☐ **candidate (RFC §11.5), not scheduled** · *depends on W4 + an additive buffer-crypto raw-AES-block PR*
+### W4b — pure-Kotlin DTLS over `buffer-crypto` · status: ✅ **SHIPPED — "the flip"**: `DtlsEngine` is now a pure-Kotlin `commonMain` implementation on every non-browser target, **DTLS 1.2 *and* 1.3**, differential-tested against BoringSSL + openssl, with BoringSSL demoted from the production backend to a `linuxTest` oracle. The one native dependency is retired and no target is without a backend. · *was RFC §11.5's candidate; the text below is the case that was made for it*
 Retire the one native dependency: a `commonMain` DTLS 1.3 core over buffer-crypto's primitives —
 deleting the cinterop/`libssl` provisioning, the duplicate-symbol hazard, the `boringssl-kmp`
 sequencing problem, and the blocked `SocketException` bridge *all at once*, while lighting up every
@@ -150,7 +152,7 @@ caller-clocked sans-io `expect` already fits — a pure-Kotlin core becomes the 
 implementation and inherits W4's fixtures as its conformance suite; **keep BoringSSL as the
 differential-testing oracle**. Full rationale + cost/risk in RFC §11.5.
 
-### W5 — `webrtc-sctp` + DCEP + DataChannel · status: ◑ **association FSM + RFC 3758 + DCEP + `DataChannel` (buffer-flow `StreamMux`) BUILT on `w5-webrtc-sctp` (green all platforms, end-to-end over the merged W3 ICE stack via a plaintext DTLS-shaped seam); PR open, `skip-release`, unmerged. Real-DTLS end-to-end remains the exit gate once W4 lands (W6's job).** · *§11.2 resolved (dcSCTP subset)*
+### W5 — `webrtc-sctp` + DCEP + DataChannel · status: ✅ **merged** — association FSM, RFC 3758 partial reliability, DCEP, and `DataChannel` as a buffer-flow `StreamMux`, all green on every platform and proven end-to-end over real DTLS. Later additions on the same wave: send-path backpressure (suspension is the whole contract — no `bufferedAmount`), one-copy send, and **RFC 6525 stream reset** (per-channel close + stream-id recycling, PRs #63/#65, released in v0.5.0). · *§11.2 resolved (dcSCTP subset)*
 The **chunk codec + DCEP messages** (pure, sans-io, commonMain) are done and merged. The **SCTP
 association state machine** (4-way handshake, TSN/SACK/RTO, congestion control, fragmentation/
 reassembly over `StreamProcessor`), RFC 3758 partial-reliability, and the `DataChannel` implementing
@@ -164,7 +166,7 @@ lands); partial-reliability (RFC 3758) for maxRetransmits/maxPacketLifeTime.
   platforms; SCTP invariants (no intra-stream reorder, no unacked-drop, DCEP converges) in fuzz
   set; loop-until-dry fuzz campaign run once with all finds fixed or filed.
 
-### W6 — `webrtc` root: JSEP + PeerConnection + browser actuals · status: ◑ SDP codec + JSEP machine merged (PR #5); PeerConnection + browser actuals remain · *needs W5*
+### W6 — `webrtc` root: JSEP + PeerConnection + browser actuals · status: ✅ **merged** — SDP codec + JSEP machine (PR #5), then the `PeerConnection` session API, the browser/wasmJs `peerConnectionSupport()` delegation, and the typed-error sweep. **Known remaining gap, tracked as post-Phase-1 work:** renegotiation — there is no `restartIce()`, and only `SdpType.Rollback` is handled in `set{Local,Remote}Description`. · *needs W5*
 `webrtc-sdp` (hand-written text codec, T0 + fuzz) and the **sans-io JSEP offer/answer machine** are
 done and merged. The **`PeerConnection` session API**, the browser/wasmJs `peerConnectionSupport()`
 `RTCPeerConnection` delegation, and the `SocketException`-hierarchy error sweep remain — they need the
@@ -177,7 +179,7 @@ error sweep — everything maps into the `SocketException` hierarchy with exhaus
   target compiles + delegation unit-tested under Karma; `.api` surface reviewed as *the* public
   API commitment (this is the wave where API mistakes become expensive — extra review pass).
 
-### W7 — Harness, interop, testsuite publish · status: ☐ · *needs W6; container work parallel-ok earlier*
+### W7 — Harness, interop, testsuite publish · status: ✅ **merged — exit criteria met.** Interop is green against Pion, werift, Chrome, Firefox and WebKit over real NAT kernels on `{x64, arm64} × {v4, v6, dual}`; `webrtc-testsuite` publishes alongside `webrtc` (v0.5.0 on Central) and goes through `validate-artifacts`; consumer-smoke gates cold in both directions (maven-local pre-publish, Central post-tag). Every lane also gates on the data-channel semantics sequence s1–s7. · *needs W6; container work parallel-ok earlier*
 Extend the socket-style compose harness: `coturn`, NAT-profile containers (iptables), netem
 profiles, controller `/describe` entries. Interop lane: Pion echo peer container + headless
 Chrome (Karma) driving real `RTCPeerConnection` against our JVM stack. `webrtc-testsuite`

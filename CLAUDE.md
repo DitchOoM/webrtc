@@ -18,14 +18,25 @@ target. Browsers are the sole exception: there `peerConnectionSupport()` delegat
 3. `DESIGN_PRINCIPLES.md` — the type-safety + zero-copy manifesto, with code patterns.
 4. `TESTING.md` — unit → integration → interop strategy, the harness, external vectors, per-wave test exit criteria.
 
-Current state: **the pure-codec / socket-free track is complete** — W1 (`webrtc-stun`), W6-partial
-(`webrtc-sdp`), and W5-codec-floor (`webrtc-sctp` chunk codec + DCEP) are all merged to `main` (all
-`skip-release`; nothing on Central yet). The transport prerequisites now exist in the **socket sibling**:
-the UDP `DatagramChannel` `commonMain` seam (`socket-udp`, socket PR #239) + the deterministic vnet/sim
-harness (socket #225) — so **W2 (vnet) is a socket deliverable, not a webrtc wave**, and **W3
-(`webrtc-ice`) is next**. Transport dev is unblocked against a socket `publishToMavenLocal` build, but
-`socket-udp` is **not yet on Central** (latest socket 3.10.1 predates #239) — so webrtc transport code
-must not merge until it is. See `EXECUTION_PLAN.md`.
+Current state (2026-07-27): **Phase 1 is substantively complete and released.** W0–W7 are all merged;
+`com.ditchoom:webrtc` + `webrtc-testsuite` are on Maven Central at **v0.5.0**. The stack establishes and
+carries data channels against Chrome, Firefox, WebKit, Pion and werift over real NAT kernels in CI, across
+`{x64, arm64} × {v4, v6, dual}`, and every lane also gates on the data-channel *semantics* sequence
+(fragmentation, unordered, PR-SCTP, multiplexing, reverse-direction, per-channel close, graceful shutdown).
+DTLS is **pure Kotlin in `commonMain`** on every target since the W4b flip (1.2 + 1.3; BoringSSL survives
+only as a `linuxTest` differential oracle), so there is no longer a platform without a DTLS backend.
+
+Two consequences for a session starting here: **the old "do not merge webrtc transport code until
+`socket-udp` is on Central" gate is LIFTED** (socket is pinned at 3.15.0 from Central, buffer at 6.22.0),
+and W2 (vnet) remains a socket deliverable rather than a webrtc wave. See `EXECUTION_PLAN.md` §2 for the
+per-wave record.
+
+**What is genuinely left** (none of it blocking, no open issues): ICE restart / renegotiation through
+JSEP is the one real functional gap — there is no `restartIce()` and only `SdpType.Rollback` is handled;
+mDNS is resolve-only (we do not advertise our own `.local`, so host IPs are exposed where a browser would
+obfuscate); and media (RTP/SRTP) is Phase 2, untouched. Deliberate non-goals, not gaps: the dcSCTP subset
+(no multihoming, no RFC 8260 interleaving, no HEARTBEAT — ICE consent freshness owns path liveness) and
+RFC 6525's four non-originated request types, which are decoded and explicitly refused.
 
 ## Standing directives (every session, every wave)
 

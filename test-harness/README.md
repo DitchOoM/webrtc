@@ -169,8 +169,7 @@ buffer-codec wire schema). Pion accepts the data channel and echoes `ping`→`po
     it detects the RFC 8446 §4.1.3 `DOWNGRD\x01` sentinel a 1.3-capable server stamps when it negotiates down
     (⇒ the offer was stripped) and fails `DtlsFailureReason.DowngradeDetected`. So interop with a 1.2-only
     peer works *because that peer never offers 1.3*, whereas a 1.3-capable peer downshifted mid-flight is
-    correctly rejected. Proven end-to-end in `webrtc-dtls` by `DtlsDowngradeE2ETest`; see `PHASE1_CLOSEOUT.md`
-    §CO-4.
+    correctly rejected. Proven end-to-end in `webrtc-dtls` by `DtlsDowngradeE2ETest`.
 - The Pion service is gated behind the `pion` compose profile (activated by `run-interop.sh` for this
   scenario only); it and `peer_b` share `PEER_B_IP` but never run at once.
 - Its image builds natively per-arch (pure Go, no cross-compile / QEMU), so CI needs no extra build step.
@@ -218,7 +217,7 @@ echoing `ping`→`pong`.
     do **not** assert the resolved pair is *selected*: mDNS is link-local, so a resolved `.local` is the same
     directly-reachable IP that prflx already won on — no topology makes the mDNS pair win a same-LAN race.
     The NAT lanes keep obfuscation OFF (real-IP host candidates); WebKit still proves the srflx/relay path
-    with `.local` present. Canonical ledger: `PHASE1_CLOSEOUT.md` §1.5-D; issue #48.
+    with `.local` present. Tracked as issue #48 (closed by PR #51).
 - **Browser-side diagnostics (`driver.mjs`)**: on every run — pass *or* fail — the driver logs the engine's
   own `getStats()` as a 2s-cadence + per-lifecycle-edge timeline (grep `getStats-timeline:`) plus a readable
   digest (`stats-summary:` — selected pair + RTT, DTLS state, per-channel message/byte counters), and rich

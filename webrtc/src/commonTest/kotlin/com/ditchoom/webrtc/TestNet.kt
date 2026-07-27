@@ -54,6 +54,12 @@ internal class TestNet(
         return FlatChannel(local, inbound, this)
     }
 
+    /** True iff an endpoint is currently bound at [local] — how a fixture observes socket retirement. */
+    fun isBound(local: SocketAddress): Boolean = local in endpoints
+
+    /** Tear the endpoint at [local] down from *outside* the stack — an interface going away under it. */
+    fun tearDown(local: SocketAddress) = unbind(local)
+
     private fun route(
         from: SocketAddress,
         to: SocketAddress,

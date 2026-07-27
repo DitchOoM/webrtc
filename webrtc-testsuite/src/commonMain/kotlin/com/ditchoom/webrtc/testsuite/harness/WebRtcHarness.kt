@@ -16,6 +16,7 @@ import com.ditchoom.webrtc.PeerConnectionFailureReason
 import com.ditchoom.webrtc.PeerConnectionState
 import com.ditchoom.webrtc.PlaintextDtls
 import com.ditchoom.webrtc.RtcPeerConnection
+import com.ditchoom.webrtc.SelectedPath
 import com.ditchoom.webrtc.WebRtcException
 import com.ditchoom.webrtc.ice.CandidatePair
 import com.ditchoom.webrtc.ice.DatagramBinder
@@ -265,7 +266,12 @@ public class WebRtcHarnessScope internal constructor(
                     else -> false
                 }
             }
-        return (state as PeerConnectionState.Connected).selectedPair
+        // The harness surfaces a plain pair-or-null: a scenario asserts on the pair it got, and "the browser
+        // owns selection internally" is not a case a harness scenario can do anything with.
+        return when (val path = (state as PeerConnectionState.Connected).path) {
+            SelectedPath.Opaque -> null
+            is SelectedPath.Known -> path.pair
+        }
     }
 
     private fun SocketAddress.toEndpoint(): HarnessEndpoint = HarnessEndpoint(host, port)

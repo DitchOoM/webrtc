@@ -142,6 +142,7 @@ public final class com/ditchoom/webrtc/ice/IceAgentDriver {
 	public final fun getLocalCredentials ()Lcom/ditchoom/webrtc/ice/IceCredentials;
 	public final fun getPath ()Lkotlinx/coroutines/flow/StateFlow;
 	public final fun getState ()Lkotlinx/coroutines/flow/StateFlow;
+	public final fun pathRidesOneOf (Ljava/util/List;)Z
 	public final fun post (Lcom/ditchoom/webrtc/ice/IceEvent;)V
 	public final fun restart ()V
 	public final fun restartAndAwait (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;

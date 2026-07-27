@@ -40,7 +40,7 @@ public fun interface DatagramBinder {
 
 /**
  * The point-to-point application-data seam over the ICE-selected pair — the RFC 7983 non-STUN half of
- * the nominated socket. [send] rides `selectedPair.local.base → selectedPair.remote.address`; [receive]
+ * the nominated socket. [send] rides the [IcePath]'s `local.base → remote.address`; [receive]
  * yields the demuxed non-STUN datagrams (DTLS/SCTP). This is **the boundary where DTLS slots in** (W4):
  * it is deliberately shaped identically to `webrtc-sctp`'s `SctpDatagramTransport` so the SCTP stack (or
  * a real DTLS record layer wrapping it) drops in as a swap, without `webrtc-ice` depending on `webrtc-sctp`.
@@ -89,7 +89,7 @@ public class IceAgentDriver(
 
     // The sans-io agent this driver clocks — internal, never public: every `handle` call must go through
     // the single [driveLoop], so exposing the raw core would let a caller race it and corrupt checklist
-    // state. Consumers use the re-exposed [state]/[selectedPair]/[localCandidates]/[localCredentials].
+    // state. Consumers use the re-exposed [state]/[path]/[localCandidates]/[localCredentials].
     internal val agent: IceAgent = IceAgent(role, agentRandom, config)
 
     /** This agent's local ICE credentials (ufrag/pwd) — signal them to the peer. */
@@ -137,6 +137,28 @@ public class IceAgentDriver(
 
     /** A snapshot of the local candidates gathered in the current ICE generation. */
     public val localCandidates: List<IceCandidate> get() = gathering.candidates.toList()
+
+    /**
+     * Whether the pair currently carrying data still rides one of [interfaces] — the question an automatic
+     * ICE-restart policy asks when the interface set changes (RFC 8445 §9).
+     *
+     * It lives here because this is the one place both address vocabularies are in scope: buffer-flow's
+     * [SocketAddress] on the [NetworkMonitor] side, webrtc-stun's `TransportAddress` on the candidate side.
+     * A session-layer implementation would end up comparing *rendered* addresses, and a v6 literal does not
+     * render identically on the two sides (`SocketAddress.toString` brackets it; the candidate does not).
+     *
+     * True when nothing is nominated or a restart is already in flight — in neither case is there a live
+     * path to lose, so neither is a reason to restart.
+     */
+    public fun pathRidesOneOf(interfaces: List<LocalInterface>): Boolean {
+        val base =
+            when (val current = _path.value) {
+                IcePath.Unnominated -> return true
+                is IcePath.Restarting -> return true
+                is IcePath.Nominated -> current.pair.local.base
+            }
+        return interfaces.any { it.address.toTransportAddressOrNull() == base }
+    }
 
     private val gathered = Channel<IceCandidate>(Channel.UNLIMITED)
 

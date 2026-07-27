@@ -45,7 +45,6 @@ internal val IceConnectionState.nominatedPair: CandidatePair
             is IceConnectionState.Completed -> selected
             IceConnectionState.New,
             IceConnectionState.Checking,
-            IceConnectionState.Disconnected,
             is IceConnectionState.Failed,
             -> error("not a converged state: $this")
         }

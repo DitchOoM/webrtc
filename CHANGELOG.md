@@ -6,7 +6,20 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
-### Removed — **BREAKING**: the public `CandidatePairState` enum (#83)
+### Removed — **BREAKING**: two public types that named states this stack cannot be in (#83, #82)
+
+Both are removed in the same release deliberately: they are the same defect for the same reason, and
+splitting them would make consumers re-exhaust a `when` twice.
+
+**`IceConnectionState.Disconnected` (#82).** The W3C `RTCIceConnectionState` "disconnected" value —
+connectivity lost but possibly recoverable. The agent never emitted it, and once RFC 7675 revocation
+became terminal it cannot: §5.1 requires a new session or an ICE restart, so consent loss goes straight
+to `Failed(ConsentExpired)`. A state meaning *"may recover if a check succeeds again"* describes exactly
+the resurrection that #75 removed — modelling it would be modelling a bug. A consumer wanting the W3C
+vocabulary maps `Failed` to "failed"; nothing is lost. Only one exhaustive `when` in the repo listed it
+(a test helper); `.ci/consumer-smoke` exhausts `PeerConnectionState`, which is unaffected.
+
+**`CandidatePairState` (#83).**
 
 `webrtc-ice` no longer exports `CandidatePairState`. It was public API with **no consumer** — it named
 no public signature and was referenced only from inside `IceAgent` — while the agent kept the pair's
@@ -60,8 +73,8 @@ first**, and either one alone leaves the agent worse off than both.
 Internally, a generation's nomination is now a sealed `Selection` (`None` | `Nominated` | `Revoked`) rather
 than a nullable pair beside a boolean, so "nominated and revoked at once" is unrepresentable and every call
 site must say which of *never*, *now* and *no longer* it means. `CheckPurpose.Consent` is gone: a consent
-check is not a pair check. No public API changed. `IceConnectionState.Disconnected` is documented as never
-emitted — consent loss is not recoverable in place, so the state has nothing left to describe.
+check is not a pair check. `IceConnectionState.Disconnected` is gone (see above) — consent loss is not
+recoverable in place, so the state had nothing left to describe.
 
 ### Added — ICE restart / renegotiation through JSEP (RFC 8445 §9), with the session surviving it
 

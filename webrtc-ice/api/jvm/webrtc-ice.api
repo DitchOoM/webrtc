@@ -329,13 +329,6 @@ public final class com/ditchoom/webrtc/ice/IceConnectionState$Connected : com/di
 	public fun toString ()Ljava/lang/String;
 }
 
-public final class com/ditchoom/webrtc/ice/IceConnectionState$Disconnected : com/ditchoom/webrtc/ice/IceConnectionState {
-	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/IceConnectionState$Disconnected;
-	public fun equals (Ljava/lang/Object;)Z
-	public fun hashCode ()I
-	public fun toString ()Ljava/lang/String;
-}
-
 public final class com/ditchoom/webrtc/ice/IceConnectionState$Failed : com/ditchoom/webrtc/ice/IceConnectionState {
 	public fun <init> (Lcom/ditchoom/webrtc/ice/IceFailureReason;)V
 	public final fun component1 ()Lcom/ditchoom/webrtc/ice/IceFailureReason;

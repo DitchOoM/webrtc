@@ -72,6 +72,11 @@ object Smoke {
             is PeerConnectionState.New -> "new"
             is PeerConnectionState.Connecting -> "connecting"
             is PeerConnectionState.Connected -> "connected"
+            // Added in the ICE-restart release (RFC 8445 §9): the session is live and usable — data still
+            // rides the old pair — but the pair underneath is about to change. A consumer that lumped this
+            // in with `connected` would be told nothing; that it had to come here and choose is the reason
+            // it is a variant rather than a flag.
+            is PeerConnectionState.Restarting -> "restarting"
             is PeerConnectionState.Failed -> "failed: ${state.reason}"
             is PeerConnectionState.Closed -> "closed"
         }

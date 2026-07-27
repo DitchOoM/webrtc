@@ -5,7 +5,10 @@ sections above are the design as built. Prereq PR #52 (browser `getStats()` + ri
 (`d276c8e`) and this builds on the counters it added.
 
 **Phase numbering as built** (§5's S5 split in two once the reverse-direction phase was accepted):
-`s1` large · `s2` unordered · `s3` partial-reliable · `s4` multiplex · **`s5` reverse** · **`s6` close**.
+`s1` large · `s2` unordered · `s3` partial-reliable · `s4` multiplex · **`s5` reverse** · **`s7`
+per-channel close** · **`s6` association close**. The ids are stable log labels, not a chronology: `s6`
+ends the association, so it is by construction last and `s7` — added once `webrtc-sctp` could reset a
+single stream (see D1 below) — runs before it.
 
 **Two things the design note got wrong about the code**, found while building it — both fixed in the same
 PR rather than papered over:
@@ -214,7 +217,8 @@ it genuinely proves vs. what stays in the vnet tests** (honesty about clean-path
 
 | # | Decision | Answer | As built |
 |---|---|---|---|
-| **D1** | close scope | **(a)** association-SHUTDOWN now, defer RFC 6525 RE-CONFIG | `s6` = `DONE` handshake + graceful association SHUTDOWN. Required the `close()` fix above. Per-channel close remains a `webrtc-sctp` follow-up, named as such in the code and the README rather than implied |
+| **D1** | close scope | **(a)** association-SHUTDOWN now, defer RFC 6525 RE-CONFIG | `s6` = `DONE` handshake + graceful association SHUTDOWN. Required the `close()` fix above. Per-channel close was named as a `webrtc-sctp` follow-up rather than implied — and **has since landed** (PR #63/#65: RE-CONFIG codec + the stream-reset state machine), which retired the deferral: see D8 |
+| **D8** | per-channel close (follow-up to D1) | **its own phase, offerer-asserted** | `s7` closes one of two sibling channels mid-session and asserts three separate properties: the neighbour still echoes (the reset took exactly one stream, and did not wedge the association), the victim's stream id becomes reusable (our stack recycles an id only after **both** RFC 6525 exchanges complete — the second is the peer's own reset, which it sends *because its channel closed*, so this is the offerer-visible proof of the far side's close), and a new channel on the recycled id echoes (the peer's per-stream SSN state really was cleared). The reflector stays dumb — the W3C contract already says "if that channel is closed by the remote, mirror-close our end" (§2), which Pion, werift and all three browser engines each already honour unchanged. On the browser lanes `run-interop.sh` additionally greps the engine's own `dc close:` line and asserts `s7/reopen` was negotiated on the same `id=` as `s7/victim` — the half only the peer can report |
 | **D2** | phase failure | **record + continue** | `SemanticsReport` collects every verdict (a throwing phase included) and prints one `semantics-summary:` line; the sequence never short-circuits, so one CI run names everything broken |
 | **D3** | per-phase markers | **yes** | `BEGIN <id>` on the control channel before each phase, echoed back — so it doubles as a liveness barrier: a marker that does not round-trip fails the phase before it starts |
 | **D4** | reverse direction | **yes, our lanes only** | `s5`; `run-interop.sh` sets `PEER_REVERSE=1` only when the answerer is `native`. The offerer reflects it with the *same* universal reflector the far side runs, so neither role has bespoke echo logic |
@@ -233,4 +237,9 @@ it genuinely proves vs. what stays in the vnet tests** (honesty about clean-path
   `dc-negotiated:` report line, DONE-driven exit.
 - `test-harness/{docker-compose.yml, compose.mdns.yml, run-interop.sh}` — env plumbing, per-lane
   `PEER_REVERSE`, `semantics_report` grading (summary line + the browsers' negotiated-property assertion).
+
+Added later, with `s7` (D8): the phase itself in `Semantics.kt`, the browsers' close + recycled-id
+assertions in `run-interop.sh`, and its deterministic sibling
+`PeerConnectionRoundTripTest.closing_one_channel_keeps_its_neighbour_and_recycles_the_stream_id`
+(alongside `webrtc-sctp`'s `DataChannelCloseTest`, which covers the same properties on a bare stack pair).
 - `test-harness/README.md`, `TESTING.md` — what each lane now proves, and the honest limits.

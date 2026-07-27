@@ -116,7 +116,12 @@ lane additionally runs an offerer-driven phase sequence over the same associatio
 reassembly of a message far past one MTU (byte-identity checked, sized against the peer's advertised
 `a=max-message-size` **and** probed at exactly that ceiling), unordered delivery, PR-SCTP with its
 FORWARD-TSN no-wedge property, three multiplexed channels with mixed profiles, a reverse-direction channel
-(our lanes only), and a graceful association SHUTDOWN. The answerer stays a scenario-agnostic **reflector**
+(our lanes only), a **per-channel close** (RFC 8831 §6.7 stream reset: one channel closed mid-session while
+its neighbour keeps echoing, the peer's own half reset — observed as the stream id coming back — and the
+recycled id reopened and used), and finally a graceful association SHUTDOWN. Its L1 siblings are
+`DataChannelCloseTest` (bare stack pair) and
+`PeerConnectionRoundTripTest.closing_one_channel_keeps_its_neighbour_and_recycles_the_stream_id` (whole
+stack over the vnet). The answerer stays a scenario-agnostic **reflector**
 in every family — echo every message back on the channel it arrived on — because the binding constraint is
 the browser, where nothing beyond the W3C API can be injected; every assertion therefore lives on our side.
 Honest limits: a clean path rarely reorders and never abandons, so s2/s3 prove *negotiation* there and get

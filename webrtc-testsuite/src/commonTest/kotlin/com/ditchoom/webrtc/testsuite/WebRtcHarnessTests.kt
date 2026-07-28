@@ -42,14 +42,33 @@ class WebRtcHarnessTests {
             }
         }
 
-    /** A full-cone NAT on both peers connects via the server-reflexive (srflx) candidates. */
+    /**
+     * A full-cone NAT on both peers connects via the server-reflexive (srflx) candidates.
+     *
+     * Pinning the type is the whole point: the harness policy also gathers a TURN relay outside
+     * `relayOnly`, so a total srflx regression would silently fall back to the relay and a bare
+     * `assertNotNull(selectedPair)` would stay green. The claim is read off the **remote** side —
+     * per RFC 8445 §6.1.2.2 a local srflx candidate is replaced by its **base** when pairs are formed,
+     * so our own half of an srflx pair is legitimately a `Host` candidate (asserted here too, so a
+     * relayed *local* candidate cannot hide behind the remote check).
+     */
     @Test
     fun fullConeNatConnectsViaServerReflexive() =
         runTest {
             withWebRtcHarness(scope = backgroundScope, clock = virtualClock()) {
                 natType(NatType.FullCone)
                 assertEquals("hello", roundTrip("hello"))
-                assertNotNull(establish().selectedPair, "full-cone should select a candidate pair")
+                val pair = assertNotNull(establish().selectedPair, "full-cone should select a candidate pair")
+                assertEquals(
+                    CandidateType.ServerReflexive,
+                    pair.remote.type,
+                    "full-cone must meet on the peer's server-reflexive candidate, not the relay fallback",
+                )
+                assertEquals(
+                    CandidateType.Host,
+                    pair.local.type,
+                    "a local srflx candidate pairs as its base (RFC 8445 §6.1.2.2) — a relayed local means the fallback won",
+                )
             }
         }
 

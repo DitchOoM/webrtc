@@ -39,13 +39,21 @@ renegotiate (RFC 8842 §5.5: unchanged fingerprint, re-offered `actpass`), and d
 pair until the new one nominates. An injected `IceRestartPolicy.OnNetworkChange` restarts automatically
 when the selected pair's interface goes away.
 
-**What is genuinely left** (none of it blocking, no open issues): no production `NetworkMonitor` actual
-enumerating real OS interfaces, so `IceRestartPolicy` defaults to `Manual` (platform-edge work, per
-target — it needs no socket-core dependency); trickled candidates carry no `ufrag`, so a restart relies on
-in-order signaling plus ICE peer-reflexive learning rather than generation-tagged candidates (RFC 8838
-§3.1); foreign-peer renegotiation is not exercised in the interop lanes; mDNS is resolve-only (we do not
-advertise our own `.local`, so host IPs are exposed where a browser would obfuscate); and media (RTP/SRTP)
-is Phase 2, untouched. Deliberate non-goals, not gaps: the dcSCTP subset (no multihoming, no RFC 8260
+**What is genuinely left** (none of it blocking; each item has a tracking issue): no production
+`NetworkMonitor` actual enumerating real OS interfaces, so `IceRestartPolicy` defaults to `Manual`
+(#69 — platform-edge work, per target; it needs no socket-core dependency); trickled candidates carry no
+`ufrag`, so a restart relies on in-order signaling plus ICE peer-reflexive learning rather than
+generation-tagged candidates (#70, RFC 8838 §3.1); foreign-peer renegotiation is proven in one direction
+only — Pion, Chrome, Firefox and WebKit each re-answer a restart *we* initiate on the `carrier-switch`
+topology (lanes `restart-{pion,chrome,firefox,webkit}`), and s8 now reads the peer's own re-answer rather
+than inferring a restart from reconvergence (both ICE credentials replaced, DTLS fingerprint unchanged —
+RFC 8842 §5.5), while the **foreign-initiated** direction (they offer, we answer) is unexercised (#87);
+those lanes are v4-only, because `carrier-switch` is, so the v6/dual families skip them, and there is
+deliberately no `restart-node` lane — werift publishes a correct re-answer but never runs a connectivity
+check on the new generation, so its session does not survive the restart at all (measured, with capture
+counts, in `test-harness/README.md`); mDNS is resolve-only (#88 — we do not advertise our own `.local`, so
+host IPs are exposed where a browser would obfuscate); and media (RTP/SRTP) is Phase 2, untouched.
+Deliberate non-goals, not gaps: the dcSCTP subset (no multihoming, no RFC 8260
 interleaving, no HEARTBEAT — ICE consent freshness owns path liveness), RFC 6525's four non-originated
 request types (decoded and explicitly refused), and establishing a *new* DTLS association on
 renegotiation (a re-answer implying the opposite role is refused with a typed reason).

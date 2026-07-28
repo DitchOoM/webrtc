@@ -341,6 +341,7 @@ private suspend fun runOfferer(
     val ourReanswerCredentials = CompletableDeferred<RoundCredentials>()
 
     // One poll socket, single-consumer: each round's answer, then the answerer's trickled candidates.
+    val trickle = TrickleBuffer()
     bg.launch {
         var answers = 0
         var peerRounds = 0
@@ -362,6 +363,9 @@ private suspend fun runOfferer(
                         RESTART_ROUND -> restartAnswerCredentials.complete(credentialsOf(a.first()))
                     }
                     pc.setRemoteDescription(SdpType.Answer, a.first())
+                    // s8's restart round renames the peer's generation, so anything trickled in the window
+                    // before this answer landed belongs to the new one — see [TrickleBuffer].
+                    reattribute(pc, trickle.drain())
                     answers++
                 }
             }
@@ -385,6 +389,9 @@ private suspend fun runOfferer(
                     ourReanswerCredentials.complete(credentialsOf(reanswer))
                     outbox.trySend(OutboundRecord(Slot.PeerAnswer, RecordId(peerRounds), reanswer))
                     println("[harness] answered the peer's restart offer (round $peerRounds) — the peer restarted ICE")
+                    // The peer's own restart offer renamed ITS generation, so its candidates read before
+                    // this point were attributed to the generation it just superseded — see [TrickleBuffer].
+                    reattribute(pc, trickle.drain())
                     peerRounds++
                 }
             }
@@ -393,6 +400,7 @@ private suspend fun runOfferer(
                 seen += cands.size
                 for (c in cands) {
                     forensics.recordCandidate(Origin.Remote, CandidateLine(c))
+                    trickle.read(CandidateLine(c))
                     pc.addIceCandidate(c)
                 }
             }
@@ -549,6 +557,7 @@ private suspend fun runAnswerer(
 
     // The offer poll above is done, so this launched loop is the only consumer of sigIn (no receive race)
     // — which is also why any LATER round is answered from inside it rather than from a loop of its own.
+    val trickle = TrickleBuffer()
     bg.launch {
         var rounds = INITIAL_ROUND + 1
         var peerRounds = 0
@@ -572,6 +581,9 @@ private suspend fun runAnswerer(
                     forensics.recordSdp(Origin.Remote, Sdp(a.first()))
                     pc.setRemoteDescription(SdpType.Answer, a.first())
                     println("[harness] answerer: the peer answered our restart offer (round $peerRounds)")
+                    // This answer names the peer's new generation, so its candidates read before it landed
+                    // were attributed to the one it superseded — see [TrickleBuffer].
+                    reattribute(pc, trickle.drain())
                     peerRounds++
                 }
             }
@@ -582,6 +594,8 @@ private suspend fun runAnswerer(
                 val o = sigIn.poll(Slot.Offer, RecordId(rounds))
                 if (o.isNotEmpty()) {
                     answerRound(pc, forensics, outbox, rounds, o.first())
+                    // The peer's restart offer renamed its generation — see [TrickleBuffer].
+                    reattribute(pc, trickle.drain())
                     rounds++
                 }
             }
@@ -589,6 +603,7 @@ private suspend fun runAnswerer(
             seen += cands.size
             for (c in cands) {
                 forensics.recordCandidate(Origin.Remote, CandidateLine(c))
+                trickle.read(CandidateLine(c))
                 pc.addIceCandidate(c)
             }
             delay(POLL_INTERVAL)
@@ -773,6 +788,57 @@ private class Forensics {
 
 /** One record queued for the PUT socket — a named type over the old `Triple<slot, id, payload>`. */
 private data class OutboundRecord(val slot: Slot, val recordId: RecordId, val payload: String)
+
+/**
+ * The trickled candidates read since the last remote description was applied — and the reason they are kept.
+ *
+ * A trickled candidate carries no `ufrag` (RFC 8838 §3.1), so every peer attributes one to whatever
+ * generation its **current** remote description names. Across a renegotiation that is a race nobody wins:
+ * the description and the candidates of the generation it introduces travel as separate mailbox records, so
+ * a candidate read in the window before the description is applied is attributed to the generation the
+ * restart just superseded — and discarded when the new description replaces it. The new generation is then
+ * left with an empty checklist, sends no connectivity checks, and *nothing in either peer's log says so*.
+ *
+ * Publishing in order does not fix it, which is what makes this worth a type rather than a comment: the
+ * reader can still poll the description slot a moment before it lands and the candidate slot a moment
+ * after. Sequencing the writer moves the window; it does not close it. So the fix is timing-independent
+ * instead — a candidate read under the old description is RE-APPLIED once the new one arrives. The cost is
+ * a duplicate add, which every stack ignores (ours dedupes remote candidates by address + type,
+ * `IceAgent.onAddRemoteCandidate`).
+ *
+ * The window is **routine, not rare**: instrumented runs open it on every single one. What varies is only
+ * whether *all* of a generation's candidates land inside it. Usually some arrive after the description and
+ * ICE converges on those alone — which is how this silently lost candidates across fourteen green local
+ * runs — and when none do, the peer is left with an empty checklist and the lane goes red (issue #95).
+ *
+ * This is what an application must do while its signalling cannot tag a candidate with the generation it
+ * belongs to; the protocol-level fix is RFC 8838 §3.1's `ufrag` on the candidate line itself.
+ */
+internal class TrickleBuffer {
+    private val sinceDescription = mutableListOf<CandidateLine>()
+
+    /** Record [line] as having been read under the description in force at the time. */
+    fun read(line: CandidateLine) {
+        sinceDescription += line
+    }
+
+    /** Take the candidates that must be re-attributed to the generation a just-applied description named. */
+    fun drain(): List<CandidateLine> = sinceDescription.toList().also { sinceDescription.clear() }
+}
+
+/**
+ * Re-apply [buffered] to the generation the description just applied named. See [TrickleBuffer] for why
+ * this exists; the log line is deliberately loud, because a run in which it re-applies anything is a run
+ * that would previously have been a coin flip.
+ */
+private suspend fun reattribute(
+    pc: NativePeerConnection,
+    buffered: List<CandidateLine>,
+) {
+    if (buffered.isEmpty()) return
+    println("[harness] re-applying ${buffered.size} candidate(s) recorded under the previous description to the generation the new one named")
+    for (line in buffered) pc.addIceCandidate(line.text)
+}
 
 /** One observed [PeerConnectionState] transition and [at] how long after the session started it happened. */
 private data class StateTransition(val at: Duration, val state: PeerConnectionState)

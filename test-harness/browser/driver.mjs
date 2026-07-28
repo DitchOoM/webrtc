@@ -158,6 +158,21 @@ async function answererInPage(cfg) {
   const statsTimeline = [];
   const STATS_TYPES = ['transport', 'sctp-transport', 'candidate-pair', 'local-candidate',
     'remote-candidate', 'data-channel', 'peer-connection'];
+  // Every REMOTE candidate this engine has actually taken into its checklist, logged once, on its own
+  // greppable line. This is the mirror of our peer's `mdns resolved` line and the only place the browser
+  // reports what it made of an obfuscated candidate WE sent (issue #88): a remote candidate of type `host`
+  // carrying our real IP can only exist if the engine resolved the `<uuid>.local` we published — a browser
+  // that ignored the name reaches us peer-reflexively instead, and that shows up as `type=prflx`.
+  const seenRemote = new Set();
+  const logRemoteCandidates = (snap) => {
+    for (const s of snap.entries) {
+      if (s.type !== 'remote-candidate') continue;
+      const key = `${s.candidateType}|${s.address}|${s.port}`;
+      if (seenRemote.has(key)) continue;
+      seenRemote.add(key);
+      log('remote-candidate:', `type=${s.candidateType}`, `address=${s.address}`, `port=${s.port}`);
+    }
+  };
   const snapshotStats = async (tag) => {
     const snap = { tag, tMs: Date.now() - startT, entries: [] };
     try {
@@ -167,6 +182,7 @@ async function answererInPage(cfg) {
       snap.error = e && e.message ? e.message : String(e);
     }
     statsTimeline.push(snap);
+    logRemoteCandidates(snap);
     return snap;
   };
   // A compact, human-first digest of the FINAL snapshot: the selected pair + RTT, transport DTLS state, and
@@ -423,6 +439,10 @@ async function answererInPage(cfg) {
       const cands = await poll('cand/offerer', seen);
       for (const c of cands) {
         try {
+          // Log what the engine was FED, not only what it made of it. On the mDNS lane this is the
+          // browser's own record that our obfuscated `<uuid>.local` reached it and was accepted — the half
+          // of the #88 mirror assertion that has to come from the foreign peer rather than from us.
+          log('remote candidate:', c);
           await pc.addIceCandidate({ candidate: c, sdpMLineIndex: 0 });
         } catch (e) {
           log('addIceCandidate error:', e.message);

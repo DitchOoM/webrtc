@@ -45,6 +45,7 @@ internal class Vnet(
     private val capabilities: DatagramCapabilities = FullVnetCapabilities,
 ) {
     private val endpoints = HashMap<SocketAddress, Channel<Datagram>>()
+    private val groups = HashMap<SocketAddress, MutableSet<SocketAddress>>()
 
     /** The addresses currently bound in the vnet — the fabric consults this to decide reachability. */
     val boundAddresses: Set<SocketAddress> get() = endpoints.keys.toSet()
@@ -67,6 +68,19 @@ internal class Vnet(
 
     /** True iff an endpoint is currently bound at [local]. */
     fun isBound(local: SocketAddress): Boolean = local in endpoints
+
+    /**
+     * Join [member] to the link-local multicast [group] — the one datagram-level behaviour mDNS needs that
+     * point-to-point delivery cannot express (RFC 6762 §3). A datagram sent *to* a group address is copied to
+     * every joined member except the sender, which is what an L2 segment does and what makes "the querier
+     * does not know the responder's address" — the entire point of a `.local` name — expressible here.
+     */
+    fun join(
+        group: SocketAddress,
+        member: SocketAddress,
+    ) {
+        groups.getOrPut(group) { LinkedHashSet() } += member
+    }
 
     /**
      * Hand a datagram sent [from]→[to] to the [fabric]; [payload] is valid only for the duration of
@@ -92,6 +106,15 @@ internal class Vnet(
         observedSource: SocketAddress,
         payload: ReadBuffer,
     ): Boolean {
+        // A group address is not an endpoint: it flood-fills to its members, minus the sender (a real
+        // segment does not hand a host back its own multicast unless loopback is asked for).
+        groups[dest]?.let { members ->
+            var delivered = false
+            for (member in members) {
+                if (member != observedSource) delivered = deliver(member, observedSource, payload) || delivered
+            }
+            return delivered
+        }
         val inbound = endpoints[dest] ?: return false
         if (inbound.isClosedForSend) return false
         val copy = copyOf(payload)

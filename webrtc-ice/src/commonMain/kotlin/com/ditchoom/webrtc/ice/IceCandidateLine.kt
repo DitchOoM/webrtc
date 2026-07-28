@@ -33,19 +33,38 @@ public object IceCandidateLine {
 
     /**
      * Serialize [candidate] as a full `candidate:` attribute value (RFC 8839 §5.1), stamped with the ICE
-     * generation it was gathered in when [generation] names one (RFC 8838 §3.1).
+     * generation it was gathered in when [generation] names one (RFC 8838 §3.1), disclosing as much of
+     * itself as [privacy] allows (RFC 8828).
      *
-     * The default is [CandidateGeneration.Untagged] — byte-for-byte the line this emitted before the tag
-     * existed — so a caller that does not know the generation cannot accidentally assert one.
+     * Both extras default to the pre-existing behaviour — [CandidateGeneration.Untagged] and
+     * [CandidatePrivacy.Disclosed] — so the line is byte-for-byte what this emitted before either existed,
+     * and a caller that does not know the generation, or does not obfuscate, cannot accidentally assert
+     * either.
      */
     public fun format(
         candidate: IceCandidate,
         generation: CandidateGeneration = CandidateGeneration.Untagged,
+        privacy: CandidatePrivacy = CandidatePrivacy.Disclosed,
     ): String {
         val a = candidate.address
+        // Only a HOST candidate is ever obfuscated (RFC 8828 §3.1): a reflexive or relayed address is a
+        // public NAT mapping or a TURN allocation, which hides nothing and which no peer could resolve.
+        // Handing this an Obfuscated for one of those publishes the address, exactly as if it had asked for
+        // the redaction a non-host candidate in an obfuscating session gets anyway.
+        val connection =
+            when {
+                privacy is CandidatePrivacy.Obfuscated && candidate is IceCandidate.Host -> privacy.name.value
+                else -> a.ip.toString()
+            }
+        val foundation =
+            when (privacy) {
+                CandidatePrivacy.Disclosed -> candidate.foundation
+                is CandidatePrivacy.Obfuscated -> privacy.foundation
+                is CandidatePrivacy.Redacted -> privacy.foundation
+            }
         val head =
-            "$PREFIX${candidate.foundation.value} ${candidate.component.value} ${candidate.transport.token} " +
-                "${candidate.priority} ${a.ip} ${a.port} typ ${candidate.type.token}"
+            "$PREFIX${foundation.value} ${candidate.component.value} ${candidate.transport.token} " +
+                "${candidate.priority} $connection ${a.port} typ ${candidate.type.token}"
         val related =
             when (candidate) {
                 is IceCandidate.ServerReflexive -> candidate.relatedAddress
@@ -53,12 +72,27 @@ public object IceCandidateLine {
                 is IceCandidate.Relayed -> candidate.relatedAddress
                 is IceCandidate.Host -> null
             }
-        val withRelated = if (related == null) head else "$head raddr ${related.ip} rport ${related.port}"
+        val withRelated =
+            when {
+                related == null -> head
+                // A related address is a LOCAL address by definition — the host base a srflx was mapped
+                // from, the socket a relay was allocated for. Publishing it in a session that obfuscates
+                // would put the very address the name hides two fields further along the same line.
+                privacy == CandidatePrivacy.Disclosed -> "$head raddr ${related.ip} rport ${related.port}"
+                else -> "$head raddr ${unspecifiedLike(related.ip)} rport 0"
+            }
         return when (generation) {
             CandidateGeneration.Untagged -> withRelated
             is CandidateGeneration.Tagged -> "$withRelated $UFRAG_ATTRIBUTE ${generation.ufrag.value}"
         }
     }
+
+    // The unspecified address of [like]'s family — `0.0.0.0` / `::`, what Chrome writes as a redacted raddr.
+    private fun unspecifiedLike(like: IpAddress): IpAddress =
+        when (like) {
+            is IpAddress.V4 -> IpAddress.V4(0u)
+            is IpAddress.V6 -> IpAddress.V6(0uL, 0uL)
+        }
 
     /**
      * Parse a `candidate:` attribute value (with or without the prefix) into an [IceCandidate], or null —
@@ -223,6 +257,46 @@ public object IceCandidateLine {
     private const val IPV4_OCTETS = 4
     private const val MAX_OCTET = 255u
     private const val MAX_PORT = 65535
+}
+
+/**
+ * How much of itself a candidate discloses on the wire (RFC 8828 privacy). Sealed rather than a nullable
+ * name plus a `redact: Boolean`, which between them could encode "publish a `.local` name but leave the host
+ * address in the `raddr`" — the one combination that would look like privacy and provide none.
+ *
+ * A candidate line leaks a local address in **three** places, and hiding one of them is theatre:
+ * 1. the connection-address — replaced by an `<uuid>.local` name on a host candidate ([Obfuscated]);
+ * 2. the `raddr` of a reflexive or relayed candidate, which *is* the host base the name exists to hide;
+ * 3. the **foundation**, which this stack derives from the base IP (`host:192.168.7.31:-:udp`) and which
+ *    therefore spells the private address out in field 1 of the very same line.
+ *
+ * So both private cases carry the [foundation] to publish instead. A caller picks per candidate:
+ * [Obfuscated] for a host candidate an [MdnsAdvertiser] has named, [Redacted] for the reflexive and relayed
+ * candidates of that same session, [Disclosed] for everything a session that does not obfuscate emits.
+ */
+public sealed interface CandidatePrivacy {
+    /** Address, related address and foundation exactly as gathered — the behaviour before #88, and the default. */
+    public data object Disclosed : CandidatePrivacy
+
+    /**
+     * Publish [name] in place of the connection address, [foundation] in place of the gathered one, and
+     * redact the related address. Meaningful only for a host candidate; on any other the name is dropped and
+     * it behaves as [Redacted], because a reflexive or relayed address hides nothing and no peer could
+     * resolve a `.local` for one.
+     */
+    public data class Obfuscated(
+        public val name: MdnsHostName,
+        public val foundation: Foundation,
+    ) : CandidatePrivacy
+
+    /**
+     * The candidate's own (already public) address in the clear, with [foundation] published instead of the
+     * gathered one and the `raddr` redacted to the unspecified address of its family — what a reflexive or
+     * relayed candidate publishes in a session that obfuscates, and what Chrome emits unconditionally.
+     */
+    public data class Redacted(
+        public val foundation: Foundation,
+    ) : CandidatePrivacy
 }
 
 /**

@@ -71,6 +71,14 @@ services:
       # Keeps the candidate-poll + resolve loops alive past the sub-second prflx connect so the `.local` the
       # browser trickles is genuinely resolved on the critical path, making the lane's mDNS proof gating-worthy.
       WEBRTC_REQUIRE_MDNS: "true"
+      # …and the mirror direction (issue #88): publish OUR host candidates as `<uuid>.local` too, and don't
+      # exit 0 unless our responder actually ANSWERED the browser's multicast query for one of them. Both
+      # halves ride ONE MulticastMdnsEndpoint on one socket per family — a second socket on 5353 would take
+      # a hash-chosen share of the unicast replies to our own queries above. Only this lane sets it: on a
+      # NAT lane the peers are on separate LANs, where a link-local query can never cross, so a name would
+      # simply cost the peer the host candidate.
+      WEBRTC_MDNS_ADVERTISE: "true"
+      WEBRTC_REQUIRE_MDNS_ANSWERED: "true"
       # ── RFC 7675 consent freshness (s9/idle, issue #80) ──
       # Consent timing is a PeerConnectionConfig.iceConfig seam, so a lane can outlive a whole revocation
       # window in seconds instead of the RFC's 30. Unset = the library's production defaults (5 s / 30 s).

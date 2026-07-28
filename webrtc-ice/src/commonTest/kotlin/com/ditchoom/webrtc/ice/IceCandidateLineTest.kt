@@ -13,6 +13,11 @@ import kotlin.test.assertTrue
  * lines — the trickle boundary must never throw.
  */
 class IceCandidateLineTest {
+    private val name = MdnsHostName("bd1a3f9c-1f4e-4a1d-9c2b-5f8e0a7d3c11.local")
+
+    // The opaque foundation an obfuscating session publishes in place of the address-derived one.
+    private val opaque = Foundation("2f6c1d90aa47b3e5")
+
     private fun addr(
         ip: String,
         port: Int,
@@ -184,6 +189,112 @@ class IceCandidateLineTest {
         val parsed = IceCandidateLine.parseLine(line)
         assertTrue(parsed is CandidateParse.MdnsHost)
         assertEquals(CandidateGeneration.Tagged(Ufrag("4ZcD")), parsed.generation)
+    }
+
+    @Test
+    fun an_obfuscated_host_candidate_publishes_the_name_and_not_the_address() {
+        // RFC 8828 privacy, the responder half (#88): the address is replaced wholesale — the port, the
+        // foundation and the priority still ride the line, because only the address is private.
+        val host = IceCandidate.host(addr("192.168.7.31", 55000))
+        val line = IceCandidateLine.format(host, privacy = CandidatePrivacy.Obfuscated(name, opaque))
+
+        assertTrue(line.contains("${name.value} 55000 typ host"), "the name stands where the address stood: $line")
+        // Not just the address field: this stack derives the FOUNDATION from the base IP too
+        // (`host:192.168.7.31:-:udp`), so hiding only the address field would leave the address in field 1.
+        assertTrue(line.startsWith("candidate:${opaque.value} "), "the foundation is the opaque one: $line")
+        assertTrue("192.168.7.31" !in line, "and the private address appears nowhere on the line: $line")
+        // It is still a candidate line a peer can act on — it parses as the mDNS host it is.
+        val parsed = IceCandidateLine.parseLine(line)
+        assertTrue(parsed is CandidateParse.MdnsHost)
+        assertEquals(name.value, parsed.hostname)
+        assertEquals(55000, parsed.port)
+        assertEquals(host.priority, parsed.priority)
+    }
+
+    @Test
+    fun an_obfuscating_session_redacts_the_related_address_of_a_reflexive_candidate() {
+        // Without this the feature would be theatre: a srflx candidate's `raddr` IS the host address the
+        // name exists to hide, sitting in the clear two fields further along the very same line.
+        val srflx =
+            IceCandidate.ServerReflexive(
+                address = addr("203.0.113.5", 50000),
+                base = addr("192.168.7.31", 55000),
+                component = ComponentId.Rtp,
+                transport = IceTransport.Udp,
+                foundation = Foundation("2"),
+                priority = 1694498815L,
+                relatedAddress = addr("192.168.7.31", 55000),
+            )
+        val line = IceCandidateLine.format(srflx, privacy = CandidatePrivacy.Redacted(opaque))
+
+        assertTrue(line.contains("203.0.113.5 50000"), "the public mapping is still published: $line")
+        assertTrue(line.contains("raddr 0.0.0.0 rport 0"), "…and the local base is redacted, as Chrome does: $line")
+        assertTrue("192.168.7.31" !in line, "so no private address survives on the line: $line")
+    }
+
+    @Test
+    fun a_redacted_v6_related_address_is_the_unspecified_address_of_its_own_family() {
+        val srflx =
+            IceCandidate.ServerReflexive(
+                address = v6Addr("2001:db8::5", 50000),
+                base = v6Addr("fd00:31::100", 55000),
+                component = ComponentId.Rtp,
+                transport = IceTransport.Udp,
+                foundation = Foundation("2"),
+                priority = 1694498815L,
+                relatedAddress = v6Addr("fd00:31::100", 55000),
+            )
+        val line = IceCandidateLine.format(srflx, privacy = CandidatePrivacy.Redacted(opaque))
+        assertTrue(line.contains("raddr :: rport 0"), "a v6 candidate redacts to `::`, not to 0.0.0.0: $line")
+        assertTrue("fd00:31::100" !in line, "and the ULA base is gone: $line")
+    }
+
+    @Test
+    fun obfuscation_and_the_generation_tag_compose_on_one_line() {
+        val host = IceCandidate.host(addr("192.168.7.31", 55000))
+        val line = IceCandidateLine.format(host, CandidateGeneration.Tagged(Ufrag("4ZcD")), CandidatePrivacy.Obfuscated(name, opaque))
+        val parsed = IceCandidateLine.parseLine(line)
+        assertTrue(parsed is CandidateParse.MdnsHost)
+        assertEquals(CandidateGeneration.Tagged(Ufrag("4ZcD")), parsed.generation, "the tag still rides the tail: $line")
+    }
+
+    @Test
+    fun a_non_host_candidate_is_never_published_under_a_name() {
+        // Only host candidates are obfuscated (RFC 8828 §3.1): a reflexive address is a public NAT mapping
+        // that hides nothing, and no peer could resolve a `.local` for one. Asking anyway must not produce
+        // a line claiming a name for it.
+        val relay =
+            IceCandidate.Relayed(
+                address = addr("203.0.113.9", 60000),
+                component = ComponentId.Rtp,
+                transport = IceTransport.Udp,
+                foundation = Foundation("3"),
+                priority = 8388607L,
+                relatedAddress = addr("192.168.7.31", 55000),
+            )
+        val line = IceCandidateLine.format(relay, privacy = CandidatePrivacy.Obfuscated(name, opaque))
+        assertTrue(line.contains("203.0.113.9 60000 typ relay"), "the relayed address is published as it is: $line")
+        assertTrue(name.value !in line, "and no name is claimed for it: $line")
+        assertTrue(line.contains("raddr 0.0.0.0 rport 0"), "…while its local base is still redacted: $line")
+    }
+
+    @Test
+    fun the_default_formatting_is_byte_for_byte_what_it_always_was() {
+        // The compatibility claim the new parameter's default makes, asserted rather than assumed.
+        val srflx =
+            IceCandidate.ServerReflexive(
+                address = addr("203.0.113.5", 50000),
+                base = addr("10.0.0.1", 4000),
+                component = ComponentId.Rtp,
+                transport = IceTransport.Udp,
+                foundation = Foundation("2"),
+                priority = 1694498815L,
+                relatedAddress = addr("10.0.0.1", 4000),
+            )
+        assertEquals(
+            "candidate:2 1 udp 1694498815 203.0.113.5 50000 typ srflx raddr 10.0.0.1 rport 4000",
+            IceCandidateLine.format(srflx),
+        )
     }
 
     private fun parsedGeneration(line: String): CandidateGeneration =

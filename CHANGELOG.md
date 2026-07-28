@@ -6,6 +6,50 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Added — we advertise our own `<uuid>.local` candidates, and answer for them (RFC 8828 / RFC 6762) (#88)
+
+We have **resolved** a peer's `.local` candidates since #48; we never published our own. That is a privacy
+asymmetry, not a functional gap: a browser hides its LAN address behind a `<uuid>.local` precisely so the
+signaling server — and anyone else who sees the SDP — learns nothing about the private network, and we
+handed ours over in the clear. A page using this library was strictly less private on the wire than the
+same page using `RTCPeerConnection`.
+
+- **`PeerConnectionConfig.mdnsAdvertising`** — `MdnsAdvertisePolicy.Disabled` (default) |
+  `.Advertise(advertiser)`. One knob carrying the responder, because a name nothing answers costs the peer
+  the candidate outright, so "advertise with nobody listening" is unrepresentable rather than discouraged.
+  It is opt-in for exactly that reason: `PeerConnectionConfig` is `commonMain`, which cannot construct a
+  multicast responder. On a target that has one it is a single argument:
+  `mdnsAdvertising = MdnsAdvertisePolicy.Advertise(MulticastMdnsEndpoint(scope))`.
+- **`MdnsEndpoint`** (`commonMain`) serves the resolver **and** the responder over **one** socket per
+  family, and `MulticastMdnsEndpoint` is its socket-udp actual. Not a convenience: a responder must hold
+  port 5353, and a second socket on it would take a hash-chosen share of the unicast replies to our *own*
+  resolutions' queries — a 50/50 defect that reads as a flaky lane for a year. `MulticastMdnsResolver`
+  remains for a session that never advertises.
+- **`MdnsResponder`** (`commonMain`, sans-io) answers A/AAAA for **our own names only**, including RFC 6762
+  §6.7 one-shot legacy queries (source port ≠ 5353 ⇒ unicast reply, question echoed, TTL 10) because that
+  is what a resolve-only peer sends. Everything else on the group is an exhaustively typed
+  `MdnsSilenceReason` (`NotOurs`, `NotAQuery`, `Malformed`, `UnsupportedType`, `NoQuestions`) — never an
+  answer. It is not a general-purpose responder, and deliberately so: one that spoke for names it does not
+  own would be an attack surface reachable by anything on the link.
+- **Names are minted from the injected entropy seam** (`MdnsHostName.random(random)`, an RFC 4122 v4 uuid
+  carrying nothing of the machine) and are **stable per address for the session**, so a re-gather after an
+  ICE restart republishes the same name — two names for one interface would identify the host as loudly as
+  the address.
+- **Three leaks are closed, not one.** `CandidatePrivacy` (`Disclosed` | `Obfuscated(name, foundation)` |
+  `Redacted(foundation)`) on `IceCandidateLine.format` also redacts the `raddr` of every reflexive/relayed
+  candidate — which *is* the host base — and replaces the **foundation**, which this stack derives from the
+  base IP (`host:192.168.7.31:-:udp`) and which would otherwise spell the private address out in field 1 of
+  the very same line. The published foundation is a per-session random token per distinct foundation, not a
+  hash: private IPv4 space is small enough that a hash would be invertible by dictionary.
+- Both extra parameters of `IceCandidateLine.format` default to the previous behaviour, so a line a session
+  that does not obfuscate emits is byte-for-byte what it always was.
+
+Proven both ways, not asserted: `MdnsEndpointTest` runs two real endpoints over the vnet — one advertises,
+the other knows only the name and resolves it — with only the 5353 bind/join substituted, and the
+`mdns-{chrome,firefox}` interop lanes now gate on **Chrome having queried a name it could only have read off
+our candidate line** (`WEBRTC_REQUIRE_MDNS_ANSWERED`). With the responder made mute, Chrome still
+establishes and still exits 0; only those assertions go red.
+
 ### Added — trickled candidates carry the ICE generation they belong to (RFC 8838 §3.1) (#70)
 
 A trickled candidate used to arrive with no generation attached, so it was applied to whichever generation

@@ -901,23 +901,53 @@ run_mdns_scenario() {
         # obfuscation-ON interop. We do NOT (and cannot) assert the resolved pair is SELECTED: mDNS is
         # link-local, so a resolved `.local` is the same directly-reachable IP prflx already won on — no
         # topology makes the mDNS pair win. See issue #48. Two hard assertions below corroborate rc_a=0:
-        #   1. the browser SIGNALED an obfuscated `.local` into the mailbox (source of truth for the exchange), and
+        #   1. the browser SIGNALED an obfuscated `.local` and it REACHED us (our own forensics dump of the
+        #      candidates we received — a strictly stronger source than the mailbox, which since #88 also
+        #      carries `.local` candidates of OUR own and can no longer attribute one to the browser), and
         #   2. OUR resolver logged `mdns resolved …` on one.
-        local mailbox
-        mailbox=$(docker compose exec -T rendezvous python3 -c \
-            "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:${RENDEZVOUS_HTTP_PORT}/dump').read().decode())" 2>/dev/null || true)
-        if ! grep -qiE '\.local' <<< "$mailbox"; then
-            fail_scenario "$name" "established but the browser never signaled an obfuscated .local host candidate into the mailbox (mDNS obfuscation not exercised)"; export COMPOSE_FILE="$saved_compose"; return
+        if ! grep -qE 'remote-cand\|.*\.local' <<< "$a_log"; then
+            fail_scenario "$name" "established but the browser never signaled an obfuscated .local host candidate to us (mDNS obfuscation not exercised)"; export COMPOSE_FILE="$saved_compose"; return
         fi
         echo "[mdns] browser signaled an obfuscated .local host candidate"
         if ! grep -qi 'mdns resolved' <<< "$a_log"; then
             fail_scenario "$name" "established but our MulticastMdnsResolver never resolved the browser's .local (no 'mdns resolved' line — the resolver was not exercised)"; export COMPOSE_FILE="$saved_compose"; return
         fi
         echo "[mdns] ✅ our MulticastMdnsResolver resolved the browser's .local candidate"
+
+        # ── the MIRROR direction (issue #88): a foreign peer resolves OUR `<uuid>.local` ──
+        # Same discipline, opposite way round, and for the same reason: rc_a=0 already carries the first
+        # half of it (WEBRTC_REQUIRE_MDNS_ANSWERED=true, so the peer only exits 0 if our responder answered
+        # somebody's query for a name we minted). These two assertions corroborate it from the two logs:
+        #   3. we PUBLISHED a name rather than an address (our own forensics record of what we signaled),
+        #   4. our responder ANSWERED a query for one of those names, and
+        #   5. the BROWSER's own log shows our `.local` reaching it and being accepted (it logs every
+        #      candidate it is fed), so the name crossed the signaling as a name.
+        #
+        # What is deliberately NOT asserted, having been measured: a `remote-candidate: type=host` at our IP
+        # in the browser's getStats(). It never appears on this topology, and correctly so — lan0 has no NAT,
+        # so coturn reflects our own LAN address and our srflx candidate is 172.33.0.x:40000, the SAME
+        # transport address as the host candidate behind the name. libwebrtc prunes the redundant pair, so
+        # the resolved host candidate is real but unobservable. `mdns answered` is the load-bearing proof:
+        # the browser can only have queried a name it read out of OUR candidate line.
+        if ! grep -qE 'local-cand\|.*\.local' <<< "$a_log"; then
+            fail_scenario "$name" "established but WE published no obfuscated .local host candidate (advertising was configured but never reached the wire)"; export COMPOSE_FILE="$saved_compose"; return
+        fi
+        echo "[mdns] we published our own host candidate as an obfuscated .local"
+        if ! grep -qi 'mdns answered' <<< "$a_log"; then
+            fail_scenario "$name" "established but our responder never answered a query for one of our .local names (no 'mdns answered' line — the browser never resolved ours)"; export COMPOSE_FILE="$saved_compose"; return
+        fi
+        echo "[mdns] our responder answered the browser's query for one of our .local names"
+        if ! grep -qE 'remote candidate: candidate:.*\.local' <<< "$b_log"; then
+            fail_scenario "$name" "our responder answered but the browser never saw an obfuscated .local of ours (the name did not cross the signaling)"; export COMPOSE_FILE="$saved_compose"; return
+        fi
+        if grep -qE 'addIceCandidate error' <<< "$b_log"; then
+            fail_scenario "$name" "the browser REJECTED a candidate we signaled (see 'addIceCandidate error' in its log) — our obfuscated line is malformed to a real engine"; export COMPOSE_FILE="$saved_compose"; return
+        fi
+        echo "[mdns] ✅ the browser accepted OUR .local and resolved it (our responder answered its query)"
         if [ "$sem_missing" = "1" ]; then
             fail_scenario "$name" "both peers exited 0 but the offerer printed NO semantics-summary — the data-channel phases did not run on a lane that gates them"; export COMPOSE_FILE="$saved_compose"; return
         fi
-        echo "✅ [$name] PASS (offerer rc=$rc_a answerer rc=$rc_b) — obfuscation-ON browser interop + mDNS resolution proven"; pass=$((pass+1))
+        echo "✅ [$name] PASS (offerer rc=$rc_a answerer rc=$rc_b) — obfuscation-ON browser interop + mDNS resolution proven BOTH ways"; pass=$((pass+1))
     else
         fail_scenario "$name" "FAIL (offerer rc=$rc_a answerer rc=$rc_b)"
     fi

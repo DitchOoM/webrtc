@@ -30,10 +30,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # temurin, not zulu — see the note in build-linux.yaml (tool-cache hit, no CDN fetch).
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
-          distribution: 'zulu'
+          distribution: 'temurin'
           java-version: '21'
 
       # Dependency + Gradle build cache (smarter than setup-java's cache:gradle; matches socket).

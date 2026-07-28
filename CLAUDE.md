@@ -39,15 +39,32 @@ renegotiate (RFC 8842 §5.5: unchanged fingerprint, re-offered `actpass`), and d
 pair until the new one nominates. An injected `IceRestartPolicy.OnNetworkChange` restarts automatically
 when the selected pair's interface goes away.
 
+**Trickled candidates carry their generation** (RFC 8838 §3.1): each candidate we signal is stamped with
+the ufrag of the generation that gathered it — taken inside the driver's serialized loop, so a candidate
+cannot be tagged with a generation it is not in — and an incoming one is *routed* by that tag instead of
+applied to whatever is current. A candidate for a superseded generation is discarded with a typed
+`CandidateDiscardReason` (observably, on `IceOutput`); one for a generation whose offer has not arrived
+yet is **held** — bounded at 32, oldest evicted first — and released by the credentials event, never by a
+timer, so the core stays sans-io. Both carriers are honoured: an explicit
+`addIceCandidate(candidate, generation)` mirroring the browser's `usernameFragment`, and the `ufrag`
+extension attribute libwebrtc has stamped on candidate lines for years. An **untagged** candidate is
+applied to the current generation exactly as before — that is the path every peer that carries no ufrag
+uses — and the whole behaviour is opt-out with
+`PeerConnectionConfig(trickleGeneration = TrickleGenerationPolicy.Untagged)`. What it buys is measured
+rather than asserted: `PeerConnectionRestartTest` now converges on the *signaled* `Host` pair, and
+`PeerConnectionTrickleGenerationTest` runs one scripted overtake (candidates released **before** the offer
+that names them) twice, differing only in that policy — tagged it converges on the signaled candidate,
+untagged it still converges, but **peer-reflexively**, because the re-gathered candidates were naturalized
+into the generation being abandoned and RFC 8445 §7.3.1.3 had to rediscover the path.
+
 **What is genuinely left** (none of it blocking; each item has a tracking issue): no production
 `NetworkMonitor` actual enumerating real OS interfaces, so `IceRestartPolicy` defaults to `Manual`
-(#69 — platform-edge work, per target; it needs no socket-core dependency); trickled candidates carry no
-`ufrag`, so a restart relies on in-order signaling plus ICE peer-reflexive learning rather than
-generation-tagged candidates (#70, RFC 8838 §3.1); foreign-peer renegotiation is proven in one direction
-only — Pion, Chrome, Firefox and WebKit each re-answer a restart *we* initiate on the `carrier-switch`
-topology (lanes `restart-{pion,chrome,firefox,webkit}`), and s8 now reads the peer's own re-answer rather
-than inferring a restart from reconvergence (both ICE credentials replaced, DTLS fingerprint unchanged —
-RFC 8842 §5.5), while the **foreign-initiated** direction (they offer, we answer) is unexercised (#87);
+(#69 — platform-edge work, per target; it needs no socket-core dependency); foreign-peer renegotiation
+is proven in one direction only — Pion, Chrome, Firefox and WebKit each re-answer a restart *we* initiate
+on the `carrier-switch` topology (lanes `restart-{pion,chrome,firefox,webkit}`), and s8 now reads the
+peer's own re-answer rather than inferring a restart from reconvergence (both ICE credentials replaced,
+DTLS fingerprint unchanged — RFC 8842 §5.5), while the **foreign-initiated** direction (they offer, we
+answer) is unexercised (#87);
 those lanes are v4-only, because `carrier-switch` is, so the v6/dual families skip them, and there is
 deliberately no `restart-node` lane — werift publishes a correct re-answer but never runs a connectivity
 check on the new generation, so its session does not survive the restart at all (measured, with capture

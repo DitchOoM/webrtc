@@ -17,9 +17,21 @@ public sealed interface IceEvent {
         public val candidate: IceCandidate,
     ) : IceEvent
 
-    /** Trickle (RFC 8838) delivered a remote candidate from signaling. */
+    /**
+     * Trickle (RFC 8838) delivered a remote candidate from signaling, for the ICE generation named by
+     * [generation] (RFC 8838 §3.1).
+     *
+     * [CandidateGeneration.Untagged] — the default, and what every peer that carries no `ufrag` sends —
+     * means *"the generation that is current when you read this"*, which is exactly how a candidate was
+     * handled before the tag existed. A [CandidateGeneration.Tagged] one is routed instead: applied if it
+     * names the applied remote generation, discarded if it names one already superseded, and **held**
+     * until it is applied if it names one not yet signaled. Holding is what closes the restart window —
+     * a candidate for the new generation that overtakes the offer announcing it is no longer naturalized
+     * into the outgoing generation and lost with it.
+     */
     public data class AddRemoteCandidate(
         public val candidate: IceCandidate,
+        public val generation: CandidateGeneration = CandidateGeneration.Untagged,
     ) : IceEvent
 
     /** The remote agent's ufrag/pwd arrived (from the SDP offer/answer). Pairing can begin. */
@@ -112,6 +124,20 @@ public sealed interface IceOutput {
      */
     public data class PathChanged(
         public val path: IcePath,
+    ) : IceOutput
+
+    /**
+     * A trickled remote candidate was deliberately **not** added, and [reason] says why (RFC 8838 §3.1).
+     *
+     * The driver has nothing to *do* with this — no socket to touch, no state to change — which is
+     * precisely why it is an output rather than an internal `return`. A candidate dropped in silence is
+     * indistinguishable from one that never arrived, so the one path that throws candidates away on
+     * purpose is the one path that has to say so; the fixtures for superseded and overflowing candidates
+     * assert on this, and could not exist otherwise.
+     */
+    public data class RemoteCandidateDiscarded(
+        public val candidate: IceCandidate,
+        public val reason: CandidateDiscardReason,
     ) : IceOutput
 }
 

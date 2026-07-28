@@ -5,6 +5,7 @@ package com.ditchoom.webrtc
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.Connection
 import com.ditchoom.webrtc.dtls.DtlsFailureReason
+import com.ditchoom.webrtc.ice.CandidateGeneration
 import com.ditchoom.webrtc.ice.CandidateParse
 import com.ditchoom.webrtc.ice.IceAgentDriver
 import com.ditchoom.webrtc.ice.IceCandidateLine
@@ -156,7 +157,40 @@ public data class PeerConnectionConfig(
      * no target ships a production [NetworkMonitor] actual enumerating real OS interfaces.
      */
     public val iceRestartPolicy: IceRestartPolicy = IceRestartPolicy.Manual,
+    /**
+     * Whether trickled candidates carry their ICE generation (RFC 8838 §3.1). Defaults to
+     * [TrickleGenerationPolicy.Tagged].
+     */
+    public val trickleGeneration: TrickleGenerationPolicy = TrickleGenerationPolicy.Tagged,
 )
+
+/**
+ * Whether this session speaks RFC 8838 §3.1's generation tag on trickled candidates — in **both**
+ * directions, because reading a tag we never write and writing one we never read are each half a
+ * protocol, and a deployment that has to turn one off has to turn the other off with it.
+ *
+ * One knob rather than two because there is exactly one question behind it: *is the `ufrag` on a
+ * candidate line to be trusted here?* If a peer is found that stamps a `ufrag` disagreeing with its own
+ * `a=ice-ufrag`, every candidate it trickles would be held for a generation that never arrives — and the
+ * remedy is to stop believing tags on that link, not to keep emitting our own into the void.
+ */
+public sealed interface TrickleGenerationPolicy {
+    /**
+     * Stamp the local ICE generation's ufrag on every candidate we trickle, and honour the one a peer
+     * sends (on the line, or beside it via [RtcPeerConnection.addIceCandidate]). The default: it is what
+     * libwebrtc has done for years, the extension attribute is ignorable by grammar (RFC 8839 §5.1), and
+     * it is the only thing that makes a candidate crossing an ICE restart placeable rather than guessable.
+     */
+    public data object Tagged : TrickleGenerationPolicy
+
+    /**
+     * Emit bare candidate lines and ignore any tag that arrives — pre-#70 behaviour exactly, kept as the
+     * one-line escape hatch for a peer whose tags cannot be trusted. Untagged candidates are applied to
+     * whichever generation is current, so a restart falls back on in-order signaling plus peer-reflexive
+     * learning (RFC 8445 §7.3.1.3), which is what it relied on before.
+     */
+    public data object Untagged : TrickleGenerationPolicy
+}
 
 /**
  * Opt-in marker for IMPLEMENTING [RtcPeerConnection] outside this library.
@@ -242,8 +276,33 @@ public interface RtcPeerConnection {
         sdp: String,
     )
 
-    /** Add a trickled remote `candidate:` line (RFC 8838). A malformed line is ignored. */
-    public suspend fun addIceCandidate(candidate: String)
+    /**
+     * Add a trickled remote `candidate:` line (RFC 8838) belonging to the ICE generation named by
+     * [generation] (RFC 8838 §3.1). A malformed line is ignored.
+     *
+     * [generation] is this API's [`usernameFragment`][CandidateGeneration.Tagged]: the W3C
+     * `RTCIceCandidateInit` carries the ufrag beside the line for exactly this reason, and a browser
+     * backend forwards it there verbatim. Passing [CandidateGeneration.Untagged] — what the single-argument
+     * overload does — falls back to whatever the line itself carries (libwebrtc has stamped a `ufrag`
+     * extension attribute on its candidate lines for years), and if the line carries none either, the
+     * candidate is applied to the current generation exactly as it always was.
+     *
+     * Naming the generation is what lets a candidate that crosses an ICE restart on the wire be *routed*
+     * rather than guessed at: one for a superseded generation is discarded on purpose, and one for a
+     * generation whose offer has not arrived yet is held until it does, instead of being applied to the
+     * outgoing generation and lost with it.
+     */
+    public suspend fun addIceCandidate(
+        candidate: String,
+        generation: CandidateGeneration,
+    )
+
+    /**
+     * Add a trickled remote `candidate:` line whose ICE generation is whatever the line itself says
+     * (RFC 8838 §3.1), or the current one if it says nothing — the shape every peer that predates the tag
+     * uses, and the behaviour this API has always had.
+     */
+    public suspend fun addIceCandidate(candidate: String): Unit = addIceCandidate(candidate, CandidateGeneration.Untagged)
 
     /**
      * Request an ICE restart (W3C `restartIce()`, RFC 8445 §9). Records the intent; the **next**
@@ -348,7 +407,7 @@ public class NativePeerConnection(
     private var dataChannels: DataChannelStack = DataChannelStack.NotUp
     private var establishJob: Job? = null
     private val pendingChannels = mutableListOf<PendingChannel>()
-    private val pendingRemoteCandidates = mutableListOf<String>()
+    private val pendingRemoteCandidates = mutableListOf<TrickledCandidate>()
     private var closed = false
 
     // What the next createOffer() must produce: a plain re-offer, or one carrying a fresh ICE generation.
@@ -622,11 +681,15 @@ public class NativePeerConnection(
         }
     }
 
-    override suspend fun addIceCandidate(candidate: String): Unit =
+    override suspend fun addIceCandidate(
+        candidate: String,
+        generation: CandidateGeneration,
+    ): Unit =
         negotiationLock.withLock {
+            val trickled = TrickledCandidate(candidate, generation)
             when (val current = transport) {
-                IceTransport.NotStarted -> pendingRemoteCandidates += candidate
-                is IceTransport.Started -> addRemoteCandidateLine(current.driver, candidate)
+                IceTransport.NotStarted -> pendingRemoteCandidates += trickled
+                is IceTransport.Started -> addRemoteCandidateLine(current.driver, trickled)
             }
         }
 
@@ -637,15 +700,50 @@ public class NativePeerConnection(
     // (no responder) or a malformed line is silently dropped, exactly as before.
     private fun addRemoteCandidateLine(
         d: IceAgentDriver,
-        line: String,
+        trickled: TrickledCandidate,
     ) {
-        when (val parsed = IceCandidateLine.parseLine(line)) {
-            is CandidateParse.Parsed -> d.addRemoteCandidate(parsed.candidate)
-            is CandidateParse.MdnsHost ->
-                scope.launch { config.mdnsResolver.resolveHostCandidate(parsed)?.let(d::addRemoteCandidate) }
+        when (val parsed = IceCandidateLine.parseLine(trickled.line)) {
+            is CandidateParse.Parsed -> d.addRemoteCandidate(parsed.candidate, generationOf(trickled.generation, parsed.generation))
+            is CandidateParse.MdnsHost -> {
+                val generation = generationOf(trickled.generation, parsed.generation)
+                scope.launch {
+                    config.mdnsResolver.resolveHostCandidate(parsed)?.let { d.addRemoteCandidate(it, generation) }
+                }
+            }
             CandidateParse.Reject -> Unit
         }
     }
+
+    /**
+     * Which ICE generation a trickled candidate belongs to, given what the caller said and what the line
+     * said (RFC 8838 §3.1).
+     *
+     * The caller wins when it named one: an explicit argument is the W3C `usernameFragment`, supplied by
+     * an application that knows which description the candidate arrived with, while the line's `ufrag` is
+     * whatever the *peer* chose to write. When the caller says nothing, the line is believed — that is
+     * how a libwebrtc peer's tag is honoured without every application having to unpack it. Under
+     * [TrickleGenerationPolicy.Untagged] neither is believed and every candidate lands in the current
+     * generation, which is precisely the pre-tag behaviour.
+     */
+    private fun generationOf(
+        explicit: CandidateGeneration,
+        onTheLine: CandidateGeneration,
+    ): CandidateGeneration =
+        when (config.trickleGeneration) {
+            TrickleGenerationPolicy.Untagged -> CandidateGeneration.Untagged
+            TrickleGenerationPolicy.Tagged ->
+                when (explicit) {
+                    is CandidateGeneration.Tagged -> explicit
+                    CandidateGeneration.Untagged -> onTheLine
+                }
+        }
+
+    /** How this session signals its own candidates: stamped with the generation that gathered them, or bare. */
+    private fun localGenerationOf(ufrag: Ufrag): CandidateGeneration =
+        when (config.trickleGeneration) {
+            TrickleGenerationPolicy.Tagged -> CandidateGeneration.Tagged(ufrag)
+            TrickleGenerationPolicy.Untagged -> CandidateGeneration.Untagged
+        }
 
     override suspend fun createDataChannel(config: DataChannelConfig): Connection<ReadBuffer> =
         negotiationLock.withLock {
@@ -718,14 +816,19 @@ public class NativePeerConnection(
         _connectionState.value = PeerConnectionState.Connecting
         scope.launch { gathering.gather(d) }
         scope.launch {
-            d.localCandidateGathered.collect { localCandidateChannel.trySend(IceCandidateLine.format(it)) }
+            // Stamped with the generation the agent actually put the candidate in (RFC 8838 §3.1), which
+            // is what lets the peer place a candidate that overtakes our restart offer instead of
+            // naturalizing it into the generation it is about to abandon.
+            d.localCandidateGathered.collect {
+                localCandidateChannel.trySend(IceCandidateLine.format(it.candidate, localGenerationOf(it.ufrag)))
+            }
         }
         establishJob = scope.launch { runEstablishment(d, sctpRandom) }
         when (val policy = config.iceRestartPolicy) {
             IceRestartPolicy.Manual -> Unit
             is IceRestartPolicy.OnNetworkChange -> scope.launch { watchNetwork(d, policy.monitor) }
         }
-        for (line in pendingRemoteCandidates) addRemoteCandidateLine(d, line)
+        for (trickled in pendingRemoteCandidates) addRemoteCandidateLine(d, trickled)
         pendingRemoteCandidates.clear()
         return d
     }
@@ -1013,7 +1116,15 @@ public class NativePeerConnection(
             (media?.fingerprints() ?: emptyList()).firstOrNull() ?: description.fingerprints().firstOrNull()
         if (fingerprint != null) remoteFingerprint = RemoteFingerprint.Declared(fingerprint)
         honorTlsId(media, description)
-        startedTransport()?.let { live -> media?.candidates()?.forEach { line -> addRemoteCandidateLine(live, line) } }
+        // A candidate carried *inside* a description belongs to that description's generation by
+        // construction — the ufrag it would be tagged with is three lines above it in the same SDP — so it
+        // is tagged with it here rather than left to whatever the line happens to say. It is also the one
+        // place the tag can be asserted rather than believed, which matters for a peer whose in-SDP
+        // candidate lines still carry a stale `ufrag` from the generation it just left.
+        val sdpGeneration = if (ufrag == null) CandidateGeneration.Untagged else CandidateGeneration.Tagged(Ufrag(ufrag))
+        startedTransport()?.let { live ->
+            media?.candidates()?.forEach { line -> addRemoteCandidateLine(live, TrickledCandidate(line, sdpGeneration)) }
+        }
     }
 
     /**
@@ -1167,6 +1278,17 @@ public class NativePeerConnection(
             val tlsId: TlsId,
         ) : RemoteTlsId
     }
+
+    /**
+     * A trickled `candidate:` line and the ICE generation the *caller* named for it (RFC 8838 §3.1) —
+     * kept together because a candidate parked before ICE starts must be replayed with the generation it
+     * arrived with, not with whichever one has become current by the time the queue is flushed. That is
+     * the same class of mistake as reading the tag from the wrong end of a restart.
+     */
+    private data class TrickledCandidate(
+        val line: String,
+        val generation: CandidateGeneration,
+    )
 
     /** The peer's ICE credentials as last signaled — the baseline a peer-initiated restart is detected against. */
     private sealed interface RemoteIceCredentials {

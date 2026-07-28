@@ -7,6 +7,7 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.Connection
+import com.ditchoom.webrtc.ice.CandidateGeneration
 import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.association.SctpReliability
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
@@ -101,8 +102,19 @@ private class WasmBrowserPeerConnection(
         jsSetRemoteDescription(pc, type.token.toJsString(), sdp.toJsString()).await<JsAny?>()
     }
 
-    override suspend fun addIceCandidate(candidate: String) {
-        jsAddIceCandidate(pc, candidate.toJsString()).await<JsAny?>()
+    override suspend fun addIceCandidate(
+        candidate: String,
+        generation: CandidateGeneration,
+    ) {
+        // RFC 8838 §3.1's tag is `RTCIceCandidateInit.usernameFragment`; `null` is the spec's own "this
+        // generation", so untagged crosses the boundary as a null and the call is byte-identical to the
+        // one this made before the tag existed.
+        val ufrag =
+            when (generation) {
+                CandidateGeneration.Untagged -> null
+                is CandidateGeneration.Tagged -> generation.ufrag.value.toJsString()
+            }
+        jsAddIceCandidate(pc, candidate.toJsString(), ufrag).await<JsAny?>()
     }
 
     // 1:1 with the native stack, which is why restartIce() was specified as deferred-intent rather than
@@ -330,10 +342,11 @@ private external fun jsSetRemoteDescription(
     sdp: JsString,
 ): Promise<JsAny?>
 
-@JsFun("(pc, cand) => pc.addIceCandidate({ candidate: cand, sdpMLineIndex: 0 })")
+@JsFun("(pc, cand, ufrag) => pc.addIceCandidate({ candidate: cand, sdpMLineIndex: 0, usernameFragment: ufrag })")
 private external fun jsAddIceCandidate(
     pc: JsRtcPeerConnection,
     cand: JsString,
+    ufrag: JsString?,
 ): Promise<JsAny?>
 
 @JsFun("(pc, cb) => { pc.onnegotiationneeded = () => cb(); }")

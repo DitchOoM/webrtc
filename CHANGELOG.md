@@ -6,6 +6,53 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Added — trickled candidates carry the ICE generation they belong to (RFC 8838 §3.1) (#70)
+
+A trickled candidate used to arrive with no generation attached, so it was applied to whichever generation
+happened to be current when it landed. Across an ICE restart (RFC 8445 §9) that is a real window in both
+directions: a candidate for the peer's *new* generation can overtake the offer announcing it, and one for
+its *old* generation can arrive after we have moved on. Untagged, the first is naturalized into a
+generation about to be abandoned and dies with it. It survived on two things nobody chose — signaling
+being in order, and RFC 8445 §7.3.1.3 peer-reflexive learning rediscovering the path afterwards.
+
+- **`CandidateGeneration`** (`Untagged` | `Tagged(Ufrag)`) is now carried on `IceEvent.AddRemoteCandidate`,
+  `IceAgentDriver.addRemoteCandidate`, `CandidateParse.Parsed`/`MdnsHost`, and `IceCandidateLine.format`.
+  The agent **routes** on it — applied / superseded / not-yet-applied — instead of guessing.
+- **A candidate for a superseded generation is discarded on purpose, and says so**: a new
+  `IceOutput.RemoteCandidateDiscarded(candidate, CandidateDiscardReason)`. A candidate dropped in silence
+  is indistinguishable from one that never arrived, which is why the one path that throws candidates away
+  is the one path that reports.
+- **A candidate for a generation whose offer has not arrived yet is held**, bounded at **32** (one FIFO
+  across generations, oldest evicted first with a typed overflow reason) and released by the *credentials
+  event*, never by a timer — `nextDeadline` is untouched and the core stays sans-io. The retired-ufrag set
+  is bounded at 8.
+- **Both ufrag carriers are honoured.** `RtcPeerConnection.addIceCandidate(candidate, generation)` mirrors
+  the W3C `RTCIceCandidateInit.usernameFragment` (the browser delegates forward it verbatim), and the
+  `ufrag` extension attribute (RFC 8839 §5.1) that libwebrtc has stamped on candidate lines for years is
+  read off the line. Explicit wins when given; `a=candidate:` lines inside a description are tagged with
+  that description's own `a=ice-ufrag`. The one-argument `addIceCandidate(candidate)` remains, as a
+  default interface method — **no existing call site changes, and its binary signature is preserved**.
+- **Our own trickled candidates are stamped** with the generation that gathered them, taken inside the
+  driver's serialized loop so a candidate cannot be tagged with a generation it is not in.
+- **Untagged stays untagged.** A candidate carrying no ufrag is applied to the current generation exactly
+  as before — the path every peer in the interop matrix uses. Routing that arm as "hold" instead takes
+  down 40 of 114 `webrtc-ice` tests, which is the measure of how load-bearing it is.
+- **`PeerConnectionConfig.trickleGeneration`** (`TrickleGenerationPolicy.Tagged` | `.Untagged`) turns the
+  whole behaviour off in both directions in one line, for a peer whose tags cannot be trusted.
+
+What it buys is measured, not asserted: `PeerConnectionRestartTest` now converges on the **signaled**
+`Host` pair where it previously converged peer-reflexively, and `PeerConnectionTrickleGenerationTest` runs
+one scripted overtake (candidates released *before* the offer naming them) under both policies — `Host`
+tagged, `PeerReflexive` untagged — so the two differ in one config value and nothing else.
+
+### Changed — **SOURCE BREAKING**: `IceAgentDriver.localCandidateGathered` yields a `GatheredCandidate`
+
+`Flow<IceCandidate>` → `Flow<GatheredCandidate>` (the candidate plus the `Ufrag` of the generation it
+landed in). Signaling a candidate without saying which generation gathered it is what made a restart's
+candidates ambiguous on the wire; a driver always knows the answer, and reading it from the gathering side
+instead returns the *old* ufrag for a candidate a restart has already placed in the new generation.
+Consumers collecting this flow take `.candidate` (and may now stamp `.ufrag`).
+
 ### Changed — **SOURCE-BREAKING** (`webrtc-sdp`): rollback is an event, not a null argument (#77)
 
 `JsepEvent.SetLocalDescription` and `JsepEvent.SetRemoteDescription` were each a `data class(type, description?)`

@@ -93,6 +93,9 @@ internal class IceDriver(
     private val _state = MutableStateFlow<IceConnectionState>(IceConnectionState.New)
     val state: StateFlow<IceConnectionState> get() = _state
 
+    /** Every trickled remote candidate the agent refused, with its typed reason (RFC 8838 §3.1). */
+    val discarded: MutableList<IceOutput.RemoteCandidateDiscarded> = mutableListOf()
+
     private val _path = MutableStateFlow<IcePath>(IcePath.Unnominated)
 
     /** Where application traffic rides (RFC 8445 §9 — see [IcePath]). */
@@ -309,6 +312,10 @@ internal class IceDriver(
                 is IceOutput.Transmit -> channels[output.fromBase]?.send(output.data, to = output.to.toSocketAddress())
                 is IceOutput.ConnectionStateChanged -> _state.value = output.state
                 is IceOutput.PathChanged -> _path.value = output.path
+                // Recorded rather than ignored: a fixture that asserts a candidate was refused on purpose
+                // (RFC 8838 §3.1) needs somewhere to read that from, and "the checklist did not grow" is
+                // equally true of a candidate that never arrived.
+                is IceOutput.RemoteCandidateDiscarded -> discarded += output
             }
         }
     }

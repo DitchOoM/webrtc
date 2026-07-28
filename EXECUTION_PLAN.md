@@ -76,13 +76,19 @@ checked in, CHANGELOG entry, standing-directive greps green.
 > **Renegotiation is now done:** `restartIce()` through JSEP with the SCTP association and every open data
 > channel surviving the restart (RFC 8445 §9), peer-initiated restart detection, ICE-side rollback, an
 > injected `IceRestartPolicy.OnNetworkChange`, and `s8/restart` interop lanes over our own peers **and**
-> over foreign ones (PR #86).
+> over foreign ones (PR #86). Trickled candidates are **`ufrag`-tagged** (RFC 8838 §3.1, PR #92): stamped
+> on the way out with the generation that gathered them, and on the way in routed by that tag — superseded
+> generations discarded with a typed reason, unapplied ones held (bounded at 32) until their offer lands,
+> untagged ones applied to the current generation exactly as before, all of it opt-out via
+> `TrickleGenerationPolicy.Untagged`. `PeerConnectionRestartTest` now converges on the signaled `Host`
+> pair, and `PeerConnectionTrickleGenerationTest` runs one scripted overtake (candidates released before
+> the offer naming them) under both policies — tagged it converges on the signaled candidate, untagged it
+> converges peer-reflexively, which is exactly what the tag replaces.
 >
 > **Remaining, none of it blocking; each item tracked:** no production `NetworkMonitor` actual, so
-> `IceRestartPolicy` defaults to `Manual` (#69); trickled candidates are not `ufrag`-tagged (#70,
-> RFC 8838 §3.1), so a restart leans on in-order signaling + peer-reflexive learning; foreign-peer
-> renegotiation is proven in one direction only — Pion, Chrome, Firefox and WebKit each re-answer a
-> restart *we* initiate on `carrier-switch` (`restart-{pion,chrome,firefox,webkit}`), with s8 reading the
+> `IceRestartPolicy` defaults to `Manual` (#69); foreign-peer renegotiation is proven in one direction
+> only — Pion, Chrome, Firefox and WebKit each re-answer a restart *we* initiate on `carrier-switch`
+> (`restart-{pion,chrome,firefox,webkit}`), with s8 reading the
 > peer's own re-answer (both ICE credentials replaced, fingerprint unchanged — RFC 8842 §5.5) instead of
 > inferring a restart from reconvergence, while the **foreign-initiated** direction (they offer, we
 > answer) is unexercised (#87); those lanes are v4-only, as `carrier-switch` is, so v6/dual skip them, and

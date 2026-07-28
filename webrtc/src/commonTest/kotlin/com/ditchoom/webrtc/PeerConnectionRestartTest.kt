@@ -12,6 +12,7 @@ import com.ditchoom.buffer.managed
 import com.ditchoom.webrtc.dtls.DtlsFailureReason
 import com.ditchoom.webrtc.ice.DatagramBinder
 import com.ditchoom.webrtc.ice.IceAgentDriver
+import com.ditchoom.webrtc.ice.IceCandidate
 import com.ditchoom.webrtc.ice.IceConfig
 import com.ditchoom.webrtc.ice.IceFailureReason
 import com.ditchoom.webrtc.ice.LocalInterface
@@ -86,6 +87,17 @@ class PeerConnectionRestartTest {
             val pairAfter = knownPair(connected)
             assertNotEquals(pairBefore, pairAfter, "the restart nominated a different pair")
             assertNotEquals(credentialsBefore, ufragOf(f.alice.createOffer()), "…on fresh ICE credentials (RFC 8445 §9)")
+
+            // …and it is the pair we SIGNALED, not one rediscovered afterwards. Until trickled candidates
+            // carried their generation (RFC 8838 §3.1) this converged on a peer-reflexive remote candidate:
+            // alice's re-gathered candidates reached bob before bob had applied her restart offer, so they
+            // landed in the generation bob was about to abandon and went with it, and RFC 8445 §7.3.1.3
+            // learned the path back from the checks themselves. The tag makes that recovery unnecessary —
+            // a regression to prflx here means the tag stopped being read, believed, or emitted.
+            assertIs<IceCandidate.Host>(
+                pairAfter.remote,
+                "the restart converged on the signaled candidate, not a peer-reflexive rediscovery of it",
+            )
 
             // …and the association did not: the SAME channel object, on the SAME stream, still round-trips.
             // A restart that quietly rebuilt DTLS/SCTP underneath would show up here as a dead channel or a

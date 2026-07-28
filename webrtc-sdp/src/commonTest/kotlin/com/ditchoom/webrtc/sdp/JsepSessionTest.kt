@@ -6,6 +6,7 @@ import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.ExperimentalTime
@@ -52,14 +53,14 @@ class JsepSessionTest {
         // Offerer: createOffer → setLocal(offer). Signaling seam ships it to the remote (setRemote).
         val offer = local.createOffer(params(SetupRole.ActPass))
         assertStateChange(
-            local.handle(JsepEvent.SetLocalDescription(SdpType.Offer, offer), t0),
+            local.handle(JsepEvent.SetLocalDescription.Apply(AppliedSdpType.Offer, offer), t0),
             SignalingState.Stable,
             SignalingState.HaveLocalOffer,
         )
         assertEquals(SignalingState.HaveLocalOffer, local.signalingState)
 
         assertStateChange(
-            remote.handle(JsepEvent.SetRemoteDescription(SdpType.Offer, offer), t0),
+            remote.handle(JsepEvent.SetRemoteDescription.Apply(AppliedSdpType.Offer, offer), t0),
             SignalingState.Stable,
             SignalingState.HaveRemoteOffer,
         )
@@ -67,12 +68,12 @@ class JsepSessionTest {
         // Answerer: createAnswer(active) → setLocal(answer); seam ships it back (setRemote(answer)).
         val answer = remote.createAnswer(params(SetupRole.Active))
         assertStateChange(
-            remote.handle(JsepEvent.SetLocalDescription(SdpType.Answer, answer), t0),
+            remote.handle(JsepEvent.SetLocalDescription.Apply(AppliedSdpType.Answer, answer), t0),
             SignalingState.HaveRemoteOffer,
             SignalingState.Stable,
         )
         assertStateChange(
-            local.handle(JsepEvent.SetRemoteDescription(SdpType.Answer, answer), t0),
+            local.handle(JsepEvent.SetRemoteDescription.Apply(AppliedSdpType.Answer, answer), t0),
             SignalingState.HaveLocalOffer,
             SignalingState.Stable,
         )
@@ -115,7 +116,7 @@ class JsepSessionTest {
     @Test
     fun answerBeforeRemoteOfferIsInvalidTransition() {
         val s = offerer()
-        val out = s.handle(JsepEvent.SetLocalDescription(SdpType.Answer, offerer().createOffer(params(SetupRole.Active))), t0)
+        val out = s.handle(JsepEvent.SetLocalDescription.Apply(AppliedSdpType.Answer, offerer().createOffer(params(SetupRole.Active))), t0)
         val rejected = assertIs<JsepOutput.Rejected>(out.single())
         val err = assertIs<JsepError.InvalidTransition>(rejected.error)
         assertEquals(SignalingState.Stable, err.from)
@@ -126,12 +127,12 @@ class JsepSessionTest {
     fun glareRollbackReturnsToStable() {
         val s = offerer()
         val offer = s.createOffer(params(SetupRole.ActPass))
-        s.handle(JsepEvent.SetLocalDescription(SdpType.Offer, offer), t0)
+        s.handle(JsepEvent.SetLocalDescription.Apply(AppliedSdpType.Offer, offer), t0)
         assertEquals(SignalingState.HaveLocalOffer, s.signalingState)
 
         // Rollback (glare resolution): discard the pending local offer, back to stable, description cleared.
         assertStateChange(
-            s.handle(JsepEvent.SetLocalDescription(SdpType.Rollback, null), t0),
+            s.handle(JsepEvent.SetLocalDescription.Rollback, t0),
             SignalingState.HaveLocalOffer,
             SignalingState.Stable,
         )
@@ -146,19 +147,19 @@ class JsepSessionTest {
         val local = offerer()
         val remote = answerer()
         val offer1 = local.createOffer(params(SetupRole.ActPass))
-        local.handle(JsepEvent.SetLocalDescription(SdpType.Offer, offer1), t0)
-        remote.handle(JsepEvent.SetRemoteDescription(SdpType.Offer, offer1), t0)
+        local.handle(JsepEvent.SetLocalDescription.Apply(AppliedSdpType.Offer, offer1), t0)
+        remote.handle(JsepEvent.SetRemoteDescription.Apply(AppliedSdpType.Offer, offer1), t0)
         val answer1 = remote.createAnswer(params(SetupRole.Active))
-        local.handle(JsepEvent.SetRemoteDescription(SdpType.Answer, answer1), t0)
+        local.handle(JsepEvent.SetRemoteDescription.Apply(AppliedSdpType.Answer, answer1), t0)
         assertEquals(SignalingState.Stable, local.signalingState)
 
         // Second offer begins renegotiation; effective local description is now offer2.
         val offer2 = local.createOffer(params(SetupRole.ActPass))
-        local.handle(JsepEvent.SetLocalDescription(SdpType.Offer, offer2), t0)
+        local.handle(JsepEvent.SetLocalDescription.Apply(AppliedSdpType.Offer, offer2), t0)
         assertEquals(offer2.toText(), local.localDescription?.toText())
 
         // Roll it back — both effective descriptions snap back to the last stable pair, not null.
-        local.handle(JsepEvent.SetLocalDescription(SdpType.Rollback, null), t0)
+        local.handle(JsepEvent.SetLocalDescription.Rollback, t0)
         assertEquals(SignalingState.Stable, local.signalingState)
         assertEquals(offer1.toText(), local.localDescription?.toText(), "rollback restores the previous stable local description")
         assertEquals(answer1.toText(), local.remoteDescription?.toText(), "rollback preserves the stable remote description")
@@ -166,7 +167,7 @@ class JsepSessionTest {
 
     @Test
     fun rollbackInStableIsInvalid() {
-        val out = offerer().handle(JsepEvent.SetLocalDescription(SdpType.Rollback, null), t0)
+        val out = offerer().handle(JsepEvent.SetLocalDescription.Rollback, t0)
         assertIs<JsepError.InvalidTransition>(assertIs<JsepOutput.Rejected>(out.single()).error)
     }
 
@@ -174,24 +175,85 @@ class JsepSessionTest {
     fun provisionalAnswerFlow() {
         val remote = answerer()
         val offer = offerer().createOffer(params(SetupRole.ActPass))
-        remote.handle(JsepEvent.SetRemoteDescription(SdpType.Offer, offer), t0)
+        remote.handle(JsepEvent.SetRemoteDescription.Apply(AppliedSdpType.Offer, offer), t0)
         // Local pranswer keeps us out of stable, then the final answer settles it.
         assertStateChange(
-            remote.handle(JsepEvent.SetLocalDescription(SdpType.PrAnswer, remote.createAnswer(params(SetupRole.Passive))), t0),
+            remote.handle(JsepEvent.SetLocalDescription.Apply(AppliedSdpType.PrAnswer, remote.createAnswer(params(SetupRole.Passive))), t0),
             SignalingState.HaveRemoteOffer,
             SignalingState.HaveLocalPrAnswer,
         )
         assertStateChange(
-            remote.handle(JsepEvent.SetLocalDescription(SdpType.Answer, remote.createAnswer(params(SetupRole.Passive))), t0),
+            remote.handle(JsepEvent.SetLocalDescription.Apply(AppliedSdpType.Answer, remote.createAnswer(params(SetupRole.Passive))), t0),
             SignalingState.HaveLocalPrAnswer,
             SignalingState.Stable,
         )
     }
 
     @Test
-    fun missingDescriptionForNonRollbackIsRejected() {
-        val out = offerer().handle(JsepEvent.SetLocalDescription(SdpType.Offer, null), t0)
-        assertIs<JsepError.MissingDescription>(assertIs<JsepOutput.Rejected>(out.single()).error)
+    fun rollbackIsAnEventOfItsOwnAndCarriesNoDescription() {
+        // Issue #77. The old shape let `SetLocalDescription(SdpType.Rollback, description)` be built and
+        // then silently discarded the description, and needed a runtime `MissingDescription` error to
+        // police `(Offer, null)` from the other side. Both are now compile errors: `Rollback` is an object
+        // with nowhere to put a description, and `Apply` takes an [AppliedSdpType] that has no rollback
+        // member and a non-null description. What remains testable is that the two are genuinely distinct
+        // events over the SAME state — a rollback applies nothing, an apply applies exactly one thing.
+        val s = offerer()
+        val offer = s.createOffer(params(SetupRole.ActPass))
+        val applied = s.handle(JsepEvent.SetLocalDescription.Apply(AppliedSdpType.Offer, offer), t0)
+        assertEquals(
+            listOf(JsepOutput.DescriptionApplied(DescriptionEndpoint.Local, AppliedSdpType.Offer)),
+            applied.filterIsInstance<JsepOutput.DescriptionApplied>(),
+            "an apply reports exactly which description was applied, at which endpoint",
+        )
+        assertEquals(offer.toText(), s.localDescription?.toText())
+
+        val rolledBack = s.handle(JsepEvent.SetLocalDescription.Rollback, t0)
+        assertTrue(
+            rolledBack.none { it is JsepOutput.DescriptionApplied },
+            "a rollback applies no description, so it never reports one as applied",
+        )
+        assertNull(s.localDescription, "and it discarded the pending offer rather than keeping it")
+    }
+
+    @Test
+    fun appliedSdpTypeExcludesRollbackAndMapsEveryOtherType() {
+        // The type-level claim the reshape rests on: `AppliedSdpType.of` is total over `SdpType`, and
+        // returns null for exactly one member — the one that applies no description.
+        assertNull(AppliedSdpType.of(SdpType.Rollback), "rollback is not an applicable description type")
+        for (type in SdpType.entries.filter { it != SdpType.Rollback }) {
+            assertEquals(type, assertNotNull(AppliedSdpType.of(type), "$type must be applicable").sdpType)
+        }
+    }
+
+    @Test
+    fun remoteRollbackIsRejectedInStableJustLikeLocal() {
+        // #77 applied to BOTH endpoints: SetRemoteDescription had exactly the same defect and the same
+        // fix, so the remote rollback edge (RFC 8829 §3.5.1) is pinned on its own rather than assumed.
+        val s = answerer()
+        assertIs<JsepError.InvalidTransition>(
+            assertIs<JsepOutput.Rejected>(s.handle(JsepEvent.SetRemoteDescription.Rollback, t0).single()).error,
+        )
+        val offer = offerer().createOffer(params(SetupRole.ActPass))
+        s.handle(JsepEvent.SetRemoteDescription.Apply(AppliedSdpType.Offer, offer), t0)
+        assertEquals(SignalingState.HaveRemoteOffer, s.signalingState)
+        assertStateChange(
+            s.handle(JsepEvent.SetRemoteDescription.Rollback, t0),
+            SignalingState.HaveRemoteOffer,
+            SignalingState.Stable,
+        )
+        assertNull(s.remoteDescription, "the rolled-back remote offer is gone")
+    }
+
+    @Test
+    fun rollbackOnAClosedSessionIsRejectedAsClosedNotAsAnIllegalEdge() {
+        // The closed check must still outrank the transition table for a rollback — it used to be a single
+        // guard at the top of one function, and is now shared by two.
+        val s = offerer()
+        s.handle(JsepEvent.SetLocalDescription.Apply(AppliedSdpType.Offer, s.createOffer(params(SetupRole.ActPass))), t0)
+        s.handle(JsepEvent.Close, t0)
+        assertIs<JsepError.SessionClosed>(
+            assertIs<JsepOutput.Rejected>(s.handle(JsepEvent.SetLocalDescription.Rollback, t0).single()).error,
+        )
     }
 
     @Test
@@ -199,15 +261,15 @@ class JsepSessionTest {
         val s = offerer()
         assertStateChange(s.handle(JsepEvent.Close, t0), SignalingState.Stable, SignalingState.Closed)
         assertTrue(s.handle(JsepEvent.Close, t0).isEmpty(), "closing an already-closed session is a no-op")
-        val out = s.handle(JsepEvent.SetLocalDescription(SdpType.Offer, s.createOffer(params(SetupRole.ActPass))), t0)
+        val out = s.handle(JsepEvent.SetLocalDescription.Apply(AppliedSdpType.Offer, s.createOffer(params(SetupRole.ActPass))), t0)
         assertIs<JsepError.SessionClosed>(assertIs<JsepOutput.Rejected>(out.single()).error)
     }
 
     @Test
     fun resettingSameSideOfferStaysInSameStateWithoutStateChangeEvent() {
         val s = offerer()
-        s.handle(JsepEvent.SetLocalDescription(SdpType.Offer, s.createOffer(params(SetupRole.ActPass))), t0)
-        val out = s.handle(JsepEvent.SetLocalDescription(SdpType.Offer, s.createOffer(params(SetupRole.ActPass))), t0)
+        s.handle(JsepEvent.SetLocalDescription.Apply(AppliedSdpType.Offer, s.createOffer(params(SetupRole.ActPass))), t0)
+        val out = s.handle(JsepEvent.SetLocalDescription.Apply(AppliedSdpType.Offer, s.createOffer(params(SetupRole.ActPass))), t0)
         // Still have-local-offer; a re-offer applies a description but emits no signaling-state change.
         assertEquals(SignalingState.HaveLocalOffer, s.signalingState)
         assertTrue(out.none { it is JsepOutput.SignalingStateChanged })

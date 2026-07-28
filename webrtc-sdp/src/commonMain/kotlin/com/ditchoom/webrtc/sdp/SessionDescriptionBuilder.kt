@@ -97,6 +97,9 @@ public class MediaSectionBuilder internal constructor(
     /** `a=setup:<role>` (RFC 8842). */
     public fun setup(role: SetupRole): MediaSectionBuilder = attribute("setup", role.token)
 
+    /** `a=tls-id:<value>` (RFC 8842 §5.3) — the identity of this endpoint's DTLS association. */
+    public fun tlsId(tlsId: TlsId): MediaSectionBuilder = attribute("tls-id", tlsId.value)
+
     /** `a=fingerprint:<hash-func> <hex>` (RFC 8122 §5). */
     public fun fingerprint(fingerprint: Fingerprint): MediaSectionBuilder =
         attribute("fingerprint", "${fingerprint.hashFunction} ${fingerprint.value}")

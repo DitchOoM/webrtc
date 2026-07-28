@@ -91,6 +91,10 @@ public final class com/ditchoom/webrtc/dtls/DtlsFailureReason$Internal : com/dit
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/dtls/DtlsFailureReason$NewAssociationRequested : com/ditchoom/webrtc/dtls/DtlsFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/dtls/DtlsFailureReason$NewAssociationRequested;
+}
+
 public final class com/ditchoom/webrtc/dtls/DtlsFailureReason$PeerCertificateMissing : com/ditchoom/webrtc/dtls/DtlsFailureReason {
 	public static final field INSTANCE Lcom/ditchoom/webrtc/dtls/DtlsFailureReason$PeerCertificateMissing;
 }

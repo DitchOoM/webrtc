@@ -46,6 +46,21 @@ public sealed interface DtlsFailureReason {
      */
     public object RoleChangeOnRenegotiation : DtlsFailureReason
 
+    /**
+     * *(driver)* A renegotiation asked for a **new** DTLS association outright: the peer's `a=tls-id`
+     * (RFC 8842 §5.3) changed from the value it had already declared for the association we are on. §5.5
+     * makes that the explicit signal — a tls-id is stable for the life of an association and changes only
+     * when the endpoint intends a fresh one — where [RoleChangeOnRenegotiation] only ever inferred the
+     * same request from a role flip. Refused for the same reason and with the same finality: an ICE
+     * restart deliberately runs underneath a DTLS/SCTP session that never renegotiates, so there is no
+     * such thing here as re-handshaking mid-session.
+     *
+     * A peer that sends **no** `a=tls-id` (which is every peer in this stack's interop matrix, and legal —
+     * the attribute is optional) can never produce this: continuity is then read off the unchanged
+     * `a=fingerprint`, exactly as before.
+     */
+    public object NewAssociationRequested : DtlsFailureReason
+
     /** *(engine)* A record-layer error after the handshake (decrypt failure / malformed record). */
     public object RecordLayerError : DtlsFailureReason
 

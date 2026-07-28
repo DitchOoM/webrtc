@@ -283,6 +283,190 @@ class PeerConnectionRestartTest {
             )
         }
 
+    // ---- a=tls-id: the explicit form of the same §5.5 question (issue #72) ---------------------------
+
+    @Test
+    fun the_tls_id_is_stable_across_an_ice_restart_and_the_association_survives() =
+        runTest {
+            // RFC 8842 §5.3: a tls-id names a DTLS ASSOCIATION and changes only when a new one is intended.
+            // A restart intends the opposite — §5.5 is the whole reason the association outlives it — so the
+            // one thing our own tls-id must never do is move when the ICE credentials do. If it did, every
+            // peer that honours the attribute would read our restart as "tear it down and handshake again",
+            // which is exactly the regression #72 is most able to cause.
+            val f = connectedPeers()
+            val channel = f.alice.createDataChannel(DataChannelConfig(label = "tlsid/restart"))
+            val streamId = channel.id
+            assertEquals("before", echo(channel, "before"))
+            val pairBefore = knownPair(f.alice.connectionState.value)
+            val before = f.alice.createOffer()
+            val tlsIdBefore = assertNotNull(tlsIdOf(before), "every description we emit carries a=tls-id")
+
+            f.alice.restartIce()
+            renegotiate(f.alice, f.bob)
+            assertNotNull(
+                withTimeoutOrNull(timeout) {
+                    f.alice.connectionState.first { it is PeerConnectionState.Connected && knownPair(it) != pairBefore }
+                },
+                "alice reconverged on a new pair",
+            )
+
+            val after = f.alice.createOffer()
+            assertNotEquals(ufragOf(before), ufragOf(after), "the restart really did replace the ICE credentials…")
+            assertEquals(tlsIdBefore, tlsIdOf(after), "…and deliberately did NOT replace the tls-id")
+            assertEquals(streamId, channel.id, "so the association was kept, stream ids and all")
+            assertEquals("after", echo(channel, "after"))
+        }
+
+    @Test
+    fun a_re_answer_carrying_a_new_tls_id_is_refused_as_a_new_association() =
+        runTest {
+            // The point of honouring the attribute (issue #72): a peer asking for a NEW DTLS association can
+            // now say so outright, instead of us inferring it from a role flip. We refuse either way — an ICE
+            // restart runs underneath a DTLS/SCTP session that never renegotiates — but the refusal is now
+            // grounded in what the peer SAID rather than in a heuristic, and it is a different typed reason.
+            val f = connectedPeers()
+            f.alice.restartIce()
+            val offer = f.alice.createOffer()
+            f.alice.setLocalDescription(SdpType.Offer, offer)
+            f.bob.setRemoteDescription(SdpType.Offer, offer)
+            val answer = f.bob.createAnswer()
+            f.bob.setLocalDescription(SdpType.Answer, answer)
+            f.alice.setRemoteDescription(SdpType.Answer, withTlsId(answer, OTHER_TLS_ID))
+
+            val failed =
+                assertNotNull(
+                    withTimeoutOrNull(timeout) { f.alice.connectionState.first { it is PeerConnectionState.Failed } },
+                    "a tls-id that changed under a live association is refused, not ignored",
+                )
+            assertEquals(
+                PeerConnectionFailureReason.Dtls(DtlsFailureReason.NewAssociationRequested),
+                (failed as PeerConnectionState.Failed).reason,
+                "…and it is named for what it is, not relabelled as the role-flip heuristic",
+            )
+        }
+
+    @Test
+    fun a_re_answer_whose_tls_id_is_unchanged_keeps_the_association() =
+        runTest {
+            // The control for the fixture above, and the guard that makes the refusal narrow rather than
+            // "any renegotiation fails". Identical script; the ONLY difference is that the tls-id is the one
+            // the peer already declared. Without this, a comparison bug that failed every re-answer would
+            // still make the refusal fixture pass.
+            val f = connectedPeers()
+            val channel = f.alice.createDataChannel(DataChannelConfig(label = "tlsid/unchanged"))
+            assertEquals("before", echo(channel, "before"))
+            f.alice.restartIce()
+            val offer = f.alice.createOffer()
+            f.alice.setLocalDescription(SdpType.Offer, offer)
+            f.bob.setRemoteDescription(SdpType.Offer, offer)
+            val answer = f.bob.createAnswer()
+            f.bob.setLocalDescription(SdpType.Answer, answer)
+            val declared = assertNotNull(tlsIdOf(answer), "bob's answer carries his tls-id")
+            f.alice.setRemoteDescription(SdpType.Answer, withTlsId(answer, declared)) // …re-stated verbatim
+
+            assertNull(
+                withTimeoutOrNull(QUIET) { f.alice.connectionState.first { it is PeerConnectionState.Failed } },
+                "repeating a tls-id is a request to KEEP the association, which is what we already do",
+            )
+            assertEquals("after", echo(channel, "after"), "and the channel never noticed the renegotiation")
+        }
+
+    @Test
+    fun a_peer_that_never_sends_a_tls_id_negotiates_exactly_as_before() =
+        runTest {
+            // The compatibility floor, and the reason this feature cannot break the interop lanes: Chrome,
+            // Firefox, WebKit, Pion and werift emit no a=tls-id at all. A session where the attribute never
+            // appears in either direction must establish, restart, and keep its association on the unchanged
+            // `a=fingerprint` alone — the pre-#72 behaviour PR #78/#86 proved against those peers.
+            val f = connectedPeers(signal = ::withoutTlsId)
+            val channel = f.alice.createDataChannel(DataChannelConfig(label = "tlsid/legacy"))
+            val streamId = channel.id
+            assertEquals("before", echo(channel, "before"))
+            val pairBefore = knownPair(f.alice.connectionState.value)
+            assertNull(tlsIdOf(withoutTlsId(f.alice.createOffer())), "the fixture really is stripping the attribute")
+
+            f.alice.restartIce()
+            renegotiate(f.alice, f.bob, ::withoutTlsId)
+
+            assertNotNull(
+                withTimeoutOrNull(timeout) {
+                    f.alice.connectionState.first { it is PeerConnectionState.Connected && knownPair(it) != pairBefore }
+                },
+                "a peer that says nothing about tls-id restarts exactly as it did before the attribute existed",
+            )
+            assertEquals(streamId, channel.id, "and keeps its association — inferred from the fingerprint, as ever")
+            assertEquals("after", echo(channel, "after"))
+        }
+
+    @Test
+    fun a_malformed_tls_id_falls_back_to_fingerprint_inference_rather_than_failing_the_session() =
+        runTest {
+            // A deliberate leniency, not an oversight. The SDP layer reports a malformed value as a typed
+            // reject (`TlsIdAttribute.Malformed`, pinned in SdpTlsIdTest) — but at the session layer, failing
+            // on it would mean a peer whose tls-id merely trips OUR reading of the §5.3 grammar loses a
+            // connection that the fingerprint says is perfectly continuous. Honouring tls-id may only ever
+            // ADD a reason to refuse; it may never remove a reason to keep.
+            val f = connectedPeers()
+            val channel = f.alice.createDataChannel(DataChannelConfig(label = "tlsid/malformed"))
+            assertEquals("before", echo(channel, "before"))
+            val pairBefore = knownPair(f.alice.connectionState.value)
+
+            f.alice.restartIce()
+            val offer = f.alice.createOffer()
+            f.alice.setLocalDescription(SdpType.Offer, offer)
+            f.bob.setRemoteDescription(SdpType.Offer, offer)
+            val answer = f.bob.createAnswer()
+            f.bob.setLocalDescription(SdpType.Answer, answer)
+            f.alice.setRemoteDescription(SdpType.Answer, withTlsId(answer, "tooshort"))
+
+            assertNotNull(
+                withTimeoutOrNull(timeout) {
+                    f.alice.connectionState.first { it is PeerConnectionState.Connected && knownPair(it) != pairBefore }
+                },
+                "an unreadable tls-id is not a reason to tear down an association the fingerprint vouches for",
+            )
+            assertEquals("after", echo(channel, "after"))
+        }
+
+    @Test
+    fun a_tls_id_change_before_the_association_is_committed_is_adopted_not_refused() =
+        runTest {
+            // Where the refusal starts, exactly. A tls-id names an association; before a DTLS role is
+            // resolved there is no association to keep, so a peer that re-derives its value mid-first-
+            // negotiation (a glare re-offer, a signaling retry) is asking for nothing we are not already
+            // doing. Refusing there would invent a failure out of a description that harms nothing — and
+            // this is the boundary that keeps the fixture above from being "any change ever fails".
+            val net = TestNet()
+            val binder = DatagramBinder { net.bind(it) }
+            val clock: () -> Instant = { epoch + testScheduler.currentTime.milliseconds }
+            val alice = peer(Random(1), binder, clock, GenerationalGathering(ALICE_IP, ALICE_FIRST_PORT))
+            val bob = peer(Random(2), binder, clock, GenerationalGathering(BOB_IP, BOB_FIRST_PORT))
+
+            // Two offers, same ICE credentials (so this is not a restart), different tls-id — and bob has
+            // not answered yet, so he has resolved no role and holds no association.
+            val offer = alice.createOffer()
+            bob.setRemoteDescription(SdpType.Offer, offer)
+            bob.setRemoteDescription(SdpType.Offer, withTlsId(offer, OTHER_TLS_ID))
+            assertNull(
+                withTimeoutOrNull(QUIET) { bob.connectionState.first { it is PeerConnectionState.Failed } },
+                "nothing is committed yet, so the new value is simply adopted",
+            )
+
+            // Answering resolves bob's role and commits the association. NOW a third value is a request to
+            // replace it, and is refused — against the value adopted above, not the one first seen.
+            bob.setLocalDescription(SdpType.Answer, bob.createAnswer())
+            bob.setRemoteDescription(SdpType.Offer, withTlsId(offer, THIRD_TLS_ID))
+            val failed =
+                assertNotNull(
+                    withTimeoutOrNull(timeout) { bob.connectionState.first { it is PeerConnectionState.Failed } },
+                    "past role resolution the association is real, and replacing it is refused",
+                )
+            assertEquals(
+                PeerConnectionFailureReason.Dtls(DtlsFailureReason.NewAssociationRequested),
+                (failed as PeerConnectionState.Failed).reason,
+            )
+        }
+
     // ---- recovery from a terminal ICE failure (RFC 7675 §5.1, issue #81) ----------------------------
 
     @Test
@@ -540,6 +724,7 @@ class PeerConnectionRestartTest {
     private suspend fun TestScope.connectedPeers(
         aliceRestartPolicy: IceRestartPolicy = IceRestartPolicy.Manual,
         iceConfig: IceConfig = IceConfig(),
+        signal: (String) -> String = { it },
     ): Peers {
         val net = TestNet()
         val binder = DatagramBinder { net.bind(it) }
@@ -564,7 +749,7 @@ class PeerConnectionRestartTest {
             }
         }
 
-        renegotiate(alice, bob)
+        renegotiate(alice, bob, signal)
         assertNotNull(withTimeoutOrNull(timeout) { alice.awaitConnected() }, "alice connected")
         assertNotNull(withTimeoutOrNull(timeout) { bob.awaitConnected() }, "bob connected")
         return Peers(net, alice, bob)
@@ -591,18 +776,43 @@ class PeerConnectionRestartTest {
     private suspend fun awaitFailed(pc: NativePeerConnection): PeerConnectionState =
         pc.connectionState.first { it is PeerConnectionState.Failed }
 
-    /** One full offer/answer round over the app's signaling seam — the round a restart needs to be carried. */
+    /**
+     * One full offer/answer round over the app's signaling seam — the round a restart needs to be carried.
+     * [signal] is what the seam does to each description in flight; the default is a faithful channel, and
+     * [withoutTlsId] makes it a peer that speaks the pre-RFC-8842-§5.3 dialect every real peer speaks.
+     */
     private suspend fun renegotiate(
         offerer: NativePeerConnection,
         answerer: NativePeerConnection,
+        signal: (String) -> String = { it },
     ) {
-        val offer = offerer.createOffer()
+        val offer = signal(offerer.createOffer())
         offerer.setLocalDescription(SdpType.Offer, offer)
         answerer.setRemoteDescription(SdpType.Offer, offer)
-        val answer = answerer.createAnswer()
+        val answer = signal(answerer.createAnswer())
         answerer.setLocalDescription(SdpType.Answer, answer)
         offerer.setRemoteDescription(SdpType.Answer, answer)
     }
+
+    /** The `a=tls-id` a description carries (RFC 8842 §5.3), or null if it carries none. */
+    private fun tlsIdOf(sdp: String): String? =
+        sdp
+            .lineSequence()
+            .firstOrNull { it.startsWith("a=tls-id:") }
+            ?.substringAfter(':')
+
+    /** The same description with its `a=tls-id` replaced — a peer announcing a different DTLS association. */
+    private fun withTlsId(
+        sdp: String,
+        value: String,
+    ): String = sdp.replace("a=tls-id:${assertNotNull(tlsIdOf(sdp), "no a=tls-id to replace")}", "a=tls-id:$value")
+
+    /** The same description with no `a=tls-id` at all — what every peer in the interop matrix actually sends. */
+    private fun withoutTlsId(sdp: String): String =
+        sdp
+            .lineSequence()
+            .filterNot { it.startsWith("a=tls-id:") }
+            .joinToString(CRLF)
 
     /** The pair a live state is riding. A state that carries no known pair is a fixture bug, not a case. */
     private fun knownPair(state: PeerConnectionState) =
@@ -668,6 +878,16 @@ class PeerConnectionRestartTest {
         /** What an interface enumeration reports for a port: nothing. */
         const val NO_PORT = 0
         const val BOB_FIRST_PORT = 5000
+
+        /** SDP's line terminator (RFC 8866 §5) — descriptions are rebuilt with it, never with a bare LF. */
+        const val CRLF = "\r\n"
+
+        /**
+         * Well-formed `a=tls-id` values (RFC 8842 §5.3: at least 20 token characters) that no peer here
+         * would ever generate — a peer naming a DIFFERENT DTLS association, which is the whole signal.
+         */
+        val OTHER_TLS_ID = "b".repeat(24)
+        val THIRD_TLS_ID = "c".repeat(24)
 
         /**
          * How long a "nothing should happen" assertion waits before believing it. Virtual time, so it costs

@@ -25,3 +25,33 @@ public enum class SdpType(
         public fun fromToken(token: String): SdpType? = entries.firstOrNull { it.token == token }
     }
 }
+
+/**
+ * The [SdpType]s that actually **carry a description**. [SdpType.Rollback] is deliberately not a member:
+ * it applies no description at all, it discards one.
+ *
+ * That distinction is a type here rather than a runtime check because modelling it as one 4-valued type
+ * is what let `SetLocalDescription(SdpType.Rollback, someDescription)` be constructed — a combination the
+ * machine answered by silently discarding the argument, and which a runtime `MissingDescription` error had
+ * to police from the other side (issue #77). With this split, [JsepEvent.SetLocalDescription.Apply] takes
+ * a type that cannot be rollback and a description that cannot be null, and the illegal pairs are simply
+ * unrepresentable (DESIGN_PRINCIPLES §4).
+ */
+public enum class AppliedSdpType(
+    /** The wire/W3C [SdpType] this applies. */
+    public val sdpType: SdpType,
+) {
+    Offer(SdpType.Offer),
+    PrAnswer(SdpType.PrAnswer),
+    Answer(SdpType.Answer),
+    ;
+
+    public companion object {
+        /**
+         * The [AppliedSdpType] for [type], or null when [type] is [SdpType.Rollback] — which is not a
+         * failure but the *other* case: a caller holding a W3C-shaped `SdpType` branches on this null to
+         * build [JsepEvent.SetLocalDescription.Rollback] instead of an `Apply`.
+         */
+        public fun of(type: SdpType): AppliedSdpType? = entries.firstOrNull { it.sdpType == type }
+    }
+}

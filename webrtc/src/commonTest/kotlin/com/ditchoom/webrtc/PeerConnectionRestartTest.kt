@@ -12,6 +12,8 @@ import com.ditchoom.buffer.managed
 import com.ditchoom.webrtc.dtls.DtlsFailureReason
 import com.ditchoom.webrtc.ice.DatagramBinder
 import com.ditchoom.webrtc.ice.IceAgentDriver
+import com.ditchoom.webrtc.ice.IceConfig
+import com.ditchoom.webrtc.ice.IceFailureReason
 import com.ditchoom.webrtc.ice.LocalInterface
 import com.ditchoom.webrtc.ice.NetworkId
 import com.ditchoom.webrtc.ice.NetworkMonitor
@@ -44,6 +46,13 @@ import kotlin.time.Instant
  * matters is not "ICE reconverges" but **"the SCTP association and every open data channel survive it"**.
  * §9 promises exactly that: *"during the restart, data can continue to be sent using existing data
  * sessions"*, and *"agents MUST NOT redetermine the roles as part of an ICE restart"*.
+ *
+ * The second half of the file is the same API used for the *other* thing RFC 8445 §9 is for: **recovery**.
+ * RFC 7675 §5.1 says a pair whose consent is revoked needs *"a new session, or an ICE restart"*, and until
+ * now only the first of those worked here — the agent restarted fine (`IceConsentTerminalTest`) while the
+ * session above it latched [PeerConnectionState.Failed] and stayed there, so a consumer whose path died had
+ * to build a whole new [NativePeerConnection]. These fixtures pin the restart as the way back, and pin the
+ * limit of it: a failure ICE cannot mend does not come back.
  *
  * Each peer gathers on a **fresh port per ICE generation** ([GenerationalGathering]) because that is what
  * an interface change actually looks like, and because the in-memory network — like a real OS — refuses to
@@ -274,6 +283,210 @@ class PeerConnectionRestartTest {
             )
         }
 
+    // ---- recovery from a terminal ICE failure (RFC 7675 §5.1, issue #81) ----------------------------
+
+    @Test
+    fun a_consent_revoked_session_fails_and_nothing_but_a_restart_brings_it_back() =
+        runTest {
+            // The premise every fixture below rests on, asserted first so the rest cannot be vacuous: when
+            // the path dies, the session really does reach a TERMINAL failure and really does stay there.
+            // (`IceConsentTerminalTest` proves the same at the agent; this is the session's own statement,
+            // and it is what makes "did not revoke" a meaningful assertion out on the interop lanes.)
+            val f = connectedPeers(iceConfig = FAST_CONSENT)
+            val channel = f.alice.createDataChannel(DataChannelConfig(label = "consent/terminal"))
+            assertEquals("before", echo(channel, "before"))
+
+            f.net.tearDown(SocketAddress.ofLiteral(ALICE_IP, ALICE_FIRST_PORT))
+
+            assertEquals(
+                PeerConnectionFailureReason.Ice(IceFailureReason.ConsentExpired),
+                (awaitFailed(f.alice) as PeerConnectionState.Failed).reason,
+                "the selected pair going silent revokes consent and fails the session (RFC 7675 §4.1)",
+            )
+            assertNull(
+                withTimeoutOrNull(QUIET) { f.alice.connectionState.first { it !is PeerConnectionState.Failed } },
+                "and nothing self-heals it — a revoked generation may never be used again (RFC 7675 §5.1)",
+            )
+        }
+
+    @Test
+    fun restart_ice_recovers_a_consent_revoked_session_with_the_association_intact() =
+        runTest {
+            // The issue itself (#81): RFC 7675 §5.1's remedy, reachable from the session API. The sharp part
+            // is not that ICE reconverges — that was already true at the agent — but that the association
+            // comes back with it. A restart renegotiates ICE and NOTHING else (RFC 8842 §5.5), so a stack
+            // that quietly rebuilt DTLS/SCTP under the recovery would show up here as a renumbered stream.
+            val f = connectedPeers(iceConfig = FAST_CONSENT)
+            val states = mutableListOf<PeerConnectionState>()
+            backgroundScope.launch { f.alice.connectionState.collect { states += it } }
+            val channel = f.alice.createDataChannel(DataChannelConfig(label = "consent/recovery"))
+            val streamId = channel.id
+            assertEquals("before", echo(channel, "before"))
+            val pairBefore = knownPair(f.alice.connectionState.value)
+
+            f.net.tearDown(SocketAddress.ofLiteral(ALICE_IP, ALICE_FIRST_PORT))
+            awaitFailed(f.alice)
+            awaitFailed(f.bob)
+
+            f.alice.restartIce()
+            renegotiate(f.alice, f.bob)
+
+            val connected =
+                assertNotNull(
+                    withTimeoutOrNull(timeout) { f.alice.connectionState.first { it is PeerConnectionState.Connected } },
+                    "restartIce() is the way out of a terminal ICE failure, not a new PeerConnection",
+                )
+            assertNotEquals(pairBefore, knownPair(connected), "…on a pair the revoked credentials never touched")
+            assertEquals(streamId, channel.id, "the data channel kept its stream id across the outage")
+            assertEquals("after", echo(channel, "after"), "and still round-trips — the association was never rebuilt")
+
+            // …and it went the W3C way round: `failed` → `connecting` → `connected`, not straight back to a
+            // live state. Not decoration — republishing Connecting is what un-latches `fail`, so a session
+            // that fails AGAIN on the new generation can say so instead of still reporting the old cause.
+            // `Restarting` would be the other wrong answer: it promises data still flowing on a retained
+            // pair, and a revoked generation is never retained (RFC 7675 §5.1).
+            val recovery = states.subList(states.indexOfLast { it is PeerConnectionState.Failed }, states.size)
+            assertEquals(
+                listOf(PeerConnectionState.Failed(PeerConnectionFailureReason.Ice(IceFailureReason.ConsentExpired))) +
+                    PeerConnectionState.Connecting + connected,
+                recovery,
+                "the recovery is failed → connecting → connected, with nothing else in between",
+            )
+        }
+
+    @Test
+    fun the_peers_restart_alone_revives_a_session_whose_own_consent_died() =
+        runTest {
+            // Bob never calls restartIce(): his side is revived by the offer alone. That matters because the
+            // two peers revoke independently — whoever notices first restarts, and the other must come back
+            // off new remote credentials rather than sitting terminal until its own app happens to act.
+            val f = connectedPeers(iceConfig = FAST_CONSENT)
+            val channel = f.alice.createDataChannel(DataChannelConfig(label = "consent/peer"))
+            assertEquals("before", echo(channel, "before"))
+            val bobPairBefore = knownPair(f.bob.connectionState.value)
+
+            f.net.tearDown(SocketAddress.ofLiteral(ALICE_IP, ALICE_FIRST_PORT))
+            awaitFailed(f.alice)
+            // Waiting for BOB's terminal too is load-bearing: restarting while he is still Connected would
+            // exercise the ordinary restart path and prove nothing about recovery.
+            awaitFailed(f.bob)
+
+            f.alice.restartIce()
+            renegotiate(f.alice, f.bob)
+
+            val bobAfter =
+                assertNotNull(
+                    withTimeoutOrNull(timeout) { f.bob.connectionState.first { it is PeerConnectionState.Connected } },
+                    "bob left his own terminal failure on the strength of the peer's new credentials",
+                )
+            assertNotEquals(bobPairBefore, knownPair(bobAfter))
+            assertEquals("after", echo(channel, "after"), "and the channel survived on both sides")
+        }
+
+    @Test
+    fun a_failure_an_ice_restart_cannot_mend_stays_failed() =
+        runTest {
+            // The limit, and the reason recovery discriminates on the typed reason instead of just leaving
+            // Failed on any restart. A re-answer that flips the DTLS role is REFUSED on purpose (RFC 8842
+            // §5.5) — and the association underneath is still perfectly up, so a recovery that did not ask
+            // *why* the session failed would walk it straight back to Connected and undo the refusal.
+            val f = connectedPeers()
+            f.alice.restartIce()
+            val offer = f.alice.createOffer()
+            f.alice.setLocalDescription(SdpType.Offer, offer)
+            f.bob.setRemoteDescription(SdpType.Offer, offer)
+            val answer = f.bob.createAnswer()
+            f.alice.setRemoteDescription(SdpType.Answer, answer.replace("a=setup:active", "a=setup:passive"))
+            val refused = assertNotNull(withTimeoutOrNull(timeout) { f.alice.connectionState.first { it is PeerConnectionState.Failed } })
+
+            // Ask for a restart anyway. The ICE generation is genuinely swapped — the app asked for one and
+            // the next offer must not lie about it — but the session does not come back.
+            f.alice.restartIce()
+            val credentialsBefore = ufragOf(offer)
+            val restartOffer = f.alice.createOffer()
+            assertNotEquals(credentialsBefore, ufragOf(restartOffer), "the restart itself is honoured")
+
+            assertNull(
+                withTimeoutOrNull(QUIET) { f.alice.connectionState.first { it != refused } },
+                "but a DTLS refusal is not something a fresh candidate pair can mend, so the session stays failed",
+            )
+            assertEquals(
+                PeerConnectionFailureReason.Dtls(DtlsFailureReason.RoleChangeOnRenegotiation),
+                (f.alice.connectionState.value as PeerConnectionState.Failed).reason,
+                "…with the cause it already had, un-relabelled",
+            )
+        }
+
+    @Test
+    fun an_ice_failure_before_the_association_exists_is_recoverable_too() =
+        runTest {
+            // Recovery is not only for sessions that once worked. A first negotiation whose candidates never
+            // reached the peer fails with a typed ICE reason before DTLS is ever attempted; the restart then
+            // has to run the WHOLE establishment — handshake and association included — rather than re-ride
+            // one. Both halves of that branch are worth a fixture, because only one of them is on the path a
+            // healthy session takes.
+            val net = TestNet()
+            val binder = DatagramBinder { net.bind(it) }
+            val clock: () -> Instant = { epoch + testScheduler.currentTime.milliseconds }
+            val alice = peer(Random(1), binder, clock, GenerationalGathering(ALICE_IP, ALICE_FIRST_PORT))
+            val bob = peer(Random(2), binder, clock, GenerationalGathering(BOB_IP, BOB_FIRST_PORT))
+            // Trickle is WITHHELD for the first round — a signaling path that carries the offer/answer and
+            // then drops the candidates. It has to be withheld in BOTH directions: one-way is not enough,
+            // because the peer that does receive candidates checks against them, and the first such check
+            // teaches the other side a peer-reflexive candidate (RFC 8445 §7.3.1.3) and the session simply
+            // establishes. From the restart on, candidates flow normally.
+            var delivering = false
+            backgroundScope.launch { alice.localIceCandidates.collect { if (delivering) bob.addIceCandidate(it) } }
+            backgroundScope.launch { bob.localIceCandidates.collect { if (delivering) alice.addIceCandidate(it) } }
+            backgroundScope.launch {
+                bob.incomingDataChannels.collect { channel -> launch { channel.receive().collect { channel.send(it) } } }
+            }
+            val channel = alice.createDataChannel(DataChannelConfig(label = "consent/cold"))
+            renegotiate(alice, bob)
+
+            val failed = assertNotNull(withTimeoutOrNull(timeout) { awaitFailed(alice) }) as PeerConnectionState.Failed
+            assertIs<PeerConnectionFailureReason.Ice>(failed.reason, "a session with nothing to pair fails at ICE, before DTLS")
+
+            delivering = true
+            alice.restartIce()
+            renegotiate(alice, bob)
+
+            assertNotNull(
+                withTimeoutOrNull(timeout) { alice.connectionState.first { it is PeerConnectionState.Connected } },
+                "the restart ran a full establishment — DTLS handshake and SCTP association included",
+            )
+            assertEquals("after", echo(channel, "after"), "and the channel queued before any of it opened for real")
+        }
+
+    @Test
+    fun losing_an_interface_restarts_a_consent_dead_session_automatically() =
+        runTest {
+            // The automatic policy's blind spot, closed. `pathRidesOneOf` answers true whenever nothing is
+            // nominated — right for a session still converging, exactly wrong for one whose pair was revoked,
+            // and the two are the same unnominated path. So the policy never fired on the failure mode it is
+            // most obviously for: the interface went away, consent died with it, and here comes the next one.
+            val monitor = ScriptedMonitor(listOf(iface("wifi", ALICE_IP)))
+            val f = connectedPeers(aliceRestartPolicy = IceRestartPolicy.OnNetworkChange(monitor), iceConfig = FAST_CONSENT)
+            assertEquals("before", echo(f.alice.createDataChannel(DataChannelConfig(label = "consent/auto")), "before"))
+
+            f.net.tearDown(SocketAddress.ofLiteral(ALICE_IP, ALICE_FIRST_PORT))
+            awaitFailed(f.alice)
+
+            // Deliberately an interface set that still CONTAINS alice's address: `pathRidesOneOf` would say
+            // "nothing to do" on its own, so the only reason left to restart is the failure itself.
+            monitor.emit(listOf(iface("wifi", ALICE_IP), iface("cellular", "10.0.0.9")))
+
+            assertNotNull(
+                withTimeoutOrNull(timeout) { f.alice.renegotiationNeeded.first() },
+                "an interface change on a consent-dead session asks the app for the round that recovers it",
+            )
+            renegotiate(f.alice, f.bob)
+            assertNotNull(
+                withTimeoutOrNull(timeout) { f.alice.connectionState.first { it is PeerConnectionState.Connected } },
+                "and the round the policy asked for carries the recovery",
+            )
+        }
+
     // ---- fixture plumbing ---------------------------------------------------------------------------
 
     private class Peers(
@@ -324,29 +537,22 @@ class PeerConnectionRestartTest {
         ip: String,
     ) = LocalInterface(NetworkId(id), SocketAddress.ofLiteral(ip, NO_PORT))
 
-    private suspend fun TestScope.connectedPeers(aliceRestartPolicy: IceRestartPolicy = IceRestartPolicy.Manual): Peers {
+    private suspend fun TestScope.connectedPeers(
+        aliceRestartPolicy: IceRestartPolicy = IceRestartPolicy.Manual,
+        iceConfig: IceConfig = IceConfig(),
+    ): Peers {
         val net = TestNet()
         val binder = DatagramBinder { net.bind(it) }
         val clock: () -> Instant = { epoch + testScheduler.currentTime.milliseconds }
         val alice =
-            NativePeerConnection(
-                scope = backgroundScope,
-                clock = clock,
-                random = Random(1),
-                binder = binder,
-                gathering = GenerationalGathering(ALICE_IP, ALICE_FIRST_PORT),
-                dtls = PlaintextDtls,
-                config = PeerConnectionConfig(iceRestartPolicy = aliceRestartPolicy),
+            peer(
+                Random(1),
+                binder,
+                clock,
+                GenerationalGathering(ALICE_IP, ALICE_FIRST_PORT),
+                PeerConnectionConfig(iceConfig = iceConfig, iceRestartPolicy = aliceRestartPolicy),
             )
-        val bob =
-            NativePeerConnection(
-                scope = backgroundScope,
-                clock = clock,
-                random = Random(2),
-                binder = binder,
-                gathering = GenerationalGathering(BOB_IP, BOB_FIRST_PORT),
-                dtls = PlaintextDtls,
-            )
+        val bob = peer(Random(2), binder, clock, GenerationalGathering(BOB_IP, BOB_FIRST_PORT), PeerConnectionConfig(iceConfig = iceConfig))
         trickle(backgroundScope, from = alice, to = bob)
         trickle(backgroundScope, from = bob, to = alice)
 
@@ -363,6 +569,27 @@ class PeerConnectionRestartTest {
         assertNotNull(withTimeoutOrNull(timeout) { bob.awaitConnected() }, "bob connected")
         return Peers(net, alice, bob)
     }
+
+    /** One peer of the pair — the production composition, with only the seams (clock/entropy/net) injected. */
+    private fun TestScope.peer(
+        random: Random,
+        binder: DatagramBinder,
+        clock: () -> Instant,
+        gathering: IceGatheringPolicy,
+        config: PeerConnectionConfig = PeerConnectionConfig(),
+    ) = NativePeerConnection(
+        scope = backgroundScope,
+        clock = clock,
+        random = random,
+        binder = binder,
+        gathering = gathering,
+        dtls = PlaintextDtls,
+        config = config,
+    )
+
+    /** Suspend until [pc] reports a terminal failure, and return it. */
+    private suspend fun awaitFailed(pc: NativePeerConnection): PeerConnectionState =
+        pc.connectionState.first { it is PeerConnectionState.Failed }
 
     /** One full offer/answer round over the app's signaling seam — the round a restart needs to be carried. */
     private suspend fun renegotiate(
@@ -447,5 +674,13 @@ class PeerConnectionRestartTest {
          * nothing; it is long enough that any restart the policy *was* going to request has been requested.
          */
         val QUIET = 30.seconds
+
+        /**
+         * Compressed RFC 7675 consent for the recovery fixtures — the RFC's own shape (checks paced at the
+         * interval, revocation measured from the last response), an order of magnitude quicker. The clock is
+         * virtual, so this buys nothing in wall time; it buys headroom under [QUIET] and [timeout], which
+         * would otherwise have to be stretched past the RFC's 30 s window for every "nothing happens" wait.
+         */
+        val FAST_CONSENT = IceConfig(consentInterval = 1.seconds, consentTimeout = 5.seconds)
     }
 }

@@ -71,6 +71,14 @@ services:
       # Keeps the candidate-poll + resolve loops alive past the sub-second prflx connect so the `.local` the
       # browser trickles is genuinely resolved on the critical path, making the lane's mDNS proof gating-worthy.
       WEBRTC_REQUIRE_MDNS: "true"
+      # ── RFC 7675 consent freshness (s9/idle, issue #80) ──
+      # Consent timing is a PeerConnectionConfig.iceConfig seam, so a lane can outlive a whole revocation
+      # window in seconds instead of the RFC's 30. Unset = the library's production defaults (5 s / 30 s).
+      # WEBRTC_IDLE_MS is the s9 hold; it MUST exceed WEBRTC_CONSENT_TIMEOUT_MS or the phase fails itself,
+      # since a hold inside the window would watch nothing while still reporting green.
+      WEBRTC_CONSENT_INTERVAL_MS: "${PEER_CONSENT_INTERVAL_MS:-}"
+      WEBRTC_CONSENT_TIMEOUT_MS: "${PEER_CONSENT_TIMEOUT_MS:-}"
+      WEBRTC_IDLE_MS: "${PEER_IDLE_MS:-}"
       WEBRTC_SEED: "${SEED_A:-}"
     networks:
       lan0: { ipv4_address: "${PEER_MDNS_IP}" }

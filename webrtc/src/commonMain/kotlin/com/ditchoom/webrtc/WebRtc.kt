@@ -55,7 +55,15 @@ public sealed interface PeerConnectionState {
         public val path: SelectedPath,
     ) : PeerConnectionState
 
-    /** Establishment failed or the session was lost with a typed cause (W3C `failed`). */
+    /**
+     * Establishment failed or the session was lost with a typed cause (W3C `failed`).
+     *
+     * Terminal for the *ICE generation*, not always for the session. Where [reason] is
+     * [PeerConnectionFailureReason.Ice] — chiefly RFC 7675 §5.1 consent revocation on the selected pair —
+     * [RtcPeerConnection.restartIce] is that RFC's own remedy and brings the session back through
+     * [Connecting], association and open data channels intact. Any other [reason] is a genuine end: a
+     * fresh candidate pair cannot mend a DTLS, SCTP or unattributed failure, and the session stays here.
+     */
     public data class Failed(
         public val reason: PeerConnectionFailureReason,
     ) : PeerConnectionState

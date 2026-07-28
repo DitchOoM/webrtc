@@ -19,7 +19,9 @@
 # offerer-driven phase sequence over the SAME association it establishes — s1 large/fragmented (byte-identity
 # + the negotiated a=max-message-size boundary), s2 unordered, s3 partial-reliable (PR-SCTP + FORWARD-TSN
 # no-wedge), s4 multiplexed, s5 reverse-direction (our lanes only), s7 per-channel close (RFC 8831 §6.7
-# stream reset: neighbour survives, the peer's channel closed, the recycled stream id works), s8 ICE restart
+# stream reset: neighbour survives, the peer's channel closed, the recycled stream id works), s9 consent
+# freshness (the session held silent past a whole RFC 7675 revocation window — see the compressed consent
+# block below), s8 ICE restart
 # across a mid-session carrier switch (our lanes only — see the carrier-switch topology below), s6 DONE +
 # graceful association SHUTDOWN — s6 ends the association, so it is always last and s8 sorts before it.
 # The answerer is a scenario-agnostic reflector in every family, so this costs no new CI lanes. They landed
@@ -35,6 +37,7 @@
 #   HARNESS_SCENARIOS=s1 ./run-interop.sh       # run only the named semantics phase(s)
 #   HARNESS_SEMANTICS_GATING=0 ./run-interop.sh # de-gate semantics everywhere (debugging; default is 1)
 #   HARNESS_SEMANTICS_NON_GATING="x y" ./run-interop.sh  # override the named informational-lane holdouts
+#   HARNESS_IDLE_MS=0 ./run-interop.sh          # skip the s9 consent-idle hold (saves ~10s per lane)
 set -uo pipefail
 cd "$(dirname "$0")"
 
@@ -249,8 +252,8 @@ NON_GATING=" impaired-loss-delay ${HARNESS_NON_GATING:-} "
 
 # ── data-channel SEMANTICS (docs/DC_SEMANTICS_INTEROP_DESIGN.md, Phase-1 close-out item #2) ──────────
 # Every lane's offerer runs the phase sequence (s1 large/fragmented, s2 unordered, s3 partial-reliable,
-# s4 multiplexed, s5 reverse, s7 per-channel close, s8 ICE restart on the carrier-switch lanes, s6 graceful
-# association close) over the SAME association it already establishes, and
+# s4 multiplexed, s5 reverse, s7 per-channel close, s9 consent-idle, s8 ICE restart on the carrier-switch
+# lanes, s6 graceful association close) over the SAME association it already establishes, and
 # every answerer becomes a universal reflector that exits on the offerer's DONE. No new lanes: each
 # existing lane gains the whole matrix. HARNESS_SEMANTICS=0 restores the pure establish-and-echo harness.
 #
@@ -262,11 +265,33 @@ NON_GATING=" impaired-loss-delay ${HARNESS_NON_GATING:-} "
 #
 # HARNESS_SEMANTICS_GATING=0 restores the old informational-everywhere behavior for a debugging run.
 export PEER_SEMANTICS="${HARNESS_SEMANTICS:-1}"
-# The default sequence budget; run_scenario re-exports it per lane (the carrier-switch lanes get more, for
-# s8's extra offer/answer round), so a caller-supplied HARNESS_SEMANTICS_TIMEOUT_MS still wins everywhere.
-export PEER_SEMANTICS_TIMEOUT_MS="${HARNESS_SEMANTICS_TIMEOUT_MS:-120000}"
 export PEER_SCENARIOS="${HARNESS_SCENARIOS:-}"   # e.g. "s1,s3" to debug a single phase
 sem_warned_names=""
+
+# ── RFC 7675 consent freshness (s9/idle, issue #80) ─────────────────────────────────────────────────
+# Until s9 there was no lane in which a session lived long enough for consent to matter: measured across a
+# full local matrix, only `impaired-loss-delay` (20.7 s) and `pion-interop` (8.2 s) put even ONE check on
+# the wire, and nothing came near the 30 s revocation window. So "does Chrome / Firefox / WebKit / Pion /
+# werift answer the Binding requests we pace at them, and does the NAT mapping survive on nothing else"
+# was simply never asked — which is the hole a consent-pacing defect (issue #73) shipped through.
+#
+# Rather than add 30 s of wall clock to every lane, COMPRESS the window: consent timing is a
+# PeerConnectionConfig.iceConfig seam, so an ~8 s window is exercised by a ~10 s hold. It applies to the
+# WHOLE run, not just s9 — every lane now also carries its establishment and its other phases under a
+# consent clock an order of magnitude tighter than production, which is a free extra assertion.
+# RFC 7675 §4.1's "MUST NOT below 4 s" is a deployment bound the core deliberately leaves to the caller
+# (see IceConfig.consentInterval); this harness is a scenario, and the library's own default is the RFC's.
+export PEER_CONSENT_INTERVAL_MS="${HARNESS_CONSENT_INTERVAL_MS:-2000}"
+export PEER_CONSENT_TIMEOUT_MS="${HARNESS_CONSENT_TIMEOUT_MS:-8000}"
+# The s9 hold. MUST exceed PEER_CONSENT_TIMEOUT_MS — the phase fails ITSELF if it does not, because a hold
+# inside the window would watch nothing at all while still reporting a green phase. 0 turns s9 off.
+export PEER_IDLE_MS="${HARNESS_IDLE_MS:-10000}"
+
+# The sequence budget has to carry the s9 hold on top of everything else, or a lane's phases get cut off by
+# the outer watchdog and the run reports an ungraded "semantics: TIMEOUT" instead of per-phase verdicts.
+# run_scenario re-exports it per lane (the carrier-switch lanes get more, for s8's extra offer/answer
+# round); a caller-supplied HARNESS_SEMANTICS_TIMEOUT_MS still wins everywhere.
+export PEER_SEMANTICS_TIMEOUT_MS="${HARNESS_SEMANTICS_TIMEOUT_MS:-$((120000 + PEER_IDLE_MS))}"
 
 # Lanes whose SEMANTICS stay informational while everything else gates. Space-padded for whole-word `case`.
 # This is deliberately a list of NAMED, UNDERSTOOD holdouts, not a blanket switch — a lane may sit here only
@@ -599,10 +624,10 @@ run_scenario() {
         # s8 adds a second offer/answer round and an ICE reconvergence, each separately watchdogged inside
         # the peer. The sequence budget has to leave room for the FAILURE path too, or a graded phase
         # verdict degrades into an ungraded "semantics: TIMEOUT" that says nothing about which half broke.
-        export PEER_SEMANTICS_TIMEOUT_MS="${HARNESS_SEMANTICS_TIMEOUT_MS:-180000}"
+        export PEER_SEMANTICS_TIMEOUT_MS="${HARNESS_SEMANTICS_TIMEOUT_MS:-$((180000 + PEER_IDLE_MS))}"
     else
         export PEER_ICE_RESTART=0
-        export PEER_SEMANTICS_TIMEOUT_MS="${HARNESS_SEMANTICS_TIMEOUT_MS:-120000}"
+        export PEER_SEMANTICS_TIMEOUT_MS="${HARNESS_SEMANTICS_TIMEOUT_MS:-$((120000 + PEER_IDLE_MS))}"
         unset PEER_RESTART_CARRIER
     fi
 

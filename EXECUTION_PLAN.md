@@ -85,8 +85,20 @@ checked in, CHANGELOG entry, standing-directive greps green.
 > the offer naming them) under both policies — tagged it converges on the signaled candidate, untagged it
 > converges peer-reflexively, which is exactly what the tag replaces.
 >
-> **Remaining, none of it blocking; each item tracked:** no production `NetworkMonitor` actual, so
-> `IceRestartPolicy` defaults to `Manual` (#69); foreign-peer renegotiation is proven in one direction
+> **A production `NetworkMonitor` shipped** (#69), **push-first**, composing two halves from different
+> owners: *reactivity* from `com.ditchoom:network-monitor` (jvm/android) and socket core at the two K/N
+> leaves — `ConnectivityManager`, the JDK-21 FFM routing socket, `AF_NETLINK`, `NWPathMonitor` — and
+> *enumeration* from our own `NetworkInterface` / `getifaddrs(3)` walk, because socket's monitor carries no
+> addresses and `pathRidesOneOf` compares the selected pair's local IP. Polling survives only as the
+> fallback with no push path (JDK < 21, Windows, Android with no `Context`), reported on
+> `SystemNetworkMonitor.detection`. js/wasmJs report the typed `NoPlatformApi` rather than a monitor that
+> never fires, and a failed probe never emits (an empty set would read as "the selected pair's interface is
+> gone"). `IceRestartPolicy` still defaults to `Manual` on purpose — the mechanism is opt-in, since an
+> automatic restart is a renegotiation only the app's signaling channel can carry. The "socket core vendors
+> a second BoringSSL" objection that kept this hand-rolled is **obsolete** (shared `boringssl-canonical`,
+> verified by linking the production native peer on both linux arches).
+>
+> **Remaining, none of it blocking; each item tracked:** foreign-peer renegotiation is proven in one direction
 > only — Pion, Chrome, Firefox and WebKit each re-answer a restart *we* initiate on `carrier-switch`
 > (`restart-{pion,chrome,firefox,webkit}`), with s8 reading the
 > peer's own re-answer (both ICE credentials replaced, fingerprint unchanged — RFC 8842 §5.5) instead of

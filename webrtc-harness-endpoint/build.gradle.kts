@@ -18,11 +18,23 @@ import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 // deliberately does NOT apply `webrtc.multiplatform-library` (no publishing/apiCheck/js/wasm/apple).
 //
 // Linkage (native): depending on :webrtc pulls :webrtc-dtls transitively, whose cinterop klib embeds
-// libssl.a (linuxTest oracle) and whose buffer-crypto dep contributes libcrypto.a — but the PRODUCTION
-// engine is pure Kotlin, so the native binary needs only the system libs the C TUs drag in (pthread +
-// libstdc++), re-added on the executable below. We depend ONLY on socket-udp (crypto-free), never socket
-// core / socket-quic (they vendor a SECOND BoringSSL → the duplicate-symbol link break; see
-// ~/git/cinterop-issues). That constraint is why signaling rides UDP.
+// libssl.a (linuxTest oracle, symbol-PREFIXED) and whose buffer-crypto dep contributes libcrypto.a — but
+// the PRODUCTION engine is pure Kotlin, so the native binary needs only the system libs the C TUs drag in
+// (pthread + libstdc++), re-added on the executable below.
+//
+// CORRECTION (#69): this comment used to say we depend only on socket-udp and "never socket core /
+// socket-quic (they vendor a SECOND BoringSSL → the duplicate-symbol link break)". That is **obsolete**.
+// Since socket 3.15.1, socket core's LinuxSockets cinterop klib embeds only liburing.a — the libssl.a /
+// libcrypto.a it carried in 3.9.5 are gone — and socket:3.15.1 and buffer-crypto:6.22.0 both resolve to
+// the SAME com.ditchoom.boringssl:boringssl-canonical:0.0.6, which Gradle dedupes. There is one BoringSSL
+// on the link line, not two. Proven, not assumed: this very executable was linked on linuxX64 AND
+// linuxArm64 with socket core present, and socket's netlink monitor was constructed and read at runtime
+// under linuxX64Test. :webrtc-ice now depends on socket core at its native leaf for exactly that monitor.
+//
+// Signaling still rides UDP, and that is left alone deliberately. It no longer *has* to — but it works,
+// it keeps this peer's dependency surface to socket-udp, and re-plumbing it on the strength of a
+// corrected premise would be scope creep. The design now stands on its own merits rather than on an
+// expired constraint; anyone changing it should do so for reasons of its own.
 //
 // Source layout: KSP 2.3.10 has no common-metadata processing here, so it runs per compilation. Per-target
 // generated codecs land in `<target>Main`, invisible to a shared metadata source set — so all shared

@@ -693,6 +693,102 @@ public final class com/ditchoom/webrtc/ice/IceTransport : java/lang/Enum {
 	public static fun values ()[Lcom/ditchoom/webrtc/ice/IceTransport;
 }
 
+public abstract interface class com/ditchoom/webrtc/ice/InterfaceChangeDetection {
+}
+
+public final class com/ditchoom/webrtc/ice/InterfaceChangeDetection$PlatformSignalled : com/ditchoom/webrtc/ice/InterfaceChangeDetection {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/InterfaceChangeDetection$PlatformSignalled;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/InterfaceChangeDetection$Polled : com/ditchoom/webrtc/ice/InterfaceChangeDetection {
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun copy-LRDsOJo (J)Lcom/ditchoom/webrtc/ice/InterfaceChangeDetection$Polled;
+	public static synthetic fun copy-LRDsOJo$default (Lcom/ditchoom/webrtc/ice/InterfaceChangeDetection$Polled;JILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/InterfaceChangeDetection$Polled;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getInterval-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/InterfaceChangeTrigger {
+}
+
+public final class com/ditchoom/webrtc/ice/InterfaceChangeTrigger$Polled : com/ditchoom/webrtc/ice/InterfaceChangeTrigger {
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun copy-LRDsOJo (J)Lcom/ditchoom/webrtc/ice/InterfaceChangeTrigger$Polled;
+	public static synthetic fun copy-LRDsOJo$default (Lcom/ditchoom/webrtc/ice/InterfaceChangeTrigger$Polled;JILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/InterfaceChangeTrigger$Polled;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getInterval-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/InterfaceChangeTrigger$Signalled : com/ditchoom/webrtc/ice/InterfaceChangeTrigger {
+	public fun <init> (Lkotlinx/coroutines/flow/Flow;)V
+	public final fun component1 ()Lkotlinx/coroutines/flow/Flow;
+	public final fun copy (Lkotlinx/coroutines/flow/Flow;)Lcom/ditchoom/webrtc/ice/InterfaceChangeTrigger$Signalled;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/InterfaceChangeTrigger$Signalled;Lkotlinx/coroutines/flow/Flow;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/InterfaceChangeTrigger$Signalled;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getSignals ()Lkotlinx/coroutines/flow/Flow;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/InterfaceEnumerationFailure {
+}
+
+public final class com/ditchoom/webrtc/ice/InterfaceEnumerationFailure$EnumerationFailed : com/ditchoom/webrtc/ice/InterfaceEnumerationFailure {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure$EnumerationFailed;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure$EnumerationFailed;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure$EnumerationFailed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDiagnostic ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/InterfaceEnumerationFailure$NoPlatformApi : com/ditchoom/webrtc/ice/InterfaceEnumerationFailure {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure$NoPlatformApi;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/InterfaceEnumerator {
+	public abstract fun enumerate ()Lcom/ditchoom/webrtc/ice/InterfaceSnapshot;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/InterfaceSnapshot {
+}
+
+public final class com/ditchoom/webrtc/ice/InterfaceSnapshot$Enumerated : com/ditchoom/webrtc/ice/InterfaceSnapshot {
+	public fun <init> (Ljava/util/List;)V
+	public final fun component1 ()Ljava/util/List;
+	public final fun copy (Ljava/util/List;)Lcom/ditchoom/webrtc/ice/InterfaceSnapshot$Enumerated;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/InterfaceSnapshot$Enumerated;Ljava/util/List;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/InterfaceSnapshot$Enumerated;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getInterfaces ()Ljava/util/List;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/InterfaceSnapshot$Unavailable : com/ditchoom/webrtc/ice/InterfaceSnapshot {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure;)Lcom/ditchoom/webrtc/ice/InterfaceSnapshot$Unavailable;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/InterfaceSnapshot$Unavailable;Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/InterfaceSnapshot$Unavailable;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReason ()Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/ice/LocalInterface {
 	public synthetic fun <init> (Ljava/lang/String;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1-qtMgfS4 ()Ljava/lang/String;
@@ -1002,6 +1098,31 @@ public abstract interface class com/ditchoom/webrtc/ice/NetworkMonitor {
 	public abstract fun interfaces ()Ljava/util/List;
 }
 
+public abstract interface class com/ditchoom/webrtc/ice/NetworkMonitorSupport {
+}
+
+public final class com/ditchoom/webrtc/ice/NetworkMonitorSupport$Unavailable : com/ditchoom/webrtc/ice/NetworkMonitorSupport {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure;)Lcom/ditchoom/webrtc/ice/NetworkMonitorSupport$Unavailable;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/NetworkMonitorSupport$Unavailable;Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/NetworkMonitorSupport$Unavailable;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReason ()Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/NetworkMonitorSupport$Watching : com/ditchoom/webrtc/ice/NetworkMonitorSupport {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/SystemNetworkMonitor;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/SystemNetworkMonitor;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/SystemNetworkMonitor;)Lcom/ditchoom/webrtc/ice/NetworkMonitorSupport$Watching;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/NetworkMonitorSupport$Watching;Lcom/ditchoom/webrtc/ice/SystemNetworkMonitor;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/NetworkMonitorSupport$Watching;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getMonitor ()Lcom/ditchoom/webrtc/ice/SystemNetworkMonitor;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public abstract interface class com/ditchoom/webrtc/ice/ServerReflexiveResult {
 }
 
@@ -1045,6 +1166,27 @@ public final class com/ditchoom/webrtc/ice/SocketUdpMdnsBinder : com/ditchoom/we
 	public fun <init> (Lcom/ditchoom/buffer/BufferFactory;)V
 	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun bind (Lcom/ditchoom/buffer/flow/AddressFamily;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/webrtc/ice/SystemNetworkMonitor : com/ditchoom/webrtc/ice/NetworkMonitor {
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/InterfaceEnumerator;Lcom/ditchoom/webrtc/ice/InterfaceChangeTrigger;JILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/InterfaceEnumerator;Lcom/ditchoom/webrtc/ice/InterfaceChangeTrigger;JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun getChanges ()Lkotlinx/coroutines/flow/Flow;
+	public final fun getDetection ()Lcom/ditchoom/webrtc/ice/InterfaceChangeDetection;
+	public final fun getLastSnapshot ()Lkotlinx/coroutines/flow/StateFlow;
+	public fun interfaces ()Ljava/util/List;
+	public final fun refresh ()V
+}
+
+public final class com/ditchoom/webrtc/ice/SystemNetworkMonitorKt {
+	public static final fun getDEFAULT_COALESCE_WINDOW ()J
+	public static final fun getDEFAULT_INTERFACE_POLL_INTERVAL ()J
+	public static final fun systemNetworkMonitor-LRDsOJo (J)Lcom/ditchoom/webrtc/ice/NetworkMonitorSupport;
+	public static synthetic fun systemNetworkMonitor-LRDsOJo$default (JILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/NetworkMonitorSupport;
+}
+
+public final class com/ditchoom/webrtc/ice/SystemNetworkMonitor_javaMainKt {
+	public static final fun systemInterfaceEnumerator ()Lcom/ditchoom/webrtc/ice/InterfaceEnumerator;
 }
 
 public final class com/ditchoom/webrtc/ice/TieBreaker {

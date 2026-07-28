@@ -70,9 +70,39 @@ nothing answers costs the peer the candidate outright and `commonMain` cannot co
 `mdns-{chrome,firefox}` lanes turn it on and gate on the browser having resolved *ours* (`mdns answered` on
 our side, a `type=host` remote candidate at our IP on the browser's).
 
-**What is genuinely left** (none of it blocking; each item has a tracking issue): no production
-`NetworkMonitor` actual enumerating real OS interfaces, so `IceRestartPolicy` defaults to `Manual`
-(#69 — platform-edge work, per target; it needs no socket-core dependency); foreign-peer renegotiation
+**A production `NetworkMonitor` now exists** (#69): `systemNetworkMonitor()` in `webrtc-ice` returns a
+`SystemNetworkMonitor`, which is **push-first** and composes two halves that deliberately come from
+different places.
+
+*Reactivity* — **when** did the network change — is `com.ditchoom:network-monitor`'s (jvm/android) and, at
+the two K/N leaves only, socket core's: `ConnectivityManager.NetworkCallback`, the JDK-21 FFM routing
+socket, `AF_NETLINK`, `NWPathMonitor`. We do not hand-roll it. *Enumeration* — **which local addresses
+exist** — is ours (`java.net.NetworkInterface` / POSIX `getifaddrs(3)`), because socket's monitor reports
+availability plus a sealed `NetworkId(kind, handle)` and carries no addresses at all, while
+`pathRidesOneOf` compares the selected pair's local **IP**. The two answer different questions; both are
+needed. Polling survives only as the fallback where no push path exists (JDK < 21, Windows, Android with
+no installed `Context`), and `SystemNetworkMonitor.detection` says which you got — coarsely and honestly,
+because socket exposes no accessor for the mechanism it resolved and re-deriving one would be a second
+source of truth that can drift (DitchOoM/socket#269).
+
+A platform that cannot see NICs at all says so in the type: js/wasmJs return
+`NetworkMonitorSupport.Unavailable(NoPlatformApi)`, so an app cannot build an
+`IceRestartPolicy.OnNetworkChange` on a monitor that would never fire. `InterfaceSnapshot` is sealed for
+one specific reason: a failed `getifaddrs` reported as an *empty* interface set is exactly what
+`pathRidesOneOf` reads as "the selected pair's interface is gone", so a transient probe failure would
+restart a healthy session on every signal — instead the last good set stands and the failure is reported
+on `lastSnapshot`. **`IceRestartPolicy` still defaults to `Manual`** deliberately: an automatic restart is
+a renegotiation only the app's signaling channel can carry, so the mechanism is opt-in, not a default flip.
+
+**The "socket core vendors a second BoringSSL" claim is obsolete — do not propagate it.** It was true
+once, it outlived its truth in four separate comments, and acting on it produced a hand-rolled
+implementation of something already published for us. Since socket 3.15.1 its `LinuxSockets` cinterop klib
+embeds only `liburing.a`, and socket and `buffer-crypto` both resolve to the *same*
+`com.ditchoom.boringssl:boringssl-canonical`, which Gradle dedupes. Verified by linking the production
+native peer on linuxX64 **and** linuxArm64 with socket core present, and by running socket's netlink
+monitor under `linuxX64Test`.
+
+**What is genuinely left** (none of it blocking; each item has a tracking issue): foreign-peer renegotiation
 is proven in one direction only — Pion, Chrome, Firefox and WebKit each re-answer a restart *we* initiate
 on the `carrier-switch` topology (lanes `restart-{pion,chrome,firefox,webkit}`), and s8 now reads the
 peer's own re-answer rather than inferring a restart from reconvergence (both ICE credentials replaced,

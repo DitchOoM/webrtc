@@ -43,10 +43,17 @@ public data class LocalInterface(
 )
 
 /**
- * The interface-enumeration seam (webrtc-owned, thin — RFC §11.4 note: `NetworkMonitor` proper lives in
- * socket core, but the ICE driver needs only this shape). A production actual watches the OS; a test
- * double drives interface flaps deterministically. Injected, so a `NetworkId` change is a scripted
- * timeline event, not a real Wi-Fi radio.
+ * The interface-enumeration seam (webrtc-owned, thin — the ICE driver needs only this shape).
+ * [SystemNetworkMonitor] is the production implementation; a test double drives interface flaps
+ * deterministically. Injected, so a `NetworkId` change is a scripted timeline event, not a real Wi-Fi radio.
+ *
+ * This is **not** a duplicate of `com.ditchoom:network-monitor`'s contract, and the distinction is
+ * structural. Socket's monitor reports *availability* and a sealed link identity (`Link(kind, handle)`,
+ * whose discriminator is documented as a numeric OS handle, "never an interface-name string"); it carries
+ * no addresses. This one reports the **addresses** ICE can gather on, because
+ * [IceAgentDriver.pathRidesOneOf] compares the selected pair's local IP against them. So
+ * [SystemNetworkMonitor] consumes socket's monitor as its *trigger* and enumerates the addresses itself —
+ * the two answer different questions and both are needed.
  */
 public interface NetworkMonitor {
     /** The interfaces currently available to gather on. */

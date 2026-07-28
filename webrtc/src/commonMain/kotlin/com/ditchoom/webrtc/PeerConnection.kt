@@ -96,10 +96,20 @@ public fun interface IceGatheringPolicy {
  * When a [NativePeerConnection] restarts ICE by itself (RFC 8445 §9). A sealed choice rather than a
  * `Boolean` plus a nullable monitor, which could encode "automatic restarts enabled, nothing to watch".
  *
- * The monitor is the **webrtc-owned** [NetworkMonitor] seam, not socket's: neither `webrtc` nor
- * `webrtc-ice` `commonMain` depends on socket at all (they target `buffer-flow` only, so the cores stay
- * all-platform including browsers), and socket's monitor lives in socket *core*, which vendors a second
- * BoringSSL — the documented duplicate-symbol break that already defers the `SocketException` bridge.
+ * The monitor is the **webrtc-owned** [NetworkMonitor] seam rather than socket's, and for a reason that
+ * survives scrutiny: socket's monitor answers *"is the network up, and what link am I on"*
+ * (`availability` plus a sealed `NetworkId` of `Link(kind, handle)`), and carries **no addresses at
+ * all** — while the question this policy asks is *"does the selected pair's local IP still exist"*. So
+ * the two are complements, not alternatives. `webrtc-ice`'s `systemNetworkMonitor()` composes them: it
+ * takes the *reactivity* from `com.ditchoom:network-monitor` (and, at the two K/N leaves only, socket
+ * core) and supplies the *address enumeration* itself. Neither `webrtc` nor `webrtc-ice` `commonMain`
+ * depends on socket, so the cores stay all-platform including browsers.
+ *
+ * A note for anyone who remembers the old reason, because it was wrong for long enough to mislead an
+ * implementation: socket core no longer "vendors a second BoringSSL". Since 3.15.1 its `LinuxSockets`
+ * cinterop klib embeds only `liburing.a`, and socket and `buffer-crypto` both resolve to the *same*
+ * `com.ditchoom.boringssl:boringssl-canonical`, which Gradle dedupes — one BoringSSL on the link line,
+ * not two. Verified by linking the production native peer on linuxX64 and linuxArm64. See #69.
  */
 public sealed interface IceRestartPolicy {
     /** Only an explicit [RtcPeerConnection.restartIce] restarts. The default, and the browser's behaviour. */
@@ -112,6 +122,10 @@ public sealed interface IceRestartPolicy {
      *
      * Automatic and manual restarts route through the same intent path, and the monitor is injected, so
      * a Wi-Fi→cellular flip is a scripted timeline event under `runTest` rather than a real radio.
+     *
+     * The production monitor is `webrtc-ice`'s `systemNetworkMonitor()` — a `getifaddrs` /
+     * `NetworkInterface` poll on every non-browser target — and it hands back a **sealed** result, so a
+     * platform that cannot see interfaces at all says so instead of handing you a monitor that never fires.
      */
     public data class OnNetworkChange(
         public val monitor: NetworkMonitor,
@@ -158,8 +172,16 @@ public data class PeerConnectionConfig(
     public val gracefulShutdownTimeout: Duration = 2.seconds,
     /**
      * Whether the session restarts ICE on its own when the network moves under it (RFC 8445 §9).
-     * Defaults to [IceRestartPolicy.Manual] — the browser's behaviour, and the only honest default while
-     * no target ships a production [NetworkMonitor] actual enumerating real OS interfaces.
+     * Defaults to [IceRestartPolicy.Manual] — the browser's behaviour, and still the default now that a
+     * production monitor exists: an automatic restart is a *renegotiation*, which only the app's
+     * signaling channel can carry, so switching it on silently would change what a session asks of its
+     * consumer. Opt in with the platform monitor, whose sealed result also tells you when there is none:
+     * ```
+     * val policy = when (val support = systemNetworkMonitor()) {
+     *     is NetworkMonitorSupport.Watching    -> IceRestartPolicy.OnNetworkChange(support.monitor)
+     *     is NetworkMonitorSupport.Unavailable -> IceRestartPolicy.Manual   // and log support.reason
+     * }
+     * ```
      */
     public val iceRestartPolicy: IceRestartPolicy = IceRestartPolicy.Manual,
     /**

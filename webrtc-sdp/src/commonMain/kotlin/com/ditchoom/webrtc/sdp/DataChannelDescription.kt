@@ -18,6 +18,18 @@ public data class DataChannelParameters(
     public val port: String = DISCARD_PORT,
     public val connection: String = DEFAULT_CONNECTION,
     public val trickle: Boolean = true,
+    /**
+     * This endpoint's DTLS association identifier (`a=tls-id`, RFC 8842 §5.3), or null to emit no such
+     * line. Null is a genuine absence, not an error or an uninitialized field: the attribute is optional,
+     * a description without one is what every peer in this stack's interop matrix sends, and a reader
+     * falls back to inferring association continuity from the unchanged `a=fingerprint` (§5.5). It
+     * defaults to null so that adding the attribute cannot change the bytes an existing caller emits.
+     *
+     * The value must be **stable for the life of the association** — the same one in a re-offer, an
+     * answer, and across an ICE restart. Changing it is how an endpoint says it wants a *new* DTLS
+     * association, so a caller that regenerates it per offer is unwittingly asking for a fresh handshake.
+     */
+    public val tlsId: TlsId? = null,
 ) {
     public companion object {
         /** RFC 8831 §5: the default SCTP port for a data channel. */
@@ -60,6 +72,9 @@ public fun dataChannelDescription(
         if (params.trickle) attribute("ice-options", "trickle")
         fingerprint(params.fingerprint)
         setup(params.setup)
+        // Media level, beside the other DTLS parameters it qualifies. RFC 8842 §5.3 allows either level;
+        // with BUNDLE there is one transport, and a reader here reads media-then-session (SdpSection.tlsId).
+        params.tlsId?.let { tlsId(it) }
         mid(params.mid)
         sctpPort(params.sctpPort)
         maxMessageSize(params.maxMessageSize)

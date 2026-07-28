@@ -41,6 +41,23 @@ public fun SdpSection.icePwd(): String? = firstAttributeValue("ice-pwd")
 public fun SdpSection.setup(): SetupRole? = firstAttributeValue("setup")?.let(SetupRole::fromToken)
 
 /**
+ * The DTLS association identifier (`a=tls-id`, RFC 8842 §5.3) declared by this section.
+ *
+ * The only interpreter here that does **not** collapse to a nullable, because absent and malformed are
+ * different answers to the §5.5 question "does this description want the association we already have?".
+ * Absent is legal (the attribute is optional and nobody in our interop matrix emits it) and means "fall
+ * back to fingerprint inference"; malformed is a typed reject that means "this peer said something about
+ * association identity that cannot be read". A bare flag line (`a=tls-id`, no value) is malformed with an
+ * empty value — the grammar requires at least 20 characters.
+ */
+public fun SdpSection.tlsId(): TlsIdAttribute {
+    val raw =
+        firstAttributeValue("tls-id")
+            ?: return if (hasFlag("tls-id")) TlsIdAttribute.Malformed("") else TlsIdAttribute.Absent
+    return TlsId.fromValue(raw)?.let(TlsIdAttribute::Present) ?: TlsIdAttribute.Malformed(raw)
+}
+
+/**
  * Every `a=fingerprint` (RFC 8122 §5) in this section, each split into hash-function + value; an
  * entry that is not two space-separated fields is dropped (null-on-malformed, applied per line).
  */

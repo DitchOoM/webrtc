@@ -6,6 +6,51 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Changed — **SOURCE-BREAKING** (`webrtc-sdp`): rollback is an event, not a null argument (#77)
+
+`JsepEvent.SetLocalDescription` and `JsepEvent.SetRemoteDescription` were each a `data class(type, description?)`
+that could express two illegal states. `SetLocalDescription(SdpType.Rollback, someDescription)` was
+constructible and the machine answered it with **silence** — the rollback arm restored the stable snapshot
+and never read the argument. `SetLocalDescription(SdpType.Offer, null)` was constructible too, and needed a
+runtime `JsepError.MissingDescription` to police from the other side a combination the type should never
+have permitted. Both endpoints had the defect; both are fixed the same way.
+
+Each is now a sealed interface with `Apply(type, description)` and a `Rollback` object. `Apply` takes the
+new `AppliedSdpType` (`Offer | PrAnswer | Answer`) rather than `SdpType`, so rollback-with-a-description is
+not merely discouraged but unrepresentable — the shape proposed in the issue kept `SdpType` and would have
+left that half of the defect standing. `JsepOutput.DescriptionApplied.type` narrows to `AppliedSdpType` for
+the same reason: a rollback applies nothing and can no longer claim to have applied something.
+
+- **Removed**: `JsepError.MissingDescription` and its runtime check. An exhaustive `when (error)` over
+  `JsepError` must drop that branch — the compile error is the point.
+- **Migration**: `SetLocalDescription(type, sdp)` → `SetLocalDescription.Apply(AppliedSdpType.of(type)!!, sdp)`;
+  `SetLocalDescription(SdpType.Rollback, null)` → `SetLocalDescription.Rollback`. `AppliedSdpType.of` returns
+  null for exactly `SdpType.Rollback`, which is how a caller holding a W3C-shaped `SdpType` branches.
+- No behaviour change: `RtcPeerConnection.setLocalDescription`/`setRemoteDescription` still take the
+  4-valued `SdpType`, and no in-tree caller was affected. The win is entirely for out-of-tree consumers of
+  `webrtc-sdp`, the module most likely to be used standalone.
+
+### Added — `a=tls-id`: the explicit statement of DTLS association continuity (RFC 8842 §5.3/§5.5, #72)
+
+We now emit `a=tls-id` in every offer and answer and honour the peer's. RFC 8842 §5.5 uses it as the
+explicit signal of whether a re-offer wants the **existing** DTLS association or a new one, where an
+unchanged `a=fingerprint` only implies it — so a peer asking for a fresh association can now say so, and is
+refused with `DtlsFailureReason.NewAssociationRequested` rather than only being caught by the role-flip
+heuristic behind `RoleChangeOnRenegotiation`.
+
+- `TlsId` is a `@JvmInline value class` enforcing the §5.3 grammar (`20*(token-char)`) at construction;
+  `TlsId.fromValue` is the total, null-on-malformed parse and `TlsId.random(Random)` draws 144 bits from
+  the **injected** entropy seam (directive #2), never `Random.Default`.
+- `SdpSection.tlsId(): TlsIdAttribute` is a three-way typed read — `Absent | Present | Malformed` — because
+  absent and malformed are different facts. Absent is legal and expected; malformed is a typed reject.
+- **Backward compatibility is the feature.** Ours is drawn once per session and never redrawn, so an ICE
+  restart re-offers the same value (§5.5: a restart renegotiates ICE and nothing else). A peer that sends
+  no `a=tls-id` — which is every peer in the interop matrix — behaves exactly as before, and a malformed
+  one falls back to fingerprint inference rather than failing a session the fingerprint vouches for.
+  Honouring tls-id only ever *adds* a reason to refuse; it never removes a reason to keep an association.
+- `DataChannelParameters.tlsId` defaults to `null` (emit nothing), so an existing caller's SDP is
+  byte-identical. `DtlsFailureReason` gains one case, which re-exhausts any `when` over it.
+
 ### Removed — **BREAKING**: two public types that named states this stack cannot be in (#83, #82)
 
 Both are removed in the same release deliberately: they are the same defect for the same reason, and

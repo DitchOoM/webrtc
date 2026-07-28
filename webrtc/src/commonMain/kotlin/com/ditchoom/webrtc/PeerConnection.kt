@@ -26,21 +26,26 @@ import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sctp.datachannel.SctpClosedException
 import com.ditchoom.webrtc.sctp.datachannel.SctpDataChannelStack
 import com.ditchoom.webrtc.sctp.datachannel.SctpRole
+import com.ditchoom.webrtc.sdp.AppliedSdpType
 import com.ditchoom.webrtc.sdp.DataChannelParameters
 import com.ditchoom.webrtc.sdp.Fingerprint
 import com.ditchoom.webrtc.sdp.JsepEvent
 import com.ditchoom.webrtc.sdp.JsepOutput
 import com.ditchoom.webrtc.sdp.JsepSession
+import com.ditchoom.webrtc.sdp.MediaDescription
 import com.ditchoom.webrtc.sdp.Mid
 import com.ditchoom.webrtc.sdp.SdpParseResult
 import com.ditchoom.webrtc.sdp.SdpType
 import com.ditchoom.webrtc.sdp.SessionDescription
 import com.ditchoom.webrtc.sdp.SetupRole
 import com.ditchoom.webrtc.sdp.SignalingState
+import com.ditchoom.webrtc.sdp.TlsId
+import com.ditchoom.webrtc.sdp.TlsIdAttribute
 import com.ditchoom.webrtc.sdp.fingerprints
 import com.ditchoom.webrtc.sdp.icePwd
 import com.ditchoom.webrtc.sdp.iceUfrag
 import com.ditchoom.webrtc.sdp.setup
+import com.ditchoom.webrtc.sdp.tlsId
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -304,6 +309,15 @@ public class NativePeerConnection(
     private val jsep = JsepSession(random)
     private val negotiationLock = Mutex()
 
+    /**
+     * This session's `a=tls-id` (RFC 8842 §5.3) — the identity of the one DTLS association it will ever
+     * have. Drawn once, from the injected entropy seam (directive #2), and never redrawn: §5.5 makes a
+     * *changed* tls-id the request for a new association, so re-generating it per offer would tell the
+     * peer to tear down and re-handshake on every renegotiation. An ICE restart therefore re-offers this
+     * same value, which is precisely the continuity claim the unchanged `a=fingerprint` already makes.
+     */
+    private val localTlsId: TlsId = TlsId.random(random)
+
     private val _connectionState = MutableStateFlow<PeerConnectionState>(PeerConnectionState.New)
     override val connectionState: StateFlow<PeerConnectionState> get() = _connectionState
 
@@ -355,6 +369,11 @@ public class NativePeerConnection(
     // because a *change* in both ufrag and pwd is precisely how a peer announces its own ICE restart
     // (RFC 8445 §9) — and there is nothing to compare against if we never remembered the previous pair.
     private var remoteIceCredentials: RemoteIceCredentials = RemoteIceCredentials.NotReceived
+
+    // The peer's a=tls-id (RFC 8842 §5.3), once it has declared one. Kept for the same reason the ICE
+    // credentials are: the signal is a CHANGE, and there is nothing to compare against if the previous
+    // value was never remembered. Not declared is the common case — see [honorTlsId].
+    private var remoteTlsId: RemoteTlsId = RemoteTlsId.NotDeclared
 
     // Resolved once both descriptions are applied; runEstablishment awaits it before the DTLS handshake.
     // Completing exactly once is what pins the DTLS role for the association's lifetime, so a
@@ -511,28 +530,42 @@ public class NativePeerConnection(
     override suspend fun setLocalDescription(
         type: SdpType,
         sdp: String,
-    ) = negotiationLock.withLock {
-        val description = if (type == SdpType.Rollback) null else parseOrThrow(sdp)
-        applyJsep(JsepEvent.SetLocalDescription(type, description))
-        // Rollback discards the local offer, so the ICE generation that offer advertised must go with it —
-        // otherwise the agent is left honouring credentials no peer has ever seen. JSEP's
-        // HaveLocalOffer → Stable edge already existed; this is its ICE half.
-        if (type == SdpType.Rollback) startedTransport()?.rollbackRestart()
-    }
+    ): Unit =
+        negotiationLock.withLock {
+            // The W3C `type` is 4-valued at this boundary, but the JSEP core's is not: `AppliedSdpType.of`
+            // returns null exactly for rollback, which applies no description and so takes no `sdp` at all.
+            val applied = AppliedSdpType.of(type)
+            if (applied == null) {
+                applyJsep(JsepEvent.SetLocalDescription.Rollback)
+                // Rollback discards the local offer, so the ICE generation that offer advertised must go
+                // with it — otherwise the agent is left honouring credentials no peer has ever seen. JSEP's
+                // HaveLocalOffer → Stable edge already existed; this is its ICE half.
+                startedTransport()?.rollbackRestart()
+            } else {
+                applyJsep(JsepEvent.SetLocalDescription.Apply(applied, parseOrThrow(sdp)))
+            }
+        }
 
     override suspend fun setRemoteDescription(
         type: SdpType,
         sdp: String,
-    ) = negotiationLock.withLock {
-        val description = if (type == SdpType.Rollback) null else parseOrThrow(sdp)
-        // A remote offer arriving first makes us the answerer — start ICE (controlled) before applying it.
-        if (type == SdpType.Offer && transport is IceTransport.NotStarted) startIce(asOfferer = false)
-        applyJsep(JsepEvent.SetRemoteDescription(type, description))
-        if (description != null) ingestRemote(type, description)
-        // A remote ANSWER fixes the offerer's role: the answer's setup names the peer's role, so we take
-        // its complement (answer active → peer is client → we are server; answer passive → we are client).
-        if (type == SdpType.Answer) resolveRole(asClient = !remoteSetupIsActive())
-    }
+    ): Unit =
+        negotiationLock.withLock {
+            val applied = AppliedSdpType.of(type)
+            if (applied == null) {
+                applyJsep(JsepEvent.SetRemoteDescription.Rollback)
+            } else {
+                // Parsed BEFORE anything is started: malformed SDP throws without having moved the session.
+                val description = parseOrThrow(sdp)
+                // A remote offer arriving first makes us the answerer — start ICE (controlled) first.
+                if (applied == AppliedSdpType.Offer && transport is IceTransport.NotStarted) startIce(asOfferer = false)
+                applyJsep(JsepEvent.SetRemoteDescription.Apply(applied, description))
+                ingestRemote(applied, description)
+                // A remote ANSWER fixes the offerer's role: the answer's setup names the peer's role, so we
+                // take its complement (answer active → peer is client → we are server; passive → client).
+                if (applied == AppliedSdpType.Answer) resolveRole(asClient = !remoteSetupIsActive())
+            }
+        }
 
     private fun remoteSetupIsActive(): Boolean =
         when (val declared = remoteSetup) {
@@ -918,7 +951,7 @@ public class NativePeerConnection(
 
     // Pull the peer's ICE credentials + any in-SDP (non-trickle) candidates out of a remote description.
     private suspend fun ingestRemote(
-        type: SdpType,
+        type: AppliedSdpType,
         description: SessionDescription,
     ) {
         val media = description.mediaDescriptions.firstOrNull()
@@ -927,7 +960,7 @@ public class NativePeerConnection(
         val d = startedTransport()
         if (ufrag != null && pwd != null) {
             val incoming = IceCredentials(Ufrag(ufrag), IcePassword(pwd))
-            if (d != null && type == SdpType.Offer && peerRestarted(incoming)) {
+            if (d != null && type == AppliedSdpType.Offer && peerRestarted(incoming)) {
                 // RFC 8445 §9: the peer restarted ICE. Restart our side too — otherwise our checklist stays
                 // bound to the old password and every check we send is silently discarded by an agent that
                 // no longer knows it. Our next answer/offer then carries our own new credentials.
@@ -945,7 +978,55 @@ public class NativePeerConnection(
         val fingerprint =
             (media?.fingerprints() ?: emptyList()).firstOrNull() ?: description.fingerprints().firstOrNull()
         if (fingerprint != null) remoteFingerprint = RemoteFingerprint.Declared(fingerprint)
+        honorTlsId(media, description)
         startedTransport()?.let { live -> media?.candidates()?.forEach { line -> addRemoteCandidateLine(live, line) } }
+    }
+
+    /**
+     * RFC 8842 §5.5, the explicit half. `a=tls-id` is the peer *stating* which DTLS association a
+     * description refers to, where an unchanged `a=fingerprint` only implies it: a description repeating
+     * the tls-id it already declared wants the association it already has, and one carrying a **new**
+     * value is asking us to tear that association down and handshake again — the same request the
+     * [DtlsFailureReason.RoleChangeOnRenegotiation] heuristic catches from the other end, now stated
+     * outright instead of inferred from a role flip.
+     *
+     * Deliberately only ever an **additional** reason to refuse, never a new reason to drop an association
+     * we would otherwise have kept:
+     * - **Absent** is the norm, not an error — the attribute is optional and no peer in the interop matrix
+     *   (Chrome, Firefox, WebKit, Pion, werift) emits one. Nothing changes; continuity keeps being read off
+     *   the unchanged fingerprint, exactly as PR #78/#86 established and every foreign lane depends on.
+     * - **Malformed** is a typed reject at the SDP layer ([TlsIdAttribute.Malformed]) and is treated here
+     *   as *no usable statement*, falling back to that same inference. Failing the session on it would let
+     *   a peer whose tls-id merely fails our grammar lose a connection it would otherwise have kept —
+     *   strictly worse than the behaviour that has been through the whole interop matrix.
+     * - **Changed** is refused only once the association is actually committed (a role has been resolved,
+     *   so the handshake is under way or done). Before that there is nothing to keep, and a peer that
+     *   re-derives its tls-id mid-first-negotiation is asking for nothing we are not already doing.
+     */
+    private fun honorTlsId(
+        media: MediaDescription?,
+        description: SessionDescription,
+    ) {
+        val declared =
+            when (val inMedia = media?.tlsId()) {
+                // RFC 8842 §5.3 allows either level; media wins, session level is the fallback default.
+                null, TlsIdAttribute.Absent -> description.tlsId()
+                is TlsIdAttribute.Present, is TlsIdAttribute.Malformed -> inMedia
+            }
+        val incoming =
+            when (declared) {
+                TlsIdAttribute.Absent, is TlsIdAttribute.Malformed -> return
+                is TlsIdAttribute.Present -> declared.tlsId
+            }
+        when (val known = remoteTlsId) {
+            RemoteTlsId.NotDeclared -> remoteTlsId = RemoteTlsId.Declared(incoming)
+            is RemoteTlsId.Declared ->
+                when {
+                    known.tlsId == incoming -> Unit // the association it already has — which is the one we keep
+                    roleResolved.isCompleted -> fail(PeerConnectionFailureReason.Dtls(DtlsFailureReason.NewAssociationRequested))
+                    else -> remoteTlsId = RemoteTlsId.Declared(incoming)
+                }
+        }
     }
 
     /**
@@ -978,6 +1059,10 @@ public class NativePeerConnection(
             fingerprint = dtls.localFingerprint,
             setup = setup,
             mid = config.dataChannelMid,
+            // RFC 8842 §5.3/§5.5: the same value in every offer and answer this session ever emits, so a
+            // peer that honours tls-id reads "keep the association" from us as reliably as it reads it
+            // from the unchanged fingerprint.
+            tlsId = localTlsId,
         )
 
     private fun parseOrThrow(sdp: String): SessionDescription =
@@ -1033,6 +1118,20 @@ public class NativePeerConnection(
         data class Declared(
             val fingerprint: Fingerprint,
         ) : RemoteFingerprint
+    }
+
+    /**
+     * The peer's `a=tls-id` (RFC 8842 §5.3) as last signaled — the baseline a new-association request is
+     * detected against. Not-declared is a *different fact* from any particular value (it means the peer
+     * says nothing about association identity and we infer from the fingerprint), so it is a case, not a
+     * null that every read site would have to remember to mean that.
+     */
+    private sealed interface RemoteTlsId {
+        data object NotDeclared : RemoteTlsId
+
+        data class Declared(
+            val tlsId: TlsId,
+        ) : RemoteTlsId
     }
 
     /** The peer's ICE credentials as last signaled — the baseline a peer-initiated restart is detected against. */

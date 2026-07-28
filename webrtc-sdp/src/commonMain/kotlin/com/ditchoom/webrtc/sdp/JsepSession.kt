@@ -11,22 +11,40 @@ public enum class DescriptionEndpoint {
     Remote,
 }
 
-/** An event fed to a [JsepSession] (sans-io: the app/signaling seam owns I/O; the core owns truth). */
+/**
+ * An event fed to a [JsepSession] (sans-io: the app/signaling seam owns I/O; the core owns truth).
+ *
+ * Applying a description and rolling one back are **different events**, not one event with a nullable
+ * argument (issue #77). The old shape could express `SetLocalDescription(SdpType.Rollback, description)`,
+ * which the machine answered by silently discarding the description, and `SetLocalDescription(Offer, null)`,
+ * which it answered with a runtime `MissingDescription` error that existed only to police a combination the
+ * type should never have permitted. Neither is constructible now: an `Apply` carries an [AppliedSdpType]
+ * (never rollback) and a non-null description, and a `Rollback` carries nothing because it needs nothing.
+ */
 public sealed interface JsepEvent {
-    /**
-     * Apply a local description ([SdpType.Offer]/[SdpType.Answer]/[SdpType.PrAnswer]), or roll the
-     * pending local offer back ([SdpType.Rollback], with a null [description]).
-     */
-    public data class SetLocalDescription(
-        public val type: SdpType,
-        public val description: SessionDescription?,
-    ) : JsepEvent
+    /** Set the **local** description: apply one, or roll the pending local offer back (RFC 8829 §4.1.8.2). */
+    public sealed interface SetLocalDescription : JsepEvent {
+        /** Apply a local offer/answer/provisional answer. */
+        public data class Apply(
+            public val type: AppliedSdpType,
+            public val description: SessionDescription,
+        ) : SetLocalDescription
 
-    /** Apply a remote description, or roll the pending remote offer back ([SdpType.Rollback]). */
-    public data class SetRemoteDescription(
-        public val type: SdpType,
-        public val description: SessionDescription?,
-    ) : JsepEvent
+        /** Discard the pending local offer, restoring the last stable pair. Carries no description. */
+        public data object Rollback : SetLocalDescription
+    }
+
+    /** Set the **remote** description: apply one, or roll the pending remote offer back. */
+    public sealed interface SetRemoteDescription : JsepEvent {
+        /** Apply a remote offer/answer/provisional answer. */
+        public data class Apply(
+            public val type: AppliedSdpType,
+            public val description: SessionDescription,
+        ) : SetRemoteDescription
+
+        /** Discard the pending remote offer, restoring the last stable pair. Carries no description. */
+        public data object Rollback : SetRemoteDescription
+    }
 
     /** Close the session — every subsequent description event is rejected [JsepError.SessionClosed]. */
     public data object Close : JsepEvent
@@ -34,10 +52,14 @@ public sealed interface JsepEvent {
 
 /** A side effect / observation emitted from [JsepSession.handle]. */
 public sealed interface JsepOutput {
-    /** A description was accepted and is now the effective local/remote description. */
+    /**
+     * A description was accepted and is now the effective local/remote description. Its [type] is an
+     * [AppliedSdpType]: a rollback applies nothing, so this output is never emitted for one and cannot
+     * claim to have been.
+     */
     public data class DescriptionApplied(
         public val endpoint: DescriptionEndpoint,
-        public val type: SdpType,
+        public val type: AppliedSdpType,
     ) : JsepOutput
 
     /** The signaling state changed (emitted only on an actual change, W3C `signalingstatechange`). */
@@ -60,9 +82,6 @@ public sealed interface JsepError {
         public val endpoint: DescriptionEndpoint,
         public val type: SdpType,
     ) : JsepError
-
-    /** A non-rollback event carried a null description. */
-    public data object MissingDescription : JsepError
 
     /** The session is [SignalingState.Closed]. */
     public data object SessionClosed : JsepError
@@ -118,44 +137,75 @@ public class JsepSession(
         @Suppress("UNUSED_PARAMETER") now: Instant,
     ): List<JsepOutput> =
         when (event) {
-            is JsepEvent.SetLocalDescription -> applyDescription(DescriptionEndpoint.Local, event.type, event.description)
-            is JsepEvent.SetRemoteDescription -> applyDescription(DescriptionEndpoint.Remote, event.type, event.description)
+            is JsepEvent.SetLocalDescription.Apply -> applyDescription(DescriptionEndpoint.Local, event.type, event.description)
+            JsepEvent.SetLocalDescription.Rollback -> rollback(DescriptionEndpoint.Local)
+            is JsepEvent.SetRemoteDescription.Apply -> applyDescription(DescriptionEndpoint.Remote, event.type, event.description)
+            JsepEvent.SetRemoteDescription.Rollback -> rollback(DescriptionEndpoint.Remote)
             JsepEvent.Close -> close()
         }
 
     private fun applyDescription(
         endpoint: DescriptionEndpoint,
-        type: SdpType,
-        description: SessionDescription?,
-    ): List<JsepOutput> {
-        if (signalingState is SignalingState.Closed) return listOf(JsepOutput.Rejected(JsepError.SessionClosed))
-        if (type != SdpType.Rollback && description == null) {
-            return listOf(JsepOutput.Rejected(JsepError.MissingDescription))
+        type: AppliedSdpType,
+        description: SessionDescription,
+    ): List<JsepOutput> =
+        onLegalEdge(endpoint, type.sdpType) { to ->
+            // Commit the description effect before announcing the transition.
+            when (endpoint) {
+                DescriptionEndpoint.Local -> localDescription = description
+                DescriptionEndpoint.Remote -> remoteDescription = description
+            }
+            commit(to, JsepOutput.DescriptionApplied(endpoint, type))
         }
+
+    /**
+     * Discard the pending offer at [endpoint] (RFC 8829 §4.1.8.2). It takes no description because there
+     * is none to take: rollback restores ALL pending changes to the last stable snapshot — both sides, not
+     * just the rolled-back one, and not to null.
+     */
+    private fun rollback(endpoint: DescriptionEndpoint): List<JsepOutput> =
+        onLegalEdge(endpoint, SdpType.Rollback) { to ->
+            localDescription = currentLocal
+            remoteDescription = currentRemote
+            commit(to, applied = null)
+        }
+
+    /**
+     * The guard both description events share: run [accepted] with the state this event moves to, or
+     * reject it typed and leave the state untouched.
+     *
+     * One function rather than a check in each, because "closed outranks an illegal transition" is a
+     * single fact and two copies of it can disagree. Closed is deliberately checked *before* the table
+     * rather than left to fall out of it — every edge out of [SignalingState.Closed] is absent from the
+     * table anyway, so without this a closed session would blame the transition instead of the close.
+     */
+    private fun onLegalEdge(
+        endpoint: DescriptionEndpoint,
+        type: SdpType,
+        accepted: (SignalingState) -> List<JsepOutput>,
+    ): List<JsepOutput> {
         val from = signalingState
+        if (from is SignalingState.Closed) return listOf(JsepOutput.Rejected(JsepError.SessionClosed))
         val to =
             transitionTo(from, endpoint, type)
                 ?: return listOf(JsepOutput.Rejected(JsepError.InvalidTransition(from, endpoint, type)))
+        return accepted(to)
+    }
 
-        // Commit the description effect before announcing the transition.
-        when (type) {
-            // Rollback discards ALL pending changes, restoring both effective descriptions to the last
-            // stable snapshot (RFC 8829 §4.1.8.2) — not just the rolled-back side, and not to null.
-            SdpType.Rollback -> {
-                localDescription = currentLocal
-                remoteDescription = currentRemote
-            }
-            else -> if (endpoint == DescriptionEndpoint.Local) localDescription = description else remoteDescription = description
-        }
+    /** Publish an accepted event: move to [to], re-baseline on stable, and emit what actually changed. */
+    private fun commit(
+        to: SignalingState,
+        applied: JsepOutput.DescriptionApplied?,
+    ): List<JsepOutput> {
+        val from = signalingState
         signalingState = to
         // Reaching stable makes the now-applied effective pair the new stable baseline.
         if (to is SignalingState.Stable) {
             currentLocal = localDescription
             currentRemote = remoteDescription
         }
-
         val outputs = mutableListOf<JsepOutput>()
-        if (type != SdpType.Rollback) outputs += JsepOutput.DescriptionApplied(endpoint, type)
+        if (applied != null) outputs += applied
         if (to != from) outputs += JsepOutput.SignalingStateChanged(from, to)
         return outputs
     }

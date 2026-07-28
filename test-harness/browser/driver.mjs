@@ -39,6 +39,12 @@
 // browser engine does. Still no scenario logic: the round is read off the mailbox, not signalled, so a lane
 // that never restarts never reaches the code.
 //
+// Renegotiation, the other direction (issue #87): the page also RESTARTS. A `RESTART` record in the mailbox
+// — the second lifecycle word beside DONE — asks this engine for a fresh ICE generation, because no engine
+// restarts because somebody ELSE's carrier moved, and the `foreign-restart-<engine>` lanes exist to prove
+// OUR side detects and answers a restart a production engine originates. Everything the page does is still
+// W3C API only (`createOffer({ iceRestart: true })`), and it never learns why one was asked for.
+//
 // Diagnostics: on every run (pass OR fail) it logs the engine's own `getStats()` — a 2s-cadence + per-edge
 // timeline (`getStats-timeline:`) plus a readable digest (`stats-summary:`) — and rich per-message /
 // per-channel accounting (negotiated ordered/maxRetransmits, size, running count, bufferedAmount). All of it
@@ -310,6 +316,31 @@ async function answererInPage(cfg) {
   // their mailbox records by the same round, so the two halves line up without either announcing anything.
   const FIRST_RESTART_ROUND = 1;
 
+  // The mailbox slots of a PEER-originated round (issue #87), and the report token every answerer family
+  // prints when it has acted on the restart cue. run-interop.sh greps that token — a peer's own report is
+  // the only place a third-party engine speaks for itself.
+  const PEER_RESTART_SLOT = 'peer-restart';
+  const PEER_OFFER_SLOT = 'peer-offer';
+  const PEER_ANSWER_SLOT = 'peer-answer';
+  const PEER_RESTART_REPORT = 'peer-initiated restart: re-offered round';
+
+  // Restart ICE (RFC 8445 §9) and publish the resulting offer on the peer-originated slots.
+  // `createOffer({ iceRestart: true })` is the W3C way to ask for a fresh generation and is what all three
+  // engines implement (`restartIce()` is the newer spelling of the same thing) — so the offer carries an
+  // ufrag AND pwd our peer has never seen, which is exactly what it has to detect.
+  const originateRestart = async (round) => {
+    try {
+      const offer = await pc.createOffer({ iceRestart: true });
+      await pc.setLocalDescription(offer);
+      await put(PEER_OFFER_SLOT, round, pc.localDescription.sdp);
+    } catch (e) {
+      log(`FAILED to originate the restart offer (round ${round}):`, e.message);
+      return;
+    }
+    log(`${PEER_RESTART_REPORT} ${round}`);
+    snapshotStats('restarted');
+  };
+
   // Apply a later round's offer and publish the answer under the SAME record id, so both peers' rounds line
   // up in the mailbox. Deliberately the same three calls as round 0: a restart is a renegotiation of the
   // existing session, not a second session. Returns false — leaving the round unconsumed so the next poll
@@ -358,7 +389,31 @@ async function answererInPage(cfg) {
   (async () => {
     let seen = 0;
     let round = FIRST_RESTART_ROUND;
+    let peerRound = 0;
+    let cued = false;
     while (Date.now() < deadline && !sawDone) {
+      // The SECOND lifecycle word (issue #87): the offerer asks THIS page for a fresh ICE generation,
+      // because no engine restarts because somebody else's carrier moved. Read off the mailbox this loop is
+      // already polling, exactly as DONE is read off the control channel — the reflector acts on a lifecycle
+      // word without learning why one was sent, and a lane that never writes the slot never reaches it.
+      if (!cued && (await poll(PEER_RESTART_SLOT, 0)).length) {
+        cued = true;
+        await originateRestart(peerRound);
+      }
+      // …and the offerer's answer to our restart offer, which carries the credentials our checks have to
+      // authenticate against from here on.
+      if (cued && peerRound < 1) {
+        const answers = await poll(PEER_ANSWER_SLOT, peerRound);
+        if (answers.length) {
+          try {
+            await pc.setRemoteDescription({ type: 'answer', sdp: answers[0] });
+            log(`the offerer answered our restart offer (round ${peerRound})`);
+            peerRound += 1;
+          } catch (e) {
+            log(`FAILED setRemoteDescription(peer-answer ${peerRound}):`, e.message);
+          }
+        }
+      }
       // A further offer means the offerer restarted ICE (RFC 8445 §9 — its s8 phase): re-answer it on the
       // SAME RTCPeerConnection. A restart renegotiates ICE and nothing else, so the DTLS association and
       // every open data channel are untouched, and this side has nothing to do beyond answering again

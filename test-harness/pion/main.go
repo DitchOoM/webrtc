@@ -26,6 +26,12 @@
 // PeerConnection — which is what the `restart-pion` lane exists to prove a third-party stack does. Still no
 // scenario logic: the round is read off the mailbox, not signalled, so a lane that never restarts never
 // reaches the code.
+//
+// Renegotiation, the other direction (issue #87): it also RESTARTS. A `RESTART` record in the mailbox — the
+// second lifecycle word beside DONE — asks this peer for a fresh ICE generation, because no stack restarts
+// because somebody ELSE's carrier moved, and the `foreign-restart-pion` lane exists to prove OUR side
+// detects and answers a restart a production stack originates. Still no scenario logic: this peer never
+// learns why one was asked for.
 package main
 
 import (
@@ -218,8 +224,33 @@ func run() int {
 	go func() {
 		seen := 0
 		round := firstRestartRound
+		peerRound := 0
+		cued := false
 		zero := uint16(0)
 		for time.Now().Before(deadline) {
+			// The SECOND lifecycle word (issue #87): the offerer asks THIS peer for a fresh ICE generation,
+			// because no stack restarts because somebody else's carrier moved. Read off the mailbox this
+			// loop is already polling, exactly as DONE is read off the control channel — the reflector acts
+			// on a lifecycle word without learning why one was sent, and a lane that never writes the slot
+			// never reaches this code.
+			if !cued {
+				if cues := sigIn.poll(peerRestartSlot, 0); len(cues) > 0 {
+					cued = true
+					originateRestart(pc, outbox, peerRound)
+				}
+			}
+			// …and the offerer's answer to our restart offer, which carries the credentials our checklist
+			// has to authenticate against from here on.
+			if cued && peerRound < 1 {
+				if answers := sigIn.poll(peerAnswerSlot, peerRound); len(answers) > 0 {
+					if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answers[0]}); err != nil {
+						fmt.Printf("[pion] FAILED SetRemoteDescription(peer-answer %d): %v\n", peerRound, err)
+					} else {
+						fmt.Printf("[pion] the offerer answered our restart offer (round %d)\n", peerRound)
+						peerRound++
+					}
+				}
+			}
 			// A further offer means the offerer restarted ICE (RFC 8445 §9 — its s8 phase): re-answer it on
 			// the SAME PeerConnection. A restart renegotiates ICE and nothing else, so the DTLS association
 			// and every open data channel are untouched, and this side has nothing to do beyond answering
@@ -283,6 +314,34 @@ const doneMarker = "DONE"
 // offerer's s8 phase publishes round 1 after the harness moves it onto a second carrier. Both peers key
 // their mailbox records by the same round, so the two halves line up without either announcing anything.
 const firstRestartRound = 1
+
+// The mailbox slots of a PEER-originated round (issue #87), and the report token every answerer family
+// prints when it has acted on the restart cue. `run-interop.sh` greps that token — a peer's own report is
+// the only place a third-party stack speaks for itself. Keep them in step with the Kotlin `Slot` enum and
+// `PEER_RESTART_REPORT`.
+const (
+	peerRestartSlot   = "peer-restart"
+	peerOfferSlot     = "peer-offer"
+	peerAnswerSlot    = "peer-answer"
+	peerRestartReport = "peer-initiated restart: re-offered round"
+)
+
+// originateRestart restarts ICE (RFC 8445 §9) and publishes the resulting offer on the peer-originated
+// slots. `CreateOffer` with ICERestart asks Pion's ICE transport for a fresh generation, so the offer
+// carries an ufrag AND pwd the far side has never seen — which is exactly what it has to detect.
+func originateRestart(pc *webrtc.PeerConnection, outbox chan<- outRecord, round int) {
+	offer, err := pc.CreateOffer(&webrtc.OfferOptions{ICERestart: true})
+	if err != nil {
+		fmt.Printf("[pion] FAILED CreateOffer(iceRestart, round %d): %v\n", round, err)
+		return
+	}
+	if err := pc.SetLocalDescription(offer); err != nil {
+		fmt.Printf("[pion] FAILED SetLocalDescription(restart offer, round %d): %v\n", round, err)
+		return
+	}
+	outbox <- outRecord{slot: peerOfferSlot, recordId: round, payload: pc.LocalDescription().SDP}
+	fmt.Printf("[pion] %s %d\n", peerRestartReport, round)
+}
 
 // outRecord is one queued PUT, drained by the single goroutine that owns sigOut (see step 3).
 type outRecord struct {

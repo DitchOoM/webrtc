@@ -53,7 +53,9 @@ import kotlin.time.Instant
 //   s9/idle       the session is held open, silent, past a whole RFC 7675 revocation window — so the peer
 //                 has to be answering our consent checks, or the pair is declared dead and the phase fails
 //   s8/restart    the network moves under the session: the harness switches this peer onto a SECOND
-//                 carrier and ICE restarts (RFC 8445 §9) — the pair moves, the association does not
+//                 carrier and WE restart ICE (RFC 8445 §9) — the pair moves, the association does not
+//   s10/foreign   the same window from the other end: the PEER restarts and we have to DETECT it from its
+//                 offer alone (both credentials changed) and answer it — s8 and s10 are exclusive
 //   s6/close      the `DONE` handshake, then a graceful association SHUTDOWN (RFC 4960 §9.2)
 //
 // The ids are stable log labels, not a chronology: `s6` tears the association down, so it is by
@@ -76,6 +78,22 @@ internal const val DONE_MARKER: String = "DONE"
 /** The cue that tells our answerer to originate the reverse-direction channel (s5). Reflected verbatim. */
 internal const val REVERSE_CUE: String = "REVERSE"
 
+/**
+ * The second lifecycle word (s10, issue #87): the payload the offerer writes into [Slot.PeerRestart] to ask
+ * the ANSWERER for a fresh ICE generation. It rides the rendezvous mailbox rather than the control channel
+ * because by the time it is sent the carrier under the data path has already been switched away — a word on
+ * a channel whose path has just stopped working would arrive, if at all, only after the thing it asks for.
+ */
+internal const val PEER_RESTART_CUE: String = "RESTART"
+
+/**
+ * The line a peer prints when it has acted on [PEER_RESTART_CUE] and published its restart offer, followed
+ * by the round number. Every answerer family prints exactly this token — `run-interop.sh` greps it, the same
+ * discipline as s7's `dc close:` and s8's `re-answered round 1`, because a peer's own report is the only
+ * place a third-party stack speaks for itself.
+ */
+internal const val PEER_RESTART_REPORT: String = "peer-initiated restart: re-offered round"
+
 /** The label the ANSWERER opens for s5; the offerer waits for an incoming channel with exactly it. */
 internal const val REVERSE_LABEL: String = "s5/reverse"
 
@@ -94,6 +112,9 @@ private const val CLOSE_ONE_REOPEN_LABEL = "s7/reopen"
  * in the assertion is the control channel, open since before phase 0.
  */
 private const val RESTART_WITNESS_LABEL = "s8/witness"
+
+/** s10's witness channel — the same role [RESTART_WITNESS_LABEL] plays for s8, across the peer's restart. */
+private const val FOREIGN_WITNESS_LABEL = "s10/witness"
 
 /**
  * The line `run-interop.sh` watches for before it flips this peer onto the second carrier. The phase then
@@ -391,6 +412,23 @@ internal interface RestartSignaling {
      * the new generation went out through the new carrier.
      */
     suspend fun awaitCarrierPublicAddress(): Boolean
+
+    /**
+     * Publish the [PEER_RESTART_CUE] lifecycle word (s10) — the harness's only way to make a third-party
+     * stack restart, since none of them restarts on its own when somebody else's carrier moves.
+     */
+    suspend fun cuePeerRestart()
+
+    /**
+     * Suspend until the peer's OWN restart offer has been applied and answered, and judge both descriptions
+     * the round produced (see [ForeignRestartEvidence]). Null = no offer arrived in time, which is the
+     * plainest failure there is: the peer cannot originate a renegotiation at all.
+     *
+     * Awaited BEFORE reconvergence for the same reason [awaitPeerReanswer] is: "never reconverged" is what a
+     * peer that never re-offered, a peer that re-offered without restarting, and a side that failed to
+     * detect a restart all look like from the pair alone.
+     */
+    suspend fun awaitPeerRestartRound(): ForeignRestartEvidence?
 }
 
 /** A phase result before it is stamped with its elapsed time. */
@@ -438,8 +476,16 @@ internal suspend fun runSemanticsPhases(
             // association, so nothing can follow it. See the id note in this file's header. It is also the
             // right place for it independently — it is the one phase that BREAKS the path it runs on, so
             // every other property is proven before the network moves.
-            if (cfg.iceRestart != IceRestartPhase.Off) {
-                add(Phase("s8", RESTART_PHASE_TIMEOUT) { phaseIceRestart(pc, ctl, restart, cfg.iceRestart) })
+            // s8 and s10 are the same window from the two ends of it, so a lane runs exactly one of them:
+            // both break the path they stand on, and the second would have to prove its reconvergence
+            // against a pair the first had just moved. Which one runs is the config's [IceRestartPhase],
+            // named case by case so a new direction is a compile error here rather than a silent omission.
+            when (val restartPhase = cfg.iceRestart) {
+                IceRestartPhase.Off -> Unit
+                IceRestartPhase.AnyNewPath, is IceRestartPhase.ExpectCarrier ->
+                    add(Phase("s8", RESTART_PHASE_TIMEOUT) { phaseIceRestart(pc, ctl, restart, restartPhase) })
+                is IceRestartPhase.ForeignInitiated ->
+                    add(Phase("s10", RESTART_PHASE_TIMEOUT) { phaseForeignRestart(pc, ctl, restart, restartPhase) })
             }
         }
 
@@ -1004,7 +1050,9 @@ private suspend fun phaseIceRestart(
     return when (expectation) {
         // Unreachable: the phase is only in the sequence when the config asked for it. Named rather than
         // `else`-d so adding a case is a compile error here instead of a silent pass.
-        IceRestartPhase.Off ->
+        // Unreachable: the phase list gives a foreign-initiated lane s10, never this phase. Named rather
+        // than `else`-d for the same reason [Off] is.
+        IceRestartPhase.Off, is IceRestartPhase.ForeignInitiated ->
             Verdict(false, "s8 ran with the restart phase disabled — the phase list and the config disagree")
         IceRestartPhase.AnyNewPath ->
             Verdict(true, "$moved; $survived")
@@ -1019,6 +1067,140 @@ private suspend fun phaseIceRestart(
                 )
             }
     }
+}
+
+// ── s10: an ICE restart the FOREIGN peer originates, which we have to detect and answer (issue #87) ──
+
+/**
+ * The same window as s8, from the other end of it: the network moves under a live session and the **peer**
+ * is the one that restarts ICE. s8 proves foreign stacks *answer* a restart we initiate; this proves the
+ * unproven direction — that our JSEP detects a restart somebody else's stack originates and completes it.
+ *
+ * Our detection rule (see `NativePeerConnection.peerRestarted`) is "an offer whose ufrag **and** pwd both
+ * changed", and until this phase it had only ever been tripped by SDP we generated ourselves. What a
+ * production stack's re-offer does differently — attribute ordering, `a=setup` on a re-offer, a bundled
+ * group restated, `a=tls-id` — is precisely the risk, and none of it is visible to a fixture whose peer is
+ * another copy of us.
+ *
+ * It runs on the same `carrier-switch` topology as s8 and the carrier is still peer A's — ours. So the
+ * network really does move under the session, the reconvergence really is a re-route rather than a change
+ * of port, and the only thing that differs from s8 is who asks for the new generation. Since no third-party
+ * stack restarts because *somebody else's* carrier moved, the ask is explicit: [RestartSignaling.cuePeerRestart]
+ * writes the [PEER_RESTART_CUE] lifecycle word into the mailbox the reflector is already polling.
+ *
+ * Four properties, the middle two being the ones this phase exists for:
+ *
+ *  1. **the association is untouched** — the control channel and [FOREIGN_WITNESS_LABEL], opened just before
+ *     the switch, still round-trip afterwards on the same stream ids (RFC 8445 §9's continuity claim).
+ *  2. **the peer really restarted** — read off its own offer against its round-0 answer: both ICE
+ *     credentials replaced, DTLS fingerprint kept (RFC 8445 §9 + RFC 8842 §5.5). Without it the lane would
+ *     pass against a peer that merely re-offered what it already had, proving nothing about detection.
+ *  3. **WE detected it** — read off the answer our JSEP produced: both of OUR credentials replaced and our
+ *     fingerprint kept. A stack that had not recognised the offer as a restart answers on the credentials it
+ *     already had, and every check it then sends is discarded by an agent that no longer knows that password.
+ *     This is the direct statement, and it is observable in nothing else we publish.
+ *  4. **traffic moved to the new generation** — the session reconverges on a different pair, and the
+ *     re-gather reaches the new carrier's public address, which no earlier generation could have learned.
+ *
+ * The deterministic sibling is
+ * `PeerConnectionRestartTest.we_answer_the_peers_restart_offer_without_re_deciding_our_dtls_role` — which is
+ * where the library gap this phase found is pinned (see the PR): answering a peer's `actpass` re-offer used
+ * to re-run the initial-offer rule and claim the DTLS role the association had already given away.
+ */
+private suspend fun phaseForeignRestart(
+    pc: NativePeerConnection,
+    ctl: ControlChannel,
+    signaling: RestartSignaling,
+    expectation: IceRestartPhase.ForeignInitiated,
+): Verdict {
+    val before =
+        livePair(pc.connectionState.value)
+            ?: return Verdict(false, "the session is not riding a known pair (${pc.connectionState.value}) — there is nothing to restart from")
+    val ctlStream = ctl.streamId
+
+    val witness = pc.createDataChannel(DataChannelConfig(label = FOREIGN_WITNESS_LABEL))
+    val witnessStream = witness.id
+    if (!echoesBack(witness, "s10w#0")) {
+        return Verdict(false, "\"$FOREIGN_WITNESS_LABEL\" (stream $witnessStream) never echoed BEFORE the restart — nothing live to carry across it")
+    }
+
+    // Same cue line s8 prints, so the orchestrator's carrier-switch watcher is one mechanism serving both
+    // directions rather than two that can drift apart.
+    println("[harness] $CARRIER_SWITCH_CUE (currently riding ${describe(before)})")
+    if (!signaling.awaitCarrierSwitch()) {
+        return Verdict(false, "the harness never reported a carrier switch — the peer was never moved, so a restart would reconverge on the same path")
+    }
+
+    signaling.cuePeerRestart()
+
+    val evidence =
+        signaling.awaitPeerRestartRound()
+            ?: return Verdict(
+                false,
+                "the peer never re-offered after the restart cue — it did not originate a renegotiation at all, " +
+                    "so there was nothing for us to detect",
+            )
+    // (2) then (3): the peer's own description first, because a peer that never restarted makes our side's
+    // behaviour unjudgeable rather than wrong — there was no restart to miss.
+    when (val peer = evidence.peerReoffer) {
+        is ReanswerVerdict.Restarted -> Unit
+        is ReanswerVerdict.TransportRebuilt,
+        is ReanswerVerdict.NotRestarted,
+        is ReanswerVerdict.Unreadable,
+        -> return Verdict(false, peer.detail(RestartWitness.PeerReoffer))
+    }
+    when (val ours = evidence.ourAnswer) {
+        is ReanswerVerdict.Restarted -> Unit
+        is ReanswerVerdict.TransportRebuilt,
+        is ReanswerVerdict.NotRestarted,
+        is ReanswerVerdict.Unreadable,
+        -> return Verdict(false, ours.detail(RestartWitness.OurAnswer))
+    }
+
+    val reconverged =
+        withTimeoutOrNull(RESTART_CONVERGE_WAIT) {
+            pc.connectionState.first { it is PeerConnectionState.Connected && livePair(it) != before }
+        } ?: return Verdict(
+            false,
+            "we answered the peer's restart offer with a fresh generation, but the session never reconverged on a new " +
+                "pair within $RESTART_CONVERGE_WAIT — it is ${pc.connectionState.value}, still on ${describe(before)}",
+        )
+    val after =
+        livePair(reconverged)
+            ?: return Verdict(false, "reconverged to $reconverged, which carries no pair to compare")
+
+    // (1): ids first — a renumbered stream is a rebuilt association, and saying so is more useful than the
+    // timeout the round trip would otherwise become.
+    if (ctl.streamId != ctlStream) {
+        return Verdict(false, "the control channel moved from stream $ctlStream to ${ctl.streamId} across the peer's restart — the association was rebuilt, not restarted")
+    }
+    if (witness.id != witnessStream) {
+        return Verdict(false, "\"$FOREIGN_WITNESS_LABEL\" moved from stream $witnessStream to ${witness.id} across the peer's restart — the association was rebuilt, not restarted")
+    }
+    if (!ctl.exchange("ALIVE s10", "ALIVE s10")) {
+        return Verdict(false, "the control channel (stream $ctlStream) stopped round-tripping across the peer's restart — the association did not survive it")
+    }
+    if (!echoesBack(witness, "s10w#1")) {
+        return Verdict(false, "\"$FOREIGN_WITNESS_LABEL\" (stream $witnessStream) stopped echoing across the peer's restart, though the control channel did not")
+    }
+
+    // (4): the pair moved, and our re-gathered generation is reachable at the carrier the harness put us on.
+    if (!signaling.awaitCarrierPublicAddress()) {
+        return Verdict(
+            false,
+            "the session reconverged onto ${describe(after)}, but the generation we opened in answer to the peer's " +
+                "restart never learned a candidate at the carrier ${expectation.carrierIp} the harness switched us " +
+                "onto — our re-gather did not follow the route change",
+        )
+    }
+    return Verdict(
+        true,
+        "the peer restarted ICE and we detected it: ${evidence.peerReoffer.detail(RestartWitness.PeerReoffer)}; " +
+            "${evidence.ourAnswer.detail(RestartWitness.OurAnswer)}; the session reconverged onto ${describe(after)} " +
+            "(was ${describe(before)}), reachable at the new carrier ${expectation.carrierIp}, and both channels kept " +
+            "their streams ($ctlStream, $witnessStream) and still round-trip — so the association survived on BOTH " +
+            "sides, since a peer that had torn its own down could not echo",
+    )
 }
 
 /**

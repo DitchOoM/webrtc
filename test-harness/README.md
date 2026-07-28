@@ -62,7 +62,7 @@ NATs (`cgnat_a`/`cgnat_b`/`cgnat`) are the same `nat/` image, wired `car→pub` 
 | **cgnat** (NAT444) | per-side `cgnat_a` + `cgnat_b`, distinct public IPs, port-restricted cone | a genuine double NAT; the composed cone mapping stays consistent, so it traverses via `srflx` (relay is the `policy=all` safety net) |
 | **hairpin** | ONE shared `cgnat` both CPEs route through, symmetric | both peers share a single external identity; stock netfilter won't hairpin `car→car`, so — like `symmetric-relay` — traversal must ride the **coturn TURN relay**. To *prove* that (not just hope for it), this lane pins **`ice_policy=relay`** (like `relay-only`), so only relay candidates are gathered and a green run cannot have used a direct/srflx path; `run_scenario` additionally asserts the offerer's selected pair is a relay pair from its `Connected` trace |
 
-### The carrier switch — the `carrier-switch` topology (ICE restart)
+### The carrier switch — the `carrier-switch` / `foreign-restart` topologies (ICE restart)
 
 The lanes above all give `peer_a` exactly one way off its LAN. This one gives it **two**: `nat_a2` is a
 second, fully independent NAT gateway on `lan_a` with its own public IP (`172.30.0.33`). The peer
@@ -71,26 +71,78 @@ so the public address every remote candidate is aimed at stops working under a l
 does when a phone walks off Wi-Fi onto cellular. Note this is not a NAT *layer* like `cgnat`: nothing
 routes through `nat_a2` on the way somewhere else, it is a sibling of `nat_a`.
 
-The switch is **observed, never timed**. The offerer prints a cue when it reaches `s8` and then parks;
-`run-interop.sh` watches for that cue, does the `ip route replace` with the same `docker compose exec` the
-NAT/netem plumbing already uses, and publishes one record into the shared rendezvous mailbox — the only
-channel there is into a running peer, and one it is already polling. Neither side ever sleeps.
+The switch is **observed, never timed**. The offerer prints a cue when it reaches its restart phase and
+then parks; `run-interop.sh` watches for that cue, does the `ip route replace` with the same
+`docker compose exec` the NAT/netem plumbing already uses, and publishes one record into the shared
+rendezvous mailbox — the only channel there is into a running peer, and one it is already polling. Neither
+side ever sleeps.
 
-Six lanes run it: **`restart-native`** (native ⇄ native), **`jvm-restart`** (JVM offerer ⇄ native), and —
-since issue #71 — one per foreign answerer family that can complete one: **`restart-pion`**,
+**Two topologies, one network event, opposite directions of the renegotiation.** The compose model is
+identical (`nat_a2` and the same route flip); what differs is who asks for the new ICE generation:
+
+| topo | phase | who restarts | what it proves |
+|---|---|---|---|
+| `carrier-switch` | `s8` | **we** do (`restartIce()` → re-offer) | a production stack correctly **answers** a restart we initiate |
+| `foreign-restart` | `s10` | **the peer** does | **we** correctly **detect and answer** a restart a production stack initiates |
+
+Six lanes run `carrier-switch`: **`restart-native`** (native ⇄ native), **`jvm-restart`** (JVM offerer ⇄
+native), and — since issue #71 — one per foreign answerer family that can complete one: **`restart-pion`**,
 **`restart-chrome`**, **`restart-firefox`**, **`restart-webkit`**. Foreign peers used to be out of scope by
 construction, because a dumb reflector never re-answered and would leave the re-offer unanswered; each
 family now re-answers a later round, which is a mailbox read and not scenario logic (§4 of the semantics
-design doc). All six are v4-only (a v6 analog needs a second v6 router, and "our public address changed"
-is a v4 mapping statement), and all six **gate**.
+design doc).
 
-What the foreign lanes add over ours is the one thing our own answerer cannot testify to: whether a
-*production* stack, handed a restart offer, replaces **both** ICE credentials and **keeps** its DTLS
-fingerprint (RFC 8842 §5.5) — i.e. restarts the session rather than rebuilding it. `s8` reads that off the
-peer's own re-answer, and `run-interop.sh` separately greps the answerer's log for its own
+Five lanes run `foreign-restart` (issue #87): **`foreign-restart-native`**, **`foreign-restart-pion`**,
+**`foreign-restart-chrome`**, **`foreign-restart-firefox`**, **`foreign-restart-webkit`**. All eleven are
+v4-only (a v6 analog needs a second v6 router, and "our public address changed" is a v4 mapping statement),
+and all eleven **gate**.
+
+What the foreign `carrier-switch` lanes add over ours is the one thing our own answerer cannot testify to:
+whether a *production* stack, handed a restart offer, replaces **both** ICE credentials and **keeps** its
+DTLS fingerprint (RFC 8842 §5.5) — i.e. restarts the session rather than rebuilding it. `s8` reads that off
+the peer's own re-answer, and `run-interop.sh` separately greps the answerer's log for its own
 `re-answered round 1` report, the same way `s7` greps a browser's `dc close:`.
 
-#### Interop finding: werift does not complete a peer-initiated ICE restart
+#### The reverse direction — `foreign-restart` and the second lifecycle word
+
+Our detection rule is "a remote **offer** whose `a=ice-ufrag` *and* `a=ice-pwd` both changed" (RFC 8445 §9,
+via `NativePeerConnection.peerRestarted`). Until issue #87 it had only ever been tripped by SDP we
+generated ourselves — `PeerConnectionRestartTest` and the `restart-native` lane — so what a production
+stack's re-offer does differently was untested by construction.
+
+Three pieces this needed that `carrier-switch` did not:
+
+* **A trigger.** No third-party stack restarts ICE because *somebody else's* carrier moved: a browser
+  restarts when the app calls `restartIce()`, Pion and werift when their app does, and none of them has an
+  app here beyond the reflector. So the reflector contract gains a **second lifecycle word**, `RESTART`,
+  alongside `DONE` — read off the rendezvous mailbox the reflector is already polling, acted on by asking
+  its own stack for a fresh generation and re-offering. It never learns *why*, never branches on what a
+  restart means, and on a lane that never writes the slot the code is not reached. **The word, not a second
+  carrier**: a `nat_b2` would have been more faithful about *why* a peer restarts, but it would still have
+  needed the word (nothing in Pion or a browser page watches its own routing table), so it buys a second NAT
+  and no additional proof — while the word on the existing topology keeps the network event real, the
+  carrier assertion intact, and the reflector dumb. It rides the **mailbox** rather than the control
+  channel for a load-bearing reason: by the time it is sent, the carrier under the data path has already
+  been switched away, so a word on that channel would arrive — if at all — after the thing it asks for.
+* **Mailbox slots.** `offer`/`answer` are the rounds *we* originate; a peer-originated round would collide
+  on record ids, so it gets its own `peer-offer` / `peer-answer` pair (plus `peer-restart` for the word).
+  Our offerer's single-consumer poll loop reads them, in the same loop and ahead of the peer's candidates —
+  a trickled candidate carries no `ufrag` (RFC 8838 §3.1), so the round that renames the peer's generation
+  must be applied before the candidates belonging to it.
+* **Our offerer answering an incoming offer**, a role it has never played here. It could not, and finding
+  that is worth more than the lane: `createAnswer()` re-ran the *initial*-offer rule (`actpass` ⇒ we are
+  active) on a re-offer, claiming the DTLS client role the association had already given to the peer, and
+  `resolveRole` correctly refused it with `RoleChangeOnRenegotiation`. Fixed in the same PR, with its
+  deterministic fixture — see `PeerConnectionRestartTest.we_answer_the_peers_restart_offer_without_re_deciding_our_dtls_role`.
+
+`s10` asserts four things, and the two in the middle are the point: the peer's own offer really carried a
+restart (both credentials replaced, fingerprint kept), **our** answer opened a fresh local generation (both
+of *our* credentials replaced, our fingerprint kept — the direct statement that the detection rule fired,
+observable in nothing else we publish), the association survived on both sides on the same stream ids, and
+the re-gather reached the new carrier's public address. `run-interop.sh` separately greps the answerer's own
+`peer-initiated restart: re-offered round 0`, which is the half only the restarting peer can report.
+
+#### Interop finding: werift does not complete an ICE restart in *either* direction
 
 There is no `restart-node` lane, and that is a result rather than an omission. **werift** gets most of the
 way: `RTCIceTransport.setRemoteParams` sees our changed credentials and calls `restart()`, which tears the
@@ -117,6 +169,27 @@ to assert only "werift emitted a well-formed re-answer", which is a statement ab
 about its stack. The werift reflector re-answers anyway, exactly like the other families, so adding the
 lane is a one-line change the day this is fixed upstream.
 
+**And it cannot originate one either — which corrects the diagnosis above** (measured while building the
+`foreign-restart` lanes, issue #87). The `connect()` asymmetry predicted that werift *as the offerer*
+would be fine, since `setRemoteDescription` for an **answer** is exactly the call site that starts a
+transport. It is not. Cued with `RESTART`, werift does everything visible right: `createOffer({ iceRestart:
+true })` reaches `secureManager.restartIce()`, it publishes a well-formed restart offer (new `ice-ufrag`
+`7fc1`, new `ice-pwd`, unchanged fingerprint), it takes a **fresh TURN allocation** on the new generation
+and trickles it (`… typ relay … generation 1 ufrag 7fc1`), and it applies our answer. Then it sends
+**nothing**:
+
+| STUN `USERNAME`, generation 0 (`C9f0`/`6772`) → generation 1 (`7fc1`/`pqrs`) | at coturn | at `nat_a2` (ours) | at `nat_b` (werift's) |
+|---|---|---|---|
+| werift's checks → us, generation 0 | 55 | — | 75 |
+| our checks → werift, generation 1 | 21 | 28 | 0 |
+| **werift's checks → us, generation 1** | **0** | **0** | **0** |
+
+So the defect is not the answerer-path call-site asymmetry; it is that werift does not run connectivity
+checks on a restarted generation *at all*. `s10` fails there exactly as `s8` did — the phase reports "we
+answered the peer's restart offer with a fresh generation, but the session never reconverged" — so there is
+no `foreign-restart-node` lane either, and for the same honest reason. Both directions are one upstream fix
+away from a one-line lane addition.
+
 **IPv6 / dual-stack: the *stack* now supports it; the *real-network harness lanes* are still IPv4-only.**
 As of Phase 1.5-A (PR #37), webrtc-ice does full IPv6 / dual-stack gathering, un-fenced address conversion,
 and RFC 8445 §5.1.2 → RFC 6724 v6 candidate priority — **exercised in CI** by the deterministic
@@ -140,11 +213,12 @@ sym×port lane, an explicit `relay-only` lane, an `impaired` (netem) lane, the t
 (NAT444) lanes — **`cgnat`** (double NAT) and **`hairpin`** (shared carrier NAT → relay; above) — the
 native-offerer interop lanes — **`pion-interop`**, **`chrome-interop`**, **`firefox-interop`**,
 **`webkit-interop`** — and the **JVM-offerer** lanes — **`jvm-native`**, **`jvm-pion`**, **`jvm-chrome`**,
-**`jvm-firefox`**, **`jvm-webkit`** (below) — and the six ICE-restart lanes, **`restart-native`**,
-**`jvm-restart`** and **`restart-{pion,chrome,firefox,webkit}`** (above). Each row is
+**`jvm-firefox`**, **`jvm-webkit`** (below) — the six ICE-restart lanes, **`restart-native`**,
+**`jvm-restart`** and **`restart-{pion,chrome,firefox,webkit}`**, and the five **foreign-initiated**
+restart lanes, **`foreign-restart-{native,pion,chrome,firefox,webkit}`** (both above). Each row is
 `name | nat_a | nat_b | policy | netem | a_impl | b_impl | topo`, where `a_impl` (offerer) ∈ `native|jvm`,
-`b_impl` (answerer) ∈ `native|pion|chrome|firefox|webkit`, and `topo` (the extra network dimension) ∈
-`single|cgnat|hairpin|carrier-switch` (defaults to `single`). A scenario **passes** iff both peers exit `0` — and
+`b_impl` (answerer) ∈ `native|pion|node|chrome|firefox|webkit`, and `topo` (the extra network dimension) ∈
+`single|cgnat|hairpin|carrier-switch|foreign-restart` (defaults to `single`). A scenario **passes** iff both peers exit `0` — and
 each exits `0` only after it CONNECTED *and* the `ping`/`pong` crossed the encrypted data channel. Every
 run tears the whole stack down (containers + networks + volumes) on exit.
 
@@ -170,11 +244,13 @@ comes for free on every existing lane and CI grows no jobs. Design note: `docs/D
 | `s7` | `s7/victim`, `s7/keep`, `s7/reopen` | **per-channel close** (RFC 8831 §6.7 = an RFC 6525 stream reset, *not* a shutdown): one channel is closed mid-session and (a) its **neighbour keeps echoing**, (b) the **peer's channel closed** — proven by the victim's stream id becoming reusable, which our stack only does once **both** directions have been reset, the second being the peer's own reset, and (c) the **recycled id works**: a new channel on it echoes, so the peer's per-stream SSN state really was cleared |
 | `s9` | `harness` | **RFC 7675 consent freshness**: the session is held **silent** for longer than a whole revocation window, then still round-trips. Nothing but the consent exchange keeps the pair (and its NAT mapping) alive across the hold — the dcSCTP subset has no HEARTBEAT on purpose, because ICE consent owns path liveness — so a peer that does not answer our §4.1 checks revokes and the phase reports it. Consent timing is a `PeerConnectionConfig.iceConfig` seam, so `run-interop.sh` compresses the window (2 s / 8 s) and a 10 s hold outlasts it; the phase **fails itself** if the hold does not, rather than passing vacuously. It asks nothing of the answerer but silence, so it runs on every lane |
 | `s8` | `harness`, `s8/witness` | **ICE restart across a carrier switch** (RFC 8445 §9): the harness moves the offerer onto a second NAT mid-session, and the session (a) **reconverges on a new pair**, (b) is **reachable at the new carrier** — proven by the restarted generation gathering a candidate at that public address, which no earlier generation could have learned, (c) **keeps its association**: the control channel and a channel opened just before the switch both still round-trip, **on the same stream ids**, so nothing was closed and nothing was renumbered — and since a peer that had torn its own association down could not echo, that holds on both sides; and (d) **the peer really restarted**, read off its own re-answer: both ICE credentials replaced and the DTLS fingerprint unchanged (RFC 8842 §5.5). (d) is what separates a restart from a peer that reconnected, or that answered without restarting at all — outcomes (a)–(c) can all be satisfied on a forgiving path by a peer doing the wrong thing, which is precisely the risk when the peer is somebody else's stack. Carrier-switch lanes only |
+| `s10` | `harness`, `s10/witness` | **the same carrier switch with the restart coming the other way** (issue #87): the peer is cued with the `RESTART` lifecycle word, restarts ICE and re-offers, and **we** have to detect that from its offer alone and answer it. It asserts (a) **the peer really restarted** — its own offer replaced both ICE credentials and kept its fingerprint, so the lane is not passing against a repeated offer; (b) **we detected it** — *our* answer replaced *our* credentials and kept *our* fingerprint, which is the direct statement that RFC 8445 §9's both-changed rule fired and is observable in nothing else we publish; (c) **the association survived on both sides**, same stream ids, both channels still round-tripping; and (d) **traffic moved to the new generation** — a different pair, reachable at the new carrier's public address, which no earlier generation could have learned. `s8` and `s10` are exclusive: a lane restarts in one direction. Foreign-restart lanes only |
 | `s6` | `harness` | the `DONE` handshake, then a **graceful association SHUTDOWN** (RFC 4960 §9.2) — the peer sees a clean close, not a vanished association |
 
 The ids are stable log labels, not a chronology: `s6` ends the association, so it necessarily runs **last**
 and every phase added after it sorts before it — `s9` is the newest phase, not the final one, and it runs
-before `s8`, which is the one that deliberately breaks the path it is standing on.
+before `s8`/`s10`, whichever of the two the lane has, since those are the phases that deliberately break the
+path they are standing on.
 
 **The answerer stays dumb in every family.** Its whole contract is: *for every incoming channel, echo every
 message back on that channel, verbatim; exit on `DONE`* (with `ping`→`pong` kept as the one historical

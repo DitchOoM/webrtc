@@ -29,9 +29,17 @@
 //
 // Renegotiation (issue #71): it also RE-ANSWERS. A second offer in the mailbox means the offerer restarted
 // ICE (RFC 8445 §9) after the harness moved it onto another carrier, and this peer answers it on the same
-// connection — which is what the `restart-node` lane exists to prove a third-party stack does. Still no
-// scenario logic: the round is read off the mailbox, not signalled, so a lane that never restarts never
-// reaches the code.
+// connection. Still no scenario logic: the round is read off the mailbox, not signalled, so a lane that
+// never restarts never reaches the code.
+//
+// Renegotiation, the other direction (issue #87): it also RESTARTS, on the `RESTART` lifecycle word — the
+// second word beside DONE — because no stack restarts because somebody ELSE's carrier moved.
+//
+// werift has NO restart lane in EITHER direction, and both are measurements rather than omissions (see
+// test-harness/README.md). It re-answers correctly, and it originates correctly — fresh credentials, fresh
+// TURN allocation, unchanged fingerprint — and then, either way, sends ZERO connectivity checks on the new
+// generation, so the session does not survive the restart. Both clauses are implemented here anyway, so
+// each lane is a one-line addition the day this is fixed upstream.
 
 import { RTCPeerConnection } from "werift";
 import { openSignaling } from "./signaling.mjs";
@@ -207,7 +215,33 @@ async function main() {
   (async () => {
     let seen = 0;
     let round = FIRST_RESTART_ROUND;
+    let peerRound = 0;
+    let cued = false;
     while (Date.now() < deadline) {
+      // The SECOND lifecycle word (issue #87): the offerer asks THIS peer for a fresh ICE generation,
+      // because no stack restarts because somebody else's carrier moved. Read off the mailbox this loop is
+      // already polling, exactly as DONE is read off the control channel — the reflector acts on a lifecycle
+      // word without learning why one was sent, and a lane that never writes the slot never reaches it.
+      if (!cued && (await sigIn.poll(PEER_RESTART_SLOT, 0)).length > 0) {
+        cued = true;
+        await originateRestart(pc, outbox, peerRound);
+      }
+      // …and the offerer's answer to our restart offer. It is also what makes werift RUN the new
+      // generation's connectivity checks: `connect()` is reached from setRemoteDescription for an ANSWER,
+      // i.e. only when werift is the offerer — which is precisely why it could not complete the restart in
+      // the other direction (see the harness README's carrier-switch section).
+      if (cued && peerRound < 1) {
+        const answers = await sigIn.poll(PEER_ANSWER_SLOT, peerRound);
+        if (answers.length > 0) {
+          try {
+            await pc.setRemoteDescription({ type: "answer", sdp: answers[0] });
+            console.log(`[node] the offerer answered our restart offer (round ${peerRound})`);
+            peerRound += 1;
+          } catch (e) {
+            console.log(`[node] FAILED setRemoteDescription(peer-answer ${peerRound}): ${e}`);
+          }
+        }
+      }
       // A further offer means the offerer restarted ICE (RFC 8445 §9 — its s8 phase): re-answer it on the
       // SAME peer connection. A restart renegotiates ICE and nothing else, so the DTLS association and
       // every open data channel are untouched, and this side has nothing to do beyond answering again
@@ -268,6 +302,30 @@ const DONE_MARKER = "DONE";
 // offerer's s8 phase publishes round 1 after the harness moves it onto a second carrier. Both peers key
 // their mailbox records by the same round, so the two halves line up without either announcing anything.
 const FIRST_RESTART_ROUND = 1;
+
+// The mailbox slots of a PEER-originated round (issue #87), and the report token every answerer family
+// prints when it has acted on the restart cue. run-interop.sh greps that token — a peer's own report is the
+// only place a third-party stack speaks for itself. Keep in step with the Kotlin `Slot` + PEER_RESTART_REPORT.
+const PEER_RESTART_SLOT = "peer-restart";
+const PEER_OFFER_SLOT = "peer-offer";
+const PEER_ANSWER_SLOT = "peer-answer";
+const PEER_RESTART_REPORT = "peer-initiated restart: re-offered round";
+
+// originateRestart restarts ICE (RFC 8445 §9) and queues the resulting offer on the peer-originated slots.
+// werift's createOffer({ iceRestart: true }) calls secureManager.restartIce(), which restarts each ICE
+// transport — so the offer carries an ufrag AND pwd the far side has never seen, which is what it has to
+// detect.
+async function originateRestart(pc, outbox, round) {
+  try {
+    const offer = await pc.createOffer({ iceRestart: true });
+    await pc.setLocalDescription(offer);
+    outbox.push({ slot: PEER_OFFER_SLOT, id: round, payload: pc.localDescription.sdp });
+  } catch (e) {
+    console.log(`[node] FAILED to originate the restart offer (round ${round}): ${e}`);
+    return;
+  }
+  console.log(`[node] ${PEER_RESTART_REPORT} ${round}`);
+}
 
 // reanswer applies a later round's offer and queues the answer under the SAME record id, so both peers'
 // rounds line up in the mailbox. Deliberately the same three calls as round 0: a restart is a renegotiation

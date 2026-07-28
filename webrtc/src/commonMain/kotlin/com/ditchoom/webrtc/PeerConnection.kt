@@ -402,9 +402,28 @@ public class NativePeerConnection(
             // The answerer chooses the a=setup that complements the offer's (RFC 8842 §5.1.2): an
             // actpass/passive offer → we are active (DTLS/SCTP client); an active offer → we are passive
             // (server). The chosen setup goes into the answer AND fixes our role.
+            //
+            // …with one exception, which only a SUBSEQUENT offer can reach: `actpass` leaves the choice to
+            // the answerer, and once this association has pinned a role there is no choice left to make.
+            // RFC 8842 §5.5 has an offerer that wants to keep its DTLS association re-offer `actpass` —
+            // continuity is signaled by the UNCHANGED fingerprint, not by the setup value (it is exactly
+            // what our own [createOffer] does) — so re-running the initial-offer rule on one would answer
+            // `active` and claim a role the association already gave away, which [resolveRole] then
+            // (correctly) refuses as a role change. RFC 8445 §9 is explicit that an ICE restart does not
+            // redetermine roles; keeping ours is what makes a PEER-INITIATED restart answerable at all.
+            // An offer that explicitly declares `active`/`passive` is untouched by this — that peer is
+            // asking for a specific role rather than leaving it open, and a flip there is still refused.
             val ourSetup =
                 when (val declared = remoteSetup) {
-                    is RemoteSetup.Declared -> if (declared.role == SetupRole.Active) SetupRole.Passive else SetupRole.Active
+                    is RemoteSetup.Declared ->
+                        when (declared.role) {
+                            SetupRole.Active -> SetupRole.Passive
+                            SetupRole.Passive -> SetupRole.Active
+                            SetupRole.ActPass -> pinnedSetup() ?: SetupRole.Active
+                            // `holdconn` names an offerer that has not chosen yet (RFC 4145 §4); there is
+                            // nothing to complement, so it falls to the same default an undeclared setup does.
+                            SetupRole.HoldConn -> SetupRole.Active
+                        }
                     RemoteSetup.NotDeclared -> SetupRole.Active
                 }
             resolveRole(ourSetup == SetupRole.Active)
@@ -571,6 +590,21 @@ public class NativePeerConnection(
         when (val declared = remoteSetup) {
             is RemoteSetup.Declared -> declared.role == SetupRole.Active
             RemoteSetup.NotDeclared -> false
+        }
+
+    /**
+     * The `a=setup` value that names the role this association has ALREADY pinned, or null when no role has
+     * been resolved yet — a genuine absence (the first negotiation), never an error or a default. Read by
+     * [createAnswer] to keep its role across a renegotiation whose offer left the choice open.
+     */
+    private fun pinnedSetup(): SetupRole? =
+        if (roleResolved.isCompleted && !roleResolved.isCancelled) {
+            when (roleResolved.getCompleted()) {
+                DtlsRole.Client -> SetupRole.Active
+                DtlsRole.Server -> SetupRole.Passive
+            }
+        } else {
+            null
         }
 
     /**

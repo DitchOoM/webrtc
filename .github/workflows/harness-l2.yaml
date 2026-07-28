@@ -122,11 +122,12 @@ jobs:
           - { runner: ubuntu-24.04-arm, name: Arm64, konan: linuxArm64 }
         ipfamily: [v4, v6, dual]
     runs-on: ${{ matrix.arch.runner }}
-    # 15 scenarios now (7 NAT profiles + pion + node + jvm-native + jvm-pion + jvm-node + firewall-relay6 +
-    # the two carrier-switch ICE-restart lanes, restart-native/jvm-restart — v4 only, family-skipped
-    # elsewhere), each a fresh stack. node-interop/jvm-node are fast (Node + one npm dep, no browser engine
-    # download); the restart lanes cost one extra offer/answer round each.
-    timeout-minutes: 45
+    # 19 scenarios now (7 NAT profiles + pion + node + jvm-native + jvm-pion + jvm-node + firewall-relay6 +
+    # the carrier-switch ICE-restart lanes: restart-native/jvm-restart/restart-pion, and the foreign-initiated
+    # direction foreign-restart-{native,pion,node} — all v4 only, family-skipped elsewhere), each a fresh
+    # stack. node-interop/jvm-node are fast (Node + one npm dep, no browser engine download); the restart
+    # lanes cost one extra offer/answer round each.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 
@@ -180,7 +181,7 @@ jobs:
         env:
           PEER_KEXE: "webrtc-harness-endpoint/build/bin/${{ matrix.arch.konan }}/peerReleaseExecutable/peer.kexe"
           PEER_JAR: "webrtc-harness-endpoint/build/libs/webrtc-harness-peer-all.jar"
-          HARNESS_SKIP: "chrome-interop firefox-interop webkit-interop jvm-chrome jvm-firefox jvm-webkit restart-chrome restart-firefox restart-webkit mdns-chrome mdns-firefox"
+          HARNESS_SKIP: "chrome-interop firefox-interop webkit-interop jvm-chrome jvm-firefox jvm-webkit restart-chrome restart-firefox restart-webkit foreign-restart-chrome foreign-restart-firefox foreign-restart-webkit mdns-chrome mdns-firefox"
           # No HARNESS_NON_GATING here any more: node-interop + jvm-node landed informational-first (per the
           # impaired/v6 precedent) and are now PROMOTED to GATING — the werift lanes proved out across every
           # family/arch once #43 was fixed (we picked the SCTP role off the DTLS role while werift picks it
@@ -324,18 +325,20 @@ jobs:
 
       # Scenario name selects the offerer: `<browser>-interop` (native) or `jvm-<browser>` (JVM peer).
       #
-      # The native jobs additionally run `restart-<browser>` — the same engine on the carrier-switch
-      # topology, where our offerer's network moves mid-session and the browser has to RE-ANSWER our ICE
-      # restart (issue #71). It rides here rather than as its own matrix dimension because the expensive
-      # part of a browser job is the engine image, which is already built and loaded by this point. The
-      # lane is v4-only (nat_a2 is a v4 NAT — see V4_ONLY_SCENARIOS), so the v6/dual jobs skip it by
-      # themselves and are left running exactly the one scenario they ran before.
+      # The native jobs additionally run `restart-<browser>` and `foreign-restart-<browser>` — the same
+      # engine on the carrier-switch topology, where our offerer's network moves mid-session, once in each
+      # direction of the renegotiation: the browser RE-ANSWERS our ICE restart (issue #71), and the browser
+      # ORIGINATES one that we have to detect and answer (issue #87). They ride here rather than as their
+      # own matrix dimension because the expensive part of a browser job is the engine image, which is
+      # already built and loaded by this point. Both are v4-only (nat_a2 is a v4 NAT — see
+      # V4_ONLY_SCENARIOS), so the v6/dual jobs skip them by themselves and are left running exactly the one
+      # scenario they ran before.
       - name: "Interop: our ${{ matrix.peer }} peer ⇄ ${{ matrix.browser }}"
         env:
           PEER_KEXE: "webrtc-harness-endpoint/build/bin/${{ matrix.arch.konan }}/peerReleaseExecutable/peer.kexe"
           PEER_JAR: "webrtc-harness-endpoint/build/libs/webrtc-harness-peer-all.jar"
           HARNESS_NO_BROWSER_BUILD: "1"  # reuse the gha-cached image built above
-          SCENARIO: "${{ matrix.peer == 'jvm' && format('jvm-{0}', matrix.browser) || format('{0}-interop restart-{0}', matrix.browser) }}"
+          SCENARIO: "${{ matrix.peer == 'jvm' && format('jvm-{0}', matrix.browser) || format('{0}-interop restart-{0} foreign-restart-{0}', matrix.browser) }}"
           IP_FAMILY: "${{ matrix.ipfamily }}"
           FAMILY_GATING: "1"  # all families gating (v4+dual+v6); see the l2 job's note
         run: |

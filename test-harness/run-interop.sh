@@ -175,7 +175,7 @@ docker run --rm --privileged --network host alpine:3.20 \
 # ── scenario matrix — name | nat_a | nat_b | ice_policy | netem(args or "-") | a_impl | b_impl | topo ──
 #   a_impl (offerer / "our side") ∈ native | jvm
 #   b_impl (answerer)             ∈ native | pion | node | chrome | firefox | webkit
-#   topo (NAT layering)           ∈ single | cgnat | hairpin | carrier-switch   (default: single)
+#   topo (NAT layering)           ∈ single | cgnat | hairpin | carrier-switch | foreign-restart  (def: single)
 # Covers each of the four NAT profiles, the symmetric→relay fallback, an explicit relay-only lane, an
 # impaired data path (all native ⇄ native), the W7 Phase-2 interop lanes where the answerer is a real Pion
 # (Go) peer or a real werift (pure-TypeScript, JS-engine) peer [2(a)] or a real headless browser — Chrome /
@@ -209,6 +209,19 @@ docker run --rm --privileged --network host alpine:3.20 \
 # (every lane's exit contract needs the s6 DONE handshake, and that needs a live association), so the
 # finding is recorded rather than encoded as a lane that asserts almost nothing. The werift reflector still
 # re-answers, like every other family, so the lane is a one-line addition if werift fixes it upstream.
+#
+# `foreign-restart` is the SAME carrier switch with the renegotiation running the other way (issue #87): the
+# offerer writes a RESTART lifecycle word into the mailbox, the ANSWERER restarts ICE and re-offers, and our
+# side has to DETECT that from the offer alone (RFC 8445 §9 — ufrag AND pwd both changed) and answer it. It
+# is the direction s8 could never test, because s8's offers are ours: what a production stack's re-offer
+# does differently — attribute ordering, `a=setup` on a re-offer, a restated bundle group — is exactly the
+# risk. There is deliberately no `foreign-restart-node` either, and MEASURING that is one of the things this
+# work was for: #86 attributed werift's broken restart to an answerer-path asymmetry (`connect()` is reached
+# from setRemoteDescription only for an ANSWER, i.e. only when werift is the offerer), which predicted that
+# werift could originate one. It cannot. It re-offers correctly and takes a fresh TURN allocation, and then
+# sends ZERO connectivity checks on the new generation — exactly as it did as the answerer. The defect is not
+# the asymmetry; it is that werift does not check a restarted generation in EITHER direction. Measurement in
+# the README's carrier-switch section.
 # `impaired-loss-delay` is NON-GATING (informational
 # — see $NON_GATING + the header): its kernel-random loss can't be provably flake-free, so the deterministic
 # DtlsSctpLossReproductionTest is the retained hard loss gate. Each expects BOTH peers to exit 0. The impl +
@@ -231,6 +244,11 @@ restart-pion         | port-restricted    | port-restricted    | all   | -      
 restart-chrome       | port-restricted    | port-restricted    | all   | -                                                | native | chrome  | carrier-switch
 restart-firefox      | port-restricted    | port-restricted    | all   | -                                                | native | firefox | carrier-switch
 restart-webkit       | port-restricted    | port-restricted    | all   | -                                                | native | webkit  | carrier-switch
+foreign-restart-native  | port-restricted | port-restricted    | all   | -                                                | native | native  | foreign-restart
+foreign-restart-pion    | port-restricted | port-restricted    | all   | -                                                | native | pion    | foreign-restart
+foreign-restart-chrome  | port-restricted | port-restricted    | all   | -                                                | native | chrome  | foreign-restart
+foreign-restart-firefox | port-restricted | port-restricted    | all   | -                                                | native | firefox | foreign-restart
+foreign-restart-webkit  | port-restricted | port-restricted    | all   | -                                                | native | webkit  | foreign-restart
 pion-interop         | port-restricted    | port-restricted    | all   | -                                                | native | pion    | single
 node-interop         | port-restricted    | port-restricted    | all   | -                                                | native | node    | single
 chrome-interop       | port-restricted    | port-restricted    | all   | -                                                | native | chrome  | single
@@ -404,7 +422,7 @@ semantics_report() {
 # (carrier-switch is v4-only for the same reason as the carrier lanes: nat_a2 is a v4 NAT with a v4 public
 # identity, and "the peer's public address changed" is a v4 mapping statement. The v6 analog — a routed
 # prefix moving — needs a second v6 router and is a follow-up, not a skip of an existing property.)
-V4_ONLY_SCENARIOS=" symmetric-relay mixed-sym-port cgnat hairpin restart-native jvm-restart restart-pion restart-chrome restart-firefox restart-webkit mdns-chrome mdns-firefox "
+V4_ONLY_SCENARIOS=" symmetric-relay mixed-sym-port cgnat hairpin restart-native jvm-restart restart-pion restart-chrome restart-firefox restart-webkit foreign-restart-native foreign-restart-pion foreign-restart-chrome foreign-restart-firefox foreign-restart-webkit mdns-chrome mdns-firefox "
 V6_ONLY_SCENARIOS=" firewall-relay6 "
 family_skipped() {
     local name=" $1 "
@@ -636,17 +654,25 @@ run_scenario() {
     # phase is no longer restricted to answerers of ours. Naming the carrier's public address is what lets
     # the phase assert WHERE the restart landed rather than only that the pair changed — and the carrier is
     # peer A's either way, so the assertion is identical whoever is answering.
-    if [ "$topo" = "carrier-switch" ]; then
-        export PEER_ICE_RESTART=1 PEER_RESTART_CARRIER="$NAT_A2_WAN_IP"
-        # s8 adds a second offer/answer round and an ICE reconvergence, each separately watchdogged inside
-        # the peer. The sequence budget has to leave room for the FAILURE path too, or a graded phase
-        # verdict degrades into an ungraded "semantics: TIMEOUT" that says nothing about which half broke.
-        export PEER_SEMANTICS_TIMEOUT_MS="${HARNESS_SEMANTICS_TIMEOUT_MS:-$((180000 + PEER_IDLE_MS))}"
-    else
-        export PEER_ICE_RESTART=0
-        export PEER_SEMANTICS_TIMEOUT_MS="${HARNESS_SEMANTICS_TIMEOUT_MS:-$((120000 + PEER_IDLE_MS))}"
-        unset PEER_RESTART_CARRIER
-    fi
+    # Both restart topologies are the SAME network event — peer A moved onto its second carrier — and they
+    # differ in exactly one thing: who asks for the new ICE generation. `carrier-switch` is s8 (we do);
+    # `foreign-restart` is s10 (the answerer does, on the RESTART lifecycle word our offerer writes into the
+    # mailbox — issue #87), which is the direction that tests OUR detection of somebody else's restart.
+    case "$topo" in
+        carrier-switch|foreign-restart)
+            export PEER_ICE_RESTART=1 PEER_RESTART_CARRIER="$NAT_A2_WAN_IP"
+            if [ "$topo" = "foreign-restart" ]; then export PEER_RESTART_INITIATOR=peer; else export PEER_RESTART_INITIATOR=us; fi
+            # s8/s10 each add an offer/answer round and an ICE reconvergence, separately watchdogged inside
+            # the peer. The sequence budget has to leave room for the FAILURE path too, or a graded phase
+            # verdict degrades into an ungraded "semantics: TIMEOUT" that says nothing about which half broke.
+            export PEER_SEMANTICS_TIMEOUT_MS="${HARNESS_SEMANTICS_TIMEOUT_MS:-$((180000 + PEER_IDLE_MS))}"
+            ;;
+        *)
+            export PEER_ICE_RESTART=0 PEER_RESTART_INITIATOR=us
+            export PEER_SEMANTICS_TIMEOUT_MS="${HARNESS_SEMANTICS_TIMEOUT_MS:-$((120000 + PEER_IDLE_MS))}"
+            unset PEER_RESTART_CARRIER
+            ;;
+    esac
 
     # NAT layering (carrier-grade / hairpin). Point each CPE's upstream at the right carrier NAT, activate
     # that carrier NAT's compose profile, and add it to this scenario's infra so `up` starts it (a profiled
@@ -661,7 +687,9 @@ run_scenario() {
         hairpin) # ONE shared carrier NAT → both peers share a single external identity → relay
             export NAT_A_CARRIER_GW="$CGNAT_SHARED_CAR_IP" NAT_B_CARRIER_GW="$CGNAT_SHARED_CAR_IP"
             profiles="$profiles hairpin"; infra="$infra cgnat" ;;
-        carrier-switch) # a SECOND gateway on peer A's own LAN, switched to mid-session (not a layer above)
+        carrier-switch|foreign-restart) # a SECOND gateway on peer A's own LAN, switched to mid-session
+            # (not a layer above). Identical topology for both restart directions — see the PEER_ICE_RESTART
+            # block above for what differs (who initiates), which is nothing the compose model knows about.
             unset NAT_A_CARRIER_GW NAT_B_CARRIER_GW
             profiles="$profiles carrier-switch"; infra="$infra nat_a2" ;;
         *)       unset NAT_A_CARRIER_GW NAT_B_CARRIER_GW ;;
@@ -721,10 +749,11 @@ run_scenario() {
     # the whole property is that the network changes MID-session — but it never races them: the peer parks
     # on the mailbox until the switch is acknowledged.
     local switch_pid=""
-    if [ "$topo" = "carrier-switch" ]; then
-        carrier_switch "$name" "$a_service" &
-        switch_pid=$!
-    fi
+    case "$topo" in
+        carrier-switch|foreign-restart)
+            carrier_switch "$name" "$a_service" &
+            switch_pid=$! ;;
+    esac
 
     # Block until each peer has exited and read its exit code (see peer_exit_rc — order-independent, unlike
     # `docker compose wait`).
@@ -786,6 +815,16 @@ run_scenario() {
         if [ "$topo" = "carrier-switch" ] && [ "${PEER_SEMANTICS:-1}" != "0" ] && [ -z "${PEER_SCENARIOS:-}" ] \
                 && ! grep -q 're-answered round 1' <<< "$b_log"; then
             fail_scenario "$name" "both peers exited 0 but the answerer never reported re-answering our ICE-restart offer (s8's far half: no 're-answered round 1' in its log)"; return
+        fi
+        # s10's far half, the mirror of the above: on a foreign-initiated lane the ANSWERER is the one that
+        # restarts, so its own log is the only place its stack says it acted on the RESTART lifecycle word.
+        # Our offerer's phase asserts what the resulting offer CONTAINED (both ICE credentials replaced, the
+        # DTLS fingerprint kept) and that our own answer opened a fresh generation — but a peer that
+        # published a well-formed offer without its stack having restarted anything is exactly the failure
+        # only the peer can rule out. Every answerer family prints the identical token.
+        if [ "$topo" = "foreign-restart" ] && [ "${PEER_SEMANTICS:-1}" != "0" ] && [ -z "${PEER_SCENARIOS:-}" ] \
+                && ! grep -q 'peer-initiated restart: re-offered round 0' <<< "$b_log"; then
+            fail_scenario "$name" "both peers exited 0 but the answerer never reported restarting ICE on our cue (s10's far half: no 'peer-initiated restart: re-offered round 0' in its log)"; return
         fi
         if [ "$sem_missing" = "1" ]; then
             fail_scenario "$name" "both peers exited 0 but the offerer printed NO semantics-summary — the data-channel phases did not run on a lane that gates them"; return

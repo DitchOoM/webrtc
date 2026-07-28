@@ -138,6 +138,80 @@ internal fun judgeReanswer(
 private fun Fingerprint.sameIdentityAs(other: Fingerprint): Boolean =
     hashFunction.equals(other.hashFunction, ignoreCase = true) && value.equals(other.value, ignoreCase = true)
 
+/**
+ * Which pair of descriptions a [ReanswerVerdict] judged (s10, issue #87). The judgement itself is identical
+ * for all of them — RFC 8445 §9's "replace both credentials" and RFC 8842 §5.5's "keep the fingerprint" do
+ * not care who wrote the SDP — so this selects only the sentence [detail] renders, never the verdict.
+ */
+internal enum class RestartWitness(
+    /** The description being judged, as the sentence's subject. */
+    val subject: String,
+    /** What a [ReanswerVerdict.Restarted] on this pair actually proves. */
+    val proves: String,
+    /** What a verdict short of that costs — the reason this witness is read at all. */
+    val costs: String,
+) {
+    /** The peer's own restart offer, against its round-0 answer: did it restart, or merely re-offer? */
+    PeerReoffer(
+        subject = "the peer's own restart offer",
+        proves = "the peer really restarted ICE rather than re-offering the generation it already had",
+        costs =
+            "there was no restart for us to detect, so this lane would have proven only that we can answer " +
+                "a repeated offer",
+    ),
+
+    /**
+     * OUR answer to that offer, against our round-0 offer. This is the direct statement that our detection
+     * rule fired: a stack that did not recognise the offer as a restart answers on the credentials it
+     * already had, and that is observable in nothing else we publish.
+     */
+    OurAnswer(
+        subject = "our answer to the peer's restart offer",
+        proves = "we detected the peer's restart and started a fresh local ICE generation on the existing association",
+        costs =
+            "we did not detect it — RFC 8445 §9's both-credentials-changed rule never fired — so every check " +
+                "we send authenticates with a generation the peer has already abandoned",
+    ),
+}
+
+/**
+ * The sentence s10 reports for this verdict about [witness]. Same discipline as [detail]: a diagnostic
+ * rendered FROM the type, never a substitute for it.
+ */
+internal fun ReanswerVerdict.detail(witness: RestartWitness): String =
+    when (this) {
+        is ReanswerVerdict.Restarted ->
+            "${witness.subject} replaced both ICE credentials (ufrag ${credentials.ufrag}) and kept its DTLS " +
+                "fingerprint, so ${witness.proves} (RFC 8445 §9, RFC 8842 §5.5)"
+        is ReanswerVerdict.TransportRebuilt ->
+            "${witness.subject} changed the DTLS fingerprint (${before.hashFunction} ${before.value} → " +
+                "${after.hashFunction} ${after.value}) — that is a NEW association, not a restart of the " +
+                "existing one, which RFC 8842 §5.5 reserves for an endpoint that wants exactly that"
+        is ReanswerVerdict.NotRestarted ->
+            "${witness.subject} ${gap.clause()} — ${witness.costs}"
+        is ReanswerVerdict.Unreadable ->
+            "${witness.subject} could not be read against its round-0 description (round 0: $initial, restart " +
+                "round: $restarted), so nothing about that ICE generation is claimed either way"
+    }
+
+/** How a credential pair fell short of RFC 8445 §9's "replace both", as a clause. */
+private fun CredentialGap.clause(): String =
+    when (this) {
+        CredentialGap.Neither -> "carried the ICE credentials it already had"
+        CredentialGap.UfragOnly -> "changed a=ice-ufrag but kept a=ice-pwd, and RFC 8445 §9 replaces both"
+        CredentialGap.PwdOnly -> "changed a=ice-pwd but kept a=ice-ufrag, and RFC 8445 §9 replaces both"
+    }
+
+/**
+ * What s10 read off the two descriptions the restart round produced: the peer's offer and our answer to it.
+ * Both are required to pass — [peerReoffer] alone would let a lane pass while we quietly failed to notice,
+ * and [ourAnswer] alone would pass against a peer that never restarted anything (see [RestartWitness]).
+ */
+internal data class ForeignRestartEvidence(
+    val peerReoffer: ReanswerVerdict,
+    val ourAnswer: ReanswerVerdict,
+)
+
 /** The sentence s8 reports for this verdict. A diagnostic rendered FROM the type, never a substitute for it. */
 internal fun ReanswerVerdict.detail(): String =
     when (this) {

@@ -121,4 +121,75 @@ class IceCandidateLineTest {
         assertEquals(srflx, parsed)
         assertTrue((parsed as IceCandidate.ServerReflexive).relatedAddress.ip is IpAddress.V6)
     }
+
+    // ---- RFC 8838 §3.1: the generation tag on the line ----------------------------------------------
+
+    @Test
+    fun a_line_carries_no_generation_unless_one_is_asked_for() {
+        // The compatibility floor. Every peer that predates the tag emits and expects exactly this line,
+        // so the default has to be byte-identical to what this codec produced before the tag existed.
+        val host = IceCandidate.host(addr("10.0.0.1", 4000))
+        assertEquals("candidate:${host.foundation.value} 1 udp ${host.priority} 10.0.0.1 4000 typ host", IceCandidateLine.format(host))
+        assertEquals(CandidateGeneration.Untagged, parsedGeneration(IceCandidateLine.format(host)))
+    }
+
+    @Test
+    fun the_generation_tag_round_trips_as_a_ufrag_extension_attribute() {
+        val host = IceCandidate.host(addr("10.0.0.1", 4000))
+        val line = IceCandidateLine.format(host, CandidateGeneration.Tagged(Ufrag("4ZcD")))
+        assertTrue(line.endsWith(" ufrag 4ZcD"), "the tag rides as an RFC 8839 §5.1 extension attribute: $line")
+        assertEquals(host, IceCandidateLine.parse(line), "and does not disturb the candidate itself")
+        assertEquals(CandidateGeneration.Tagged(Ufrag("4ZcD")), parsedGeneration(line))
+    }
+
+    @Test
+    fun the_tag_survives_the_raddr_tail_and_other_extension_attributes() {
+        // A libwebrtc-shaped line: raddr/rport, then `generation`, `ufrag` and `network-cost` in the
+        // extension tail. The tag has to be found past all of it, or a Chrome candidate arrives untagged.
+        val line =
+            "candidate:842163049 1 udp 1677729535 203.0.113.5 50633 typ srflx raddr 10.0.0.7 rport 55000 " +
+                "generation 0 ufrag EWlB network-cost 999"
+        assertEquals(CandidateGeneration.Tagged(Ufrag("EWlB")), parsedGeneration(line))
+        assertTrue(IceCandidateLine.parse(line) is IceCandidate.ServerReflexive, "the candidate still parses: $line")
+    }
+
+    @Test
+    fun an_extension_attribute_whose_value_is_ufrag_is_not_a_tag() {
+        // The trap a bare indexOf("ufrag") falls into. Extension-attribute values are arbitrary text, so
+        // one that happens to read "ufrag" would be mistaken for the attribute name and the token after it
+        // for a generation — routing a perfectly good candidate into the hold buffer, where it would wait
+        // for a generation nobody will ever signal.
+        val line = "candidate:f 1 udp 100 10.0.0.1 4000 typ host network-id ufrag"
+        assertEquals(CandidateGeneration.Untagged, parsedGeneration(line))
+
+        // …and the same word appearing as a *value* before a real tag must not shadow it.
+        val shadowed = "candidate:f 1 udp 100 10.0.0.1 4000 typ host network-id ufrag ufrag abcd"
+        assertEquals(CandidateGeneration.Tagged(Ufrag("abcd")), parsedGeneration(shadowed))
+    }
+
+    @Test
+    fun a_value_less_or_empty_ufrag_attribute_is_untagged_not_a_reject() {
+        // A malformed optional attribute is not a reason to throw a usable candidate away (T0): the typed
+        // answer for "the tag is unreadable" is "there is no tag", which routes to the current generation.
+        val trailing = "candidate:f 1 udp 100 10.0.0.1 4000 typ host ufrag"
+        assertEquals(CandidateGeneration.Untagged, parsedGeneration(trailing))
+        assertTrue(IceCandidateLine.parse(trailing) is IceCandidate.Host, "and the candidate still parses")
+    }
+
+    @Test
+    fun an_mdns_host_candidate_carries_its_generation_too() {
+        // The `.local` path resolves asynchronously, so it is the one most likely to arrive late — which
+        // makes it the one that most needs to say which generation it belongs to.
+        val line = "candidate:1 1 udp 2122260223 abcd-ef01.local 55000 typ host ufrag 4ZcD"
+        val parsed = IceCandidateLine.parseLine(line)
+        assertTrue(parsed is CandidateParse.MdnsHost)
+        assertEquals(CandidateGeneration.Tagged(Ufrag("4ZcD")), parsed.generation)
+    }
+
+    private fun parsedGeneration(line: String): CandidateGeneration =
+        when (val parsed = IceCandidateLine.parseLine(line)) {
+            is CandidateParse.Parsed -> parsed.generation
+            is CandidateParse.MdnsHost -> parsed.generation
+            CandidateParse.Reject -> error("expected a parseable candidate line: $line")
+        }
 }

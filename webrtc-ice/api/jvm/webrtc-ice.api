@@ -1,3 +1,49 @@
+public abstract interface class com/ditchoom/webrtc/ice/CandidateDiscardReason {
+}
+
+public final class com/ditchoom/webrtc/ice/CandidateDiscardReason$SupersededGeneration : com/ditchoom/webrtc/ice/CandidateDiscardReason {
+	public synthetic fun <init> (Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-VbcWDus ()Ljava/lang/String;
+	public final fun copy-n5OP7yU (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/CandidateDiscardReason$SupersededGeneration;
+	public static synthetic fun copy-n5OP7yU$default (Lcom/ditchoom/webrtc/ice/CandidateDiscardReason$SupersededGeneration;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/CandidateDiscardReason$SupersededGeneration;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getUfrag-VbcWDus ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/CandidateDiscardReason$UnappliedGenerationOverflow : com/ditchoom/webrtc/ice/CandidateDiscardReason {
+	public synthetic fun <init> (Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-VbcWDus ()Ljava/lang/String;
+	public final fun copy-n5OP7yU (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/CandidateDiscardReason$UnappliedGenerationOverflow;
+	public static synthetic fun copy-n5OP7yU$default (Lcom/ditchoom/webrtc/ice/CandidateDiscardReason$UnappliedGenerationOverflow;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/CandidateDiscardReason$UnappliedGenerationOverflow;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getUfrag-VbcWDus ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/CandidateGeneration {
+}
+
+public final class com/ditchoom/webrtc/ice/CandidateGeneration$Tagged : com/ditchoom/webrtc/ice/CandidateGeneration {
+	public synthetic fun <init> (Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-VbcWDus ()Ljava/lang/String;
+	public final fun copy-n5OP7yU (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/CandidateGeneration$Tagged;
+	public static synthetic fun copy-n5OP7yU$default (Lcom/ditchoom/webrtc/ice/CandidateGeneration$Tagged;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/CandidateGeneration$Tagged;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getUfrag-VbcWDus ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/CandidateGeneration$Untagged : com/ditchoom/webrtc/ice/CandidateGeneration {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/CandidateGeneration$Untagged;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/ice/CandidatePair {
 	public static final field PAIR_PRIORITY_SHIFT I
 	public fun <init> (Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/IceCandidate;)V
@@ -18,17 +64,20 @@ public abstract interface class com/ditchoom/webrtc/ice/CandidateParse {
 }
 
 public final class com/ditchoom/webrtc/ice/CandidateParse$MdnsHost : com/ditchoom/webrtc/ice/CandidateParse {
-	public synthetic fun <init> (Ljava/lang/String;ILcom/ditchoom/webrtc/ice/ComponentId;Ljava/lang/String;JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Ljava/lang/String;ILcom/ditchoom/webrtc/ice/ComponentId;Ljava/lang/String;JLcom/ditchoom/webrtc/ice/CandidateGeneration;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Ljava/lang/String;ILcom/ditchoom/webrtc/ice/ComponentId;Ljava/lang/String;JLcom/ditchoom/webrtc/ice/CandidateGeneration;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()Ljava/lang/String;
 	public final fun component2 ()I
 	public final fun component3 ()Lcom/ditchoom/webrtc/ice/ComponentId;
 	public final fun component4-nlo9HBA ()Ljava/lang/String;
 	public final fun component5 ()J
-	public final fun copy-hMEMhdA (Ljava/lang/String;ILcom/ditchoom/webrtc/ice/ComponentId;Ljava/lang/String;J)Lcom/ditchoom/webrtc/ice/CandidateParse$MdnsHost;
-	public static synthetic fun copy-hMEMhdA$default (Lcom/ditchoom/webrtc/ice/CandidateParse$MdnsHost;Ljava/lang/String;ILcom/ditchoom/webrtc/ice/ComponentId;Ljava/lang/String;JILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/CandidateParse$MdnsHost;
+	public final fun component6 ()Lcom/ditchoom/webrtc/ice/CandidateGeneration;
+	public final fun copy-TcTJ79I (Ljava/lang/String;ILcom/ditchoom/webrtc/ice/ComponentId;Ljava/lang/String;JLcom/ditchoom/webrtc/ice/CandidateGeneration;)Lcom/ditchoom/webrtc/ice/CandidateParse$MdnsHost;
+	public static synthetic fun copy-TcTJ79I$default (Lcom/ditchoom/webrtc/ice/CandidateParse$MdnsHost;Ljava/lang/String;ILcom/ditchoom/webrtc/ice/ComponentId;Ljava/lang/String;JLcom/ditchoom/webrtc/ice/CandidateGeneration;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/CandidateParse$MdnsHost;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getComponent ()Lcom/ditchoom/webrtc/ice/ComponentId;
 	public final fun getFoundation-nlo9HBA ()Ljava/lang/String;
+	public final fun getGeneration ()Lcom/ditchoom/webrtc/ice/CandidateGeneration;
 	public final fun getHostname ()Ljava/lang/String;
 	public final fun getPort ()I
 	public final fun getPriority ()J
@@ -37,12 +86,15 @@ public final class com/ditchoom/webrtc/ice/CandidateParse$MdnsHost : com/ditchoo
 }
 
 public final class com/ditchoom/webrtc/ice/CandidateParse$Parsed : com/ditchoom/webrtc/ice/CandidateParse {
-	public fun <init> (Lcom/ditchoom/webrtc/ice/IceCandidate;)V
+	public fun <init> (Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateGeneration;)V
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateGeneration;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()Lcom/ditchoom/webrtc/ice/IceCandidate;
-	public final fun copy (Lcom/ditchoom/webrtc/ice/IceCandidate;)Lcom/ditchoom/webrtc/ice/CandidateParse$Parsed;
-	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/CandidateParse$Parsed;Lcom/ditchoom/webrtc/ice/IceCandidate;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/CandidateParse$Parsed;
+	public final fun component2 ()Lcom/ditchoom/webrtc/ice/CandidateGeneration;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateGeneration;)Lcom/ditchoom/webrtc/ice/CandidateParse$Parsed;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/CandidateParse$Parsed;Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateGeneration;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/CandidateParse$Parsed;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getCandidate ()Lcom/ditchoom/webrtc/ice/IceCandidate;
+	public final fun getGeneration ()Lcom/ditchoom/webrtc/ice/CandidateGeneration;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -98,6 +150,19 @@ public final class com/ditchoom/webrtc/ice/Foundation$Companion {
 	public final fun of-bzdhg3Q (Lcom/ditchoom/webrtc/ice/CandidateType;Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/webrtc/ice/IceTransport;)Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/ice/GatheredCandidate {
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceCandidate;Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/IceCandidate;
+	public final fun component2-VbcWDus ()Ljava/lang/String;
+	public final fun copy-VAlAgi8 (Lcom/ditchoom/webrtc/ice/IceCandidate;Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/GatheredCandidate;
+	public static synthetic fun copy-VAlAgi8$default (Lcom/ditchoom/webrtc/ice/GatheredCandidate;Lcom/ditchoom/webrtc/ice/IceCandidate;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/GatheredCandidate;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCandidate ()Lcom/ditchoom/webrtc/ice/IceCandidate;
+	public final fun getUfrag-VbcWDus ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/ice/Ice {
 	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/Ice;
 	public static final field MODULE Ljava/lang/String;
@@ -119,7 +184,8 @@ public final class com/ditchoom/webrtc/ice/IceAgent {
 public final class com/ditchoom/webrtc/ice/IceAgentDriver {
 	public fun <init> (Lcom/ditchoom/webrtc/ice/IceRole;Lkotlin/random/Random;Lcom/ditchoom/webrtc/ice/DatagramBinder;Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lcom/ditchoom/webrtc/ice/IceConfig;)V
 	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceRole;Lkotlin/random/Random;Lcom/ditchoom/webrtc/ice/DatagramBinder;Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lcom/ditchoom/webrtc/ice/IceConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public final fun addRemoteCandidate (Lcom/ditchoom/webrtc/ice/IceCandidate;)V
+	public final fun addRemoteCandidate (Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateGeneration;)V
+	public static synthetic fun addRemoteCandidate$default (Lcom/ditchoom/webrtc/ice/IceAgentDriver;Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateGeneration;ILjava/lang/Object;)V
 	public final fun appDataTransport ()Lcom/ditchoom/webrtc/ice/IceDataTransport;
 	public final fun close ()V
 	public final fun drop (Lcom/ditchoom/webrtc/ice/IceCandidate;)V
@@ -270,7 +336,8 @@ public final class com/ditchoom/webrtc/ice/IceCandidate$ServerReflexive : com/di
 
 public final class com/ditchoom/webrtc/ice/IceCandidateLine {
 	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/IceCandidateLine;
-	public final fun format (Lcom/ditchoom/webrtc/ice/IceCandidate;)Ljava/lang/String;
+	public final fun format (Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateGeneration;)Ljava/lang/String;
+	public static synthetic fun format$default (Lcom/ditchoom/webrtc/ice/IceCandidateLine;Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateGeneration;ILjava/lang/Object;)Ljava/lang/String;
 	public final fun parse (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/IceCandidate;
 	public final fun parseLine (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/CandidateParse;
 }
@@ -386,12 +453,15 @@ public final class com/ditchoom/webrtc/ice/IceEvent$AddLocalCandidate : com/ditc
 }
 
 public final class com/ditchoom/webrtc/ice/IceEvent$AddRemoteCandidate : com/ditchoom/webrtc/ice/IceEvent {
-	public fun <init> (Lcom/ditchoom/webrtc/ice/IceCandidate;)V
+	public fun <init> (Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateGeneration;)V
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateGeneration;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()Lcom/ditchoom/webrtc/ice/IceCandidate;
-	public final fun copy (Lcom/ditchoom/webrtc/ice/IceCandidate;)Lcom/ditchoom/webrtc/ice/IceEvent$AddRemoteCandidate;
-	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/IceEvent$AddRemoteCandidate;Lcom/ditchoom/webrtc/ice/IceCandidate;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceEvent$AddRemoteCandidate;
+	public final fun component2 ()Lcom/ditchoom/webrtc/ice/CandidateGeneration;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateGeneration;)Lcom/ditchoom/webrtc/ice/IceEvent$AddRemoteCandidate;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/IceEvent$AddRemoteCandidate;Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateGeneration;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceEvent$AddRemoteCandidate;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getCandidate ()Lcom/ditchoom/webrtc/ice/IceCandidate;
+	public final fun getGeneration ()Lcom/ditchoom/webrtc/ice/CandidateGeneration;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -494,6 +564,19 @@ public final class com/ditchoom/webrtc/ice/IceOutput$PathChanged : com/ditchoom/
 	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/IceOutput$PathChanged;Lcom/ditchoom/webrtc/ice/IcePath;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceOutput$PathChanged;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getPath ()Lcom/ditchoom/webrtc/ice/IcePath;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/IceOutput$RemoteCandidateDiscarded : com/ditchoom/webrtc/ice/IceOutput {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateDiscardReason;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/IceCandidate;
+	public final fun component2 ()Lcom/ditchoom/webrtc/ice/CandidateDiscardReason;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateDiscardReason;)Lcom/ditchoom/webrtc/ice/IceOutput$RemoteCandidateDiscarded;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/IceOutput$RemoteCandidateDiscarded;Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateDiscardReason;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceOutput$RemoteCandidateDiscarded;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCandidate ()Lcom/ditchoom/webrtc/ice/IceCandidate;
+	public final fun getReason ()Lcom/ditchoom/webrtc/ice/CandidateDiscardReason;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }

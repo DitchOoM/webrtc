@@ -57,6 +57,21 @@ public interface IceDataTransport {
 }
 
 /**
+ * A local candidate as it left the gathering seam, with the **ufrag of the ICE generation it landed in**
+ * (RFC 8838 §3.1). Signaling a candidate without saying which generation gathered it is what makes a
+ * restart's candidates ambiguous on the wire; carrying the two together makes the tag impossible to
+ * forget and impossible to take from the wrong generation.
+ *
+ * The ufrag is a plain [Ufrag] rather than a [CandidateGeneration], because a *local* candidate is never
+ * untagged from the driver's point of view: the agent always knows which generation it is in. Whether the
+ * session layer then stamps it on the wire is a signaling policy, decided above.
+ */
+public data class GatheredCandidate(
+    public val candidate: IceCandidate,
+    public val ufrag: Ufrag,
+)
+
+/**
  * The production **driver** the sans-io [IceAgent] lacks by design (RFC §5.1: cores own truth, drivers
  * own I/O) — promoted from the W5 `IceDriver` composition proof so `PeerConnection` and a future media
  * layer compose the *same* transport-over-the-selected-pair rather than re-deriving it.
@@ -178,10 +193,20 @@ public class IceAgentDriver(
             is IceCandidate.Host, is IceCandidate.ServerReflexive, is IceCandidate.PeerReflexive -> candidate.base
         }
 
-    private val gathered = Channel<IceCandidate>(Channel.UNLIMITED)
+    private val gathered = Channel<GatheredCandidate>(Channel.UNLIMITED)
 
-    /** Every local candidate as it is gathered (host/srflx/relay) — the trickle (RFC 8838) source. */
-    public val localCandidateGathered: Flow<IceCandidate> get() = gathered.receiveAsFlow()
+    /**
+     * Every local candidate as it is gathered (host/srflx/relay) — the trickle (RFC 8838) source — paired
+     * with the ufrag of the ICE generation it actually landed in, so the session layer can stamp RFC 8838
+     * §3.1's generation tag on the line it signals.
+     *
+     * The pairing is made **inside the drive loop**, at the instant the agent applies the candidate, and
+     * that is load-bearing: gathering runs in its own coroutines, so a candidate gathered just before a
+     * restart is applied to the new generation while a `localCredentials` read from the gathering side
+     * would still have returned the old ufrag. Tagging a candidate with a generation it is not in is the
+     * exact defect the tag exists to prevent, so the tag is taken where the answer cannot be stale.
+     */
+    public val localCandidateGathered: Flow<GatheredCandidate> get() = gathered.receiveAsFlow()
 
     /** Launch the serialized drive loop. Gather candidates and feed remote state after this. */
     public fun start() {
@@ -282,9 +307,16 @@ public class IceAgentDriver(
         post(IceEvent.SetRemoteCredentials(credentials))
     }
 
-    /** Feed a trickled remote candidate in (RFC 8838). */
-    public fun addRemoteCandidate(candidate: IceCandidate) {
-        post(IceEvent.AddRemoteCandidate(candidate))
+    /**
+     * Feed a trickled remote candidate in (RFC 8838), for the ICE generation named by [generation]
+     * (RFC 8838 §3.1). The default — untagged — is what a peer that carries no `ufrag` sends, and is
+     * applied to whichever generation is current, exactly as before the tag existed.
+     */
+    public fun addRemoteCandidate(
+        candidate: IceCandidate,
+        generation: CandidateGeneration = CandidateGeneration.Untagged,
+    ) {
+        post(IceEvent.AddRemoteCandidate(candidate, generation))
     }
 
     /** Tear down the socket backing [candidate] (a link/interface going away — the candidate-flap seam). */
@@ -376,10 +408,11 @@ public class IceAgentDriver(
         gathering.bases += base
     }
 
+    // The candidate is published on [localCandidateGathered] by the drive loop, not here — see that
+    // property for why the generation tag has to be taken where the agent applies the candidate.
     private fun gather(candidate: IceCandidate) {
         gathering.candidates += candidate
         post(IceEvent.AddLocalCandidate(candidate))
-        gathered.trySend(candidate)
     }
 
     /**
@@ -466,7 +499,14 @@ public class IceAgentDriver(
                 null -> apply(agent.handle(IceEvent.TimerFired, clock()))
                 is Command.Event -> {
                     if (command.event == IceEvent.Restart) beginRestartGeneration()
-                    apply(agent.handle(command.event, clock()))
+                    val event = command.event
+                    apply(agent.handle(event, clock()))
+                    // Published here, after the agent has applied it: `localCredentials` now names the
+                    // generation this candidate is genuinely in, even if a restart overtook the gathering
+                    // coroutine that produced it (RFC 8838 §3.1).
+                    if (event is IceEvent.AddLocalCandidate) {
+                        gathered.trySend(GatheredCandidate(event.candidate, agent.localCredentials.ufrag))
+                    }
                 }
                 is Command.Restart -> {
                     beginRestartGeneration()
@@ -493,6 +533,11 @@ public class IceAgentDriver(
                     if (output.path is IcePath.Nominated) completeRestartGeneration()
                     _path.value = output.path
                 }
+                // Nothing for the driver to *do*: the candidate was refused by the core on purpose
+                // (RFC 8838 §3.1), there is no socket to touch and no state to unwind. It is an output
+                // rather than a silent return so a fixture — and a future diagnostics surface — can see
+                // the difference between a candidate discarded and a candidate that never arrived.
+                is IceOutput.RemoteCandidateDiscarded -> Unit
             }
         }
     }

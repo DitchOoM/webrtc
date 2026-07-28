@@ -7,6 +7,7 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.Connection
+import com.ditchoom.webrtc.ice.CandidateGeneration
 import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.association.SctpReliability
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
@@ -78,12 +79,22 @@ private fun sessionDescription(
     return d
 }
 
-private fun iceCandidateInit(candidate: String): dynamic {
+private fun iceCandidateInit(
+    candidate: String,
+    generation: CandidateGeneration,
+): dynamic {
     val c: dynamic = js("({})")
     c.candidate = candidate
     // Match by m-line index only (a single m=application section): hardcoding sdpMid="0" would make the
     // browser reject a candidate when the remote description used a different mid.
     c.sdpMLineIndex = 0
+    // RFC 8838 §3.1's generation tag is `RTCIceCandidateInit.usernameFragment` in the W3C API, so it is
+    // forwarded verbatim rather than re-encoded onto the line. Untagged leaves the field absent (`null`
+    // means "this generation", per spec) — which is what every caller that never heard of the tag sends.
+    when (generation) {
+        CandidateGeneration.Untagged -> Unit
+        is CandidateGeneration.Tagged -> c.usernameFragment = generation.ufrag.value
+    }
     return c
 }
 
@@ -198,8 +209,11 @@ private class BrowserPeerConnection(
         pc.setRemoteDescription(sessionDescription(type, sdp)).unsafeCast<Promise<dynamic>>().await()
     }
 
-    override suspend fun addIceCandidate(candidate: String) {
-        pc.addIceCandidate(iceCandidateInit(candidate)).unsafeCast<Promise<dynamic>>().await()
+    override suspend fun addIceCandidate(
+        candidate: String,
+        generation: CandidateGeneration,
+    ) {
+        pc.addIceCandidate(iceCandidateInit(candidate, generation)).unsafeCast<Promise<dynamic>>().await()
     }
 
     // 1:1 with the native stack, which is why restartIce() was specified as deferred-intent rather than

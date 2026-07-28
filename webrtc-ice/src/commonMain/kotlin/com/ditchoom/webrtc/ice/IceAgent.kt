@@ -87,6 +87,15 @@ public data class IceConfig(
  * credentials ([IceEvent.RollbackRestart]), and the peer's checks against the old credentials are still
  * answered so its consent (RFC 7675) does not expire mid-restart.
  *
+ * **Trickle generations.** A trickled candidate may name the generation it was gathered in (RFC 8838
+ * §3.1, [CandidateGeneration]), and if it does it is routed to that generation rather than to whichever
+ * one happens to be current: applied, discarded as superseded, or **held** — bounded — until the
+ * generation it names is signaled. That last case is the restart window, closed: a candidate for the
+ * peer's new generation that overtakes the offer announcing it used to be naturalized into the outgoing
+ * generation and discarded with it, leaving peer-reflexive learning (§7.3.1.3) to rediscover the path.
+ * An **untagged** candidate — every peer that carries no ufrag, which is most of them — is applied to
+ * the current generation exactly as it always was.
+ *
  * Entropy is injected once (the [random] seam, directive #2): it seeds the tie-breaker, the local
  * credentials, and every STUN transaction id, so a scenario replays bit-for-bit — the precondition a
  * timeline shrinker needs. Production wires `CryptoRandom`; tests wire a seeded [Random].
@@ -98,6 +107,17 @@ public class IceAgent(
 ) {
     private var current: Generation = newGeneration(initialRole)
     private var retained: RetainedGeneration = RetainedGeneration.None
+
+    // ---- the PEER's generation timeline (RFC 8838 §3.1) ---------------------------------------------
+    //
+    // Deliberately NOT fields on [Generation]: these track the remote agent's generations, which advance
+    // when the peer signals new credentials, not when we restart. A restart swaps `current` for a
+    // generation that has been signaled nothing, and a ledger living inside it would forget — at exactly
+    // the moment a late candidate for the peer's outgoing generation is most likely to arrive — which
+    // remote ufrag we were ever talking to.
+    private var remoteGeneration: RemoteGeneration = RemoteGeneration.None
+    private val retiredRemoteUfrags = LinkedHashSet<Ufrag>()
+    private val heldCandidates = mutableListOf<HeldCandidate>()
 
     // What the driver has last been told. Kept apart from the generation's own fields so a restart
     // (which installs a fresh generation already sitting at New) still emits the transition, and a
@@ -169,7 +189,7 @@ public class IceAgent(
         val out = mutableListOf<IceOutput>()
         when (event) {
             is IceEvent.AddLocalCandidate -> onAddLocalCandidate(event.candidate, now, out)
-            is IceEvent.AddRemoteCandidate -> onAddRemoteCandidate(event.candidate, now, out)
+            is IceEvent.AddRemoteCandidate -> onTrickledCandidate(event, now, out)
             is IceEvent.SetRemoteCredentials -> onSetRemoteCredentials(event.credentials, now, out)
             is IceEvent.DatagramReceived -> onDatagram(event, now, out)
             IceEvent.TimerFired -> onTimer(now, out)
@@ -207,7 +227,134 @@ public class IceAgent(
         out: MutableList<IceOutput>,
     ) {
         current.remote = RemotePeer.Signaled(credentials)
+        val released = adoptRemoteGeneration(credentials.ufrag)
         formPairs(now, out)
+        // Whatever was waiting for these credentials was waiting for exactly this (RFC 8838 §3.1), and
+        // enters through the same door every other remote candidate does — including its dedup, its
+        // pairing and its pacing. Released AFTER the credentials are installed, so the pairs it forms are
+        // checkable immediately rather than sitting until the next intake happens to run formPairs again.
+        for (candidate in released) onAddRemoteCandidate(candidate, now, out)
+    }
+
+    // ---- trickle generations (RFC 8838 §3.1) --------------------------------------------------------
+
+    /**
+     * Route a trickled candidate to the generation it names, or hold it until that generation exists.
+     *
+     * The four answers are four cases, not a nullable ufrag plus flags, because each carries different
+     * data and a different action — and because "unknown" and "absent" are the two that a `Ufrag?` would
+     * have collapsed into one, which is the whole defect: an *untagged* candidate must be applied now,
+     * while one tagged for a generation we have not applied must not be.
+     */
+    private fun onTrickledCandidate(
+        event: IceEvent.AddRemoteCandidate,
+        now: Instant,
+        out: MutableList<IceOutput>,
+    ) {
+        when (val route = routeOf(event.generation)) {
+            // Pre-tag behaviour, preserved exactly: no generation was named, so the current one is meant.
+            CandidateRoute.Untagged -> onAddRemoteCandidate(event.candidate, now, out)
+            CandidateRoute.AppliedGeneration -> onAddRemoteCandidate(event.candidate, now, out)
+            is CandidateRoute.SupersededGeneration ->
+                out += IceOutput.RemoteCandidateDiscarded(event.candidate, CandidateDiscardReason.SupersededGeneration(route.ufrag))
+            is CandidateRoute.UnappliedGeneration -> hold(event.candidate, route.ufrag, out)
+        }
+    }
+
+    private fun routeOf(generation: CandidateGeneration): CandidateRoute =
+        when (generation) {
+            CandidateGeneration.Untagged -> CandidateRoute.Untagged
+            is CandidateGeneration.Tagged ->
+                when (val known = remoteGeneration) {
+                    // Nothing signaled yet, so nothing to compare against: this candidate names a
+                    // generation we cannot yet place. Held, not dropped — see [adoptRemoteGeneration],
+                    // where the first credentials to arrive release the lot.
+                    RemoteGeneration.None -> CandidateRoute.UnappliedGeneration(generation.ufrag)
+                    is RemoteGeneration.Applied ->
+                        when {
+                            known.ufrag == generation.ufrag -> CandidateRoute.AppliedGeneration
+                            generation.ufrag in retiredRemoteUfrags -> CandidateRoute.SupersededGeneration(generation.ufrag)
+                            else -> CandidateRoute.UnappliedGeneration(generation.ufrag)
+                        }
+                }
+        }
+
+    /**
+     * Record that the peer's applied generation is now [ufrag], retiring the one it replaces, and return
+     * the held candidates that belong to it.
+     *
+     * The **first** application is deliberately permissive: everything held is released, whatever it was
+     * tagged with. Before it there is no generation for a candidate to be late for, so a tag we cannot
+     * match means only that the peer's `ufrag` attribute disagrees with its own `a=ice-ufrag` — and
+     * stranding a whole first negotiation over a disagreement about an optional attribute would turn an
+     * interop annoyance into a dead session. Once a generation *has* been applied, routing is strict:
+     * from then on an unmatched tag genuinely distinguishes past from future.
+     *
+     * There is deliberately no sweep here for held candidates whose generation has since been superseded,
+     * because **a held candidate's generation can never be superseded**: the hold is emptied in full the
+     * instant its generation is applied, and a candidate for a generation already applied *and* left is
+     * discarded at the door rather than held. Eviction is therefore the only way a held candidate leaves
+     * without being used, and eviction is bounded ([hold]). A sweep for a state that cannot occur would be
+     * untestable code claiming to defend a buffer that is defended elsewhere.
+     */
+    private fun adoptRemoteGeneration(ufrag: Ufrag): List<IceCandidate> {
+        when (val known = remoteGeneration) {
+            RemoteGeneration.None -> {
+                remoteGeneration = RemoteGeneration.Applied(ufrag)
+                val all = heldCandidates.map { it.candidate }
+                heldCandidates.clear()
+                return all
+            }
+            is RemoteGeneration.Applied -> {
+                if (known.ufrag == ufrag) return takeHeld(ufrag)
+                retire(known.ufrag)
+                remoteGeneration = RemoteGeneration.Applied(ufrag)
+                return takeHeld(ufrag)
+            }
+        }
+    }
+
+    /** Remove and return everything held for [ufrag] (insertion order preserved). */
+    private fun takeHeld(ufrag: Ufrag): List<IceCandidate> {
+        val released = heldCandidates.filter { it.ufrag == ufrag }
+        heldCandidates.removeAll(released)
+        return released.map { it.candidate }
+    }
+
+    /** A generation the peer has left: remembered, bounded, most-recently-retired last. */
+    private fun retire(ufrag: Ufrag) {
+        retiredRemoteUfrags.remove(ufrag)
+        retiredRemoteUfrags += ufrag
+        while (retiredRemoteUfrags.size > MAX_RETIRED_REMOTE_GENERATIONS) {
+            retiredRemoteUfrags.remove(retiredRemoteUfrags.first())
+        }
+    }
+
+    /**
+     * Hold a candidate for a generation that has not been applied yet, evicting the oldest held candidate
+     * when the buffer is full.
+     *
+     * The bound ([MAX_HELD_CANDIDATES]) is the point: a peer that trickles candidates tagged with
+     * generations it never signals — broken, or hostile — would otherwise grow this without limit, and an
+     * unbounded buffer fed straight off the network is a denial of service, not a feature. Eviction is
+     * oldest-first because the newest tag is the likeliest to be the one about to be signaled. Nothing
+     * here is clocked: a held candidate is released by an *event* (the credentials arriving), never by a
+     * timer, so this adds no deadline to [nextDeadline] and the core stays sans-io.
+     */
+    private fun hold(
+        candidate: IceCandidate,
+        ufrag: Ufrag,
+        out: MutableList<IceOutput>,
+    ) {
+        while (heldCandidates.size >= MAX_HELD_CANDIDATES) {
+            val evicted = heldCandidates.removeAt(0)
+            out +=
+                IceOutput.RemoteCandidateDiscarded(
+                    evicted.candidate,
+                    CandidateDiscardReason.UnappliedGenerationOverflow(evicted.ufrag),
+                )
+        }
+        heldCandidates += HeldCandidate(ufrag, candidate)
     }
 
     // Pair every compatible (local, remote); RFC 8445 §6.1.2.2/§6.1.2.4. Runs on each intake so trickled
@@ -1142,6 +1289,54 @@ public class IceAgent(
         ) : RetainedGeneration
     }
 
+    /**
+     * Which of the peer's generations a trickled candidate names (RFC 8838 §3.1) — the routing decision,
+     * as four cases the compiler makes every call site answer.
+     *
+     * Written as a sealed set rather than "a nullable ufrag plus a couple of booleans" for the reason
+     * [Selection] is: the flag encoding admits combinations that must not exist (untagged *and*
+     * superseded; unapplied *and* current), and each real answer carries different data — [Untagged]
+     * carries none, [SupersededGeneration] carries the ufrag to report, [UnappliedGeneration] carries the
+     * ufrag to file it under. An `else` branch here would silently swallow a case added later, which is
+     * exactly how "we'll handle that generation properly next time" becomes a lost candidate.
+     */
+    private sealed interface CandidateRoute {
+        /** No generation named — apply to the current one (pre-RFC-8838-§3.1 behaviour, unchanged). */
+        data object Untagged : CandidateRoute
+
+        /** Names the generation whose credentials are applied right now — apply it. */
+        data object AppliedGeneration : CandidateRoute
+
+        /** Names a generation the peer has already left — discard it, and say so. */
+        data class SupersededGeneration(
+            val ufrag: Ufrag,
+        ) : CandidateRoute
+
+        /** Names a generation not applied (yet) — hold it, bounded, until it is. */
+        data class UnappliedGeneration(
+            val ufrag: Ufrag,
+        ) : CandidateRoute
+    }
+
+    /** The peer's currently applied ICE generation, as signaled. Sealed for the same reason
+     *  [RemotePeer] is: "never signaled" and "signaled X" drive different routing, and a null would be
+     *  read as the wrong one of them at exactly one call site. */
+    private sealed interface RemoteGeneration {
+        /** The peer has never signaled credentials — no generation to be late for, or early for. */
+        data object None : RemoteGeneration
+
+        /** [ufrag] names the peer's generation whose candidates are checkable now. */
+        data class Applied(
+            val ufrag: Ufrag,
+        ) : RemoteGeneration
+    }
+
+    /** A candidate parked until the generation it names is applied — the ufrag is its filing key. */
+    private class HeldCandidate(
+        val ufrag: Ufrag,
+        val candidate: IceCandidate,
+    )
+
     private companion object {
         const val ROLE_CONFLICT = 487
         const val MAX_UTF8_PER_CHAR = 3
@@ -1155,5 +1350,22 @@ public class IceAgent(
         // A hard ceiling on outstanding consent ids, so a pathological config (a consent interval of zero,
         // or a revocation window orders of magnitude larger than it) cannot turn the set into a leak.
         val CONSENT_OUTSTANDING_CEILING = 64
+
+        /**
+         * The hold bound (RFC 8838 §3.1): how many candidates for not-yet-applied generations are parked
+         * before the oldest is evicted. Sized for one full gather of a real endpoint — a browser trickles
+         * on the order of ten candidates per generation over a couple of interfaces, so 32 holds a whole
+         * generation's worth twice over with room to spare, while a peer that never signals the generation
+         * it keeps tagging costs a fixed, small amount of memory instead of an unbounded one.
+         */
+        val MAX_HELD_CANDIDATES = 32
+
+        /**
+         * How many superseded remote ufrags stay nameable, so a late candidate for one is discarded
+         * *deliberately* rather than mistaken for a future generation and held. Bounded for the same
+         * reason: a peer that restarts in a loop must not turn this into a ledger. A ufrag that falls off
+         * the end degrades to the safe answer — held, then evicted — never to "applied".
+         */
+        val MAX_RETIRED_REMOTE_GENERATIONS = 8
     }
 }

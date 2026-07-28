@@ -75,14 +75,22 @@ checked in, CHANGELOG entry, standing-directive greps green.
 >
 > **Renegotiation is now done:** `restartIce()` through JSEP with the SCTP association and every open data
 > channel surviving the restart (RFC 8445 §9), peer-initiated restart detection, ICE-side rollback, an
-> injected `IceRestartPolicy.OnNetworkChange`, and an `s8/restart` interop lane over our own peers.
+> injected `IceRestartPolicy.OnNetworkChange`, and `s8/restart` interop lanes over our own peers **and**
+> over foreign ones (PR #86).
 >
-> **Remaining, none of it blocking and no open issues:** no production `NetworkMonitor` actual (so
-> `IceRestartPolicy` defaults to `Manual`); trickled candidates are not `ufrag`-tagged (RFC 8838 §3.1), so
-> a restart leans on in-order signaling + peer-reflexive learning; foreign-peer renegotiation is not
-> exercised in the interop lanes; mDNS is resolve-only, so we do not advertise our own `.local`; media
-> (RTP/SRTP) is **P2**, untouched. The dcSCTP subset choices, RFC 6525's four non-originated request types,
-> and refusing a *new* DTLS association on renegotiation are deliberate non-goals, not gaps.
+> **Remaining, none of it blocking; each item tracked:** no production `NetworkMonitor` actual, so
+> `IceRestartPolicy` defaults to `Manual` (#69); trickled candidates are not `ufrag`-tagged (#70,
+> RFC 8838 §3.1), so a restart leans on in-order signaling + peer-reflexive learning; foreign-peer
+> renegotiation is proven in one direction only — Pion, Chrome, Firefox and WebKit each re-answer a
+> restart *we* initiate on `carrier-switch` (`restart-{pion,chrome,firefox,webkit}`), with s8 reading the
+> peer's own re-answer (both ICE credentials replaced, fingerprint unchanged — RFC 8842 §5.5) instead of
+> inferring a restart from reconvergence, while the **foreign-initiated** direction (they offer, we
+> answer) is unexercised (#87); those lanes are v4-only, as `carrier-switch` is, so v6/dual skip them, and
+> there is deliberately no `restart-node` lane — werift re-answers correctly but never checks on the new
+> generation, so its session does not survive (measured in `test-harness/README.md`); mDNS is resolve-only,
+> so we do not advertise our own `.local` (#88); media (RTP/SRTP) is **P2**, untouched. The dcSCTP subset
+> choices, RFC 6525's four non-originated request types, and refusing a *new* DTLS association on
+> renegotiation are deliberate non-goals, not gaps.
 
 ### W0 — Foundations (cross-repo) · status: ✅ merged
 Two upstream PRs + repo bootstrap. **Resolves RFC §11.1 first.**

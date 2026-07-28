@@ -195,9 +195,21 @@ docker run --rm --privileged --network host alpine:3.20 \
 # see family_skipped). `carrier-switch` is a THIRD topology dimension rather than a NAT layering: peer_a
 # gets a SECOND NAT gateway (nat_a2) on its own LAN, and the harness flips its default route onto it
 # mid-session (carrier_switch, below), so its public identity changes underneath a live session and ICE has
-# to restart (RFC 8445 §9). Only our own answerer can play it — a foreign reflector never re-answers — so
-# `restart-native` (native⇄native) and `jvm-restart` (jvm⇄native) are the only two lanes that run it, and
-# they are the only lanes with WEBRTC_ICE_RESTART on. `impaired-loss-delay` is NON-GATING (informational
+# to restart (RFC 8445 §9). Every `restart-*` lane plus `jvm-restart` runs it, and they are the only lanes
+# with WEBRTC_ICE_RESTART on. It used to be OURS only — the reflectors answered round 0 and then never
+# looked at the mailbox again — but each family now RE-ANSWERS a later round (issue #71), so the same
+# property is asserted against Pion and all three browser engines. That is the point of the foreign restart
+# lanes: the offerer's assertions are ours either way, but only a third-party answer can say whether a
+# production stack replaces both ICE credentials and keeps its DTLS fingerprint (RFC 8842 §5.5) when
+# somebody else's network moves.
+#
+# There is deliberately NO `restart-node`: werift re-answers correctly and then never restarts its
+# connectivity checks on the answerer path, so its session does not survive a peer-initiated restart at all
+# — see the harness README's carrier-switch section for the measurement. A lane for it could not finish
+# (every lane's exit contract needs the s6 DONE handshake, and that needs a live association), so the
+# finding is recorded rather than encoded as a lane that asserts almost nothing. The werift reflector still
+# re-answers, like every other family, so the lane is a one-line addition if werift fixes it upstream.
+# `impaired-loss-delay` is NON-GATING (informational
 # — see $NON_GATING + the header): its kernel-random loss can't be provably flake-free, so the deterministic
 # DtlsSctpLossReproductionTest is the retained hard loss gate. Each expects BOTH peers to exit 0. The impl +
 # topo columns default to native/native/single when omitted. The pion AND node/werift lanes force DTLS 1.2
@@ -215,6 +227,10 @@ cgnat                | port-restricted    | port-restricted    | all   | -      
 hairpin              | port-restricted    | port-restricted    | relay | -                                                | native | native  | hairpin
 restart-native       | port-restricted    | port-restricted    | all   | -                                                | native | native  | carrier-switch
 jvm-restart          | port-restricted    | port-restricted    | all   | -                                                | jvm    | native  | carrier-switch
+restart-pion         | port-restricted    | port-restricted    | all   | -                                                | native | pion    | carrier-switch
+restart-chrome       | port-restricted    | port-restricted    | all   | -                                                | native | chrome  | carrier-switch
+restart-firefox      | port-restricted    | port-restricted    | all   | -                                                | native | firefox | carrier-switch
+restart-webkit       | port-restricted    | port-restricted    | all   | -                                                | native | webkit  | carrier-switch
 pion-interop         | port-restricted    | port-restricted    | all   | -                                                | native | pion    | single
 node-interop         | port-restricted    | port-restricted    | all   | -                                                | native | node    | single
 chrome-interop       | port-restricted    | port-restricted    | all   | -                                                | native | chrome  | single
@@ -388,7 +404,7 @@ semantics_report() {
 # (carrier-switch is v4-only for the same reason as the carrier lanes: nat_a2 is a v4 NAT with a v4 public
 # identity, and "the peer's public address changed" is a v4 mapping statement. The v6 analog — a routed
 # prefix moving — needs a second v6 router and is a follow-up, not a skip of an existing property.)
-V4_ONLY_SCENARIOS=" symmetric-relay mixed-sym-port cgnat hairpin restart-native jvm-restart mdns-chrome mdns-firefox "
+V4_ONLY_SCENARIOS=" symmetric-relay mixed-sym-port cgnat hairpin restart-native jvm-restart restart-pion restart-chrome restart-firefox restart-webkit mdns-chrome mdns-firefox "
 V6_ONLY_SCENARIOS=" firewall-relay6 "
 family_skipped() {
     local name=" $1 "
@@ -615,11 +631,12 @@ run_scenario() {
     # the phase is enabled only on the native⇄native / jvm⇄native lanes and simply absent elsewhere.
     if [ "$b_impl" = "native" ]; then export PEER_REVERSE=1; else export PEER_REVERSE=0; fi
 
-    # s8 (ICE restart across a mid-session carrier switch) needs BOTH: an answerer of ours — a foreign
-    # reflector never re-answers, so it would leave our re-offer unanswered and the restart unconverged —
-    # and a topology with a second carrier to be moved onto. Naming the carrier's public address is what
-    # lets the phase assert WHERE the restart landed rather than only that the pair changed.
-    if [ "$topo" = "carrier-switch" ] && [ "$b_impl" = "native" ]; then
+    # s8 (ICE restart across a mid-session carrier switch) needs a topology with a second carrier to be
+    # moved onto, and nothing else: every answerer family re-answers a later round now (issue #71), so the
+    # phase is no longer restricted to answerers of ours. Naming the carrier's public address is what lets
+    # the phase assert WHERE the restart landed rather than only that the pair changed — and the carrier is
+    # peer A's either way, so the assertion is identical whoever is answering.
+    if [ "$topo" = "carrier-switch" ]; then
         export PEER_ICE_RESTART=1 PEER_RESTART_CARRIER="$NAT_A2_WAN_IP"
         # s8 adds a second offer/answer round and an ICE reconvergence, each separately watchdogged inside
         # the peer. The sequence budget has to leave room for the FAILURE path too, or a graded phase
@@ -758,6 +775,17 @@ run_scenario() {
         if { [ "$topo" = "hairpin" ] || [ "$name" = "firewall-relay6" ]; } \
                 && ! grep -qE 'Connected\(path=Known\(pair=CandidatePair\(.*Relayed' <<< "$a_log"; then
             fail_scenario "$name" "established but the selected ICE pair is NOT a relay pair (this lane must traverse the coturn TURN relay)"; return
+        fi
+        # s8's far half: the ANSWERER's own report that it re-answered our ICE-restart offer. The offerer's
+        # phase already asserts what that answer CONTAINED (RFC 8842 §5.5 — both ICE credentials replaced,
+        # the DTLS fingerprint kept) and that the session reconverged onto the new carrier; this asserts the
+        # peer said it, in the peer's own log, which is the only place a third-party stack speaks for itself.
+        # Same discipline as s7's `dc close:` grep, and every answerer family prints the identical token.
+        # Herestring, not `printf | grep -q` — see the relay assertion above for why a pipe SIGPIPEs here.
+        # Skipped when the semantics sequence is off or subset, since then s8 never ran to be reported on.
+        if [ "$topo" = "carrier-switch" ] && [ "${PEER_SEMANTICS:-1}" != "0" ] && [ -z "${PEER_SCENARIOS:-}" ] \
+                && ! grep -q 're-answered round 1' <<< "$b_log"; then
+            fail_scenario "$name" "both peers exited 0 but the answerer never reported re-answering our ICE-restart offer (s8's far half: no 're-answered round 1' in its log)"; return
         fi
         if [ "$sem_missing" = "1" ]; then
             fail_scenario "$name" "both peers exited 0 but the offerer printed NO semantics-summary — the data-channel phases did not run on a lane that gates them"; return

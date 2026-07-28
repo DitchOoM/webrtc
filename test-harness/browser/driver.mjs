@@ -33,6 +33,12 @@
 // the offerer, and this side only has to echo and REPORT (the `dc-negotiated:` line below is the
 // end-to-end proof that our DCEP channel types were honored).
 //
+// Renegotiation (issue #71): the page also RE-ANSWERS. A second offer in the mailbox means the offerer
+// restarted ICE (RFC 8445 §9) after the harness moved it onto another carrier, and the page answers it on
+// the same RTCPeerConnection — which is what the `restart-<engine>` lanes exist to prove a production
+// browser engine does. Still no scenario logic: the round is read off the mailbox, not signalled, so a lane
+// that never restarts never reaches the code.
+//
 // Diagnostics: on every run (pass OR fail) it logs the engine's own `getStats()` — a 2s-cadence + per-edge
 // timeline (`getStats-timeline:`) plus a readable digest (`stats-summary:`) — and rich per-message /
 // per-channel accounting (negotiated ordered/maxRetransmits, size, running count, bufferedAmount). All of it
@@ -299,6 +305,32 @@ async function answererInPage(cfg) {
     put('cand/answerer', candOutId++, ev.candidate.candidate);
   };
 
+  // The first offer/answer round that can only be an ICE restart. Round 0 negotiates the session; the
+  // offerer's s8 phase publishes round 1 after the harness moves it onto a second carrier. Both peers key
+  // their mailbox records by the same round, so the two halves line up without either announcing anything.
+  const FIRST_RESTART_ROUND = 1;
+
+  // Apply a later round's offer and publish the answer under the SAME record id, so both peers' rounds line
+  // up in the mailbox. Deliberately the same three calls as round 0: a restart is a renegotiation of the
+  // existing session, not a second session. Returns false — leaving the round unconsumed so the next poll
+  // retries it — if the engine rejected the offer, since a half-applied round is worse than a retried one.
+  const reanswer = async (offer, round) => {
+    try {
+      await pc.setRemoteDescription({ type: 'offer', sdp: offer });
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await put('answer', round, pc.localDescription.sdp);
+    } catch (e) {
+      log(`FAILED to re-answer round ${round}:`, e.message);
+      return false;
+    }
+    // The line run-interop.sh greps on the restart lanes: this peer's OWN report that it re-answered, which
+    // is the half of the proof only the answerer can give. Every reflector family prints the same token.
+    log(`re-answered round ${round} — the offerer restarted ICE`);
+    snapshotStats('reanswered');
+    return true;
+  };
+
   // 1. Await the offer (bounded by the watchdog), then set it as the remote description.
   let offer = null;
   while (Date.now() < deadline) {
@@ -315,10 +347,24 @@ async function answererInPage(cfg) {
   await put('answer', 0, pc.localDescription.sdp);
   log('answer published');
 
-  // 3. Poll the offerer's trickled candidates → addIceCandidate (single m-line, sdpMLineIndex 0).
+  // 3. Poll the offerer's trickled candidates → addIceCandidate (single m-line, sdpMLineIndex 0), and any
+  //    LATER round's offer → re-answer.
+  //
+  //    The loop runs to the deadline, NOT to `echoed` as it once did. Stopping at the first echo was
+  //    harmless while a session only ever negotiated once — every candidate that mattered had already
+  //    arrived — but it starves an ICE RESTART: the offerer's re-gathered generation trickles its
+  //    candidates long after phase 0's ping/pong, and a browser that stopped polling would answer the
+  //    restart offer and then never learn where to send.
   (async () => {
     let seen = 0;
-    while (Date.now() < deadline && !echoed) {
+    let round = FIRST_RESTART_ROUND;
+    while (Date.now() < deadline && !sawDone) {
+      // A further offer means the offerer restarted ICE (RFC 8445 §9 — its s8 phase): re-answer it on the
+      // SAME RTCPeerConnection. A restart renegotiates ICE and nothing else, so the DTLS association and
+      // every open data channel are untouched, and this side has nothing to do beyond answering again
+      // (RFC 8842 §5.5). Failing to re-answer would leave the offerer's restart unconverged.
+      const offers = await poll('offer', round);
+      if (offers.length && (await reanswer(offers[0], round))) round++;
       const cands = await poll('cand/offerer', seen);
       for (const c of cands) {
         try {

@@ -60,8 +60,16 @@ scenario decision and every assertion on the offerer side (our Kotlin).** Concre
 entire contract becomes:
 
 > For every incoming data channel, echo every message back **on the same channel**, verbatim (same
-> bytes, same string/binary type). If that channel is closed by the remote, mirror-close our end. Exit
-> 0 once the offerer signals completion (see §4), having echoed everything without error.
+> bytes, same string/binary type). If that channel is closed by the remote, mirror-close our end.
+> If a further offer appears in the mailbox, answer it on the same connection. Exit 0 once the offerer
+> signals completion (see §4), having echoed everything without error.
+
+The re-answer clause was added for the ICE-restart lanes (issue #71) and is deliberately phrased as a
+*signaling* obligation, not a scenario one: the reflector reads a round off the mailbox it is already
+polling and answers it, exactly as it answered round 0. It never learns that a restart happened, never
+branches on one, and on a lane where no second round is ever published the code is not reached. That is
+what keeps the contract dumb while letting a foreign stack be asked the one question only it can answer —
+whether *it* restarts ICE correctly (RFC 8842 §5.5) when the network under the session moves.
 
 That is a ~15-line generalisation of what each answerer already does (they echo *one* message on *one*
 channel today). It means:
@@ -121,6 +129,26 @@ All three already echo; the change is "one channel" → "every channel", plus mi
 | **Pion** (`main.go`) | `OnDataChannel` per channel; `dc.OnMessage` → send back the same bytes with the same `IsString`. Mirror close. `DONE` → linger + exit. |
 | **werift** (`peer.mjs`) | Same shape as Pion; echo string-vs-Buffer by input type (it already distinguishes). |
 | **native/JVM** (`Main.kt` answerer path) | The `runAnswerer` echo becomes "collect `incomingDataChannels`, launch an echo pump per channel." Our own reflector can additionally assert nothing (it's still just a reflector) — but it's the one place we *could* later add reverse-direction origination (decision **D4**). |
+
+**The re-answer (issue #71).** Each family polls the `offer` slot for round ≥ 1 from the *same* loop that
+already polls the offerer's trickled candidates, and answers it with the identical three calls it made for
+round 0 (`setRemoteDescription` → `createAnswer` → `setLocalDescription` → PUT under the same round id). Two
+things were load-bearing to get right, and both are of the harness's own making rather than the RFC's:
+
+- **The single-consumer socket discipline.** Pion and werift each own one PUT socket and one poll socket
+  (see `signaling.go` / `signaling.mjs`); publishing the re-answer from the poll loop would have raced the
+  candidate drain on the PUT socket. Both grew a one-writer outbox queue, which is what our own peer's
+  `Main.kt` has always had. The browsers signal over the rendezvous **HTTP** face, so they need none of it.
+- **The browser candidate loop used to stop at the first echo** (`while (… && !echoed)`). Harmless while a
+  session negotiated exactly once — every candidate that mattered had already arrived — but it starves a
+  restart: the offerer's re-gathered generation trickles long after phase 0's ping/pong, so the page would
+  have answered the restart offer and then never learned where to send. It now runs until `DONE`.
+
+All five families implement the clause; **four of them can complete a restart**. Pion, Chrome, Firefox and
+WebKit each get a `restart-<family>` lane. werift re-answers correctly and then never restarts its
+connectivity checks on the answerer path, so its session does not survive the restart and it has no lane —
+the measurement, and why a reduced lane would have asserted nothing worth having, are in the harness
+README's carrier-switch section.
 
 ## 5. Concrete scenario set
 

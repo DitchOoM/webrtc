@@ -134,6 +134,7 @@ private val RESTART_CONVERGE_WAIT = 30.seconds
 /** How long s8 waits for `restartIce()` to report that a renegotiation round is owed. */
 private val RENEGOTIATION_WAIT = 5.seconds
 
+
 /** How long a single echo is waited for inside a phase (strictly under [PHASE_TIMEOUT]). */
 private val ECHO_WAIT = 25.seconds
 
@@ -364,6 +365,18 @@ internal interface RestartSignaling {
 
     /** Create the next round's offer — which carries the fresh ICE generation — and publish it. */
     suspend fun reoffer()
+
+    /**
+     * Suspend until the peer's answer to the restart round has been applied, and judge it against its
+     * answer to the initial round (see [judgeReanswer] for what the two rounds are being asked). Null =
+     * no re-answer arrived in time, which on a foreign lane is the plainest failure there is: the peer
+     * cannot renegotiate at all.
+     *
+     * Awaited BEFORE the reconvergence wait, because it is the more specific diagnostic — a peer that
+     * never re-answered and a peer that re-answered wrongly both surface as "never reconverged", and only
+     * this can tell them apart.
+     */
+    suspend fun awaitPeerReanswer(): ReanswerVerdict?
 
     /**
      * Suspend until this peer has GATHERED a candidate at the carrier address this run was configured with
@@ -895,6 +908,12 @@ private suspend fun phaseConsentIdle(
  *  3. **nothing closed.** Both channels are still on the stream ids they had before the restart. s7 has
  *     just established that a closed channel is observable here precisely as a recycled id, so an id that
  *     did not move is a positive statement that neither channel was closed and reopened underneath us.
+ *     It also says the association survived on the PEER's side: a peer that tore its own down could not
+ *     echo, whatever our stream ids read.
+ *  4. **the peer restarted, rather than merely reconverging.** Read off its own re-answer — both ICE
+ *     credentials replaced, the DTLS fingerprint unchanged — see [judgeReanswer]. Properties 1–3 are all
+ *     satisfiable by a peer doing the wrong thing on a forgiving path, which is why the lanes that run
+ *     this against Pion, werift and the browsers (issue #71) assert this one too.
  *
  * The deterministic sibling is `PeerConnectionRestartTest` (whole stack, vnet, virtual time). This phase is
  * that property over real kernels, real NATs and a real route change.
@@ -933,6 +952,21 @@ private suspend fun phaseIceRestart(
     }
     signaling.reoffer()
 
+    // (0) the PEER restarted — the half of the proof only its answer carries, and the reason these lanes
+    // exist against foreign stacks at all (issue #71). Judged before reconvergence because "never
+    // reconverged" is what a peer that cannot re-answer, one that re-answered without restarting, and one
+    // that rebuilt its transport all look like from the pair alone.
+    val reanswer =
+        signaling.awaitPeerReanswer()
+            ?: return Verdict(false, "the peer never answered our ICE-restart offer — it did not renegotiate at all")
+    when (reanswer) {
+        is ReanswerVerdict.Restarted -> Unit
+        is ReanswerVerdict.TransportRebuilt,
+        is ReanswerVerdict.NotRestarted,
+        is ReanswerVerdict.Unreadable,
+        -> return Verdict(false, reanswer.detail())
+    }
+
     val reconverged =
         withTimeoutOrNull(RESTART_CONVERGE_WAIT) {
             pc.connectionState.first { it is PeerConnectionState.Connected && livePair(it) != before }
@@ -963,7 +997,10 @@ private suspend fun phaseIceRestart(
     // (2) the pair moved — and, where the lane named the carrier it moved us to, our public address moved
     // there with it (see RestartSignaling.awaitCarrierPublicAddress for why the pair alone cannot say so).
     val moved = "ICE restarted onto ${describe(after)} (was ${describe(before)})"
-    val survived = "both channels kept their streams ($ctlStream, $witnessStream) and still round-trip"
+    val survived =
+        "both channels kept their streams ($ctlStream, $witnessStream) and still round-trip — so the " +
+            "association survived on BOTH sides, since a peer that had torn its own down could not echo; " +
+            reanswer.detail()
     return when (expectation) {
         // Unreachable: the phase is only in the sequence when the config asked for it. Named rather than
         // `else`-d so adding a case is a compile error here instead of a silent pass.

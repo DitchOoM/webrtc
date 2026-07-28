@@ -179,7 +179,7 @@ jobs:
         env:
           PEER_KEXE: "webrtc-harness-endpoint/build/bin/${{ matrix.arch.konan }}/peerReleaseExecutable/peer.kexe"
           PEER_JAR: "webrtc-harness-endpoint/build/libs/webrtc-harness-peer-all.jar"
-          HARNESS_SKIP: "chrome-interop firefox-interop webkit-interop jvm-chrome jvm-firefox jvm-webkit mdns-chrome mdns-firefox"
+          HARNESS_SKIP: "chrome-interop firefox-interop webkit-interop jvm-chrome jvm-firefox jvm-webkit restart-chrome restart-firefox restart-webkit mdns-chrome mdns-firefox"
           # No HARNESS_NON_GATING here any more: node-interop + jvm-node landed informational-first (per the
           # impaired/v6 precedent) and are now PROMOTED to GATING — the werift lanes proved out across every
           # family/arch once #43 was fixed (we picked the SCTP role off the DTLS role while werift picks it
@@ -322,12 +322,19 @@ jobs:
           cache-from: type=gha,scope=browser-${{ matrix.browser }}-${{ matrix.arch.name }}
 
       # Scenario name selects the offerer: `<browser>-interop` (native) or `jvm-<browser>` (JVM peer).
+      #
+      # The native jobs additionally run `restart-<browser>` — the same engine on the carrier-switch
+      # topology, where our offerer's network moves mid-session and the browser has to RE-ANSWER our ICE
+      # restart (issue #71). It rides here rather than as its own matrix dimension because the expensive
+      # part of a browser job is the engine image, which is already built and loaded by this point. The
+      # lane is v4-only (nat_a2 is a v4 NAT — see V4_ONLY_SCENARIOS), so the v6/dual jobs skip it by
+      # themselves and are left running exactly the one scenario they ran before.
       - name: "Interop: our ${{ matrix.peer }} peer ⇄ ${{ matrix.browser }}"
         env:
           PEER_KEXE: "webrtc-harness-endpoint/build/bin/${{ matrix.arch.konan }}/peerReleaseExecutable/peer.kexe"
           PEER_JAR: "webrtc-harness-endpoint/build/libs/webrtc-harness-peer-all.jar"
           HARNESS_NO_BROWSER_BUILD: "1"  # reuse the gha-cached image built above
-          SCENARIO: "${{ matrix.peer == 'jvm' && format('jvm-{0}', matrix.browser) || format('{0}-interop', matrix.browser) }}"
+          SCENARIO: "${{ matrix.peer == 'jvm' && format('jvm-{0}', matrix.browser) || format('{0}-interop restart-{0}', matrix.browser) }}"
           IP_FAMILY: "${{ matrix.ipfamily }}"
           FAMILY_GATING: "1"  # all families gating (v4+dual+v6); see the l2 job's note
         run: |

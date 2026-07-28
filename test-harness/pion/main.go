@@ -20,6 +20,12 @@
 // It stays scenario-agnostic: it never reads a channel label to decide behaviour, so all of the
 // data-channel semantics matrix (fragmentation, unordered, partial reliability, multiplexing) is driven
 // and asserted entirely by the offerer.
+//
+// Renegotiation (issue #71): it also RE-ANSWERS. A second offer in the mailbox means the offerer restarted
+// ICE (RFC 8445 §9) after the harness moved it onto another carrier, and this peer answers it on the same
+// PeerConnection — which is what the `restart-pion` lane exists to prove a third-party stack does. Still no
+// scenario logic: the round is read off the mailbox, not signalled, so a lane that never restarts never
+// reaches the code.
 package main
 
 import (
@@ -188,20 +194,41 @@ func run() int {
 	}
 	fmt.Println("[pion] answer published")
 
-	// 3. Drain trickled local candidates → PUT to cand/answerer (single consumer of sigOut).
+	// 3. One PUT queue with ONE draining goroutine, so exactly one goroutine ever writes sigOut — the
+	//    single-consumer socket discipline signaling.go documents. Trickled candidates ride it, and so does
+	//    a later round's answer (step 4), which is why the queue exists at all: before renegotiation there
+	//    was only ever one writer and the answer could be PUT inline.
+	outbox := make(chan outRecord, 64)
+	go func() {
+		for r := range outbox {
+			sigOut.put(r.slot, r.recordId, r.payload)
+		}
+	}()
 	go func() {
 		i := 0
 		for c := range candOut {
-			sigOut.put("cand/answerer", i, c)
+			outbox <- outRecord{slot: "cand/answerer", recordId: i, payload: c}
 			i++
 		}
 	}()
 
-	// 4. Poll the offerer's trickled candidates → AddICECandidate (single consumer of sigIn).
+	// 4. Poll the offerer's trickled candidates → AddICECandidate, and any LATER round's offer → re-answer
+	//    (single consumer of sigIn — which is also why the re-answer is handled here rather than from a
+	//    second loop that would race this one's socket read).
 	go func() {
 		seen := 0
+		round := firstRestartRound
 		zero := uint16(0)
 		for time.Now().Before(deadline) {
+			// A further offer means the offerer restarted ICE (RFC 8445 §9 — its s8 phase): re-answer it on
+			// the SAME PeerConnection. A restart renegotiates ICE and nothing else, so the DTLS association
+			// and every open data channel are untouched, and this side has nothing to do beyond answering
+			// again (RFC 8842 §5.5). Failing to re-answer would leave the offerer's restart unconverged.
+			if offers := sigIn.poll("offer", round); len(offers) > 0 {
+				if reanswer(pc, outbox, round, offers[0]) {
+					round++
+				}
+			}
 			cands := sigIn.poll("cand/offerer", seen)
 			for _, c := range cands {
 				// Single m-line (mid:0); the native side sends bare candidate strings, so supply the
@@ -251,6 +278,43 @@ func run() int {
 
 // doneMarker is the offerer's completion word on the control channel (see the Kotlin ControlChannel).
 const doneMarker = "DONE"
+
+// The first offer/answer round that can only be an ICE restart. Round 0 negotiates the session; the
+// offerer's s8 phase publishes round 1 after the harness moves it onto a second carrier. Both peers key
+// their mailbox records by the same round, so the two halves line up without either announcing anything.
+const firstRestartRound = 1
+
+// outRecord is one queued PUT, drained by the single goroutine that owns sigOut (see step 3).
+type outRecord struct {
+	slot     string
+	recordId int
+	payload  string
+}
+
+// reanswer applies a later round's offer and publishes the answer under the SAME record id, so both peers'
+// rounds line up in the mailbox. Deliberately the same three calls as round 0: a restart is a renegotiation
+// of the existing session, not a second session. Returns false — leaving the round unconsumed so the next
+// poll retries it — if the engine rejected the offer, since a half-applied round is worse than a retried one.
+func reanswer(pc *webrtc.PeerConnection, outbox chan<- outRecord, round int, offer string) bool {
+	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: offer}); err != nil {
+		fmt.Printf("[pion] FAILED SetRemoteDescription(offer, round %d): %v\n", round, err)
+		return false
+	}
+	answer, err := pc.CreateAnswer(nil)
+	if err != nil {
+		fmt.Printf("[pion] FAILED CreateAnswer(round %d): %v\n", round, err)
+		return false
+	}
+	if err := pc.SetLocalDescription(answer); err != nil {
+		fmt.Printf("[pion] FAILED SetLocalDescription(round %d): %v\n", round, err)
+		return false
+	}
+	outbox <- outRecord{slot: "answer", recordId: round, payload: pc.LocalDescription().SDP}
+	// The line run-interop.sh greps on the restart lanes: this peer's OWN report that it re-answered, which
+	// is the half of the proof only the answerer can give. Every reflector family prints the same token.
+	fmt.Printf("[pion] re-answered round %d — the offerer restarted ICE\n", round)
+	return true
+}
 
 // fmtBool / fmtU16 render Pion's *bool / *uint16 DCEP properties in the SAME shape every reflector family
 // prints ("true"/"false", a number, or "-" when the peer left it unset), so run-interop.sh can assert the

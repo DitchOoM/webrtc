@@ -321,6 +321,13 @@ private suspend fun runOfferer(
     // Left uncompleted — and never awaited — on every lane that does not run s8.
     val carrierSwitched = CompletableDeferred<Unit>()
 
+    // s8 property (4): what the PEER's own answers say it did with its ICE generation. Captured here, where
+    // each round's SDP is applied, because by the time the phase runs the descriptions have been consumed
+    // into connection state that no longer distinguishes "the peer restarted" from "a pair moved".
+    // Uncompleted — and never awaited — on every lane that does not run s8.
+    val initialAnswerCredentials = CompletableDeferred<RoundCredentials>()
+    val restartAnswerCredentials = CompletableDeferred<RoundCredentials>()
+
     // One poll socket, single-consumer: each round's answer, then the answerer's trickled candidates.
     bg.launch {
         var answers = 0
@@ -337,6 +344,10 @@ private suspend fun runOfferer(
                     // The peer's ceiling is read off its FIRST answer only: a later round renegotiates ICE,
                     // not the SCTP association s1 already sized itself against.
                     if (answers == INITIAL_ROUND) remoteMaxMessageSize.complete(maxMessageSizeOf(a.first()))
+                    when (answers) {
+                        INITIAL_ROUND -> initialAnswerCredentials.complete(credentialsOf(a.first()))
+                        RESTART_ROUND -> restartAnswerCredentials.complete(credentialsOf(a.first()))
+                    }
                     pc.setRemoteDescription(SdpType.Answer, a.first())
                     answers++
                 }
@@ -378,6 +389,11 @@ private suspend fun runOfferer(
 
             override suspend fun awaitCarrierPublicAddress(): Boolean =
                 withTimeoutOrNull(PUBLIC_ADDRESS_WAIT) { publicAddressSeen.await() } != null
+
+            override suspend fun awaitPeerReanswer(): ReanswerVerdict? =
+                withTimeoutOrNull(REANSWER_WAIT) {
+                    judgeReanswer(initialAnswerCredentials.await(), restartAnswerCredentials.await())
+                }
         }
 
     if (!awaitEstablished(pc)) return false
@@ -684,6 +700,12 @@ private val CARRIER_SWITCH_WAIT = 30.seconds
 // How long s8 waits for the restarted generation to learn our new public address from coturn. One STUN
 // round trip on a healthy path; the window covers a re-gather that has to retransmit its Binding request.
 private val PUBLIC_ADDRESS_WAIT = 15.seconds
+
+// How long s8 waits for the PEER's answer to the restart round to land in the mailbox and be applied.
+// Shorter than the phase's own reconvergence wait, deliberately: it is a signaling round trip with no
+// gathering in it, and a peer that has not re-answered by now will not reconverge either — failing here
+// first is what turns the useless "never reconverged" into "the peer never re-answered".
+private val REANSWER_WAIT = 20.seconds
 
 // Echo/flush windows for the IMPAIRED lane: with the harness's fast SCTP RTO (500ms initial, 100ms min),
 // a lost pong (or SACK) is recovered in well under a second per retransmit, so these need only cover a

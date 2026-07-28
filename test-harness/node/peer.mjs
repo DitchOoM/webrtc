@@ -26,6 +26,12 @@
 // stays scenario-agnostic: it never reads a channel label to decide behaviour, so the whole data-channel
 // semantics matrix (fragmentation, unordered, partial reliability, multiplexing) is driven and asserted
 // entirely by the offerer.
+//
+// Renegotiation (issue #71): it also RE-ANSWERS. A second offer in the mailbox means the offerer restarted
+// ICE (RFC 8445 §9) after the harness moved it onto another carrier, and this peer answers it on the same
+// connection — which is what the `restart-node` lane exists to prove a third-party stack does. Still no
+// scenario logic: the round is read off the mailbox, not signalled, so a lane that never restarts never
+// reaches the code.
 
 import { RTCPeerConnection } from "werift";
 import { openSignaling } from "./signaling.mjs";
@@ -139,10 +145,13 @@ async function main() {
   // "candidate:" token (that token is only prepended when serialized into an SDP `a=` line). The native
   // parser expects the `candidate:...` grammar (the same grammar Pion emits), so toCandidateLine() adds
   // the prefix when absent.
-  const candOut = [];
+  // Queued into `outbox` (drained by step 3's single loop) rather than PUT here, so exactly one activity
+  // ever writes sigOut — the single-consumer socket discipline signaling.mjs documents.
+  const outbox = [];
+  let candOutId = 0;
   pc.onIceCandidate.subscribe((candidate) => {
     if (!candidate || !candidate.candidate) return; // end-of-candidates; native uses ICE consent, not this
-    candOut.push(toCandidateLine(candidate.candidate));
+    outbox.push({ slot: "cand/answerer", id: candOutId++, payload: toCandidateLine(candidate.candidate) });
   });
 
   // 1. Await the offer (bounded by the watchdog), then set it as the remote description.
@@ -175,26 +184,36 @@ async function main() {
   }
   console.log("[node] answer published");
 
-  // 3. Drain trickled local candidates → PUT to cand/answerer (single consumer of sigOut). A background
-  //    loop; runs until the deadline, then the process exits and tears it down.
+  // 3. Drain the PUT queue → sigOut (its single writer). Trickled candidates ride it, and so does a later
+  //    round's answer (step 4) — which is why the queue exists at all: before renegotiation there was only
+  //    ever one writer and the answer could be PUT inline. A background loop; runs until the deadline, then
+  //    the process exits and tears it down.
   (async () => {
-    let i = 0;
     while (Date.now() < deadline) {
-      if (candOut.length > 0) {
-        await sigOut.put("cand/answerer", i, candOut.shift());
-        i++;
+      if (outbox.length > 0) {
+        const r = outbox.shift();
+        await sigOut.put(r.slot, r.id, r.payload);
       } else {
         await sleep(50);
       }
     }
   })();
 
-  // 4. Poll the offerer's trickled candidates → addIceCandidate (single consumer of sigIn). The native
-  //    side sends bare `candidate:...` strings for a single m-line, so we supply sdpMLineIndex 0; werift's
-  //    IceCandidate.fromJSON strips the "candidate:" prefix and resolves the m-section by that index.
+  // 4. Poll the offerer's trickled candidates → addIceCandidate, and any LATER round's offer → re-answer
+  //    (single consumer of sigIn, which is why the re-answer is handled here rather than from a second loop
+  //    that would race this one's socket read). The native side sends bare `candidate:...` strings for a
+  //    single m-line, so we supply sdpMLineIndex 0; werift's IceCandidate.fromJSON strips the "candidate:"
+  //    prefix and resolves the m-section by that index.
   (async () => {
     let seen = 0;
+    let round = FIRST_RESTART_ROUND;
     while (Date.now() < deadline) {
+      // A further offer means the offerer restarted ICE (RFC 8445 §9 — its s8 phase): re-answer it on the
+      // SAME peer connection. A restart renegotiates ICE and nothing else, so the DTLS association and
+      // every open data channel are untouched, and this side has nothing to do beyond answering again
+      // (RFC 8842 §5.5). Failing to re-answer would leave the offerer's restart unconverged.
+      const offers = await sigIn.poll("offer", round);
+      if (offers.length > 0 && (await reanswer(pc, outbox, round, offers[0]))) round++;
       const cands = await sigIn.poll("cand/offerer", seen);
       for (const c of cands) {
         try {
@@ -244,6 +263,31 @@ async function main() {
 
 // The offerer's completion word on the control channel (see the Kotlin ControlChannel).
 const DONE_MARKER = "DONE";
+
+// The first offer/answer round that can only be an ICE restart. Round 0 negotiates the session; the
+// offerer's s8 phase publishes round 1 after the harness moves it onto a second carrier. Both peers key
+// their mailbox records by the same round, so the two halves line up without either announcing anything.
+const FIRST_RESTART_ROUND = 1;
+
+// reanswer applies a later round's offer and queues the answer under the SAME record id, so both peers'
+// rounds line up in the mailbox. Deliberately the same three calls as round 0: a restart is a renegotiation
+// of the existing session, not a second session. Returns false — leaving the round unconsumed so the next
+// poll retries it — if the engine rejected the offer, since a half-applied round is worse than a retried one.
+async function reanswer(pc, outbox, round, offer) {
+  try {
+    await pc.setRemoteDescription({ type: "offer", sdp: offer });
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    outbox.push({ slot: "answer", id: round, payload: pc.localDescription.sdp });
+  } catch (e) {
+    console.log(`[node] FAILED to re-answer round ${round}: ${e}`);
+    return false;
+  }
+  // The line run-interop.sh greps on the restart lanes: this peer's OWN report that it re-answered, which
+  // is the half of the proof only the answerer can give. Every reflector family prints the same token.
+  console.log(`[node] re-answered round ${round} — the offerer restarted ICE`);
+  return true;
+}
 
 // awaitOffer polls the `offer` slot until a record appears or the watchdog fires.
 async function awaitOffer(sig, deadline) {

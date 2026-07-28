@@ -42,8 +42,7 @@ internal data class FamilyBinding(
  * exactly one run.
  */
 internal sealed interface IceRestartPhase {
-    /** s8 does not run — every foreign-peer lane (a dumb reflector cannot re-answer) and every lane with
-     *  only one carrier to sit behind. */
+    /** s8 does not run — every lane with only one carrier to sit behind. */
     data object Off : IceRestartPhase
 
     /** s8 runs and asserts only that the restart reconverged on a DIFFERENT pair. */

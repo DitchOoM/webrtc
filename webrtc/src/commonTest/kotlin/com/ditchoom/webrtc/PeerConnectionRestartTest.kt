@@ -256,6 +256,39 @@ class PeerConnectionRestartTest {
         }
 
     @Test
+    fun we_answer_the_peers_restart_offer_without_re_deciding_our_dtls_role() =
+        runTest {
+            // The direction the fixtures above never ran: the ROUND-0 OFFERER answering a restart offer.
+            // Bob (round-0 answerer, DTLS client) restarts and re-offers `a=setup:actpass`, which RFC 8842
+            // §5.5 is explicit is what an endpoint keeping its association offers — continuity is signalled
+            // by the unchanged fingerprint, not by the setup value. Alice must answer it keeping the SERVER
+            // role she resolved in round 0; re-running the initial-offer rule (actpass ⇒ we are active)
+            // would have her claim the client role the association already gave away, and RFC 8445 §9's
+            // "agents MUST NOT redetermine the roles as part of an ICE restart" is exactly that prohibition.
+            val f = connectedPeers()
+            val channel = f.alice.createDataChannel(DataChannelConfig(label = "restart/foreign"))
+            val streamId = channel.id
+            assertEquals("before", echo(channel, "before"))
+            val alicePairBefore = knownPair(f.alice.connectionState.value)
+            val aliceUfragBefore = ufragOf(f.alice.createAnswer())
+
+            f.bob.restartIce()
+            renegotiate(f.bob, f.alice)
+
+            val connected =
+                assertNotNull(
+                    withTimeoutOrNull(timeout) {
+                        f.alice.connectionState.first { it is PeerConnectionState.Connected && knownPair(it) != alicePairBefore }
+                    },
+                    "alice detected the peer's restart, restarted her own side and reconverged",
+                )
+            assertNotEquals(alicePairBefore, knownPair(connected))
+            assertNotEquals(aliceUfragBefore, ufragOf(f.alice.createAnswer()), "…on fresh local credentials (RFC 8445 §9)")
+            assertEquals(streamId, channel.id, "the data channel kept its stream id across the peer's restart")
+            assertEquals("after", echo(channel, "after"), "and the association survived on both sides")
+        }
+
+    @Test
     fun a_re_answer_that_flips_the_dtls_role_is_refused() =
         runTest {
             // RFC 8842 §5.5: an endpoint that wants to keep its DTLS association re-offers `a=setup:actpass`

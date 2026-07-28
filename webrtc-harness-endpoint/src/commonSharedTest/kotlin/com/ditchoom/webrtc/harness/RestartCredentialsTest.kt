@@ -180,6 +180,84 @@ class RestartCredentialsTest {
             append("a=sctp-port:5000\r\n")
         }
 
+    // ── s10 (issue #87): the SAME judgement, read about the two descriptions a peer-initiated restart
+    // produces. The pass condition is identical — RFC 8445 §9 and RFC 8842 §5.5 do not care who wrote the
+    // SDP — so what these pin is that both witnesses are actually required, and that each says whose
+    // generation it is talking about. A sentence naming the wrong side is worse than no sentence: it would
+    // send a reader looking for a bug in the peer when the bug is ours.
+
+    @Test
+    fun the_peers_own_restart_offer_is_judged_exactly_as_its_re_answer_would_be() {
+        val verdict = judge(answer(ufrag = "aaaa", pwd = "pwd-one"), answer(ufrag = "bbbb", pwd = "pwd-two"))
+        assertIs<ReanswerVerdict.Restarted>(verdict)
+        val detail = verdict.detail(RestartWitness.PeerReoffer)
+        assertTrue(detail.startsWith("the peer's own restart offer"), detail)
+        assertTrue("really restarted ICE" in detail, detail)
+    }
+
+    @Test
+    fun our_own_answer_is_what_says_we_detected_the_peers_restart() {
+        val verdict = judge(answer(ufrag = "aaaa", pwd = "pwd-one"), answer(ufrag = "bbbb", pwd = "pwd-two"))
+        val detail = verdict.detail(RestartWitness.OurAnswer)
+        assertTrue(detail.startsWith("our answer to the peer's restart offer"), detail)
+        assertTrue("we detected the peer's restart" in detail, detail)
+    }
+
+    /**
+     * The failure this lane exists to catch, and the one nothing else can see: the peer really restarted,
+     * and OUR side answered on the credentials it already had — i.e. the RFC 8445 §9 detection rule did not
+     * fire. Every check we then send authenticates against a generation the peer has abandoned, and the
+     * session looks merely "slow to reconverge" from every other observable.
+     */
+    @Test
+    fun answering_a_restart_on_our_old_credentials_names_our_side_as_the_one_at_fault() {
+        val verdict = judge(answer(ufrag = "aaaa", pwd = "pwd-one"), answer(ufrag = "aaaa", pwd = "pwd-one"))
+        assertEquals(CredentialGap.Neither, assertIs<ReanswerVerdict.NotRestarted>(verdict).gap)
+        val detail = verdict.detail(RestartWitness.OurAnswer)
+        assertTrue(detail.startsWith("our answer to the peer's restart offer"), detail)
+        assertTrue("we did not detect it" in detail, detail)
+    }
+
+    /** …and the mirror: a peer that re-offered without restarting is named as the peer, not as us. */
+    @Test
+    fun a_re_offer_without_a_restart_names_the_peer_as_the_one_at_fault() {
+        val verdict = judge(answer(ufrag = "aaaa", pwd = "pwd-one"), answer(ufrag = "aaaa", pwd = "pwd-one"))
+        val detail = verdict.detail(RestartWitness.PeerReoffer)
+        assertTrue(detail.startsWith("the peer's own restart offer"), detail)
+        assertTrue("no restart for us to detect" in detail, detail)
+    }
+
+    @Test
+    fun a_rebuilt_transport_reads_the_same_whichever_side_produced_it() {
+        val verdict =
+            judge(
+                answer(ufrag = "aaaa", pwd = "pwd-one", fingerprint = FINGERPRINT_A),
+                answer(ufrag = "bbbb", pwd = "pwd-two", fingerprint = FINGERPRINT_B),
+            )
+        assertIs<ReanswerVerdict.TransportRebuilt>(verdict)
+        for (witness in RestartWitness.entries) {
+            val detail = verdict.detail(witness)
+            assertTrue(detail.startsWith(witness.subject), detail)
+            assertTrue("NEW association" in detail, detail)
+        }
+    }
+
+    /**
+     * s10 requires BOTH witnesses. Neither alone is the property: the peer's offer alone says nothing about
+     * whether we noticed, and our answer alone would pass against a peer that restarted nothing (there is
+     * no such thing as detecting a restart that did not happen).
+     */
+    @Test
+    fun the_evidence_carries_both_sides_of_the_round() {
+        val evidence =
+            ForeignRestartEvidence(
+                peerReoffer = judge(answer(ufrag = "aaaa", pwd = "p1"), answer(ufrag = "bbbb", pwd = "p2")),
+                ourAnswer = judge(answer(ufrag = "cccc", pwd = "p3"), answer(ufrag = "cccc", pwd = "p3")),
+            )
+        assertIs<ReanswerVerdict.Restarted>(evidence.peerReoffer)
+        assertIs<ReanswerVerdict.NotRestarted>(evidence.ourAnswer)
+    }
+
     private companion object {
         const val SESSION_PREAMBLE =
             "v=0\r\n" +

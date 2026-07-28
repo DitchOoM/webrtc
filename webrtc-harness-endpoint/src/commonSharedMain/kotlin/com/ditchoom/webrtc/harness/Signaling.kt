@@ -63,6 +63,25 @@ internal enum class Slot(
      * rather than a sleep either side would otherwise have to guess at (directive #4).
      */
     CarrierSwitch("carrier"),
+
+    /**
+     * The reverse-direction offer/answer pair (s10, issue #87). `Offer`/`Answer` above are offerer→answerer
+     * and answerer→offerer *for rounds we originate*; a round the PEER originates cannot share them — the
+     * record ids would collide with ours, and a peer writing into the slot we write is a second writer on a
+     * slot the mailbox keys by (slot, id) alone. So a peer-originated round gets its own two slots, with its
+     * own round numbering starting at 0.
+     */
+    PeerOffer("peer-offer"),
+    PeerAnswer("peer-answer"),
+
+    /**
+     * The lifecycle word that asks the ANSWERER to restart ICE and re-offer (s10). Written by the offerer
+     * once the harness has moved it onto the second carrier, and polled by every reflector family from the
+     * loop it already polls the offer slot with — see `docs/DC_SEMANTICS_INTEROP_DESIGN.md` §4 for why the
+     * reflector may act on a lifecycle word without ceasing to be dumb: it never learns *why* a fresh ICE
+     * generation was asked for, and a lane that never writes this slot never reaches the code.
+     */
+    PeerRestart("peer-restart"),
 }
 
 // [RecordId] — the per-slot record index wrapper — lives in commonMain (SignalingTypes.kt): `@JvmInline`

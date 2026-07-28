@@ -303,6 +303,9 @@ private suspend fun runOfferer(
         when (val restart = cfg.iceRestart) {
             IceRestartPhase.Off, IceRestartPhase.AnyNewPath -> null
             is IceRestartPhase.ExpectCarrier -> restart.carrierIp
+            // s10 moves us onto the same carrier; only the initiator of the restart differs, so the
+            // re-gathered generation has to reach exactly the same public address to prove it followed.
+            is IceRestartPhase.ForeignInitiated -> restart.carrierIp
         }
     val publicAddressSeen = CompletableDeferred<Unit>()
 
@@ -328,9 +331,19 @@ private suspend fun runOfferer(
     val initialAnswerCredentials = CompletableDeferred<RoundCredentials>()
     val restartAnswerCredentials = CompletableDeferred<RoundCredentials>()
 
+    // s10 (issue #87), the mirror of the above for a restart the PEER originates: what its own re-offer
+    // carried, and what OUR answer to it carried. The second is the direct evidence that our detection rule
+    // fired — a stack that had not recognised the offer as a restart answers on the credentials it already
+    // had — and it is observable in nothing else this peer publishes. Our round-0 offer is the baseline
+    // both are judged against, so it is read here, once, from the offer we just built.
+    val ourInitialCredentials = credentialsOf(offer)
+    val peerReofferCredentials = CompletableDeferred<RoundCredentials>()
+    val ourReanswerCredentials = CompletableDeferred<RoundCredentials>()
+
     // One poll socket, single-consumer: each round's answer, then the answerer's trickled candidates.
     bg.launch {
         var answers = 0
+        var peerRounds = 0
         var seen = 0
         while (isActive) {
             // The answer to round `answers`. A restart lane signals TWO rounds (cfg.negotiationRounds):
@@ -350,6 +363,29 @@ private suspend fun runOfferer(
                     }
                     pc.setRemoteDescription(SdpType.Answer, a.first())
                     answers++
+                }
+            }
+            // s10 — an offer the PEER originated, on its own slots. Applied and answered from THIS loop,
+            // the single consumer of this socket, for the same reason the answerer answers a later round
+            // from its one loop. It is polled BEFORE the peer's candidates on purpose: a trickled candidate
+            // carries no ufrag (RFC 8838 §3.1), so the round that renames the peer's generation has to be
+            // applied before the candidates belonging to it, and in-order signaling is what makes that hold.
+            if (peerRounds < cfg.peerNegotiationRounds) {
+                val o = sigIn.poll(Slot.PeerOffer, RecordId(peerRounds))
+                if (o.isNotEmpty()) {
+                    forensics.recordSdp(Origin.Remote, Sdp(o.first()))
+                    peerReofferCredentials.complete(credentialsOf(o.first()))
+                    // The role this peer has never played in the harness: answerer. JSEP allows it from
+                    // `stable`, and a restart is a renegotiation of the existing session — so this is the
+                    // same three calls the answerer makes, in the direction we have never made them.
+                    pc.setRemoteDescription(SdpType.Offer, o.first())
+                    val reanswer = pc.createAnswer()
+                    forensics.recordSdp(Origin.Local, Sdp(reanswer))
+                    pc.setLocalDescription(SdpType.Answer, reanswer)
+                    ourReanswerCredentials.complete(credentialsOf(reanswer))
+                    outbox.trySend(OutboundRecord(Slot.PeerAnswer, RecordId(peerRounds), reanswer))
+                    println("[harness] answered the peer's restart offer (round $peerRounds) — the peer restarted ICE")
+                    peerRounds++
                 }
             }
             if (answers > 0) {
@@ -393,6 +429,22 @@ private suspend fun runOfferer(
             override suspend fun awaitPeerReanswer(): ReanswerVerdict? =
                 withTimeoutOrNull(REANSWER_WAIT) {
                     judgeReanswer(initialAnswerCredentials.await(), restartAnswerCredentials.await())
+                }
+
+            override suspend fun cuePeerRestart() {
+                outbox.trySend(OutboundRecord(Slot.PeerRestart, RecordId(0), PEER_RESTART_CUE))
+            }
+
+            override suspend fun awaitPeerRestartRound(): ForeignRestartEvidence? =
+                withTimeoutOrNull(PEER_REOFFER_WAIT) {
+                    ForeignRestartEvidence(
+                        // Both of the peer's descriptions, so "did it restart" is answered by the peer's own
+                        // SDP rather than inferred from a pair that moved…
+                        peerReoffer = judgeReanswer(initialAnswerCredentials.await(), peerReofferCredentials.await()),
+                        // …and both of ours, so "did WE detect it" is answered by the description our JSEP
+                        // produced in response, which is the property this whole lane exists for.
+                        ourAnswer = judgeReanswer(ourInitialCredentials, ourReanswerCredentials.await()),
+                    )
                 }
         }
 
@@ -499,8 +551,30 @@ private suspend fun runAnswerer(
     // — which is also why any LATER round is answered from inside it rather than from a loop of its own.
     bg.launch {
         var rounds = INITIAL_ROUND + 1
+        var peerRounds = 0
+        var cued = false
         var seen = 0
         while (isActive) {
+            // s10 (issue #87) — the lifecycle word that asks US to restart. Read off the mailbox this loop
+            // is already polling, which is exactly how `DONE` is read off the control channel: the reflector
+            // acts on a lifecycle word without learning why one was sent, so it stays scenario-agnostic and a
+            // lane that never writes the slot never reaches this code (cfg.peerNegotiationRounds is 0 there).
+            if (cfg.peerNegotiationRounds > 0 && !cued && sigIn.poll(Slot.PeerRestart, RecordId(0)).isNotEmpty()) {
+                cued = true
+                originateRestart(pc, forensics, outbox, peerRounds)
+            }
+            // …and the offerer's answer to it, which is what actually tells our agent the peer's new
+            // credentials. Without applying it our checklist would keep authenticating against the
+            // generation the restart superseded.
+            if (cued && peerRounds < cfg.peerNegotiationRounds) {
+                val a = sigIn.poll(Slot.PeerAnswer, RecordId(peerRounds))
+                if (a.isNotEmpty()) {
+                    forensics.recordSdp(Origin.Remote, Sdp(a.first()))
+                    pc.setRemoteDescription(SdpType.Answer, a.first())
+                    println("[harness] answerer: the peer answered our restart offer (round $peerRounds)")
+                    peerRounds++
+                }
+            }
             // A further offer means the peer restarted ICE (RFC 8445 §9, the offerer's s8): re-answer it
             // on the SAME session — the association and every open channel are untouched by a restart.
             // Only a lane that can have a second round ever asks for one (cfg.negotiationRounds).
@@ -596,6 +670,30 @@ private suspend fun answerRound(
     pc.setLocalDescription(SdpType.Answer, answer)
     if (round != INITIAL_ROUND) println("[harness] answerer: re-answered round $round — the peer restarted ICE")
     outbox.trySend(OutboundRecord(Slot.Answer, RecordId(round), answer))
+}
+
+/**
+ * s10 — restart ICE (RFC 8445 §9) and publish the resulting offer on the peer-originated slots, because the
+ * offerer asked for a fresh generation with the [Slot.PeerRestart] lifecycle word.
+ *
+ * The three calls are the ones the OFFERER has always made; only the direction is new. `restartIce()`
+ * records the intent and the next `createOffer()` carries it out, so the offer this publishes advertises a
+ * generation the offerer has never seen — which is the whole of what the lane asks it to detect.
+ */
+private suspend fun originateRestart(
+    pc: NativePeerConnection,
+    forensics: Forensics,
+    outbox: Channel<OutboundRecord>,
+    round: Int,
+) {
+    pc.restartIce()
+    val offer = pc.createOffer()
+    forensics.recordSdp(Origin.Local, Sdp(offer))
+    pc.setLocalDescription(SdpType.Offer, offer)
+    outbox.trySend(OutboundRecord(Slot.PeerOffer, RecordId(round), offer))
+    // The token every reflector family prints and `run-interop.sh` greps on the foreign-restart lanes: this
+    // peer's OWN report that it restarted, the half of the proof only the restarting side can give.
+    println("[harness] $PEER_RESTART_REPORT $round")
 }
 
 /**
@@ -706,6 +804,12 @@ private val PUBLIC_ADDRESS_WAIT = 15.seconds
 // gathering in it, and a peer that has not re-answered by now will not reconverge either — failing here
 // first is what turns the useless "never reconverged" into "the peer never re-answered".
 private val REANSWER_WAIT = 20.seconds
+
+// How long s10 waits for the PEER's own restart offer to land after we published the lifecycle word, and
+// for our answer to it to be produced. Longer than [REANSWER_WAIT] because the peer has more to do than
+// answer: it has to notice the word on its poll cadence, ask its stack for a fresh generation, and build an
+// offer from it. Still a watchdog on an observable event — the offer's arrival in the mailbox.
+private val PEER_REOFFER_WAIT = 30.seconds
 
 // Echo/flush windows for the IMPAIRED lane: with the harness's fast SCTP RTO (500ms initial, 100ms min),
 // a lost pong (or SACK) is recovered in well under a second per retransmit, so these need only cover a

@@ -35,25 +35,40 @@ internal data class FamilyBinding(
 )
 
 /**
- * Whether the s8 ICE-restart phase runs, and what the restarted session has to land on.
+ * Whether an ICE-restart phase runs, **who initiates it**, and what the restarted session has to land on.
  *
- * A sealed choice rather than a flag beside a nullable address: those two fields can also spell "the phase
- * is off, but here is the carrier it must land on", which is not a run anyone can have. Each case here is
- * exactly one run.
+ * A sealed choice rather than a flag beside a nullable address and a direction boolean: those fields can
+ * also spell "the phase is off, but here is the carrier it must land on" or "nobody initiates", neither of
+ * which is a run anyone can have. Each case here is exactly one run.
  */
 internal sealed interface IceRestartPhase {
-    /** s8 does not run — every lane with only one carrier to sit behind. */
+    /** No restart phase runs — every lane with only one carrier to sit behind. */
     data object Off : IceRestartPhase
 
-    /** s8 runs and asserts only that the restart reconverged on a DIFFERENT pair. */
+    /** WE initiate the restart (s8) and assert only that it reconverged on a DIFFERENT pair. */
     data object AnyNewPath : IceRestartPhase
 
     /**
-     * s8 runs and additionally asserts the new pair's local address is [carrierIp] — the public address of
-     * the carrier the orchestrator moved us onto mid-session (`topo=carrier-switch`). Without this the
-     * phase would pass on any pair change at all, including one that reconverged on the carrier we left.
+     * WE initiate the restart (s8), and it additionally asserts the new pair's local address is [carrierIp]
+     * — the public address of the carrier the orchestrator moved us onto mid-session
+     * (`topo=carrier-switch`). Without this the phase would pass on any pair change at all, including one
+     * that reconverged on the carrier we left.
      */
     data class ExpectCarrier(
+        val carrierIp: String,
+    ) : IceRestartPhase
+
+    /**
+     * The **PEER** initiates the restart (s10, issue #87): the harness moves us onto [carrierIp], we ask the
+     * answerer for a fresh ICE generation with the [Slot.PeerRestart] lifecycle word, and the restart offer
+     * comes back at us. Same carrier assertion as [ExpectCarrier] — the carrier is peer A's either way — but
+     * the property under test is the opposite one: that WE detect and answer somebody else's restart.
+     *
+     * Deliberately exclusive with the two above: a lane restarts in one direction. Both would need two
+     * carriers to move between, and the second restart would have to prove its reconvergence against a pair
+     * the first one had just changed.
+     */
+    data class ForeignInitiated(
         val carrierIp: String,
     ) : IceRestartPhase
 }
@@ -179,11 +194,29 @@ internal data class HarnessConfig(
     fun runsScenario(id: String): Boolean = scenarios.isEmpty() || id in scenarios
 
     /**
-     * How many offer/answer rounds this run signals. One normally; two when s8 re-offers with a fresh ICE
-     * generation. It bounds the mailbox polling on BOTH sides, so a lane that cannot restart keeps exactly
-     * the single-round poll sequence it has always had.
+     * How many rounds this run signals on the `offer`/`answer` slots — the ones WE originate. One normally;
+     * two when s8 re-offers with a fresh ICE generation. It bounds the mailbox polling on BOTH sides, so a
+     * lane that cannot restart keeps exactly the single-round poll sequence it has always had. A
+     * peer-originated restart (s10) adds no round here: it rides its own slots (see [Slot.PeerOffer]).
      */
-    val negotiationRounds: Int get() = if (iceRestart == IceRestartPhase.Off) 1 else 2
+    val negotiationRounds: Int
+        get() =
+            when (iceRestart) {
+                IceRestartPhase.Off, is IceRestartPhase.ForeignInitiated -> 1
+                IceRestartPhase.AnyNewPath, is IceRestartPhase.ExpectCarrier -> 2
+            }
+
+    /**
+     * How many rounds this run signals on the `peer-offer`/`peer-answer` slots — the ones the PEER
+     * originates (s10). Exactly one on a foreign-restart lane and none anywhere else, which is what keeps
+     * every other lane's poll sequence byte-identical to what it has always been.
+     */
+    val peerNegotiationRounds: Int
+        get() =
+            when (iceRestart) {
+                IceRestartPhase.Off, IceRestartPhase.AnyNewPath, is IceRestartPhase.ExpectCarrier -> 0
+                is IceRestartPhase.ForeignInitiated -> 1
+            }
 
     companion object {
         fun fromEnv(): HarnessConfig {
@@ -237,6 +270,15 @@ internal data class HarnessConfig(
                 iceRestart =
                     when {
                         !env("WEBRTC_ICE_RESTART").isTruthy() -> IceRestartPhase.Off
+                        // WEBRTC_RESTART_INITIATOR names WHO restarts: `peer` is s10 (issue #87), anything
+                        // else — including absent — is s8, the direction every restart lane has run so far.
+                        // The peer direction needs the carrier named: without it the phase could not say
+                        // where the restart landed, and there is no reason to run it blind when the lane it
+                        // runs on always has one.
+                        env("WEBRTC_RESTART_INITIATOR").equals("peer", ignoreCase = true) ->
+                            env("WEBRTC_RESTART_CARRIER")
+                                ?.let { IceRestartPhase.ForeignInitiated(it) }
+                                ?: error("WEBRTC_RESTART_INITIATOR=peer requires WEBRTC_RESTART_CARRIER")
                         else ->
                             env("WEBRTC_RESTART_CARRIER")
                                 ?.let { IceRestartPhase.ExpectCarrier(it) }

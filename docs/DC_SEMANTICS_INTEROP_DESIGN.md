@@ -6,9 +6,11 @@ sections above are the design as built. Prereq PR #52 (browser `getStats()` + ri
 
 **Phase numbering as built** (§5's S5 split in two once the reverse-direction phase was accepted):
 `s1` large · `s2` unordered · `s3` partial-reliable · `s4` multiplex · **`s5` reverse** · **`s7`
-per-channel close** · **`s6` association close**. The ids are stable log labels, not a chronology: `s6`
+per-channel close** · **`s9` consent-idle** · **`s8` ICE restart (we initiate)** / **`s10` ICE restart (the
+peer initiates)** · **`s6` association close**. The ids are stable log labels, not a chronology: `s6`
 ends the association, so it is by construction last and `s7` — added once `webrtc-sctp` could reset a
-single stream (see D1 below) — runs before it.
+single stream (see D1 below) — runs before it. `s8` and `s10` are the two directions of one renegotiation
+and are mutually exclusive: a lane restarts one way or the other, never both.
 
 **Two things the design note got wrong about the code**, found while building it — both fixed in the same
 PR rather than papered over:
@@ -61,8 +63,9 @@ entire contract becomes:
 
 > For every incoming data channel, echo every message back **on the same channel**, verbatim (same
 > bytes, same string/binary type). If that channel is closed by the remote, mirror-close our end.
-> If a further offer appears in the mailbox, answer it on the same connection. Exit 0 once the offerer
-> signals completion (see §4), having echoed everything without error.
+> If a further offer appears in the mailbox, answer it on the same connection. If the `RESTART` lifecycle
+> word appears in the mailbox, ask your own stack for a fresh ICE generation and re-offer it. Exit 0 once
+> the offerer signals completion (see §4), having echoed everything without error.
 
 The re-answer clause was added for the ICE-restart lanes (issue #71) and is deliberately phrased as a
 *signaling* obligation, not a scenario one: the reflector reads a round off the mailbox it is already
@@ -149,6 +152,20 @@ WebKit each get a `restart-<family>` lane. werift re-answers correctly and then 
 connectivity checks on the answerer path, so its session does not survive the restart and it has no lane —
 the measurement, and why a reduced lane would have asserted nothing worth having, are in the harness
 README's carrier-switch section.
+
+**The second lifecycle word, `RESTART` (issue #87).** The clause above lets a foreign stack answer a restart
+*we* initiate. The reverse — a restart *it* initiates, which is what tests our own detection rule — needs one
+more thing, because no third-party stack restarts ICE because somebody else's carrier moved: a browser
+restarts when its app calls `restartIce()`, Pion and werift when theirs does, and none of them has an app
+here beyond the reflector. So the contract gains a second word beside `DONE`, read off the same mailbox the
+reflector is already polling and acted on with the three calls the *offerer* has always made
+(`restartIce()`/`createOffer({iceRestart:true})` → `setLocalDescription` → publish). The dumbness is intact
+by the same test as the re-answer clause: the reflector never learns that the network moved, never learns
+what a restart is for, never branches on one, and on a lane that does not write the slot the code is not
+reached. It rides the **mailbox** rather than the control channel because by the time it is sent the carrier
+under the data path has already been switched away — a word on that channel would arrive, if at all, after
+the thing it asks for. `foreign-restart-{native,pion,chrome,firefox,webkit}` run it; werift again has no
+lane, and measuring *why* corrected the diagnosis above (see the README).
 
 ## 5. Concrete scenario set
 

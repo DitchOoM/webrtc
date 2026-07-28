@@ -217,6 +217,26 @@ async function main() {
     let round = FIRST_RESTART_ROUND;
     let peerRound = 0;
     let cued = false;
+    // The trickled candidates read since the last remote description was applied. A trickled candidate
+    // carries no ufrag (RFC 8838 §3.1), so every peer attributes one to whatever generation its CURRENT
+    // remote description names; one read in the window before a renegotiation's description arrives lands
+    // in the generation the restart just superseded and is discarded there, leaving the new generation with
+    // an empty checklist and nothing in any log to say so. Publishing in order does not fix it — the reader
+    // can always split its two polls around the arrival — so these are re-applied on every remote
+    // description instead. Duplicate adds are ignored by every stack. See PR #93.
+    let sinceDescription = [];
+    const reattribute = async (why) => {
+      if (!sinceDescription.length) return;
+      console.log(`[node] re-applying ${sinceDescription.length} candidate(s) recorded under the previous description to the generation ${why} named`);
+      for (const c of sinceDescription) {
+        try {
+          await pc.addIceCandidate({ candidate: c, sdpMLineIndex: 0 });
+        } catch (e) {
+          console.log(`[node] re-addIceCandidate(${JSON.stringify(c)}) error: ${e}`);
+        }
+      }
+      sinceDescription = [];
+    };
     while (Date.now() < deadline) {
       // The SECOND lifecycle word (issue #87): the offerer asks THIS peer for a fresh ICE generation,
       // because no stack restarts because somebody else's carrier moved. Read off the mailbox this loop is
@@ -236,6 +256,7 @@ async function main() {
           try {
             await pc.setRemoteDescription({ type: "answer", sdp: answers[0] });
             console.log(`[node] the offerer answered our restart offer (round ${peerRound})`);
+            await reattribute("this answer");
             peerRound += 1;
           } catch (e) {
             console.log(`[node] FAILED setRemoteDescription(peer-answer ${peerRound}): ${e}`);
@@ -247,9 +268,16 @@ async function main() {
       // every open data channel are untouched, and this side has nothing to do beyond answering again
       // (RFC 8842 §5.5). Failing to re-answer would leave the offerer's restart unconverged.
       const offers = await sigIn.poll("offer", round);
-      if (offers.length > 0 && (await reanswer(pc, outbox, round, offers[0]))) round++;
+      if (offers.length > 0 && (await reanswer(pc, outbox, round, offers[0]))) {
+        await reattribute("the offerer's restart offer");
+        round++;
+      }
       const cands = await sigIn.poll("cand/offerer", seen);
+      if (cands.length > 0 && cued && peerRound < 1) {
+        console.log(`[node] unattributable candidate(s) (${cands.length}) — read while our restart round is unanswered`);
+      }
       for (const c of cands) {
+        sinceDescription.push(c);
         try {
           await pc.addIceCandidate({ candidate: c, sdpMLineIndex: 0 });
         } catch (e) {

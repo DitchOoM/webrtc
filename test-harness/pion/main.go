@@ -227,6 +227,26 @@ func run() int {
 		peerRound := 0
 		cued := false
 		zero := uint16(0)
+		// The trickled candidates read since the last remote description was applied. A trickled candidate
+		// carries no ufrag (RFC 8838 §3.1), so every peer attributes one to whatever generation its CURRENT
+		// remote description names; one read in the window before a renegotiation's description arrives
+		// lands in the generation the restart just superseded and is discarded there, leaving the new
+		// generation with an empty checklist and nothing in any log to say so. Publishing in order does not
+		// fix it — the reader can always split its two polls around the arrival — so these are re-applied on
+		// every remote description instead. Duplicate adds are ignored by every stack. See PR #93.
+		sinceDescription := []string{}
+		reattribute := func(why string) {
+			if len(sinceDescription) == 0 {
+				return
+			}
+			fmt.Printf("[pion] re-applying %d candidate(s) recorded under the previous description to the generation %s named\n", len(sinceDescription), why)
+			for _, c := range sinceDescription {
+				if err := pc.AddICECandidate(webrtc.ICECandidateInit{Candidate: c, SDPMLineIndex: &zero}); err != nil {
+					fmt.Printf("[pion] re-AddICECandidate(%q) error: %v\n", c, err)
+				}
+			}
+			sinceDescription = sinceDescription[:0]
+		}
 		for time.Now().Before(deadline) {
 			// The SECOND lifecycle word (issue #87): the offerer asks THIS peer for a fresh ICE generation,
 			// because no stack restarts because somebody else's carrier moved. Read off the mailbox this
@@ -247,6 +267,7 @@ func run() int {
 						fmt.Printf("[pion] FAILED SetRemoteDescription(peer-answer %d): %v\n", peerRound, err)
 					} else {
 						fmt.Printf("[pion] the offerer answered our restart offer (round %d)\n", peerRound)
+						reattribute("this answer")
 						peerRound++
 					}
 				}
@@ -257,11 +278,16 @@ func run() int {
 			// again (RFC 8842 §5.5). Failing to re-answer would leave the offerer's restart unconverged.
 			if offers := sigIn.poll("offer", round); len(offers) > 0 {
 				if reanswer(pc, outbox, round, offers[0]) {
+					reattribute("the offerer's restart offer")
 					round++
 				}
 			}
 			cands := sigIn.poll("cand/offerer", seen)
+			if len(cands) > 0 && cued && peerRound < 1 {
+				fmt.Printf("[pion] unattributable candidate(s) (%d) — read while our restart round is unanswered\n", len(cands))
+			}
 			for _, c := range cands {
+				sinceDescription = append(sinceDescription, c)
 				// Single m-line (mid:0); the native side sends bare candidate strings, so supply the
 				// mline index Pion's API wants.
 				if err := pc.AddICECandidate(webrtc.ICECandidateInit{Candidate: c, SDPMLineIndex: &zero}); err != nil {

@@ -324,6 +324,41 @@ async function answererInPage(cfg) {
   const PEER_ANSWER_SLOT = 'peer-answer';
   const PEER_RESTART_REPORT = 'peer-initiated restart: re-offered round';
 
+  // The trickled candidates read since the last remote description was applied.
+  //
+  // A trickled candidate carries no ufrag (RFC 8838 §3.1), so every peer attributes one to whatever
+  // generation its CURRENT remote description names. Across a renegotiation that is a race nobody wins: the
+  // description and the candidates of the generation it introduces are separate mailbox records, and one
+  // read in the window before the description is applied lands in the generation the restart just
+  // superseded, where it is discarded — leaving the new generation with an EMPTY checklist, no connectivity
+  // checks, and no log line anywhere saying so. That is precisely how this page failed intermittently
+  // (PR #93): it polled `peer-answer` a moment before our answer landed and `cand/offerer` a moment after,
+  // so all three of the offerer's new-generation candidates went to the old one.
+  //
+  // Publishing in order does not fix it — the reader can always split the two polls around the arrival — so
+  // the fix is timing-independent instead: re-apply on every remote description. The cost is a duplicate
+  // add, which every stack ignores.
+  let sinceDescription = [];
+  // How many of those were read while a renegotiation of ours was outstanding — i.e. genuinely
+  // unattributable, as opposed to merely stale. Both are re-applied (a stale one is a duplicate the far
+  // side ignores), but only this count is evidence the window actually opened, so the two are reported
+  // apart rather than as one number that overclaims.
+  let windowReads = 0;
+  const reattribute = async (why) => {
+    if (!sinceDescription.length) return;
+    log(`re-applying ${sinceDescription.length} candidate(s) recorded under the previous description to the generation ${why} named` +
+        ` — ${windowReads} of them read while our round was unanswered`);
+    for (const c of sinceDescription) {
+      try {
+        await pc.addIceCandidate({ candidate: c, sdpMLineIndex: 0 });
+      } catch (e) {
+        log('re-addIceCandidate error:', e.message);
+      }
+    }
+    sinceDescription = [];
+    windowReads = 0;
+  };
+
   // Restart ICE (RFC 8445 §9) and publish the resulting offer on the peer-originated slots.
   // `createOffer({ iceRestart: true })` is the W3C way to ask for a fresh generation and is what all three
   // engines implement (`restartIce()` is the newer spelling of the same thing) — so the offer carries an
@@ -358,6 +393,9 @@ async function answererInPage(cfg) {
     // The line run-interop.sh greps on the restart lanes: this peer's OWN report that it re-answered, which
     // is the half of the proof only the answerer can give. Every reflector family prints the same token.
     log(`re-answered round ${round} — the offerer restarted ICE`);
+    // The offerer's restart offer renamed ITS generation, so candidates read before it landed belong to
+    // the new one — the s8 direction of the same race. See `sinceDescription`.
+    await reattribute('the offerer\'s restart offer');
     snapshotStats('reanswered');
     return true;
   };
@@ -408,6 +446,7 @@ async function answererInPage(cfg) {
           try {
             await pc.setRemoteDescription({ type: 'answer', sdp: answers[0] });
             log(`the offerer answered our restart offer (round ${peerRound})`);
+            await reattribute('this answer');
             peerRound += 1;
           } catch (e) {
             log(`FAILED setRemoteDescription(peer-answer ${peerRound}):`, e.message);
@@ -421,11 +460,34 @@ async function answererInPage(cfg) {
       const offers = await poll('offer', round);
       if (offers.length && (await reanswer(offers[0], round))) round++;
       const cands = await poll('cand/offerer', seen);
+      // A candidate read in the window before a renegotiation's description arrives cannot be attributed to
+      // a generation, and there are TWO ways to lose it. UNTAGGED, it is attributed to whatever the current
+      // remote description names — the generation the restart superseded — and discarded when the new one
+      // replaces it. TAGGED (our peer stamps ` ufrag <x>` on the line since #92, RFC 8838 §3.1), the W3C
+      // RTCIceCandidate constructor parses it into `usernameFragment`, and addIceCandidate REJECTS with
+      // OperationError because it names no APPLIED remote description. Loud rather than silent — but the
+      // catch below swallowed it, so it was lost just the same.
+      //
+      // `sinceDescription` therefore retains the line BEFORE the add is attempted, deliberately: the buffer
+      // has to OWN the rejected case, not merely happen to contain it.
+      if (cands.length && cued && peerRound < 1) {
+        windowReads += cands.length;
+        log(`unattributable candidate(s) (${cands.length}) — read while our restart round is unanswered`);
+        // Which of the two loss paths this engine takes, answered on the wire rather than from the spec:
+        // does the generation tag reach the browser as a usernameFragment at all?
+        try {
+          const probe = new RTCIceCandidate({ candidate: cands[0], sdpMLineIndex: 0 });
+          log('ufrag-probe: usernameFragment=' + JSON.stringify(probe.usernameFragment));
+        } catch (e) {
+          log('ufrag-probe: unparseable —', e.message);
+        }
+      }
       for (const c of cands) {
+        sinceDescription.push(c);
         try {
           await pc.addIceCandidate({ candidate: c, sdpMLineIndex: 0 });
         } catch (e) {
-          log('addIceCandidate error:', e.message);
+          log('addIceCandidate rejected:', (e.name || '?') + ':', e.message, '— retained for re-application');
         }
       }
       seen += cands.length;

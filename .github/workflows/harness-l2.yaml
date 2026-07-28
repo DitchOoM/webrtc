@@ -47,7 +47,16 @@ jobs:
   build-peer:
     name: "cross-build peer (x64 → x64 + arm64)"
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # A WARM run is 6-7 minutes, so no value in this range does any performance-detection work; the budget
+    # exists to stop a wedge. What it must actually cover is a COLD run — a ~600 MB Konan download plus a
+    # full compile of both native targets and BoringSSL for each — and that path is unmeasured, because the
+    # `Cache Konan` key below has not been invalidated in over forty runs. It goes cold on any change to
+    # `gradle/libs.versions.toml` (a dependabot bump will do it) or simply after a week's cache eviction, so
+    # it goes cold on a PR that has nothing to do with it. The one time the old 45-minute budget was
+    # actually reached, it surfaced as an unrelated red whose log tail pointed at whatever happened to be
+    # running when the budget expired (a CDN stall, fixed in #94) — expensive to diagnose and misleading
+    # while undiagnosed. 90 leaves room for the cold path to be slow without being wrong.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
 

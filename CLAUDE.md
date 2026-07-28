@@ -57,6 +57,19 @@ that names them) twice, differing only in that policy — tagged it converges on
 untagged it still converges, but **peer-reflexively**, because the re-gathered candidates were naturalized
 into the generation being abandoned and RFC 8445 §7.3.1.3 had to rediscover the path.
 
+**mDNS goes both ways** (RFC 8828, #88): a session configured with
+`PeerConnectionConfig(mdnsAdvertising = MdnsAdvertisePolicy.Advertise(MulticastMdnsEndpoint(scope)))` mints a
+stable-per-address `<uuid>.local` for each host candidate, publishes *that* instead of the address, and
+answers the peer's A/AAAA queries for it (RFC 6762 §6, including the one-shot legacy shape a resolve-only
+peer sends). It also redacts what a name alone would leave behind: the `raddr` of every reflexive/relayed
+candidate — which *is* the host base — and the **foundation**, which this stack derives from the base IP and
+would otherwise spell the private address out in field 1 of the same line. Everything but the socket is
+`commonMain`: `MdnsEndpoint` + `MdnsResponder` run over the vnet under `runTest`, and only
+`MdnsMulticastBinder` (bind 5353, join the group) is a platform actual. It is **opt-in**, because a name
+nothing answers costs the peer the candidate outright and `commonMain` cannot construct a responder — the
+`mdns-{chrome,firefox}` lanes turn it on and gate on the browser having resolved *ours* (`mdns answered` on
+our side, a `type=host` remote candidate at our IP on the browser's).
+
 **What is genuinely left** (none of it blocking; each item has a tracking issue): no production
 `NetworkMonitor` actual enumerating real OS interfaces, so `IceRestartPolicy` defaults to `Manual`
 (#69 — platform-edge work, per target; it needs no socket-core dependency); foreign-peer renegotiation
@@ -68,8 +81,7 @@ answer) is unexercised (#87);
 those lanes are v4-only, because `carrier-switch` is, so the v6/dual families skip them, and there is
 deliberately no `restart-node` lane — werift publishes a correct re-answer but never runs a connectivity
 check on the new generation, so its session does not survive the restart at all (measured, with capture
-counts, in `test-harness/README.md`); mDNS is resolve-only (#88 — we do not advertise our own `.local`, so
-host IPs are exposed where a browser would obfuscate); and media (RTP/SRTP) is Phase 2, untouched.
+counts, in `test-harness/README.md`); and media (RTP/SRTP) is Phase 2, untouched.
 Deliberate non-goals, not gaps: the dcSCTP subset (no multihoming, no RFC 8260
 interleaving, no HEARTBEAT — ICE consent freshness owns path liveness), RFC 6525's four non-originated
 request types (decoded and explicitly refused), and establishing a *new* DTLS association on

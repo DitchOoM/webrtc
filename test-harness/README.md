@@ -354,6 +354,24 @@ echoing `ping`→`pong`.
     directly-reachable IP that prflx already won on — no topology makes the mDNS pair win a same-LAN race.
     The NAT lanes keep obfuscation OFF (real-IP host candidates); WebKit still proves the srflx/relay path
     with `.local` present. Tracked as issue #48 (closed by PR #51).
+  - **…and, since #88, the MIRROR direction on the same lane**: `peer_mdns` also runs with
+    `WEBRTC_MDNS_ADVERTISE=true`, so *our* host candidates are published as `<uuid>.local` names minted by a
+    `MulticastMdnsEndpoint` — the two-way actual that serves the resolver and the responder over **one**
+    socket per family (a second socket on 5353 would take a hash-chosen share of the unicast replies to our
+    own queries). `WEBRTC_REQUIRE_MDNS_ANSWERED=true` makes rc=0 mean our responder actually **answered** a
+    foreign engine's query for a name we minted, and the log carries every decision — `mdns answered <name>
+    (Multicast)`, and the typed silences (`mdns silent: NotOurs(...)`, `NotAQuery`) that show the responder
+    refusing everything that is not ours. Measured against Chrome: it queries the name out of our candidate
+    line within ~200 ms of `setRemoteDescription` and we answer on the group.
+    **What this lane cannot assert, and why** — the mirror of the note above. A `remote-candidate:
+    type=host` at our IP never appears in the browser's `getStats()`, correctly: `lan0` has no NAT, so
+    coturn reflects our own LAN address and our *srflx* candidate is the **same transport address**
+    (`172.33.0.100:40000`) as the host candidate behind the name; libwebrtc prunes the redundant pair, so the
+    resolved host candidate is real but unobservable. The load-bearing proof is therefore `mdns answered`:
+    the browser can only have queried a name it read out of our own candidate line. The browser's log
+    corroborates from its side (`remote candidate: candidate:…<uuid>.local…`, and no `addIceCandidate
+    error`). **Mutation-checked**: with the responder made mute, Chrome still establishes and still exits 0
+    — the lane goes red only because of these assertions. Tracked as issue #88.
 - **Browser-side diagnostics (`driver.mjs`)**: on every run — pass *or* fail — the driver logs the engine's
   own `getStats()` as a 2s-cadence + per-lifecycle-edge timeline (grep `getStats-timeline:`) plus a readable
   digest (`stats-summary:` — selected pair + RTT, DTLS state, per-channel message/byte counters), and rich

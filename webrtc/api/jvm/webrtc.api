@@ -84,7 +84,30 @@ public final class com/ditchoom/webrtc/JsepStateException : java/lang/IllegalSta
 	public final fun getError ()Lcom/ditchoom/webrtc/sdp/JsepError;
 }
 
+public abstract interface class com/ditchoom/webrtc/MdnsAdvertisePolicy {
+}
+
+public final class com/ditchoom/webrtc/MdnsAdvertisePolicy$Advertise : com/ditchoom/webrtc/MdnsAdvertisePolicy {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/MdnsAdvertiser;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/MdnsAdvertiser;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/MdnsAdvertiser;)Lcom/ditchoom/webrtc/MdnsAdvertisePolicy$Advertise;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/MdnsAdvertisePolicy$Advertise;Lcom/ditchoom/webrtc/ice/MdnsAdvertiser;ILjava/lang/Object;)Lcom/ditchoom/webrtc/MdnsAdvertisePolicy$Advertise;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAdvertiser ()Lcom/ditchoom/webrtc/ice/MdnsAdvertiser;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/MdnsAdvertisePolicy$Disabled : com/ditchoom/webrtc/MdnsAdvertisePolicy {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/MdnsAdvertisePolicy$Disabled;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/NativePeerConnection : com/ditchoom/webrtc/RtcPeerConnection {
+	public static final field FOUNDATION_DIGITS I
+	public static final field FOUNDATION_RADIX I
 	public fun <init> (Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lkotlin/random/Random;Lcom/ditchoom/webrtc/ice/DatagramBinder;Lcom/ditchoom/webrtc/IceGatheringPolicy;Lcom/ditchoom/webrtc/DtlsTransportFactory;Lcom/ditchoom/webrtc/PeerConnectionConfig;)V
 	public synthetic fun <init> (Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lkotlin/random/Random;Lcom/ditchoom/webrtc/ice/DatagramBinder;Lcom/ditchoom/webrtc/IceGatheringPolicy;Lcom/ditchoom/webrtc/DtlsTransportFactory;Lcom/ditchoom/webrtc/PeerConnectionConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun addIceCandidate (Ljava/lang/String;Lcom/ditchoom/webrtc/ice/CandidateGeneration;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
@@ -104,8 +127,8 @@ public final class com/ditchoom/webrtc/NativePeerConnection : com/ditchoom/webrt
 }
 
 public final class com/ditchoom/webrtc/PeerConnectionConfig {
-	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;Lcom/ditchoom/webrtc/ice/MdnsResolver;JLcom/ditchoom/webrtc/IceRestartPolicy;Lcom/ditchoom/webrtc/TrickleGenerationPolicy;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;Lcom/ditchoom/webrtc/ice/MdnsResolver;JLcom/ditchoom/webrtc/IceRestartPolicy;Lcom/ditchoom/webrtc/TrickleGenerationPolicy;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;Lcom/ditchoom/webrtc/ice/MdnsResolver;JLcom/ditchoom/webrtc/IceRestartPolicy;Lcom/ditchoom/webrtc/TrickleGenerationPolicy;Lcom/ditchoom/webrtc/MdnsAdvertisePolicy;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;Lcom/ditchoom/webrtc/ice/MdnsResolver;JLcom/ditchoom/webrtc/IceRestartPolicy;Lcom/ditchoom/webrtc/TrickleGenerationPolicy;Lcom/ditchoom/webrtc/MdnsAdvertisePolicy;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()Lcom/ditchoom/webrtc/ice/IceConfig;
 	public final fun component2 ()Lcom/ditchoom/webrtc/sctp/association/SctpConfig;
 	public final fun component3-QcrJwnM ()Ljava/lang/String;
@@ -113,13 +136,15 @@ public final class com/ditchoom/webrtc/PeerConnectionConfig {
 	public final fun component5-UwyO8pc ()J
 	public final fun component6 ()Lcom/ditchoom/webrtc/IceRestartPolicy;
 	public final fun component7 ()Lcom/ditchoom/webrtc/TrickleGenerationPolicy;
-	public final fun copy-X0NwtJM (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;Lcom/ditchoom/webrtc/ice/MdnsResolver;JLcom/ditchoom/webrtc/IceRestartPolicy;Lcom/ditchoom/webrtc/TrickleGenerationPolicy;)Lcom/ditchoom/webrtc/PeerConnectionConfig;
-	public static synthetic fun copy-X0NwtJM$default (Lcom/ditchoom/webrtc/PeerConnectionConfig;Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;Lcom/ditchoom/webrtc/ice/MdnsResolver;JLcom/ditchoom/webrtc/IceRestartPolicy;Lcom/ditchoom/webrtc/TrickleGenerationPolicy;ILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionConfig;
+	public final fun component8 ()Lcom/ditchoom/webrtc/MdnsAdvertisePolicy;
+	public final fun copy-WQIGDog (Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;Lcom/ditchoom/webrtc/ice/MdnsResolver;JLcom/ditchoom/webrtc/IceRestartPolicy;Lcom/ditchoom/webrtc/TrickleGenerationPolicy;Lcom/ditchoom/webrtc/MdnsAdvertisePolicy;)Lcom/ditchoom/webrtc/PeerConnectionConfig;
+	public static synthetic fun copy-WQIGDog$default (Lcom/ditchoom/webrtc/PeerConnectionConfig;Lcom/ditchoom/webrtc/ice/IceConfig;Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Ljava/lang/String;Lcom/ditchoom/webrtc/ice/MdnsResolver;JLcom/ditchoom/webrtc/IceRestartPolicy;Lcom/ditchoom/webrtc/TrickleGenerationPolicy;Lcom/ditchoom/webrtc/MdnsAdvertisePolicy;ILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionConfig;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getDataChannelMid-QcrJwnM ()Ljava/lang/String;
 	public final fun getGracefulShutdownTimeout-UwyO8pc ()J
 	public final fun getIceConfig ()Lcom/ditchoom/webrtc/ice/IceConfig;
 	public final fun getIceRestartPolicy ()Lcom/ditchoom/webrtc/IceRestartPolicy;
+	public final fun getMdnsAdvertising ()Lcom/ditchoom/webrtc/MdnsAdvertisePolicy;
 	public final fun getMdnsResolver ()Lcom/ditchoom/webrtc/ice/MdnsResolver;
 	public final fun getSctpConfig ()Lcom/ditchoom/webrtc/sctp/association/SctpConfig;
 	public final fun getTrickleGeneration ()Lcom/ditchoom/webrtc/TrickleGenerationPolicy;

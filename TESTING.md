@@ -229,7 +229,7 @@ each wave must ship:
 |---|---|
 | **W1 `webrtc-stun`** | T0 round-trip + **RFC 5769 vectors** + malformed corpus; Jazzer lane wired with seed corpus; wrapper-transparency tests |
 | **W2 vnet** | NAT-model property tests (each NAT type provably filters per its definition); two-peer echo over each topology under virtual time |
-| **W3 `webrtc-ice`** | canonical TA fixtures (dual-symmetric-NAT→relay, candidate-flap, `NetworkId` change→restart); timeline fuzz smoke + JVM deep-run with shrinker; ICE invariants in the fuzz set |
+| **W3 `webrtc-ice`** | canonical TA fixtures (dual-symmetric-NAT→relay, candidate-flap, `NetworkId` change→restart); timeline fuzz smoke + JVM deep-run with shrinker; ICE invariants in the fuzz set; **mDNS both ways over the vnet** — one `MdnsEndpoint` advertises a `<uuid>.local`, another that knows only the name resolves it over a link-local group, with only the 5353 bind/join substituted (`MdnsEndpointTest`, `MdnsResponderTest`) |
 | **W4 `webrtc-dtls`** | handshake between two of our stacks over the vnet under virtual time (RNG-drift bound asserted); dropped-flight retransmission fixture; wrapper-free invariant; Apple/Android runtime-validated on runners |
 | **W5 `webrtc-sctp`+DC** | **end-to-end TB**: two full stacks (ICE+DTLS+SCTP) over dual-NAT vnet exchange ordered/unordered/lossy messages under virtual time, all platforms; SCTP invariants in fuzz set; one loop-until-dry fuzz campaign |
 | **W6 `webrtc` root** | full API round-trip fixture (signaling scripted); browser target compiles + delegation unit-tested under Karma; wpt `webrtc/` smoke on the browser target |

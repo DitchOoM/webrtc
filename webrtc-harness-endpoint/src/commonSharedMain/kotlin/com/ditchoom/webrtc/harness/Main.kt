@@ -8,6 +8,7 @@ import com.ditchoom.buffer.flow.AddressFamily
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.webrtc.PureKotlinDtls
 import com.ditchoom.webrtc.IceGatheringPolicy
+import com.ditchoom.webrtc.MdnsAdvertisePolicy
 import com.ditchoom.webrtc.NativePeerConnection
 import com.ditchoom.webrtc.PeerConnectionConfig
 import com.ditchoom.webrtc.PeerConnectionState
@@ -15,6 +16,8 @@ import com.ditchoom.webrtc.dtls.DtlsConfig
 import com.ditchoom.webrtc.ice.IceConfig
 import com.ditchoom.webrtc.ice.MdnsResolution
 import com.ditchoom.webrtc.ice.MdnsResolver
+import com.ditchoom.webrtc.ice.MdnsResponse
+import com.ditchoom.webrtc.ice.MulticastMdnsEndpoint
 import com.ditchoom.webrtc.ice.MulticastMdnsResolver
 import com.ditchoom.webrtc.sctp.association.SctpConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
@@ -119,6 +122,50 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
         // resolution fired; every other lane leaves it uncompleted and never waits on it. See issue #48.
         val mdnsResolved = CompletableDeferred<Unit>()
 
+        // …and the mirror, for the direction #88 added: completes the first time OUR responder answers a
+        // foreign peer's query for one of the names we minted. The require-answered lane awaits this too, so
+        // a rc=0 there proves a browser could resolve OUR `.local` — not merely that it tolerated one.
+        val mdnsAnswered = CompletableDeferred<Unit>()
+
+        // The mDNS actual. Advertising off (every NAT lane, and production until a consumer asks for it):
+        // the resolve-only [MulticastMdnsResolver], holding a socket only while a query is in flight.
+        // Advertising on (the same-LAN lane): ONE [MulticastMdnsEndpoint] serving both halves over one
+        // socket per family, because a responder must hold 5353 and a second socket on it would take a
+        // hash-chosen share of the unicast replies to our own queries.
+        val families =
+            cfg.bindings
+                .map { if (it.family == IpFamily.V4) AddressFamily.IPv4 else AddressFamily.IPv6 }
+                .distinct()
+        @Suppress("UnseamedEntropy") val mdnsRandom = Random(cfg.seed xor MDNS_SEED_DERIVATION)
+        val mdnsEndpoint =
+            if (!cfg.advertiseMdns) {
+                null
+            } else {
+                MulticastMdnsEndpoint(
+                    scope = bg,
+                    families = families,
+                    bufferFactory = net,
+                    random = mdnsRandom,
+                    onResponse = { response ->
+                        // Every responder decision, answers AND typed silences, in the peer's own log. The
+                        // silences matter as much: on a shared group most traffic is somebody else's, and a
+                        // lane that saw only "answered" could not tell "nobody asked" from "we were mute".
+                        when (response) {
+                            is MdnsResponse.Answer -> {
+                                println("[harness] mdns answered ${response.names.joinToString(",") { it.value }} (${response.destination})")
+                                mdnsAnswered.complete(Unit)
+                            }
+                            is MdnsResponse.Silent -> println("[harness] mdns silent: ${response.reason}")
+                        }
+                    },
+                )
+            }
+        val mdnsResolver: MdnsResolver =
+            (mdnsEndpoint ?: MulticastMdnsResolver(families = families, bufferFactory = net))
+                .logged(onResolved = { mdnsResolved.complete(Unit) })
+        val mdnsAdvertising =
+            if (mdnsEndpoint == null) MdnsAdvertisePolicy.Disabled else MdnsAdvertisePolicy.Advertise(mdnsEndpoint)
+
         // Which ICE generation the next gather belongs to. The stack re-invokes this policy once per
         // RFC 8445 §9 restart (s8), and the OUTGOING generation's sockets deliberately stay bound until the
         // new one nominates — that is the continuity guarantee — so re-gathering onto the same pinned port
@@ -170,14 +217,10 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
                         // fires when a `.local` candidate actually arrives (the same-LAN mDNS lane, where the
                         // browser advertises obfuscated hosts and shares our link); on the NAT'd lanes no
                         // `.local` is ever offered, so this stays dormant. Query only the lane's families.
-                        mdnsResolver =
-                            MulticastMdnsResolver(
-                                families =
-                                    cfg.bindings
-                                        .map { if (it.family == IpFamily.V4) AddressFamily.IPv4 else AddressFamily.IPv6 }
-                                        .distinct(),
-                                bufferFactory = net,
-                            ).logged(onResolved = { mdnsResolved.complete(Unit) }),
+                        mdnsResolver = mdnsResolver,
+                        // …and, on that same lane, publish OUR host candidates as `.local` names too, so the
+                        // browser has to resolve one of ours (issue #88). Disabled everywhere else.
+                        mdnsAdvertising = mdnsAdvertising,
                         // Fast SCTP RTO for the harness's low-RTT network: the default 3s initial RTO
                         // (RFC 4960, tuned for the internet) means a single lost DATA chunk — e.g. the
                         // echo pong under the impaired lane's loss — waits 3s before the first retransmit,
@@ -225,14 +268,22 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
         // It is checked INSIDE the role (right after phase 0) rather than after it, because the semantics
         // sequence ends by CLOSING the session — a post-hoc mDNS wait would then be watching a torn-down
         // ICE agent.
+        //
+        // #88 added the mirror: with advertising on, the lane ALSO requires that our responder answered a
+        // foreign peer's query for one of the names we minted. Same reasoning, opposite direction — and it
+        // is the only observation that separates "the browser resolved our name" from "the browser ignored
+        // our name and reached us peer-reflexively anyway", which is what happens if the responder is mute.
         val mdnsGate: suspend () -> Boolean = {
-            if (!cfg.requireMdns) {
-                true
-            } else if (withTimeoutOrNull(MDNS_RESOLVE_WAIT) { mdnsResolved.await() } != null) {
-                true
-            } else {
-                println("[harness] mdns REQUIRED but no browser .local resolved within $MDNS_RESOLVE_WAIT")
-                false
+            when {
+                cfg.requireMdns && withTimeoutOrNull(MDNS_RESOLVE_WAIT) { mdnsResolved.await() } == null -> {
+                    println("[harness] mdns REQUIRED but no browser .local resolved within $MDNS_RESOLVE_WAIT")
+                    false
+                }
+                cfg.requireMdnsAnswered && withTimeoutOrNull(MDNS_RESOLVE_WAIT) { mdnsAnswered.await() } == null -> {
+                    println("[harness] mdns ANSWER REQUIRED but nobody asked for one of our .local names within $MDNS_RESOLVE_WAIT")
+                    false
+                }
+                else -> true
             }
         }
 
@@ -891,6 +942,11 @@ private val FLUSH_LINGER = 10.seconds
 // covers the tail where the browser's trickle lags our sub-second prflx connect. Bounded by the outer
 // cfg.timeout regardless. A watchdog on the observable "resolved" state, not a padding delay (directive #4).
 private val MDNS_RESOLVE_WAIT = 10.seconds
+
+// The mDNS name minter rides the SAME logged cfg.seed as everything else (a fixed derivation), so the
+// `<uuid>.local` a failed run published is reconstructible from the artifact — a name that appeared in a
+// pcap can be tied back to the peer that minted it. Directive #2: entropy is a seam, never ambient.
+private const val MDNS_SEED_DERIVATION = 0x8888L
 
 // How long the answerer watches for the offerer's graceful association SHUTDOWN to land (s6/close). A
 // watchdog on the observable terminal state, not a sleep: it ends the moment the association reports

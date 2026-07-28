@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalDatagramApi::class)
+
 package com.ditchoom.webrtc.ice
 
 import com.ditchoom.buffer.BufferFactory
@@ -5,10 +7,14 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.webrtc.stun.IpAddress
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * Deterministic coverage for the pure mDNS wire codec ([MdnsMessage]) — the RFC 6762 / RFC 1035 message
@@ -139,6 +145,116 @@ class MdnsMessageTest {
         assertNull(MdnsMessage.decodeAddress(response, MdnsMessage.TYPE_A))
     }
 
+    @Test
+    fun our_own_query_decodes_back_into_the_question_it_asked() {
+        // The exact bytes the resolver puts on the wire, read by the responder half — the two ends of this
+        // codec are each other's only real fixture, so they are pinned against each other.
+        val query = MdnsMessage.encodeQuery("abcd.local", MdnsMessage.TYPE_A, BufferFactory.Default)
+        val decoded = assertIs<MdnsMessage.QueryDecode.Decoded>(MdnsMessage.decodeQuery(query)).query
+        assertEquals(1, decoded.questions.size)
+        assertEquals("abcd.local", decoded.questions[0].name, "the QNAME is reassembled label by label")
+        assertEquals(MdnsMessage.TYPE_A, decoded.questions[0].qType)
+        assertTrue(decoded.questions[0].unicastResponse, "our queries set the QU bit (RFC 6762 §5.4)")
+    }
+
+    @Test
+    fun a_response_is_not_a_query_and_says_so_distinctly() {
+        val response = response(answerCount = 0) {}
+        assertEquals(
+            MdnsMessage.QueryDecode.NotAQuery,
+            MdnsMessage.decodeQuery(response),
+            "every host's responses land on the shared group; that is routine, not corruption",
+        )
+    }
+
+    @Test
+    fun a_truncated_query_is_a_typed_reject_not_a_throw() {
+        val truncated = BufferFactory.Default.allocate(4, ByteOrder.BIG_ENDIAN)
+        truncated.writeUShort(0u)
+        truncated.writeUShort(0u)
+        truncated.resetForRead()
+        assertEquals(MdnsMessage.QueryDecode.Malformed, MdnsMessage.decodeQuery(truncated))
+    }
+
+    @Test
+    fun a_question_promised_but_missing_is_malformed() {
+        val query = BufferFactory.Default.allocate(HEADER_ONLY_CAPACITY, ByteOrder.BIG_ENDIAN)
+        query.writeUShort(0u) // ID
+        query.writeUShort(0u) // flags: QR=0
+        query.writeUShort(1u) // QDCOUNT claims one question…
+        query.writeUShort(0u)
+        query.writeUShort(0u)
+        query.writeUShort(0u) // …and the message ends here
+        query.resetForRead()
+        assertEquals(MdnsMessage.QueryDecode.Malformed, MdnsMessage.decodeQuery(query))
+    }
+
+    @Test
+    fun a_self_referential_compression_pointer_terminates_and_names_nothing() {
+        // A name that points at itself: the classic decompression bomb, and this codec is reachable by
+        // anything on the local link. RFC 1035 §4.1.4 pointers are BACKWARD references, so one that does
+        // not reach a strictly lower offset simply ends the name where it stands — the decode terminates,
+        // the record after it is still read, and the empty name is nobody's, so a responder refuses it.
+        val query = BufferFactory.Default.allocate(HEADER_ONLY_CAPACITY + 6, ByteOrder.BIG_ENDIAN)
+        query.writeUShort(0u)
+        query.writeUShort(0u)
+        query.writeUShort(1u) // QDCOUNT
+        query.writeUShort(0u)
+        query.writeUShort(0u)
+        query.writeUShort(0u)
+        query.writeByte(0xC0.toByte())
+        query.writeByte(0x0C.toByte()) // → offset 12, which is this very pointer
+        query.writeUShort(MdnsMessage.TYPE_A.toUShort())
+        query.writeUShort(1u) // QCLASS IN
+        query.resetForRead()
+
+        val decoded = assertIs<MdnsMessage.QueryDecode.Decoded>(MdnsMessage.decodeQuery(query)).query
+        assertEquals("", decoded.questions.single().name, "the name is unreassemblable, so it is empty — never chased")
+        assertEquals(
+            MdnsResponse.Silent(MdnsSilenceReason.NotOurs(MdnsHostName(""))),
+            MdnsResponder().respond(query.also { it.resetForRead() }, SocketAddress.ofLiteral("10.0.0.9", 40000)),
+            "and a responder that advertises nothing under that name says so, rather than answering",
+        )
+    }
+
+    @Test
+    fun an_encoded_response_round_trips_with_the_owner_name_of_each_answer() {
+        // The property the shared-socket endpoint depends on: with several resolutions outstanding, an
+        // answer has to be attributable to the name it answers for, not merely to "a response arrived".
+        val v6 = IpAddress.V6.parse("2001:db8::7")!!
+        val encoded =
+            MdnsMessage.encodeResponse(
+                listOf(
+                    MdnsMessage.AnswerRecord("one.local", IpAddress.V4(0x0A00000Au)),
+                    MdnsMessage.AnswerRecord("two.local", v6),
+                ),
+                MdnsMessage.ResponseShape.Shared,
+                BufferFactory.Default,
+            )
+        val decoded = MdnsMessage.decodeAnswers(encoded)
+        assertEquals(listOf("one.local", "two.local"), decoded.map { it.name })
+        assertEquals("10.0.0.10", decoded[0].address.toString())
+        assertEquals(v6, decoded[1].address)
+    }
+
+    @Test
+    fun a_trailing_record_we_cannot_parse_does_not_cost_the_address_already_decoded() {
+        val response =
+            response(answerCount = 2) {
+                writeName("abcd", "local")
+                writeUShort(MdnsMessage.TYPE_A.toUShort())
+                writeUShort(1u)
+                writeUInt(120u)
+                writeUShort(4u)
+                writeByte(10)
+                writeByte(0)
+                writeByte(0)
+                writeByte(7) // 10.0.0.7 — the answer we came for
+                writeByte(0x09) // …followed by a second record that simply runs off the end
+            }
+        assertEquals("10.0.0.7", MdnsMessage.decodeAddress(response, MdnsMessage.TYPE_A).toString())
+    }
+
     // ── helpers ──
 
     private fun readLabel(buffer: ReadBuffer): String {
@@ -178,5 +294,6 @@ class MdnsMessageTest {
 
     private companion object {
         const val RESPONSE_CAPACITY = 128
+        const val HEADER_ONLY_CAPACITY = 12
     }
 }

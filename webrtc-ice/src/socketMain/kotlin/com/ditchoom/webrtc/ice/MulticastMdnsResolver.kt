@@ -33,6 +33,12 @@ import kotlin.time.Duration.Companion.seconds
  * shared demuxed data socket the ICE/data path rides, so it does not conflict with the single-socket
  * composition rule. All time/entropy ride the caller's coroutine context ([queryTimeout] is the one
  * injected budget), so it establishes under `runTest` virtual time like every other driver.
+ *
+ * **Resolve-only.** A session that also *advertises* its own `<uuid>.local` names (RFC 8828 privacy, #88)
+ * must use [MulticastMdnsEndpoint] instead — for both halves. It is not a preference: a responder has to
+ * hold port 5353 open, and a second socket on 5353 would take a hash-chosen share of the unicast replies to
+ * *this* resolver's queries. [MulticastMdnsEndpoint] does resolution and response over one socket precisely
+ * so that cannot happen.
  */
 public class MulticastMdnsResolver(
     private val families: List<AddressFamily> = listOf(AddressFamily.IPv4, AddressFamily.IPv6),
@@ -40,7 +46,7 @@ public class MulticastMdnsResolver(
     private val queryTimeout: Duration = DEFAULT_QUERY_TIMEOUT,
 ) : MdnsResolver {
     override suspend fun resolve(hostname: String): MdnsResolution {
-        if (!hostname.endsWith(MDNS_SUFFIX, ignoreCase = true)) return MdnsResolution.Unresolved
+        if (!hostname.endsWith(MdnsHostName.SUFFIX, ignoreCase = true)) return MdnsResolution.Unresolved
         // Query each configured family (a v4-only lane skips the v6 group, and vice-versa) and take the
         // first responder. Sequential, so at most one multicast socket is open at a time.
         for (family in families) {
@@ -85,8 +91,8 @@ public class MulticastMdnsResolver(
     }
 
     public companion object {
-        /** The mDNS UDP port (RFC 6762 §5). */
-        public const val MDNS_PORT: Int = 5353
+        /** The mDNS UDP port (RFC 6762 §5) — the `commonMain` [MDNS_UDP_PORT], which the responder shares. */
+        public const val MDNS_PORT: Int = MDNS_UDP_PORT
 
         /** The IPv4 mDNS link-local group (RFC 6762 §3). */
         public const val MDNS_GROUP_V4: String = "224.0.0.251"
@@ -99,7 +105,5 @@ public class MulticastMdnsResolver(
 
         /** Default per-family query budget — a one-shot query answered by an on-link responder is sub-second. */
         public val DEFAULT_QUERY_TIMEOUT: Duration = 2.seconds
-
-        private const val MDNS_SUFFIX = ".local"
     }
 }

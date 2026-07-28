@@ -106,6 +106,40 @@ public final class com/ditchoom/webrtc/ice/CandidateParse$Reject : com/ditchoom/
 	public fun toString ()Ljava/lang/String;
 }
 
+public abstract interface class com/ditchoom/webrtc/ice/CandidatePrivacy {
+}
+
+public final class com/ditchoom/webrtc/ice/CandidatePrivacy$Disclosed : com/ditchoom/webrtc/ice/CandidatePrivacy {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/CandidatePrivacy$Disclosed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/CandidatePrivacy$Obfuscated : com/ditchoom/webrtc/ice/CandidatePrivacy {
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-G48gZ24 ()Ljava/lang/String;
+	public final fun component2-nlo9HBA ()Ljava/lang/String;
+	public final fun copy-n6FxKn4 (Ljava/lang/String;Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/CandidatePrivacy$Obfuscated;
+	public static synthetic fun copy-n6FxKn4$default (Lcom/ditchoom/webrtc/ice/CandidatePrivacy$Obfuscated;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/CandidatePrivacy$Obfuscated;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFoundation-nlo9HBA ()Ljava/lang/String;
+	public final fun getName-G48gZ24 ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/CandidatePrivacy$Redacted : com/ditchoom/webrtc/ice/CandidatePrivacy {
+	public synthetic fun <init> (Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-nlo9HBA ()Ljava/lang/String;
+	public final fun copy-oiQG0DI (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/CandidatePrivacy$Redacted;
+	public static synthetic fun copy-oiQG0DI$default (Lcom/ditchoom/webrtc/ice/CandidatePrivacy$Redacted;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/CandidatePrivacy$Redacted;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFoundation-nlo9HBA ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/ice/CandidateType : java/lang/Enum {
 	public static final field Host Lcom/ditchoom/webrtc/ice/CandidateType;
 	public static final field PeerReflexive Lcom/ditchoom/webrtc/ice/CandidateType;
@@ -336,8 +370,8 @@ public final class com/ditchoom/webrtc/ice/IceCandidate$ServerReflexive : com/di
 
 public final class com/ditchoom/webrtc/ice/IceCandidateLine {
 	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/IceCandidateLine;
-	public final fun format (Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateGeneration;)Ljava/lang/String;
-	public static synthetic fun format$default (Lcom/ditchoom/webrtc/ice/IceCandidateLine;Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateGeneration;ILjava/lang/Object;)Ljava/lang/String;
+	public final fun format (Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateGeneration;Lcom/ditchoom/webrtc/ice/CandidatePrivacy;)Ljava/lang/String;
+	public static synthetic fun format$default (Lcom/ditchoom/webrtc/ice/IceCandidateLine;Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateGeneration;Lcom/ditchoom/webrtc/ice/CandidatePrivacy;ILjava/lang/Object;)Ljava/lang/String;
 	public final fun parse (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/IceCandidate;
 	public final fun parseLine (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/CandidateParse;
 }
@@ -672,6 +706,145 @@ public final class com/ditchoom/webrtc/ice/LocalInterface {
 	public fun toString ()Ljava/lang/String;
 }
 
+public abstract interface class com/ditchoom/webrtc/ice/MdnsAdvertisement {
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsAdvertisement$Advertised : com/ditchoom/webrtc/ice/MdnsAdvertisement {
+	public synthetic fun <init> (Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-G48gZ24 ()Ljava/lang/String;
+	public final fun copy-p44HJuY (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/MdnsAdvertisement$Advertised;
+	public static synthetic fun copy-p44HJuY$default (Lcom/ditchoom/webrtc/ice/MdnsAdvertisement$Advertised;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/MdnsAdvertisement$Advertised;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getName-G48gZ24 ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsAdvertisement$Declined : com/ditchoom/webrtc/ice/MdnsAdvertisement {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/MdnsDeclineReason;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/MdnsDeclineReason;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/MdnsDeclineReason;)Lcom/ditchoom/webrtc/ice/MdnsAdvertisement$Declined;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/MdnsAdvertisement$Declined;Lcom/ditchoom/webrtc/ice/MdnsDeclineReason;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/MdnsAdvertisement$Declined;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReason ()Lcom/ditchoom/webrtc/ice/MdnsDeclineReason;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/MdnsAdvertiser {
+	public abstract fun advertise (Lcom/ditchoom/webrtc/stun/IpAddress;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/MdnsDeclineReason {
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsDeclineReason$GroupUnavailable : com/ditchoom/webrtc/ice/MdnsDeclineReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/MdnsDeclineReason$GroupUnavailable;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsDeclineReason$NoResponder : com/ditchoom/webrtc/ice/MdnsDeclineReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/MdnsDeclineReason$NoResponder;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsDeclineReason$UnsupportedFamily : com/ditchoom/webrtc/ice/MdnsDeclineReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/MdnsDeclineReason$UnsupportedFamily;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/MdnsDestination {
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsDestination$Multicast : com/ditchoom/webrtc/ice/MdnsDestination {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/MdnsDestination$Multicast;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsDestination$Unicast : com/ditchoom/webrtc/ice/MdnsDestination {
+	public fun <init> (Lcom/ditchoom/buffer/flow/SocketAddress;)V
+	public final fun component1 ()Lcom/ditchoom/buffer/flow/SocketAddress;
+	public final fun copy (Lcom/ditchoom/buffer/flow/SocketAddress;)Lcom/ditchoom/webrtc/ice/MdnsDestination$Unicast;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/MdnsDestination$Unicast;Lcom/ditchoom/buffer/flow/SocketAddress;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/MdnsDestination$Unicast;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getTo ()Lcom/ditchoom/buffer/flow/SocketAddress;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsEndpoint : com/ditchoom/webrtc/ice/MdnsAdvertiser, com/ditchoom/webrtc/ice/MdnsResolver {
+	public synthetic fun <init> (Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/webrtc/ice/MdnsMulticastBinder;Ljava/util/List;Lcom/ditchoom/buffer/BufferFactory;Lkotlin/random/Random;JLkotlin/jvm/functions/Function1;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/webrtc/ice/MdnsMulticastBinder;Ljava/util/List;Lcom/ditchoom/buffer/BufferFactory;Lkotlin/random/Random;JLkotlin/jvm/functions/Function1;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun advertise (Lcom/ditchoom/webrtc/stun/IpAddress;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun close ()V
+	public final fun getAdvertisedNames ()Ljava/util/Set;
+	public fun resolve (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun withdraw-s_WYxZ0 (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsEndpointKt {
+	public static final fun getDEFAULT_MDNS_QUERY_TIMEOUT ()J
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/MdnsGroupBinding {
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsGroupBinding$Bound : com/ditchoom/webrtc/ice/MdnsGroupBinding {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/MdnsGroupSocket;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/MdnsGroupSocket;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/MdnsGroupSocket;)Lcom/ditchoom/webrtc/ice/MdnsGroupBinding$Bound;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/MdnsGroupBinding$Bound;Lcom/ditchoom/webrtc/ice/MdnsGroupSocket;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/MdnsGroupBinding$Bound;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getSocket ()Lcom/ditchoom/webrtc/ice/MdnsGroupSocket;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsGroupBinding$Unavailable : com/ditchoom/webrtc/ice/MdnsGroupBinding {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/MdnsGroupBinding$Unavailable;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsGroupSocket {
+	public fun <init> (Lcom/ditchoom/buffer/flow/DatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;)V
+	public final fun getChannel ()Lcom/ditchoom/buffer/flow/DatagramChannel;
+	public final fun getGroup ()Lcom/ditchoom/buffer/flow/SocketAddress;
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsHostName {
+	public static final field Companion Lcom/ditchoom/webrtc/ice/MdnsHostName$Companion;
+	public static final field SUFFIX Ljava/lang/String;
+	public static final synthetic fun box-impl (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/MdnsHostName;
+	public static fun constructor-impl (Ljava/lang/String;)Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (Ljava/lang/String;Ljava/lang/Object;)Z
+	public static final fun equals-impl0 (Ljava/lang/String;Ljava/lang/String;)Z
+	public final fun getValue ()Ljava/lang/String;
+	public fun hashCode ()I
+	public static fun hashCode-impl (Ljava/lang/String;)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (Ljava/lang/String;)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsHostName$Companion {
+	public final fun random-8rHHD-U (Lkotlin/random/Random;)Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/MdnsMulticastBinder {
+	public abstract fun bind (Lcom/ditchoom/buffer/flow/AddressFamily;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
 public abstract interface class com/ditchoom/webrtc/ice/MdnsResolution {
 }
 
@@ -695,6 +868,104 @@ public final class com/ditchoom/webrtc/ice/MdnsResolution$Unresolved : com/ditch
 
 public abstract interface class com/ditchoom/webrtc/ice/MdnsResolver {
 	public abstract fun resolve (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsResponder {
+	public fun <init> ()V
+	public fun <init> (Lcom/ditchoom/buffer/BufferFactory;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun addressOf-p44HJuY (Ljava/lang/String;)Lcom/ditchoom/webrtc/stun/IpAddress;
+	public final fun advertise-s_WYxZ0 (Ljava/lang/String;Lcom/ditchoom/webrtc/stun/IpAddress;)V
+	public final fun getAdvertisedNames ()Ljava/util/Set;
+	public final fun respond (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/flow/SocketAddress;)Lcom/ditchoom/webrtc/ice/MdnsResponse;
+	public final fun withdraw-p44HJuY (Ljava/lang/String;)V
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsResponderKt {
+	public static final field MDNS_UDP_PORT I
+	public static final fun serve (Lcom/ditchoom/webrtc/ice/MdnsResponder;Lcom/ditchoom/buffer/flow/DatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun serve$default (Lcom/ditchoom/webrtc/ice/MdnsResponder;Lcom/ditchoom/buffer/flow/DatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final fun serveOne (Lcom/ditchoom/webrtc/ice/MdnsResponder;Lcom/ditchoom/buffer/flow/DatagramSink;Lcom/ditchoom/buffer/flow/Datagram;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/MdnsResponse {
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsResponse$Answer : com/ditchoom/webrtc/ice/MdnsResponse {
+	public fun <init> (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/webrtc/ice/MdnsDestination;Ljava/util/List;)V
+	public final fun component1 ()Lcom/ditchoom/buffer/ReadBuffer;
+	public final fun component2 ()Lcom/ditchoom/webrtc/ice/MdnsDestination;
+	public final fun component3 ()Ljava/util/List;
+	public final fun copy (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/webrtc/ice/MdnsDestination;Ljava/util/List;)Lcom/ditchoom/webrtc/ice/MdnsResponse$Answer;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/MdnsResponse$Answer;Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/webrtc/ice/MdnsDestination;Ljava/util/List;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/MdnsResponse$Answer;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDestination ()Lcom/ditchoom/webrtc/ice/MdnsDestination;
+	public final fun getNames ()Ljava/util/List;
+	public final fun getPayload ()Lcom/ditchoom/buffer/ReadBuffer;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsResponse$Silent : com/ditchoom/webrtc/ice/MdnsResponse {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/MdnsSilenceReason;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/MdnsSilenceReason;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/MdnsSilenceReason;)Lcom/ditchoom/webrtc/ice/MdnsResponse$Silent;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/MdnsResponse$Silent;Lcom/ditchoom/webrtc/ice/MdnsSilenceReason;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/MdnsResponse$Silent;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReason ()Lcom/ditchoom/webrtc/ice/MdnsSilenceReason;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/MdnsSilenceReason {
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsSilenceReason$Malformed : com/ditchoom/webrtc/ice/MdnsSilenceReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/MdnsSilenceReason$Malformed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsSilenceReason$NoQuestions : com/ditchoom/webrtc/ice/MdnsSilenceReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/MdnsSilenceReason$NoQuestions;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsSilenceReason$NotAQuery : com/ditchoom/webrtc/ice/MdnsSilenceReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/MdnsSilenceReason$NotAQuery;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsSilenceReason$NotOurs : com/ditchoom/webrtc/ice/MdnsSilenceReason {
+	public synthetic fun <init> (Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-G48gZ24 ()Ljava/lang/String;
+	public final fun copy-p44HJuY (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/MdnsSilenceReason$NotOurs;
+	public static synthetic fun copy-p44HJuY$default (Lcom/ditchoom/webrtc/ice/MdnsSilenceReason$NotOurs;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/MdnsSilenceReason$NotOurs;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getName-G48gZ24 ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsSilenceReason$UnsupportedType : com/ditchoom/webrtc/ice/MdnsSilenceReason {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/webrtc/ice/MdnsSilenceReason$UnsupportedType;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/MdnsSilenceReason$UnsupportedType;IILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/MdnsSilenceReason$UnsupportedType;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getQType ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/MulticastMdnsEndpointKt {
+	public static final fun MulticastMdnsEndpoint-myKFqkg (Lkotlinx/coroutines/CoroutineScope;Ljava/util/List;Lcom/ditchoom/buffer/BufferFactory;Lkotlin/random/Random;JLkotlin/jvm/functions/Function1;)Lcom/ditchoom/webrtc/ice/MdnsEndpoint;
+	public static synthetic fun MulticastMdnsEndpoint-myKFqkg$default (Lkotlinx/coroutines/CoroutineScope;Ljava/util/List;Lcom/ditchoom/buffer/BufferFactory;Lkotlin/random/Random;JLkotlin/jvm/functions/Function1;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/MdnsEndpoint;
 }
 
 public final class com/ditchoom/webrtc/ice/MulticastMdnsResolver : com/ditchoom/webrtc/ice/MdnsResolver {
@@ -767,6 +1038,13 @@ public final class com/ditchoom/webrtc/ice/ServerReflexiveResult$Unavailable$Rej
 	public fun equals (Ljava/lang/Object;)Z
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/SocketUdpMdnsBinder : com/ditchoom/webrtc/ice/MdnsMulticastBinder {
+	public fun <init> ()V
+	public fun <init> (Lcom/ditchoom/buffer/BufferFactory;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun bind (Lcom/ditchoom/buffer/flow/AddressFamily;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
 public final class com/ditchoom/webrtc/ice/TieBreaker {

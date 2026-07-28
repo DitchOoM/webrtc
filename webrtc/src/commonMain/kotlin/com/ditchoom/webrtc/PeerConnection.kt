@@ -7,7 +7,10 @@ import com.ditchoom.buffer.flow.Connection
 import com.ditchoom.webrtc.dtls.DtlsFailureReason
 import com.ditchoom.webrtc.ice.CandidateGeneration
 import com.ditchoom.webrtc.ice.CandidateParse
+import com.ditchoom.webrtc.ice.CandidatePrivacy
+import com.ditchoom.webrtc.ice.Foundation
 import com.ditchoom.webrtc.ice.IceAgentDriver
+import com.ditchoom.webrtc.ice.IceCandidate
 import com.ditchoom.webrtc.ice.IceCandidateLine
 import com.ditchoom.webrtc.ice.IceConfig
 import com.ditchoom.webrtc.ice.IceConnectionState
@@ -15,6 +18,8 @@ import com.ditchoom.webrtc.ice.IceCredentials
 import com.ditchoom.webrtc.ice.IcePassword
 import com.ditchoom.webrtc.ice.IcePath
 import com.ditchoom.webrtc.ice.IceRole
+import com.ditchoom.webrtc.ice.MdnsAdvertisement
+import com.ditchoom.webrtc.ice.MdnsAdvertiser
 import com.ditchoom.webrtc.ice.MdnsResolution
 import com.ditchoom.webrtc.ice.MdnsResolver
 import com.ditchoom.webrtc.ice.NetworkMonitor
@@ -162,7 +167,51 @@ public data class PeerConnectionConfig(
      * [TrickleGenerationPolicy.Tagged].
      */
     public val trickleGeneration: TrickleGenerationPolicy = TrickleGenerationPolicy.Tagged,
+    /**
+     * Whether this session hides its own host addresses behind `<uuid>.local` names (RFC 8828 privacy).
+     * Defaults to [MdnsAdvertisePolicy.Disabled] — see that type for why the default cannot be anything
+     * else in `commonMain`, and how a platform consumer turns it on in one line.
+     */
+    public val mdnsAdvertising: MdnsAdvertisePolicy = MdnsAdvertisePolicy.Disabled,
 )
+
+/**
+ * Whether this session publishes `<uuid>.local` names in place of its own host addresses (RFC 8828), and —
+ * when it does — who answers the peer's queries for them.
+ *
+ * A browser obfuscates its host candidates precisely so the signaling server, and anyone else who sees the
+ * SDP, learns nothing about the private network. Without this a page using this library is strictly less
+ * private on the wire than the same page using `RTCPeerConnection`, which is the wrong direction for a
+ * stack whose whole point is to be the drop-in.
+ *
+ * One knob, not two, and it carries the responder rather than sitting beside it: a name is only worth
+ * publishing if something is listening for it, so "advertise, but nothing answers" — which would cost the
+ * peer the candidate outright — is unrepresentable instead of merely discouraged.
+ *
+ * **Why the default is [Disabled].** `PeerConnectionConfig` is `commonMain`, which includes the browser
+ * targets, and `commonMain` cannot construct a multicast responder. A default of "advertise" would
+ * therefore have to mean "advertise with nobody answering", which is worse than publishing the address: the
+ * peer resolves nothing and simply loses the host candidate. On every target that *has* a responder,
+ * turning it on is one argument — `mdnsAdvertising = MdnsAdvertisePolicy.Advertise(MulticastMdnsEndpoint(scope))`
+ * — and the same field is the opt-out the issue asks for, for a consumer on a trusted LAN who does not want
+ * the extra resolution round trip, or for a deterministic lane that must assert on a literal address.
+ */
+public sealed interface MdnsAdvertisePolicy {
+    /** Publish host candidates with their literal addresses. The behaviour before #88, and the default. */
+    public data object Disabled : MdnsAdvertisePolicy
+
+    /**
+     * Publish a `<uuid>.local` name for each host candidate, minted and answered by [advertiser].
+     *
+     * It also redacts the `raddr` of every reflexive and relayed candidate to the unspecified address
+     * (`0.0.0.0` / `::`, port 0) — exactly what Chrome emits. Without that the feature would be theatre:
+     * a server-reflexive candidate's related address *is* the host address the name exists to hide, sitting
+     * in the clear two fields further along the very same line.
+     */
+    public data class Advertise(
+        public val advertiser: MdnsAdvertiser,
+    ) : MdnsAdvertisePolicy
+}
 
 /**
  * Whether this session speaks RFC 8838 §3.1's generation tag on trickled candidates — in **both**
@@ -385,6 +434,14 @@ public class NativePeerConnection(
 
     private val localCandidateChannel = Channel<String>(Channel.UNLIMITED)
     override val localIceCandidates: Flow<String> get() = localCandidateChannel.receiveAsFlow()
+
+    // The opaque foundations an obfuscating session publishes, and the entropy that mints them (RFC 8828 —
+    // see [publishedFoundationFor]). Derived from the injected [random] LAZILY, so a session that does not
+    // obfuscate draws nothing and its RNG stream is byte-for-byte what it has always been.
+    private val publishedFoundations = HashMap<Foundation, Foundation>()
+
+    @Suppress("UnseamedEntropy") // derived from the injected [random]; not an ambient default
+    private val privacyRandom: Random by lazy { Random(random.nextLong()) }
 
     private val incomingChannels = Channel<Connection<ReadBuffer>>(Channel.UNLIMITED)
     override val incomingDataChannels: Flow<Connection<ReadBuffer>> get() = incomingChannels.receiveAsFlow()
@@ -738,6 +795,62 @@ public class NativePeerConnection(
                 }
         }
 
+    /**
+     * How much of a local candidate goes on the wire (RFC 8828 privacy) — the one place a host address of
+     * ours becomes a `<uuid>.local` name instead of an IP.
+     *
+     * The name is minted **before** the candidate is signaled, on the same coroutine that signals it, and
+     * that ordering is the whole contract: a peer may query for the name the instant it reads our SDP, so a
+     * name published before the responder is answering for it would be resolved to nothing and the candidate
+     * would simply be lost. An advertiser that declines publishes the address in the clear — the exact
+     * behaviour of every release before this one, which is the right thing to fall back to.
+     */
+    private suspend fun candidatePrivacyFor(candidate: IceCandidate): CandidatePrivacy =
+        when (val policy = config.mdnsAdvertising) {
+            MdnsAdvertisePolicy.Disabled -> CandidatePrivacy.Disclosed
+            is MdnsAdvertisePolicy.Advertise -> {
+                val foundation = publishedFoundationFor(candidate.foundation)
+                when (candidate) {
+                    is IceCandidate.Host ->
+                        when (val advertisement = policy.advertiser.advertise(candidate.address.ip)) {
+                            is MdnsAdvertisement.Advertised -> CandidatePrivacy.Obfuscated(advertisement.name, foundation)
+                            // Nothing will answer for this address, so the name would cost the peer the
+                            // candidate. The address goes out in the clear — and so, therefore, may the
+                            // foundation, but publishing the opaque one anyway costs nothing and keeps every
+                            // line of an obfuscating session shaped the same.
+                            is MdnsAdvertisement.Declined -> CandidatePrivacy.Redacted(foundation)
+                        }
+                    // Reflexive and relayed addresses are public by construction; only their `raddr` — the
+                    // local base they were derived from — and their foundation have anything left to hide.
+                    is IceCandidate.ServerReflexive,
+                    is IceCandidate.PeerReflexive,
+                    is IceCandidate.Relayed,
+                    -> CandidatePrivacy.Redacted(foundation)
+                }
+            }
+        }
+
+    /**
+     * The opaque token published in place of a candidate's real [foundation], which this stack derives from
+     * the base IP (`host:192.168.7.31:-:udp`) and would otherwise spell the private address out in field 1
+     * of a line whose address field we just took such trouble to hide.
+     *
+     * A fresh random token **per distinct foundation, per session** — not a hash of the real one. A hash
+     * would be invertible by dictionary: the space of private IPv4 addresses is small enough to enumerate,
+     * so an observer who recognised the construction could recover the address the name exists to hide.
+     * A random token discloses nothing at all, while preserving the only property a foundation carries on
+     * the wire (RFC 8445 §5.1.1.3): two candidates share one iff they share a base, type, server and
+     * transport — which is exactly what a per-foundation map preserves.
+     *
+     * Reached only from the single candidate-signaling coroutine, so the map and the [privacyRandom] stream
+     * need no synchronization.
+     */
+    private fun publishedFoundationFor(foundation: Foundation): Foundation =
+        publishedFoundations.getOrPut(foundation) {
+            val token = privacyRandom.nextLong().toULong()
+            Foundation(token.toString(FOUNDATION_RADIX).padStart(FOUNDATION_DIGITS, '0'))
+        }
+
     /** How this session signals its own candidates: stamped with the generation that gathered them, or bare. */
     private fun localGenerationOf(ufrag: Ufrag): CandidateGeneration =
         when (config.trickleGeneration) {
@@ -820,7 +933,8 @@ public class NativePeerConnection(
             // is what lets the peer place a candidate that overtakes our restart offer instead of
             // naturalizing it into the generation it is about to abandon.
             d.localCandidateGathered.collect {
-                localCandidateChannel.trySend(IceCandidateLine.format(it.candidate, localGenerationOf(it.ufrag)))
+                val privacy = candidatePrivacyFor(it.candidate)
+                localCandidateChannel.trySend(IceCandidateLine.format(it.candidate, localGenerationOf(it.ufrag), privacy))
             }
         }
         establishJob = scope.launch { runEstablishment(d, sctpRandom) }
@@ -1347,5 +1461,12 @@ public class NativePeerConnection(
         fun fail(cause: Throwable) {
             real.completeExceptionally(cause)
         }
+    }
+
+    private companion object {
+        // The published foundation is 16 lowercase hex digits — well inside RFC 8839 §5.1's `1*32ice-char`,
+        // and (unlike the address-derived one it replaces) actually made of ice-chars.
+        const val FOUNDATION_RADIX = 16
+        const val FOUNDATION_DIGITS = 16
     }
 }

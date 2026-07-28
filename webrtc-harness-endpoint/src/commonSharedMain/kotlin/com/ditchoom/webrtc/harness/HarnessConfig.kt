@@ -131,6 +131,29 @@ internal data class HarnessConfig(
      */
     val requireMdns: Boolean,
     /**
+     * Same-LAN mDNS lane only (`WEBRTC_MDNS_ADVERTISE=true`): publish our own host candidates as
+     * `<uuid>.local` names (RFC 8828 privacy) and answer the peer's multicast queries for them, instead of
+     * signaling literal LAN addresses. Off everywhere else — the NAT lanes put the peers on separate LANs,
+     * where a link-local query can never cross, so a name would simply cost the peer the host candidate.
+     *
+     * When on, the SAME [MulticastMdnsEndpoint] serves both halves. That is not a convenience: a responder
+     * has to hold port 5353, and a second socket on it would take a hash-chosen share of the unicast replies
+     * to our own queries. Tracks issue #88.
+     */
+    val advertiseMdns: Boolean,
+    /**
+     * Same-LAN mDNS lane only (`WEBRTC_REQUIRE_MDNS_ANSWERED=true`): the mirror of [requireMdns] for the
+     * direction #88 added. The peer's success additionally REQUIRES that our responder actually **answered**
+     * a foreign peer's query for one of the names we minted — the only thing that proves a browser could
+     * resolve *our* `.local`, as opposed to merely tolerating it.
+     *
+     * It needs its own gate for the same reason [requireMdns] does: establishment proves nothing here.
+     * RFC 8445 §7.3.1.3 peer-reflexive learning finds the path from our own checks on a flat segment whether
+     * or not a single name was ever resolved, so a lane that only asserted "connected" would pass with the
+     * responder deleted.
+     */
+    val requireMdnsAnswered: Boolean,
+    /**
      * Run the data-channel SEMANTICS phase sequence after phase 0's ping/pong (see [Semantics.kt] and
      * docs/DC_SEMANTICS_INTEROP_DESIGN.md). Off by default so any other invocation keeps the historical
      * establish-and-echo contract exactly; `run-interop.sh` turns it on for every lane.
@@ -257,6 +280,10 @@ internal data class HarnessConfig(
                 enableDtls13 = env("WEBRTC_DTLS13")?.equals("false", ignoreCase = true) != true,
                 // Off everywhere except the same-LAN mDNS lane, whose compose overlay sets it explicitly.
                 requireMdns = env("WEBRTC_REQUIRE_MDNS")?.equals("true", ignoreCase = true) == true,
+                // Off everywhere except the same-LAN mDNS lane: obfuscating a host candidate a peer cannot
+                // resolve (a different LAN) would cost it the candidate for nothing (issue #88).
+                advertiseMdns = env("WEBRTC_MDNS_ADVERTISE")?.equals("true", ignoreCase = true) == true,
+                requireMdnsAnswered = env("WEBRTC_REQUIRE_MDNS_ANSWERED")?.equals("true", ignoreCase = true) == true,
                 // Semantics: off unless explicitly enabled, so an unmodified invocation keeps the exact
                 // historical establish-and-echo contract. run-interop.sh enables it for every lane.
                 semantics = env("WEBRTC_SEMANTICS").isTruthy(),

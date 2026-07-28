@@ -46,6 +46,7 @@ internal class TestNet(
     @Suppress("UnseamedEntropy")
     private val lossRng = Random(seed)
     private val endpoints = HashMap<SocketAddress, Channel<Datagram>>()
+    private val groups = HashMap<SocketAddress, MutableSet<SocketAddress>>()
 
     fun bind(local: SocketAddress): DatagramChannel {
         require(local !in endpoints) { "address already bound: $local" }
@@ -57,6 +58,19 @@ internal class TestNet(
     /** True iff an endpoint is currently bound at [local] — how a fixture observes socket retirement. */
     fun isBound(local: SocketAddress): Boolean = local in endpoints
 
+    /**
+     * Join [member] to the link-local multicast [group] (RFC 6762 §3): a datagram sent *to* the group
+     * address is copied to every joined member but its sender, which is what an L2 segment does. It is the
+     * one datagram behaviour an `<uuid>.local` name depends on — the querier does not know, and must not
+     * need, the responder's address.
+     */
+    fun join(
+        group: SocketAddress,
+        member: SocketAddress,
+    ) {
+        groups.getOrPut(group) { LinkedHashSet() } += member
+    }
+
     /** Tear the endpoint at [local] down from *outside* the stack — an interface going away under it. */
     fun tearDown(local: SocketAddress) = unbind(local)
 
@@ -65,6 +79,12 @@ internal class TestNet(
         to: SocketAddress,
         payload: ReadBuffer,
     ) {
+        // A group address is not an endpoint: it flood-fills to its members, minus the sender (a real
+        // segment does not hand a host back its own multicast unless loopback is asked for).
+        groups[to]?.let { members ->
+            for (member in members) if (member != from) route(from, member, payload)
+            return
+        }
         val inbound = endpoints[to] ?: return // into the void
         if (inbound.isClosedForSend) return
         // Draw one value per routed datagram regardless of outcome — a stable RNG stream (directive #2).

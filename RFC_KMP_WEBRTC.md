@@ -256,7 +256,10 @@ its Java 21 classes.
    (what libwebrtc/Pion actually speak today).
 4. **mDNS candidates (`.local` obfuscation):** gathering-side responder is platform work
    (multicast) — ship in W3 or defer behind a flag? Recommendation: resolve-only in W3 (needed to
-   *reach* browser peers), responder deferred.
+   *reach* browser peers), responder deferred. **Settled 2026-07-28 (#88): the responder shipped**, on
+   exactly that shape — opt-in behind `MdnsAdvertisePolicy`, and *not* platform work after all beyond one
+   seam: the codec, the RFC 6762 §6 policy and the dispatch loop are `commonMain` over the vnet, with only
+   `MdnsMulticastBinder` (bind 5353, join the group) at the edge.
 5. **Pure-Kotlin DTLS 1.3 over `buffer-crypto` — retire the one native dependency?** (raised
    2026-07-16, after W4-native landed.) §1 says the protocol cores are **ours**; DTLS is the single
    exception, and it is the exception that costs the most: the cinterop/`libssl` provisioning, the

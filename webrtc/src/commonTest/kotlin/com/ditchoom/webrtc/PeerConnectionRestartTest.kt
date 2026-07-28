@@ -15,9 +15,14 @@ import com.ditchoom.webrtc.ice.IceAgentDriver
 import com.ditchoom.webrtc.ice.IceCandidate
 import com.ditchoom.webrtc.ice.IceConfig
 import com.ditchoom.webrtc.ice.IceFailureReason
+import com.ditchoom.webrtc.ice.InterfaceChangeTrigger
+import com.ditchoom.webrtc.ice.InterfaceEnumerationFailure
+import com.ditchoom.webrtc.ice.InterfaceEnumerator
+import com.ditchoom.webrtc.ice.InterfaceSnapshot
 import com.ditchoom.webrtc.ice.LocalInterface
 import com.ditchoom.webrtc.ice.NetworkId
 import com.ditchoom.webrtc.ice.NetworkMonitor
+import com.ditchoom.webrtc.ice.SystemNetworkMonitor
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sdp.SdpType
 import kotlinx.coroutines.CoroutineScope
@@ -36,6 +41,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
@@ -242,6 +248,67 @@ class PeerConnectionRestartTest {
                     "and the round the policy asked for carries a genuine ICE restart",
                 )
             assertNotEquals(pairBefore, knownPair(connected))
+            assertEquals("after", echo(channel, "after"))
+        }
+
+    @Test
+    fun the_production_monitor_drives_the_same_automatic_restart() =
+        runTest {
+            // The same scenario as above, but through the REAL SystemNetworkMonitor (#69) instead of a
+            // hand-written double — with only the one-call platform edge (InterfaceEnumerator) scripted.
+            // Until this fixture existed, every automatic-restart test drove a NetworkMonitor written by
+            // the test itself, so the production monitor's own behaviour — that it polls, that it
+            // compares, that a change is what it emits — was never on the path being asserted, which is
+            // exactly the "wired and tested, but only against a double" the issue is about.
+            val enumerator = ScriptedEnumerator(listOf(iface("wifi", ALICE_IP)))
+            val monitor = SystemNetworkMonitor(enumerator, InterfaceChangeTrigger.Polled(POLL_INTERVAL))
+            val f = connectedPeers(aliceRestartPolicy = IceRestartPolicy.OnNetworkChange(monitor))
+            val channel = f.alice.createDataChannel(DataChannelConfig(label = "restart/polled"))
+            assertEquals("before", echo(channel, "before"))
+            val pairBefore = knownPair(f.alice.connectionState.value)
+
+            enumerator.next = listOf(iface("cellular", "10.0.0.9"))
+
+            assertNotNull(
+                withTimeoutOrNull(timeout) { f.alice.renegotiationNeeded.first() },
+                "the polling monitor noticed the flip on its own clock and asked for a round",
+            )
+            renegotiate(f.alice, f.bob)
+
+            val connected =
+                assertNotNull(
+                    withTimeoutOrNull(timeout) {
+                        f.alice.connectionState.first { it is PeerConnectionState.Connected && knownPair(it) != pairBefore }
+                    },
+                    "and that round carried a genuine ICE restart",
+                )
+            assertNotEquals(pairBefore, knownPair(connected))
+            assertEquals("after", echo(channel, "after"), "…with the association intact across it")
+        }
+
+    @Test
+    fun a_failed_interface_probe_does_not_restart_a_healthy_session() =
+        runTest {
+            // The production monitor's failure mode, at the level where it would actually hurt. A
+            // getifaddrs/NetworkInterface failure reported as an *empty* interface set reads, to
+            // IceAgentDriver.pathRidesOneOf, as "the interface carrying our selected pair is gone" — so a
+            // transient enumeration failure would tear this session down and keep tearing it down. The
+            // sealed InterfaceSnapshot is what makes that unrepresentable; this is the fixture that says so.
+            val enumerator = ScriptedEnumerator(listOf(iface("wifi", ALICE_IP)))
+            val monitor = SystemNetworkMonitor(enumerator, InterfaceChangeTrigger.Polled(POLL_INTERVAL))
+            val f = connectedPeers(aliceRestartPolicy = IceRestartPolicy.OnNetworkChange(monitor))
+            val channel = f.alice.createDataChannel(DataChannelConfig(label = "restart/probe-failure"))
+            assertEquals("before", echo(channel, "before"))
+            val pairBefore = knownPair(f.alice.connectionState.value)
+
+            enumerator.fail("scripted enumeration failure")
+
+            assertNull(
+                withTimeoutOrNull(QUIET) { f.alice.renegotiationNeeded.first() },
+                "an unreadable interface table is not evidence that the path's interface went away",
+            )
+            assertTrue(enumerator.reads > 1, "…and it stayed quiet by reading the failure, not by never probing")
+            assertEquals(pairBefore, knownPair(f.alice.connectionState.value), "the healthy session is untouched")
             assertEquals("after", echo(channel, "after"))
         }
 
@@ -756,6 +823,35 @@ class PeerConnectionRestartTest {
     }
 
     /**
+     * The one-call platform edge the production [SystemNetworkMonitor] sits on, scripted — so the
+     * fixtures above exercise the real monitor and stub only the `getifaddrs`/`NetworkInterface` read.
+     */
+    private class ScriptedEnumerator(
+        initial: List<LocalInterface>,
+    ) : InterfaceEnumerator {
+        private var snapshot: InterfaceSnapshot = InterfaceSnapshot.Enumerated(initial)
+
+        var reads: Int = 0
+            private set
+
+        var next: List<LocalInterface>
+            get() = (snapshot as? InterfaceSnapshot.Enumerated)?.interfaces ?: emptyList()
+            set(value) {
+                snapshot = InterfaceSnapshot.Enumerated(value)
+            }
+
+        /** Make every subsequent read fail, as a real enumeration API transiently can. */
+        fun fail(diagnostic: String) {
+            snapshot = InterfaceSnapshot.Unavailable(InterfaceEnumerationFailure.EnumerationFailed(diagnostic))
+        }
+
+        override fun enumerate(): InterfaceSnapshot {
+            reads++
+            return snapshot
+        }
+    }
+
+    /**
      * An interface as a real [NetworkMonitor] would report it: an address with **no meaningful port**.
      * Enumerating interfaces tells you nothing about which ephemeral port ICE bound on one, so a fixture
      * that helpfully supplies the matching port would prove the policy works only for a monitor that
@@ -939,6 +1035,13 @@ class PeerConnectionRestartTest {
          * nothing; it is long enough that any restart the policy *was* going to request has been requested.
          */
         val QUIET = 30.seconds
+
+        /**
+         * Interface re-read cadence for the fixtures that drive the production [SystemNetworkMonitor].
+         * Well inside [QUIET], so a "nothing happens" assertion has covered many probes by the time it
+         * concludes — and free, because the poll is a `delay` on the test's virtual clock.
+         */
+        val POLL_INTERVAL = 1.seconds
 
         /**
          * Compressed RFC 7675 consent for the recovery fixtures — the RFC's own shape (checks paced at the

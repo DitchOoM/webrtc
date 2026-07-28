@@ -61,5 +61,46 @@ kotlin {
         for (leaf in mdnsSocketLeaves) {
             named(leaf) { dependsOn(socketMain) }
         }
+
+        // ── The production NetworkMonitor (#69) ──────────────────────────────────────────────────
+        // It has two halves, and they come from different places on purpose.
+        //
+        //  ENUMERATION (which local ADDRESSES exist) is ours: `systemInterfaceEnumerator()`. It has to
+        //  be — `com.ditchoom:network-monitor` answers "is the network up, and what link am I on"
+        //  (availability + a sealed NetworkId of Link(kind, handle)), and carries no addresses at all,
+        //  while IceAgentDriver.pathRidesOneOf compares the selected pair's local IP against the set.
+        //  jvm and android read the SAME API for it (`java.net.NetworkInterface`), so that actual is one
+        //  physical file in a REAL shared source set both leaves `dependsOn`, exactly as `socketMain`
+        //  above and for the same Dokka reason (one source file, one owning source set, or
+        //  dokkaGeneratePublicationHtml rejects it).
+        //
+        //  REACTIVITY (WHEN did it change) is socket's, so we do not hand-roll a second one:
+        //   · jvm + android → com.ditchoom:network-monitor — cinterop-free, and its only commonMain
+        //     dependency is kotlinx-coroutines-core. Hung on the two leaves rather than commonMain: the
+        //     sans-io core stays dependency-free and all-platform (browsers included).
+        //   · nativeMain    → com.ditchoom:socket core, the ONLY place we depend on it. socket's netlink
+        //     and NWPathMonitor monitors reuse its LinuxSockets / NWHelpers cinterop, which
+        //     :network-monitor deliberately stays free of, so on native that artifact ships the contract
+        //     with no implementation behind it. Known interim — DitchOoM/socket#269.
+        //
+        //     The old "socket core vendors a SECOND BoringSSL → duplicate-symbol link break" objection is
+        //     OBSOLETE, verified not assumed: socket 3.15.1's LinuxSockets klib embeds only liburing.a
+        //     (the libssl.a/libcrypto.a in 3.9.5 are gone), and socket:3.15.1 + buffer-crypto:6.22.0 both
+        //     resolve to the SAME com.ditchoom.boringssl:boringssl-canonical:0.0.6, which Gradle dedupes.
+        //     Proven by linking the production webrtc-harness-endpoint executable on linuxX64 AND
+        //     linuxArm64 with this dependency present, and by running socket's netlink monitor under
+        //     linuxX64Test. js/wasmJs need neither dependency — they report NoPlatformApi and are moot.
+        val javaMain by creating {
+            dependsOn(commonMain.get())
+        }
+        for (leaf in listOf("jvmMain", "androidMain")) {
+            named(leaf) {
+                dependsOn(javaMain)
+                dependencies { implementation(libs.network.monitor) }
+            }
+        }
+        named("nativeMain") {
+            dependencies { implementation(libs.socket.core) }
+        }
     }
 }

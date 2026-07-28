@@ -2,11 +2,17 @@
 
 package com.ditchoom.webrtc
 
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.ByteOrder
+import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.Connection
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.managed
 import com.ditchoom.webrtc.ice.CandidatePair
 import com.ditchoom.webrtc.ice.DatagramBinder
 import com.ditchoom.webrtc.ice.IceAgentDriver
 import com.ditchoom.webrtc.ice.IceCandidate
+import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sdp.SdpType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -18,7 +24,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import kotlin.random.Random
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -99,6 +108,50 @@ class PeerConnectionTrickleGenerationTest {
                 pair.remote,
                 "without the tag the signaled candidate is lost and the path is rediscovered, not signaled",
             )
+        }
+
+    @Test
+    fun a_restart_whose_candidates_overtake_the_offer_still_keeps_the_dtls_association() =
+        runTest {
+            // Where #70 and #72 meet. A restart re-offers the SAME `a=tls-id` and the SAME `a=fingerprint`
+            // (RFC 8842 §5.3/§5.5) — that is how it says "keep the association" — while the ICE credentials
+            // underneath it are wholly replaced. This fixture runs both claims through the *hostile*
+            // ordering: the new generation's candidates arrive before the offer that names them, so the
+            // routing that #70 added is what decides where they land, and the association continuity that
+            // #72 made explicit has to hold across the same window. Neither existing fixture covers both —
+            // `PeerConnectionRestartTest` asserts tls-id stability under in-order signaling, and the
+            // fixtures above assert routing without looking at DTLS at all.
+            val f = connectedPeers(TrickleGenerationPolicy.Tagged)
+            val channel = f.alice.createDataChannel(DataChannelConfig(label = "trickle/tlsid"))
+            val streamId = channel.id
+            assertEquals("before", echo(channel, "before"), "the channel works before the restart")
+
+            val before = f.alice.createOffer()
+            val tlsIdBefore = assertNotNull(tlsIdOf(before), "every description we emit carries a=tls-id")
+            val fingerprintBefore = assertNotNull(fingerprintOf(before), "…and a fingerprint")
+
+            f.aliceToBob.close()
+            f.alice.restartIce()
+            val offer = f.alice.createOffer()
+            f.alice.setLocalDescription(SdpType.Offer, offer)
+            assertTrue(f.aliceToBob.awaitHeld(), "alice re-gathered on the new generation")
+
+            f.aliceToBob.release()
+            f.bob.setRemoteDescription(SdpType.Offer, offer)
+            val answer = f.bob.createAnswer()
+            f.bob.setLocalDescription(SdpType.Answer, answer)
+            f.alice.setRemoteDescription(SdpType.Answer, answer)
+
+            val pair = f.awaitBobsNewPair()
+            assertIs<IceCandidate.Host>(pair.remote, "the overtaking candidate was still routed to its own generation")
+
+            // The ICE generation moved; the DTLS association did not, and says so in both attributes.
+            val after = f.alice.createOffer()
+            assertNotEquals(ufragOf(before), ufragOf(after), "the restart really did replace the ICE credentials…")
+            assertEquals(tlsIdBefore, tlsIdOf(after), "…while re-offering the same tls-id (RFC 8842 §5.5)")
+            assertEquals(fingerprintBefore, fingerprintOf(after), "…and the same fingerprint")
+            assertEquals(streamId, channel.id, "so the association was kept, stream ids and all")
+            assertEquals("after", echo(channel, "after"), "and the channel still round-trips over the new pair")
         }
 
     // ---- fixture plumbing ---------------------------------------------------------------------------
@@ -199,6 +252,14 @@ class PeerConnectionTrickleGenerationTest {
         val aliceToBob = TrickleGate(backgroundScope, from = alice, to = bob)
         TrickleGate(backgroundScope, from = bob, to = alice)
 
+        // Bob reflects whatever arrives on the channel it arrived on — he has no idea a restart is coming,
+        // which is the point: continuity is asserted from the side that was never told.
+        backgroundScope.launch {
+            bob.incomingDataChannels.collect { channel ->
+                launch { channel.receive().collect { channel.send(it) } }
+            }
+        }
+
         val offer = alice.createOffer()
         alice.setLocalDescription(SdpType.Offer, offer)
         bob.setRemoteDescription(SdpType.Offer, offer)
@@ -211,6 +272,50 @@ class PeerConnectionTrickleGenerationTest {
         val bobState = withTimeoutOrNull(timeout) { bob.awaitConnected() }
         peers.bobsFirstPair = assertIs<SelectedPath.Known>((assertIs<PeerConnectionState.Connected>(bobState)).path).pair
         return peers
+    }
+
+    /** The `a=ice-ufrag` of a description — the ICE generation it advertises. */
+    private fun ufragOf(sdp: String): String =
+        sdp
+            .lineSequence()
+            .first { it.startsWith("a=ice-ufrag:") }
+            .substringAfter(':')
+
+    /** The `a=tls-id` a description carries (RFC 8842 §5.3), or null if it carries none. */
+    private fun tlsIdOf(sdp: String): String? =
+        sdp
+            .lineSequence()
+            .firstOrNull { it.startsWith("a=tls-id:") }
+            ?.substringAfter(':')
+
+    /** The `a=fingerprint` a description carries (RFC 8122) — the implicit statement of the same continuity. */
+    private fun fingerprintOf(sdp: String): String? =
+        sdp
+            .lineSequence()
+            .firstOrNull { it.startsWith("a=fingerprint:") }
+            ?.substringAfter(':')
+
+    private suspend fun echo(
+        channel: Connection<ReadBuffer>,
+        text: String,
+    ): String? {
+        channel.send(textBuffer(text))
+        return withTimeoutOrNull(timeout) { channel.receive().first().text() }
+    }
+
+    private fun textBuffer(s: String): ReadBuffer {
+        val bytes = s.encodeToByteArray()
+        val buf = BufferFactory.managed().allocate(maxOf(1, bytes.size), ByteOrder.BIG_ENDIAN)
+        for (b in bytes) buf.writeByte(b)
+        buf.resetForRead()
+        buf.setLimit(bytes.size)
+        return buf
+    }
+
+    private fun ReadBuffer.text(): String {
+        val out = StringBuilder()
+        for (i in position() until limit()) out.append((get(i).toInt() and 0xFF).toChar())
+        return out.toString()
     }
 
     private suspend fun NativePeerConnection.awaitConnected(): PeerConnectionState =

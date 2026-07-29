@@ -80,14 +80,32 @@ socket, `AF_NETLINK`, `NWPathMonitor`. We do not hand-roll it. *Enumeration* —
 exist** — is ours (`java.net.NetworkInterface` / POSIX `getifaddrs(3)`), because socket's monitor reports
 availability plus a sealed `NetworkId(kind, handle)` and carries no addresses at all, while
 `pathRidesOneOf` compares the selected pair's local **IP**. The two answer different questions; both are
-needed. Polling survives only as the fallback where no push path exists (JDK < 21, Windows, Android with
-no installed `Context`), and `SystemNetworkMonitor.detection` says which you got — coarsely and honestly,
-because socket exposes no accessor for the mechanism it resolved and re-deriving one would be a second
-source of truth that can drift (DitchOoM/socket#269).
+needed. Polling survives only as the fallback where no push path exists (JDK < 21, Windows, a browser),
+and `SystemNetworkMonitor.detection` says which you got — coarsely, but that is now a *choice*: since
+socket 3.16.0 a sealed `MonitorMechanism` names what socket resolved, but reading it means **constructing**
+socket's monitor, which is what registers the platform callback. We decline to charge every
+`PeerConnectionConfig` a `NetworkCallback` registration just to describe ourselves, and read it only where
+it is free — Android's `hasAndroidApplicationContext()`. `PlatformSignalled` therefore promises *"we do not
+poll"*, never *"the OS pushes"*. (DitchOoM/socket#269 stays open on its other half: the Apple/Linux native
+monitors still live in socket core, which is why the two K/N leaves depend on it.)
+
+**Android is reactive out of the box** (#104), and it did not used to be. socket#270 added an
+androidx.startup initializer that captures the application `Context` before app code runs — but that
+initializer is deliberately *capture-only*, so it installs no process default, and our seam was reading
+`installedProcessDefaultOrNull()`. socket could hand us reactivity and we reported `Polled` anyway. The
+seam now reads `hasAndroidApplicationContext()` (side-effect-free) and builds via `androidOrNull()` per
+collection. Proven against a **real `ConnectivityManager`** under Robolectric in `androidHostTest` — the
+one target that previously had no runtime proof at all, on the platform where Wi-Fi→cellular is routine.
 
 A platform that cannot see NICs at all says so in the type: js/wasmJs return
 `NetworkMonitorSupport.Unavailable(NoPlatformApi)`, so an app cannot build an
-`IceRestartPolicy.OnNetworkChange` on a monitor that would never fire. `InterfaceSnapshot` is sealed for
+`IceRestartPolicy.OnNetworkChange` on a monitor that would never fire. And a platform that *can* watch
+interfaces but has nothing pushing to it returns `NetworkMonitorSupport.Degraded(monitor, reason)` — a
+third state, because the two axes are independent: `Degraded` still hands back a working monitor (slower
+is not off) while naming, at **config time**, why it will be slower. On Android
+`ReactivityDegradation.NoAndroidContext` is actionable (install a `Context`); `NoPlatformSignal` is not.
+Before that state existed the answer was only findable by inspecting `detection` on a monitor already
+wired into a session, which is exactly how the Android gap survived to become #104. `InterfaceSnapshot` is sealed for
 one specific reason: a failed `getifaddrs` reported as an *empty* interface set is exactly what
 `pathRidesOneOf` reads as "the selected pair's interface is gone", so a transient probe failure would
 restart a healthy session on every signal — instead the last good set stands and the failure is reported

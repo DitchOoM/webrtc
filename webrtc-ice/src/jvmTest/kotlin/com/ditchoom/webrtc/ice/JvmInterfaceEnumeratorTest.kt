@@ -21,6 +21,10 @@ class JvmInterfaceEnumeratorTest {
         val monitor =
             when (val support = systemNetworkMonitor()) {
                 is NetworkMonitorSupport.Watching -> support.monitor
+                // Not folded into an `Available` branch on purpose: Degraded here would mean the JVM had
+                // silently fallen back to our own timer, which is the regression this test exists to catch.
+                is NetworkMonitorSupport.Degraded ->
+                    error("the JVM is pushed by network-monitor, so this must be Watching — got ${support.reason}")
                 is NetworkMonitorSupport.Unavailable ->
                     error("the JVM enumerates interfaces, so this must be Watching — got ${support.reason}")
             }

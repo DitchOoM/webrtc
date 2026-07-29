@@ -69,6 +69,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -177,10 +178,13 @@ public data class PeerConnectionConfig(
      * signaling channel can carry, so switching it on silently would change what a session asks of its
      * consumer. Opt in with the platform monitor, whose sealed result also tells you when there is none:
      * ```
-     * val policy = when (val support = systemNetworkMonitor()) {
-     *     is NetworkMonitorSupport.Watching    -> IceRestartPolicy.OnNetworkChange(support.monitor)
+     * val support = systemNetworkMonitor()
+     * val policy = when (support) {
+     *     is NetworkMonitorSupport.Available   -> IceRestartPolicy.OnNetworkChange(support.monitor)
      *     is NetworkMonitorSupport.Unavailable -> IceRestartPolicy.Manual   // and log support.reason
      * }
+     * // Degraded still works, just on a timer — and on Android the reason is usually actionable.
+     * if (support is NetworkMonitorSupport.Degraded) log("network changes are polled: ${support.reason}")
      * ```
      */
     public val iceRestartPolicy: IceRestartPolicy = IceRestartPolicy.Manual,
@@ -987,14 +991,38 @@ public class NativePeerConnection(
      * It routes through the same [negotiationIntent] the explicit API sets, so automatic and manual
      * restarts are one code path and both still wait for the app to drive the offer/answer round —
      * a session cannot renegotiate without its signaling channel, whoever noticed the change.
+     *
+     * **A monitor that cannot watch stops the watcher, never the session.** [NetworkMonitor.changes] is a
+     * flow supplied from outside this class, and it can fail on collection: the concrete case is an
+     * Android app that stripped `ACCESS_NETWORK_STATE` from its merged manifest, where socket raises
+     * `NetworkMonitorPermissionException` from `AndroidNetworkMonitor`'s constructor — which our trigger
+     * runs lazily, inside the flow, so the throw arrives here rather than at
+     * `systemNetworkMonitor()`. Left uncaught it escapes the `scope.launch` above into the
+     * **app's own** [CoroutineScope] and cancels everything that scope holds, so a one-line manifest
+     * mistake would kill a healthy data channel. Automatic restart is an enhancement layered on a
+     * session; the session is not layered on it.
+     *
+     * The failure is not swallowed anywhere it could have been reported: it stays typed on the monitor
+     * the app constructed and can collect itself. What is missing is a session-level diagnostic seam to
+     * surface it without a second registration — **#106**, filed rather than invented here, since
+     * growing the public surface is not this change's job. [CancellationException] is rethrown, so
+     * ordinary teardown still tears down.
      */
     private suspend fun watchNetwork(
         d: IceAgentDriver,
         monitor: NetworkMonitor,
     ) {
-        monitor.changes.collect { interfaces ->
-            if (recoveryFor(_connectionState.value) != Recovery.Resume && d.pathRidesOneOf(interfaces)) return@collect
-            negotiationLock.withLock { requestIceRestart() }
+        try {
+            monitor.changes.collect { interfaces ->
+                if (recoveryFor(_connectionState.value) != Recovery.Resume && d.pathRidesOneOf(interfaces)) return@collect
+                negotiationLock.withLock { requestIceRestart() }
+            }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Throwable) {
+            // Permanent by nature (a missing install-time permission, a platform API that is simply not
+            // there), so there is nothing to retry and no backoff worth writing: stop watching and leave
+            // the session exactly as it was — which is what IceRestartPolicy.Manual would have given it.
         }
     }
 

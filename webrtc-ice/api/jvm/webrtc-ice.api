@@ -718,12 +718,14 @@ public abstract interface class com/ditchoom/webrtc/ice/InterfaceChangeTrigger {
 }
 
 public final class com/ditchoom/webrtc/ice/InterfaceChangeTrigger$Polled : com/ditchoom/webrtc/ice/InterfaceChangeTrigger {
-	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JLcom/ditchoom/webrtc/ice/ReactivityDegradation;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1-UwyO8pc ()J
-	public final fun copy-LRDsOJo (J)Lcom/ditchoom/webrtc/ice/InterfaceChangeTrigger$Polled;
-	public static synthetic fun copy-LRDsOJo$default (Lcom/ditchoom/webrtc/ice/InterfaceChangeTrigger$Polled;JILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/InterfaceChangeTrigger$Polled;
+	public final fun component2 ()Lcom/ditchoom/webrtc/ice/ReactivityDegradation;
+	public final fun copy-VtjQ1oo (JLcom/ditchoom/webrtc/ice/ReactivityDegradation;)Lcom/ditchoom/webrtc/ice/InterfaceChangeTrigger$Polled;
+	public static synthetic fun copy-VtjQ1oo$default (Lcom/ditchoom/webrtc/ice/InterfaceChangeTrigger$Polled;JLcom/ditchoom/webrtc/ice/ReactivityDegradation;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/InterfaceChangeTrigger$Polled;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getInterval-UwyO8pc ()J
+	public final fun getReason ()Lcom/ditchoom/webrtc/ice/ReactivityDegradation;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -1101,6 +1103,23 @@ public abstract interface class com/ditchoom/webrtc/ice/NetworkMonitor {
 public abstract interface class com/ditchoom/webrtc/ice/NetworkMonitorSupport {
 }
 
+public abstract interface class com/ditchoom/webrtc/ice/NetworkMonitorSupport$Available : com/ditchoom/webrtc/ice/NetworkMonitorSupport {
+	public abstract fun getMonitor ()Lcom/ditchoom/webrtc/ice/SystemNetworkMonitor;
+}
+
+public final class com/ditchoom/webrtc/ice/NetworkMonitorSupport$Degraded : com/ditchoom/webrtc/ice/NetworkMonitorSupport$Available {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/SystemNetworkMonitor;Lcom/ditchoom/webrtc/ice/ReactivityDegradation;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/SystemNetworkMonitor;
+	public final fun component2 ()Lcom/ditchoom/webrtc/ice/ReactivityDegradation;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/SystemNetworkMonitor;Lcom/ditchoom/webrtc/ice/ReactivityDegradation;)Lcom/ditchoom/webrtc/ice/NetworkMonitorSupport$Degraded;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/NetworkMonitorSupport$Degraded;Lcom/ditchoom/webrtc/ice/SystemNetworkMonitor;Lcom/ditchoom/webrtc/ice/ReactivityDegradation;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/NetworkMonitorSupport$Degraded;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getMonitor ()Lcom/ditchoom/webrtc/ice/SystemNetworkMonitor;
+	public final fun getReason ()Lcom/ditchoom/webrtc/ice/ReactivityDegradation;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/ice/NetworkMonitorSupport$Unavailable : com/ditchoom/webrtc/ice/NetworkMonitorSupport {
 	public fun <init> (Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure;)V
 	public final fun component1 ()Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure;
@@ -1112,13 +1131,30 @@ public final class com/ditchoom/webrtc/ice/NetworkMonitorSupport$Unavailable : c
 	public fun toString ()Ljava/lang/String;
 }
 
-public final class com/ditchoom/webrtc/ice/NetworkMonitorSupport$Watching : com/ditchoom/webrtc/ice/NetworkMonitorSupport {
+public final class com/ditchoom/webrtc/ice/NetworkMonitorSupport$Watching : com/ditchoom/webrtc/ice/NetworkMonitorSupport$Available {
 	public fun <init> (Lcom/ditchoom/webrtc/ice/SystemNetworkMonitor;)V
 	public final fun component1 ()Lcom/ditchoom/webrtc/ice/SystemNetworkMonitor;
 	public final fun copy (Lcom/ditchoom/webrtc/ice/SystemNetworkMonitor;)Lcom/ditchoom/webrtc/ice/NetworkMonitorSupport$Watching;
 	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/NetworkMonitorSupport$Watching;Lcom/ditchoom/webrtc/ice/SystemNetworkMonitor;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/NetworkMonitorSupport$Watching;
 	public fun equals (Ljava/lang/Object;)Z
-	public final fun getMonitor ()Lcom/ditchoom/webrtc/ice/SystemNetworkMonitor;
+	public fun getMonitor ()Lcom/ditchoom/webrtc/ice/SystemNetworkMonitor;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/ReactivityDegradation {
+}
+
+public final class com/ditchoom/webrtc/ice/ReactivityDegradation$NoAndroidContext : com/ditchoom/webrtc/ice/ReactivityDegradation {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/ReactivityDegradation$NoAndroidContext;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/ReactivityDegradation$NoPlatformSignal : com/ditchoom/webrtc/ice/ReactivityDegradation {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/ReactivityDegradation$NoPlatformSignal;
+	public fun equals (Ljava/lang/Object;)Z
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }

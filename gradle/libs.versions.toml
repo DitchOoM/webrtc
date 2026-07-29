@@ -52,7 +52,14 @@ buffer = "6.22.0"
 # binds to. Same platform set as socket-udp (jvm/android/js-node/linux/apple, NOT wasm). Its POM only
 # *requires* buffer 6.11.0, so it composes with any buffer >= that; we ride buffer 6.22.0 (above),
 # free to bump now that the DTLS oracle is symbol-decoupled. Unblocks CO-2 mDNS end-to-end.
-socket = "3.15.1"
+# 3.16.0 (socket PR #270) is what makes Android reactivity reachable at all (webrtc#104): an
+# androidx.startup initializer captures the application `Context` before app code runs, so
+# `NetworkMonitor.androidOrNull()` builds a ConnectivityManager monitor with nothing asked of the app —
+# plus `hasAndroidApplicationContext()` (side-effect-free, so deciding costs no callback registration),
+# the sealed `MonitorMechanism` accessor, and the `reset*ForTesting` seams our Robolectric fixtures use.
+# The initializer is deliberately CAPTURE-ONLY: it installs no process default, so a seam reading
+# `installedProcessDefaultOrNull()` sees nothing and reports Polled. That is the bug #104 turned out to be.
+socket = "3.16.0"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"
@@ -66,6 +73,11 @@ jazzer = "0.30.0"
 # kotlinx-benchmark — parse/crypto throughput benchmarks in a shared commonBenchmark source set
 # (the buffer pattern); results tracked in PERFORMANCE.md. Runs on demand + release, JVM + Linux K/N.
 kotlinxBenchmark = "0.4.17"
+# Robolectric — the Android framework on the HOST JVM, so `ConnectivityManager` reactivity is a normal
+# `testAndroidHostTest` run with no emulator. Android is the only target whose NetworkMonitor trigger had
+# no runtime proof (webrtc#104); every other one asserts against a real platform API. 4.15.1 ships SDKs up
+# to 35, below our compileSdk 36, so the tests pin `@Config(sdk = ...)` rather than inherit it.
+robolectric = "4.15.1"
 
 [libraries]
 buffer = { module = "com.ditchoom:buffer", version.ref = "buffer" }
@@ -87,6 +99,7 @@ kotlin-web = { module = "org.jetbrains.kotlin-wrappers:kotlin-web", version.ref 
 kotlin-js = { module = "org.jetbrains.kotlin-wrappers:kotlin-js", version.ref = "kotlinWrappers" }
 jazzer = { module = "com.code-intelligence:jazzer", version.ref = "jazzer" }
 kotlinx-benchmark-runtime = { module = "org.jetbrains.kotlinx:kotlinx-benchmark-runtime", version.ref = "kotlinxBenchmark" }
+robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
 
 [plugins]
 kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }

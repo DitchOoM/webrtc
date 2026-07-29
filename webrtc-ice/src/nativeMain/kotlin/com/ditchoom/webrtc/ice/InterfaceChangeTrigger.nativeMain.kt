@@ -15,8 +15,9 @@ import com.ditchoom.socket.NetworkMonitor as SocketNetworkMonitor
  * These two monitors reuse socket's own `LinuxSockets` / `NWHelpers` cinterop, and `:network-monitor` is
  * deliberately cinterop-free so it never perturbs the commonizer — so on native it ships the portable
  * contract only, with no implementation behind it. Depending on socket core at this leaf is a known
- * interim, tracked upstream as **DitchOoM/socket#269**; if those monitors are ever extracted, this file
- * changes its import and nothing else.
+ * interim, tracked upstream as **DitchOoM/socket#269**, which is still open on exactly this point:
+ * socket#270 answered that issue's separate *mechanism-accessor* ask, not its module-extraction one. If
+ * those monitors are ever extracted, this file changes its import and nothing else.
  *
  * **The historical objection to this dependency no longer holds, and was verified rather than assumed.**
  * socket core once vendored its own BoringSSL, which duplicate-collided with buffer-crypto's at the K/N

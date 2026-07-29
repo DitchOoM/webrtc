@@ -13,4 +13,4 @@ import kotlin.time.Duration
  * there is no raw-UDP `DatagramChannel` actual on js, so there is no ICE agent of ours to restart.)
  */
 internal actual fun platformInterfaceChangeTrigger(pollInterval: Duration): InterfaceChangeTrigger =
-    InterfaceChangeTrigger.Polled(pollInterval)
+    InterfaceChangeTrigger.Polled(pollInterval, ReactivityDegradation.NoPlatformSignal)

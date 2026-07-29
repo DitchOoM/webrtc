@@ -90,10 +90,16 @@ checked in, CHANGELOG entry, standing-directive greps green.
 > leaves — `ConnectivityManager`, the JDK-21 FFM routing socket, `AF_NETLINK`, `NWPathMonitor` — and
 > *enumeration* from our own `NetworkInterface` / `getifaddrs(3)` walk, because socket's monitor carries no
 > addresses and `pathRidesOneOf` compares the selected pair's local IP. Polling survives only as the
-> fallback with no push path (JDK < 21, Windows, Android with no `Context`), reported on
+> fallback with no push path (JDK < 21, Windows, a browser), reported on
 > `SystemNetworkMonitor.detection`. js/wasmJs report the typed `NoPlatformApi` rather than a monitor that
 > never fires, and a failed probe never emits (an empty set would read as "the selected pair's interface is
-> gone"). `IceRestartPolicy` still defaults to `Manual` on purpose — the mechanism is opt-in, since an
+> gone"). **Android joined the reactive set** (#104): network-monitor 3.16.0's androidx.startup initializer
+> captures the application `Context` with nothing asked of the app, and our seam reads
+> `hasAndroidApplicationContext()` instead of the process default the initializer deliberately never
+> installs — proven against a real `ConnectivityManager` under Robolectric in `androidHostTest`, the one
+> target that had had no runtime proof. A platform that enumerates but cannot be pushed now reports
+> `NetworkMonitorSupport.Degraded(monitor, reason)` at construction rather than leaving it to be found on
+> `detection` afterwards. `IceRestartPolicy` still defaults to `Manual` on purpose — the mechanism is opt-in, since an
 > automatic restart is a renegotiation only the app's signaling channel can carry. The "socket core vendors
 > a second BoringSSL" objection that kept this hand-rolled is **obsolete** (shared `boringssl-canonical`,
 > verified by linking the production native peer on both linux arches).

@@ -22,6 +22,7 @@ import com.ditchoom.webrtc.ice.InterfaceSnapshot
 import com.ditchoom.webrtc.ice.LocalInterface
 import com.ditchoom.webrtc.ice.NetworkId
 import com.ditchoom.webrtc.ice.NetworkMonitor
+import com.ditchoom.webrtc.ice.ReactivityDegradation
 import com.ditchoom.webrtc.ice.SystemNetworkMonitor
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sdp.SdpType
@@ -30,6 +31,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
@@ -261,7 +263,7 @@ class PeerConnectionRestartTest {
             // compares, that a change is what it emits — was never on the path being asserted, which is
             // exactly the "wired and tested, but only against a double" the issue is about.
             val enumerator = ScriptedEnumerator(listOf(iface("wifi", ALICE_IP)))
-            val monitor = SystemNetworkMonitor(enumerator, InterfaceChangeTrigger.Polled(POLL_INTERVAL))
+            val monitor = SystemNetworkMonitor(enumerator, InterfaceChangeTrigger.Polled(POLL_INTERVAL, NO_SIGNAL))
             val f = connectedPeers(aliceRestartPolicy = IceRestartPolicy.OnNetworkChange(monitor))
             val channel = f.alice.createDataChannel(DataChannelConfig(label = "restart/polled"))
             assertEquals("before", echo(channel, "before"))
@@ -287,6 +289,43 @@ class PeerConnectionRestartTest {
         }
 
     @Test
+    fun a_monitor_that_cannot_watch_disables_automatic_restart_without_taking_the_session_down() =
+        runTest {
+            // The ACCESS_NETWORK_STATE residue, at the level where it actually costs something. On
+            // Android the trigger must decide Signalled from `hasAndroidApplicationContext()` — the only
+            // question answerable without registering a callback — so a stripped permission cannot be
+            // seen until collection, and then socket throws. That throw lands in the `scope.launch` that
+            // drives this policy, on a CoroutineScope the APP supplied.
+            //
+            // Automatic ICE restart is an optional enhancement layered on a session; a permanently
+            // unwatchable network is a reason for it to stop watching, never a reason to tear down a
+            // working data channel. Without the guard the failure escapes the launch and cancels
+            // whatever the app's scope also holds — turning a one-line manifest mistake into a dead
+            // session, which is a far worse outcome than the polled fallback it replaced.
+            val f =
+                connectedPeers(
+                    aliceRestartPolicy =
+                        IceRestartPolicy.OnNetworkChange(UnwatchableMonitor(listOf(iface("wifi", ALICE_IP)))),
+                )
+            val channel = f.alice.createDataChannel(DataChannelConfig(label = "restart/unwatchable"))
+
+            assertEquals("before", echo(channel, "before"))
+            assertNull(
+                withTimeoutOrNull(QUIET) { f.alice.renegotiationNeeded.first() },
+                "a monitor that never reports a change must not manufacture one",
+            )
+            assertEquals(
+                "after",
+                echo(channel, "after"),
+                "the session outlives its network watcher — the watcher is the optional half",
+            )
+            assertIs<PeerConnectionState.Connected>(
+                f.alice.connectionState.value,
+                "…and stays Connected rather than being cancelled by an exception escaping the watcher",
+            )
+        }
+
+    @Test
     fun a_failed_interface_probe_does_not_restart_a_healthy_session() =
         runTest {
             // The production monitor's failure mode, at the level where it would actually hurt. A
@@ -295,7 +334,7 @@ class PeerConnectionRestartTest {
             // transient enumeration failure would tear this session down and keep tearing it down. The
             // sealed InterfaceSnapshot is what makes that unrepresentable; this is the fixture that says so.
             val enumerator = ScriptedEnumerator(listOf(iface("wifi", ALICE_IP)))
-            val monitor = SystemNetworkMonitor(enumerator, InterfaceChangeTrigger.Polled(POLL_INTERVAL))
+            val monitor = SystemNetworkMonitor(enumerator, InterfaceChangeTrigger.Polled(POLL_INTERVAL, NO_SIGNAL))
             val f = connectedPeers(aliceRestartPolicy = IceRestartPolicy.OnNetworkChange(monitor))
             val channel = f.alice.createDataChannel(DataChannelConfig(label = "restart/probe-failure"))
             assertEquals("before", echo(channel, "before"))
@@ -823,6 +862,21 @@ class PeerConnectionRestartTest {
     }
 
     /**
+     * A [NetworkMonitor] that cannot watch anything and says so by throwing on collection — what an
+     * Android app with `ACCESS_NETWORK_STATE` stripped from its merged manifest actually gets, since
+     * socket's `AndroidNetworkMonitor` raises `NetworkMonitorPermissionException` from its constructor
+     * and our trigger builds the monitor inside the flow, on collection.
+     */
+    private class UnwatchableMonitor(
+        private val initial: List<LocalInterface>,
+    ) : NetworkMonitor {
+        override fun interfaces(): List<LocalInterface> = initial
+
+        override val changes: Flow<List<LocalInterface>>
+            get() = flow { throw IllegalStateException(PERMISSION_FAILURE) }
+    }
+
+    /**
      * The one-call platform edge the production [SystemNetworkMonitor] sits on, scripted — so the
      * fixtures above exercise the real monitor and stub only the `getifaddrs`/`NetworkInterface` read.
      */
@@ -1042,6 +1096,21 @@ class PeerConnectionRestartTest {
          * concludes — and free, because the poll is a `delay` on the test's virtual clock.
          */
         val POLL_INTERVAL = 1.seconds
+
+        /**
+         * Why these fixtures poll. Incidental to what they assert — they drive interface *changes*, not
+         * the reason there is no push — so they stand in for a platform with nothing to signal rather
+         * than for Android's actionable [ReactivityDegradation.NoAndroidContext].
+         */
+        val NO_SIGNAL = ReactivityDegradation.NoPlatformSignal
+
+        /**
+         * What socket's `NetworkMonitorPermissionException` says, in shape: an `IllegalStateException`
+         * escaping the monitor on collection. Named here rather than typed, because `webrtc` cannot see
+         * an Android-only exception class from `commonTest` — and must not, since the guard under test is
+         * "any monitor failure", not "this one".
+         */
+        const val PERMISSION_FAILURE = "ACCESS_NETWORK_STATE is required to observe network changes"
 
         /**
          * Compressed RFC 7675 consent for the recovery fixtures — the RFC's own shape (checks paced at the

@@ -102,5 +102,23 @@ kotlin {
         named("nativeMain") {
             dependencies { implementation(libs.socket.core) }
         }
+
+        // ── Android reactivity proof (#104) ──────────────────────────────────────────────────────
+        // Android was the ONLY target whose trigger had no runtime proof: Linux asserts against real
+        // AF_NETLINK, Apple against a real NWPathMonitor on the macOS runner, the JVM against the
+        // JDK-21 FFM routing socket — and `androidHostTest` exercised the code path with no
+        // ConnectivityManager behind it. That inversion is the whole of #104: Wi-Fi→cellular is the
+        // canonical IceRestartPolicy.OnNetworkChange case and it is a *mobile* phenomenon.
+        //
+        // Robolectric runs the real framework classes on the host JVM, so this is an ordinary
+        // `testAndroidHostTest` in the existing build-linux lane — no emulator, no new CI lane. It
+        // proves the ADAPTER (a ConnectivityManager callback reaches our seam); it deliberately does
+        // not claim to prove the RADIO (that a real handoff fires onLost), which is #102's job.
+        named("androidHostTest") {
+            dependencies {
+                implementation(libs.robolectric)
+                implementation(libs.androidx.test.core.ktx)
+            }
+        }
     }
 }

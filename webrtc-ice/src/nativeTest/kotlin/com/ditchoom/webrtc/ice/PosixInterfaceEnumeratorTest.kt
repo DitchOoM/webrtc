@@ -27,6 +27,10 @@ class PosixInterfaceEnumeratorTest {
         val monitor =
             when (val support = systemNetworkMonitor()) {
                 is NetworkMonitorSupport.Watching -> support.monitor
+                // Kept distinct from Unavailable: Degraded would mean netlink/NWPathMonitor stopped
+                // driving us and we had quietly reverted to a timer, which reads as "green" everywhere else.
+                is NetworkMonitorSupport.Degraded ->
+                    error("netlink/NWPathMonitor push here, so this must be Watching — got ${support.reason}")
                 is NetworkMonitorSupport.Unavailable ->
                     error("this native target enumerates interfaces, so this must be Watching — got ${support.reason}")
             }

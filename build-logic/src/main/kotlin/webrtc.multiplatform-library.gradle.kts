@@ -110,7 +110,13 @@ kotlin {
         namespace = androidNamespace
         compileSdk = 36
         minSdk = 21
-        withHostTest { }
+        // Robolectric resolves the Android framework through the merged manifest + resources, so the
+        // host-test compilation has to package them; without this it fails at startup rather than
+        // skipping. Set here rather than in one module's build file because this convention is the
+        // single place structural Android facts are stated. The modules that never load Robolectric
+        // pay only the resource-merge tasks, which are trivially incremental — measurably so: a full
+        // `allTests` sweep across all seven host lanes is unchanged.
+        withHostTest { isIncludeAndroidResources = true }
     }
     jvm {
         compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)

@@ -126,7 +126,7 @@ class SystemNetworkMonitorTest {
             // The churn guard, one level below IceRestartPolicy's own: a monitor that re-announced the
             // same set on every wakeup would ask the app to renegotiate on every network blip.
             val enumerator = ScriptedEnumerator(enumerated(WIFI))
-            val monitor = SystemNetworkMonitor(enumerator, InterfaceChangeTrigger.Polled(POLL), COALESCE)
+            val monitor = SystemNetworkMonitor(enumerator, polled(POLL), COALESCE)
             assertEquals(InterfaceChangeDetection.Polled(POLL), monitor.detection)
 
             assertNull(withTimeoutOrNull(QUIET) { monitor.changes.first() }, "an unchanged table is not a change")
@@ -141,7 +141,7 @@ class SystemNetworkMonitorTest {
             // interface carrying our selected pair is gone" — so a transient getifaddrs failure would tear
             // down a perfectly healthy session for as long as the failure lasted.
             val enumerator = ScriptedEnumerator(enumerated(WIFI))
-            val monitor = SystemNetworkMonitor(enumerator, InterfaceChangeTrigger.Polled(POLL), COALESCE)
+            val monitor = SystemNetworkMonitor(enumerator, polled(POLL), COALESCE)
             enumerator.next =
                 InterfaceSnapshot.Unavailable(InterfaceEnumerationFailure.EnumerationFailed("scripted probe failure"))
 
@@ -166,7 +166,7 @@ class SystemNetworkMonitorTest {
             // The escape hatch for a caller with its own reason to suspect the network moved. The poll
             // interval here is an hour: without refresh() shortcutting it, this could only pass by waiting.
             val enumerator = ScriptedEnumerator(enumerated(WIFI))
-            val monitor = SystemNetworkMonitor(enumerator, InterfaceChangeTrigger.Polled(1.hours), COALESCE)
+            val monitor = SystemNetworkMonitor(enumerator, polled(1.hours), COALESCE)
             val emissions = collectChanges(monitor)
 
             enumerator.next = enumerated(CELLULAR)
@@ -208,7 +208,11 @@ class SystemNetworkMonitorTest {
             // keeps an app from building an IceRestartPolicy.OnNetworkChange on a monitor that can never
             // fire. `systemNetworkMonitor()` returning a monitor is itself proof the first probe succeeded.
             when (val support = systemNetworkMonitor()) {
-                is NetworkMonitorSupport.Watching -> assertRealInterfaceTable(support.monitor.lastSnapshot.value)
+                // `Available`, not `Watching`: this asserts the *enumeration* axis, and reactivity is the
+                // other one. On an Android host JVM with no App Startup the honest answer is
+                // Degraded(NoAndroidContext) — a real interface table, read on a timer — and demanding
+                // Watching here would fail a target that is behaving exactly as designed.
+                is NetworkMonitorSupport.Available -> assertRealInterfaceTable(support.monitor.lastSnapshot.value)
                 is NetworkMonitorSupport.Unavailable ->
                     assertEquals(
                         InterfaceEnumerationFailure.NoPlatformApi,
@@ -252,6 +256,14 @@ class SystemNetworkMonitorTest {
                 LocalInterface(NetworkId(id), SocketAddress.ofLiteral("10.0.0.${index + 1}", 0))
             },
         )
+
+    /**
+     * A polled trigger for the fallback fixtures. The degradation reason is incidental to what they test
+     * (interval behaviour, diffing, failed probes) — [ReactivityDegradation.NoPlatformSignal] stands in for
+     * "a platform with nothing to push", which is what the polling path exists for.
+     */
+    private fun polled(interval: Duration): InterfaceChangeTrigger.Polled =
+        InterfaceChangeTrigger.Polled(interval, ReactivityDegradation.NoPlatformSignal)
 
     private companion object {
         /** Fallback poll cadence for the polled fixtures. */

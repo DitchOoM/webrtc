@@ -9,4 +9,4 @@ import kotlin.time.Duration
  * [InterfaceChangeTrigger.Polled] rather than a fake signal.
  */
 internal actual fun platformInterfaceChangeTrigger(pollInterval: Duration): InterfaceChangeTrigger =
-    InterfaceChangeTrigger.Polled(pollInterval)
+    InterfaceChangeTrigger.Polled(pollInterval, ReactivityDegradation.NoPlatformSignal)

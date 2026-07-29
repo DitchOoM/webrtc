@@ -104,22 +104,69 @@ public sealed interface InterfaceChangeTrigger {
         public val signals: Flow<Unit>,
     ) : InterfaceChangeTrigger
 
-    /** No platform signal on this configuration — re-read the table every [interval]. */
+    /**
+     * No platform signal on this configuration — re-read the table every [interval]. [reason] says why
+     * there is no signal, and travels out to the caller on [NetworkMonitorSupport.Degraded]; carrying it
+     * *here* is what makes that possible without a second derivation, since this is the one value that
+     * already knows.
+     */
     public data class Polled(
         public val interval: Duration,
+        public val reason: ReactivityDegradation,
     ) : InterfaceChangeTrigger
+}
+
+/**
+ * Why a [SystemNetworkMonitor] falls back to polling instead of being pushed — a typed reason, reported at
+ * **construction** time on [NetworkMonitorSupport.Degraded] rather than left to be discovered afterwards
+ * by inspecting [SystemNetworkMonitor.detection].
+ *
+ * The timing is the point (webrtc#104). Degraded reactivity is not a failure: a 5-second re-read sits
+ * comfortably inside RFC 7675's 30-second consent lifetime, so a session still notices and still recovers.
+ * But it is materially slower than a `ConnectivityManager` callback, and on Android it is usually
+ * *fixable by the app* — and a reason a consumer can only find by interrogating a monitor it has already
+ * built and wired up is a reason nobody reads.
+ */
+public sealed interface ReactivityDegradation {
+    /**
+     * **Android, and actionable.** No application `Context` has reached socket, so no
+     * `ConnectivityManager.NetworkCallback` can be registered and the interface table is re-read on a
+     * timer instead.
+     *
+     * This should be rare: since `com.ditchoom:network-monitor` 3.16.0 an androidx.startup initializer
+     * captures the application context before any app code runs, so the ordinary app never sees it.
+     * Seeing it means App Startup did not run — the app disabled `androidx.startup.InitializationProvider`
+     * in its manifest, or this is a process without ContentProviders. Calling
+     * `NetworkMonitor.installAndroidContext(applicationContext)` fixes it, and the next
+     * [systemNetworkMonitor] then reports [NetworkMonitorSupport.Watching].
+     */
+    public data object NoAndroidContext : ReactivityDegradation
+
+    /**
+     * Nothing pushes here and nothing the app does will change that. Either the platform has no signal to
+     * give — a browser page cannot watch the machine's NICs — or socket resolved a monitor that does not
+     * push (its own poller, a constant), in which case our own timer is the simpler equivalent rather than
+     * a second timer stacked on socket's. Log it; there is no action behind it.
+     */
+    public data object NoPlatformSignal : ReactivityDegradation
 }
 
 /**
  * How a [SystemNetworkMonitor] learns that the network moved — the answer to *"why did this session not
  * notice my Wi-Fi drop for four seconds?"*, readable from a bug report without opening the source.
  *
- * Deliberately **coarse**. Socket exposes no accessor for which concrete mechanism it resolved
- * (`ConnectivityManager` / `NWPathMonitor` / netlink / the JDK-21 FFM routing socket), and re-deriving it
- * here from `os.name` plus the JDK version would be a second source of truth that can drift from socket's
- * actual choice — a type that confidently names the wrong mechanism is worse than one that admits it
- * cannot see. Naming the mechanism is a bonus; never claiming *signalled* where we are in fact polling is
- * the property that must hold, and that one is exact. Tracked upstream as DitchOoM/socket#269.
+ * Deliberately **coarse**, and since socket 3.16.0 that is a *choice* rather than a limit. Socket now
+ * publishes a sealed `MonitorMechanism` naming what it resolved (`ConnectivityManager` / `NWPathMonitor` /
+ * netlink / the JDK-21 FFM routing socket, or its own poller), so we could mirror it — but reading it
+ * means **constructing socket's monitor**, and construction is exactly what registers the platform
+ * callback. Paying a `NetworkCallback` registration, or an FFM routing socket, merely to describe
+ * ourselves would be a side effect charged to every `PeerConnectionConfig` built. So we read the mechanism
+ * only where it is free: Android answers from `hasAndroidApplicationContext()`, which constructs nothing.
+ *
+ * What this type promises is therefore narrow and exact: [PlatformSignalled] means *we* do not poll. It
+ * does **not** claim the OS pushes — below JDK 21 and on Windows socket's own poller is what pushes to us,
+ * and that is invisible from here by design. Never claiming *signalled* where we are in fact polling is
+ * the property that must hold; naming the concrete mechanism is a bonus we decline to buy at that price.
  */
 public sealed interface InterfaceChangeDetection {
     /**
@@ -144,12 +191,15 @@ public sealed interface InterfaceChangeDetection {
  *  - **jvm** — network-monitor's `defaultJvmNetworkMonitor()`: a JDK-21 FFM routing socket where
  *    available (shipped under `META-INF/versions/21`), its polling monitor below that. Either way it
  *    pushes to us, so we never poll.
- *  - **android** — the `ConnectivityManager.NetworkCallback` monitor, but **only** if the app installed a
- *    `Context` via socket's `NetworkMonitor.installAndroidContext(...)`; there is no way to obtain a
- *    functional Android monitor without one, so absent that we honestly report [Polled].
+ *  - **android** — the `ConnectivityManager.NetworkCallback` monitor, and since network-monitor 3.16.0
+ *    **with nothing asked of the app**: an androidx.startup initializer captures the application `Context`
+ *    before app code runs, so a reactive monitor is buildable out of the box. An app that installed its
+ *    own still wins. Only a process where App Startup never ran degrades to
+ *    [Polled] — [ReactivityDegradation.NoAndroidContext], which the app can act on.
  *  - **linux / apple (K/N)** — socket core's `NetworkMonitor.default()`: netlink on Linux, `NWPathMonitor`
  *    on Apple. These two stay in socket *core* because they reuse its `LinuxSockets` / `NWHelpers`
- *    cinterop, which `:network-monitor` deliberately stays free of — a known interim, DitchOoM/socket#269.
+ *    cinterop, which `:network-monitor` deliberately stays free of — a known interim, DitchOoM/socket#269
+ *    (still open: #270 answered that issue's *mechanism-accessor* ask, not its module-extraction one).
  *  - **js / wasmJs** — [Polled], and moot: the enumerator reports `NoPlatformApi` there anyway.
  */
 internal expect fun platformInterfaceChangeTrigger(pollInterval: Duration): InterfaceChangeTrigger
@@ -318,17 +368,46 @@ public class SystemNetworkMonitor(
  * the app's side, from automatic restarts being switched off, and the app would never learn which.
  *
  * ```
- * val policy = when (val support = systemNetworkMonitor()) {
- *     is NetworkMonitorSupport.Watching    -> IceRestartPolicy.OnNetworkChange(support.monitor)
+ * val support = systemNetworkMonitor()
+ * val policy = when (support) {
+ *     is NetworkMonitorSupport.Available   -> IceRestartPolicy.OnNetworkChange(support.monitor)
  *     is NetworkMonitorSupport.Unavailable -> IceRestartPolicy.Manual   // and log support.reason
  * }
+ * // Reactivity is a separate axis from support: a Degraded monitor still works, just slower.
+ * if (support is NetworkMonitorSupport.Degraded) log("network changes are polled: ${support.reason}")
  * ```
  */
 public sealed interface NetworkMonitorSupport {
-    /** This platform enumerates interfaces; [monitor] is watching them. */
+    /**
+     * This platform enumerates interfaces, so [monitor] works and is worth handing to
+     * [IceRestartPolicy.OnNetworkChange]. *How fast* it notices is the [Watching] / [Degraded] split —
+     * a caller that only needs a monitor matches here and gets either.
+     *
+     * The two axes are deliberately separate types rather than one flag: "can this platform watch
+     * interfaces at all" is answered by the enumerator and is permanent, while "does something push"
+     * is answered by the trigger and can change with a `Context` install or a JDK upgrade.
+     */
+    public sealed interface Available : NetworkMonitorSupport {
+        public val monitor: SystemNetworkMonitor
+    }
+
+    /** Fully reactive: a platform signal drives [monitor] and it never polls. */
     public data class Watching(
-        public val monitor: SystemNetworkMonitor,
-    ) : NetworkMonitorSupport
+        override val monitor: SystemNetworkMonitor,
+    ) : Available
+
+    /**
+     * [monitor] works, but nothing pushes to it here, so it re-reads the interface table on a timer. The
+     * typed [reason] says why — and on Android usually what to do about it.
+     *
+     * **Slower is not off:** this monitor is still the right one to pass to
+     * [IceRestartPolicy.OnNetworkChange]. The interval is deliberately not duplicated onto this state;
+     * [SystemNetworkMonitor.detection] carries it, and is the single place it is stated.
+     */
+    public data class Degraded(
+        override val monitor: SystemNetworkMonitor,
+        public val reason: ReactivityDegradation,
+    ) : Available
 
     /** This platform cannot watch interfaces — see the typed [reason]. Automatic restart is off. */
     public data class Unavailable(
@@ -342,17 +421,27 @@ public sealed interface NetworkMonitorSupport {
  * guess. A platform whose *first* read fails ([InterfaceEnumerationFailure.EnumerationFailed]) reports
  * [NetworkMonitorSupport.Unavailable] too; call it again later if you want to retry.
  *
- * [pollInterval] is used **only** where no platform signal exists — read
- * [SystemNetworkMonitor.detection] to see which you got. It is injected, and the monitor is
+ * Both axes are answered **here**, before the caller has built anything: whether interfaces can be watched
+ * at all, and — via [NetworkMonitorSupport.Degraded] — whether anything pushes. The second used to be
+ * findable only by inspecting [SystemNetworkMonitor.detection] on a monitor already wired into a session,
+ * which is why nobody found it (webrtc#104).
+ *
+ * [pollInterval] is used **only** where no platform signal exists. It is injected, and the monitor is
  * caller-clocked, so a fixture drives either path in virtual time.
  */
 public fun systemNetworkMonitor(pollInterval: Duration = DEFAULT_INTERFACE_POLL_INTERVAL): NetworkMonitorSupport {
-    // Constructing the monitor IS the probe — it reads the table once and publishes it on lastSnapshot,
-    // so deciding support costs one enumeration, not two.
-    val monitor = SystemNetworkMonitor(systemInterfaceEnumerator(), platformInterfaceChangeTrigger(pollInterval))
+    val trigger = platformInterfaceChangeTrigger(pollInterval)
+    // Constructing the monitor IS the enumeration probe — it reads the table once and publishes it on
+    // lastSnapshot, so deciding support costs one enumeration, not two. Deciding *reactivity* costs
+    // nothing at all: the trigger already knows, and is asked rather than re-derived.
+    val monitor = SystemNetworkMonitor(systemInterfaceEnumerator(), trigger)
     return when (val first = monitor.lastSnapshot.value) {
-        is InterfaceSnapshot.Enumerated -> NetworkMonitorSupport.Watching(monitor)
         is InterfaceSnapshot.Unavailable -> NetworkMonitorSupport.Unavailable(first.reason)
+        is InterfaceSnapshot.Enumerated ->
+            when (trigger) {
+                is InterfaceChangeTrigger.Signalled -> NetworkMonitorSupport.Watching(monitor)
+                is InterfaceChangeTrigger.Polled -> NetworkMonitorSupport.Degraded(monitor, trigger.reason)
+            }
     }
 }
 

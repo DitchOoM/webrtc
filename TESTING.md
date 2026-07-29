@@ -23,6 +23,7 @@ part you can never fully trust.
 | **T0′ — coverage-guided fuzz** | Jazzer over the pure-Kotlin parsers (real JVM-bytecode coverage feedback) | jvmTest, time-boxed CI | seeded | W1+ |
 | **TA — timeline replay** | fixtures + seeded fuzz + ddmin shrinker over vnet/stub seams, virtual time | commonTest, all platforms | yes | W3+ |
 | **TB — real-stack vnet** | full native stack (real BoringSSL) through simulated NATs/impairment; strict trace-prefix invariants, RNG drift bounded | commonTest, native + JVM | yes (±1-datagram RNG drift bound) | W5 |
+| **TP — platform adapter** | the thin actuals the deterministic tiers stub out, against the **real** platform API on the host: `getifaddrs(3)` (`nativeTest`), `java.net.NetworkInterface` + the JDK-21 FFM routing socket (`jvmTest`), and `ConnectivityManager` under Robolectric (`androidHostTest`). Asserts the adapter, never the radio — that a callback reaches our seam, not that a real handoff fires one | jvmTest / nativeTest / androidHostTest | yes (no network I/O) | W3+ |
 | **Integration** | container harness: coturn, NAT-profile containers (iptables), netem impairment, toxiproxy on signaling | harness CI job, arch-matched matrix | no (real OS net) | W7 |
 | **Interop** | our stack ⇄ Pion echo peer; our stack ⇄ headless Chrome (`RTCPeerConnection`) via Karma | harness CI job | scripted signaling | W7 |
 | **Consumer** | `.ci/consumer-smoke` — a standalone build declaring `com.ditchoom:webrtc` + `webrtc-testsuite` by coordinate, compiled + K/N-linked + run (`withWebRtcHarness { natType(); relayOnly(); impaired() }`) against a **cold** resolve of the merged maven-local repo (pre-publish) and of **Maven Central** (post-release) | `consumer-smoke.yaml`, Linux + macOS hosts | yes (virtual time) | W7 |
@@ -175,6 +176,10 @@ Every timeline replay and fuzz campaign asserts, not just crash-freedom:
 4. **Errors are typed** — surface as sealed reasons, never strings.
 5. **Liveness** — the session reaches Connected or a typed terminal failure; it never hangs.
 6. **SCTP ordering** — no message reordered within a stream, no unacked data dropped, DCEP converges.
+7. **An optional watcher never kills the session** — anything we `launch` to collect a flow the *app*
+   supplied (today: `IceRestartPolicy.OnNetworkChange`'s `NetworkMonitor`) must survive that flow
+   throwing. Uncaught, it escapes into the app's own `CoroutineScope` and cancels a healthy data
+   channel — the concrete case being an Android app that stripped `ACCESS_NETWORK_STATE`.
 
 Assertion discipline (carried from socket): assert **observable state + a watchdog**, never wall-clock
 budgets; `scenario = port`; skip-on-unreachable probes for off-CI harness runs; wrapper-transparency
@@ -243,6 +248,7 @@ each wave must ship:
 # Deterministic tiers (what every PR runs) — no Docker
 ./gradlew allTests                    # T0/TA/TB across all modules + platforms
 ./gradlew :webrtc-stun:jvmTest        # one module
+./gradlew :webrtc-ice:testAndroidHostTest   # TP: Robolectric — real ConnectivityManager, no emulator
 # Fuzz (time-boxed) — wired in W1
 ./gradlew :webrtc-stun:stunHeaderFuzz # example; Jazzer, jvmTest lane
 

@@ -10,7 +10,7 @@ ktlint = "14.2.0"
 detekt = "2.0.0-alpha.5"
 mavenPublish = "0.37.0"
 dokka = "2.2.0"
-kover = "0.9.8"
+kover = "0.9.9"
 binaryCompatibilityValidator = "0.18.1"
 kotlinxCoroutines = "1.11.0"
 # DitchOoM buffer stack — the zero-copy substrate this library is built on.
@@ -59,7 +59,7 @@ buffer = "6.22.0"
 # the sealed `MonitorMechanism` accessor, and the `reset*ForTesting` seams our Robolectric fixtures use.
 # The initializer is deliberately CAPTURE-ONLY: it installs no process default, so a seam reading
 # `installedProcessDefaultOrNull()` sees nothing and reports Polled. That is the bug #104 turned out to be.
-socket = "3.16.0"
+socket = "3.16.1"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"
@@ -77,7 +77,7 @@ kotlinxBenchmark = "0.4.17"
 # `testAndroidHostTest` run with no emulator. Android is the only target whose NetworkMonitor trigger had
 # no runtime proof (webrtc#104); every other one asserts against a real platform API. 4.15.1 ships SDKs up
 # to 35, below our compileSdk 36, so the tests pin `@Config(sdk = ...)` rather than inherit it.
-robolectric = "4.15.1"
+robolectric = "4.16.1"
 
 [libraries]
 buffer = { module = "com.ditchoom:buffer", version.ref = "buffer" }

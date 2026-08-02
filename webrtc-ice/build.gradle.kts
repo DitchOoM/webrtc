@@ -105,6 +105,23 @@ kotlin {
             dependencies { implementation(libs.socket.core) }
         }
 
+        // ── The real-device flap replay (#113) ───────────────────────────────────────────────────
+        // `linkTopology()` exists twice — once in javaMain, once in nativeMain — because the two read
+        // the same NetworkState out of different artifacts (socket#269). Two copies of a decision want
+        // ONE test, or the duplication is unguarded: edit one and nothing notices. So the replay lives
+        // in a shared TEST source set that both jvmTest and nativeTest `dependsOn`, and each leaf
+        // compiles it against its own copy.
+        //
+        // socket-testkit is test-only and stays that way: it pulls socket CORE transitively, which
+        // jvmMain deliberately does not depend on, so it must never reach a published POM.
+        val monitorReplayTest by creating {
+            dependsOn(commonTest.get())
+            dependencies { implementation(libs.socket.testkit) }
+        }
+        for (leaf in listOf("jvmTest", "nativeTest")) {
+            named(leaf) { dependsOn(monitorReplayTest) }
+        }
+
         // ── Android reactivity proof (#104) ──────────────────────────────────────────────────────
         // Android was the ONLY target whose trigger had no runtime proof: Linux asserts against real
         // AF_NETLINK, Apple against a real NWPathMonitor on the macOS runner, the JVM against the

@@ -29,6 +29,12 @@ import kotlin.test.assertNotEquals
  *
  * The suppression is only safe if it is *narrow*, so both halves are asserted: the verdict is erased,
  * and everything that genuinely relocates addresses still gets through.
+ *
+ * Lives in the shared `monitorReplayTest` set so it runs against **both** copies of [linkTopology] —
+ * `javaMain`'s and `nativeMain`'s (they read the same `NetworkState` from different artifacts;
+ * DitchOoM/socket#269). That matters most for [a_link_change_survives_the_erasure], which is the
+ * assertion `DeviceFlapReplayTest` measurably cannot make: the captured handset timeline passes through
+ * `Offline` between every reassociation, so it contains no direct link → link edge to discriminate on.
  */
 class LinkTopologyTest {
     private val wifi = NetworkId.Link(NetworkKind.Wifi, handle = 100L)

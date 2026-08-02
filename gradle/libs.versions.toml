@@ -111,6 +111,15 @@ buffer-crypto = { module = "com.ditchoom:buffer-crypto", version.ref = "buffer" 
 socket-udp = { module = "com.ditchoom:socket-udp", version.ref = "socket" }
 network-monitor = { module = "com.ditchoom:network-monitor", version.ref = "socket" }
 socket-core = { module = "com.ditchoom:socket", version.ref = "socket" }
+# socket's published test harness — TEST SOURCE SETS ONLY. We take exactly two things from it:
+# `TraceEvent.parseAll` and `networkMonitorScriptFromTrace`, which decode the v1 network-trace format
+# socket's `NetworkMonitorRecorder` emits. That is what lets a flap CAPTURED FROM A PHYSICAL ANDROID
+# HANDSET replay through our own trigger on every platform with no device attached (webrtc#113). The
+# monitor it feeds, `ScriptedNetworkMonitor`, needs nothing from here — it ships in :network-monitor,
+# and its KDoc names this repo's IceRestartPolicy.OnNetworkChange as the intended consumer.
+# Note it pulls `com.ditchoom:socket` core transitively (not just :network-monitor), which is why it is
+# confined to test source sets and never reaches a published artifact's POM.
+socket-testkit = { module = "com.ditchoom:socket-testkit", version.ref = "socket" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinxCoroutines" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }

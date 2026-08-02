@@ -14,7 +14,7 @@ import com.ditchoom.webrtc.stun.TransportAddress
 
 /**
  * The address vocabulary the virtual network straddles at its I/O edge: buffer-flow's [SocketAddress]
- * (host literal + port — the [com.ditchoom.buffer.flow.DatagramChannel] seam) and webrtc-stun's
+ * (host literal + port — the [com.ditchoom.buffer.flow.AddressedDatagramChannel] seam) and webrtc-stun's
  * array-free [TransportAddress] (an [IpAddress] + port — every STUN/TURN attribute).
  *
  * **Why these live here and not in `webrtc-ice`:** the production `SocketAddress`↔`TransportAddress`

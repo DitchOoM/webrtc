@@ -3,8 +3,10 @@ package com.ditchoom.webrtc.ice
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
 import androidx.test.core.app.ApplicationProvider
 import com.ditchoom.socket.MonitorMechanism
+import com.ditchoom.socket.ReachResolution
 import com.ditchoom.socket.androidOrNull
 import com.ditchoom.socket.hasAndroidApplicationContext
 import com.ditchoom.socket.installAndroidApplicationContext
@@ -21,6 +23,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowNetwork
+import org.robolectric.shadows.ShadowNetworkCapabilities
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
@@ -98,7 +101,7 @@ class AndroidInterfaceChangeTriggerTest {
             // value, so what we assert below is a genuine change rather than the seed.
             runCurrent()
 
-            fireOnAvailable()
+            fireNetworkAvailable()
             runCurrent()
 
             assertTrue(
@@ -141,10 +144,20 @@ class AndroidInterfaceChangeTriggerTest {
 
     /**
      * Drive every callback socket registered, exactly as the framework would. Robolectric hands back the
-     * real registered instances, so this exercises `AndroidNetworkMonitor`'s own `onAvailable` rather
-     * than a stand-in for it.
+     * real registered instances, so this exercises `AndroidNetworkMonitor`'s own callbacks rather than a
+     * stand-in for them.
+     *
+     * **`onAvailable` alone is not enough, and that is correct.** Since network-monitor 4.0.0 the
+     * default-network path returns from `onAvailable` without publishing, because the platform javadoc
+     * forbids reading capabilities there ("prone to race conditions ... may return an outdated or even a
+     * null object") and guarantees `onCapabilitiesChanged` follows immediately on O+. Publishing on
+     * `onAvailable` too would expose the new network's reachability beside the old network's identity —
+     * the torn read the single `NetworkState` exists to make unrepresentable. So a fixture that fires
+     * only `onAvailable` observes silence, and would be asserting against a callback sequence the
+     * framework never produces. Firing the documented pair is strictly more faithful than what this
+     * helper did before.
      */
-    private fun fireOnAvailable() {
+    private fun fireNetworkAvailable() {
         val callbacks = shadowOf(connectivityManager).networkCallbacks
         assertTrue(
             callbacks.isNotEmpty(),
@@ -152,7 +165,19 @@ class AndroidInterfaceChangeTriggerTest {
                 "never reached ConnectivityManager, so the rest of this test would pass vacuously.",
         )
         val network: Network = connectivityManager.activeNetwork ?: ShadowNetwork.newInstance(FAKE_NET_ID)
-        callbacks.forEach { it.onAvailable(network) }
+        // `addCapability`/`addTransportType` are @hide on the public SDK, so the shadow is the only way
+        // to build one — the same construction socket's own Robolectric suite uses.
+        val caps =
+            ShadowNetworkCapabilities.newInstance().also {
+                shadowOf(it).addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                shadowOf(it).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                shadowOf(it).addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                shadowOf(it).addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
+            }
+        callbacks.forEach {
+            it.onAvailable(network)
+            it.onCapabilitiesChanged(network, caps)
+        }
     }
 
     /**
@@ -174,7 +199,11 @@ class AndroidInterfaceChangeTriggerTest {
             monitor,
             "socket captured no application context, so the rest of this file's premise is wrong.",
         )
-        assertEquals(MonitorMechanism.PlatformSignalled, monitor.mechanism)
+        assertEquals(MonitorMechanism.PlatformSignalled, monitor.capability.mechanism)
+        // Android is the one platform that reports the full ladder, which is why [linkTopology]'s
+        // erasure of the reachability verdict is load-bearing here and nowhere else: a `RouteOnly`
+        // monitor can never emit the Pending -> Confirmed transition it suppresses.
+        assertEquals(ReachResolution.RouteAndInternet, monitor.capability.resolution)
         monitor.close()
     }
 
@@ -204,7 +233,7 @@ class AndroidInterfaceChangeTriggerTest {
             val collector = launch { trigger.signals.collect { signalled.complete(Unit) } }
             runCurrent()
 
-            fireOnAvailable()
+            fireNetworkAvailable()
             runCurrent()
 
             assertTrue(

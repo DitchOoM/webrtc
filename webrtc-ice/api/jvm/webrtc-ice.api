@@ -570,8 +570,8 @@ public final class com/ditchoom/webrtc/ice/IceFailureReason$NoCandidatePairs : c
 }
 
 public final class com/ditchoom/webrtc/ice/IceGatheringKt {
-	public static final fun gatherServerReflexive-2AWqQcw (Lcom/ditchoom/buffer/flow/DatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/random/Random;JJLcom/ditchoom/buffer/BufferFactory;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public static synthetic fun gatherServerReflexive-2AWqQcw$default (Lcom/ditchoom/buffer/flow/DatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/random/Random;JJLcom/ditchoom/buffer/BufferFactory;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final fun gatherServerReflexive-2AWqQcw (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/random/Random;JJLcom/ditchoom/buffer/BufferFactory;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun gatherServerReflexive-2AWqQcw$default (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/random/Random;JJLcom/ditchoom/buffer/BufferFactory;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public static final fun getDEFAULT_GATHER_RTO ()J
 	public static final fun getDEFAULT_GATHER_TIMEOUT ()J
 	public static final fun resolveHostCandidate (Lcom/ditchoom/webrtc/ice/MdnsResolver;Lcom/ditchoom/webrtc/ice/CandidateParse$MdnsHost;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
@@ -914,8 +914,8 @@ public final class com/ditchoom/webrtc/ice/MdnsGroupBinding$Unavailable : com/di
 }
 
 public final class com/ditchoom/webrtc/ice/MdnsGroupSocket {
-	public fun <init> (Lcom/ditchoom/buffer/flow/DatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;)V
-	public final fun getChannel ()Lcom/ditchoom/buffer/flow/DatagramChannel;
+	public fun <init> (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;)V
+	public final fun getChannel ()Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;
 	public final fun getGroup ()Lcom/ditchoom/buffer/flow/SocketAddress;
 }
 
@@ -981,9 +981,9 @@ public final class com/ditchoom/webrtc/ice/MdnsResponder {
 
 public final class com/ditchoom/webrtc/ice/MdnsResponderKt {
 	public static final field MDNS_UDP_PORT I
-	public static final fun serve (Lcom/ditchoom/webrtc/ice/MdnsResponder;Lcom/ditchoom/buffer/flow/DatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public static synthetic fun serve$default (Lcom/ditchoom/webrtc/ice/MdnsResponder;Lcom/ditchoom/buffer/flow/DatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
-	public static final fun serveOne (Lcom/ditchoom/webrtc/ice/MdnsResponder;Lcom/ditchoom/buffer/flow/DatagramSink;Lcom/ditchoom/buffer/flow/Datagram;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun serve (Lcom/ditchoom/webrtc/ice/MdnsResponder;Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun serve$default (Lcom/ditchoom/webrtc/ice/MdnsResponder;Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final fun serveOne (Lcom/ditchoom/webrtc/ice/MdnsResponder;Lcom/ditchoom/buffer/flow/AddressedDatagramSink;Lcom/ditchoom/buffer/flow/Datagram;Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
 public abstract interface class com/ditchoom/webrtc/ice/MdnsResponse {
@@ -1245,11 +1245,11 @@ public final class com/ditchoom/webrtc/ice/TieBreaker$Companion {
 	public final fun random-mWZnPeY (Lkotlin/random/Random;)J
 }
 
-public final class com/ditchoom/webrtc/ice/TurnAllocation : com/ditchoom/buffer/flow/DatagramChannel {
+public final class com/ditchoom/webrtc/ice/TurnAllocation : com/ditchoom/buffer/flow/AddressedDatagramChannel {
 	public static final field MAX_UTF8_PER_CHAR I
 	public static final field TURN_OVERHEAD_BYTES I
-	public fun <init> (Lcom/ditchoom/buffer/flow/DatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Ljava/lang/String;Ljava/lang/String;Lkotlin/random/Random;Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/buffer/BufferFactory;)V
-	public synthetic fun <init> (Lcom/ditchoom/buffer/flow/DatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Ljava/lang/String;Ljava/lang/String;Lkotlin/random/Random;Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/buffer/BufferFactory;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Ljava/lang/String;Ljava/lang/String;Lkotlin/random/Random;Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/buffer/BufferFactory;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Ljava/lang/String;Ljava/lang/String;Lkotlin/random/Random;Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/buffer/BufferFactory;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun allocate-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static synthetic fun allocate-VtjQ1oo$default (Lcom/ditchoom/webrtc/ice/TurnAllocation;JLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public fun close ()V

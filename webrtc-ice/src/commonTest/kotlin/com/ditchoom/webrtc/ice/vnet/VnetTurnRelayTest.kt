@@ -4,8 +4,8 @@ package com.ditchoom.webrtc.ice.vnet
 
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.Datagram
-import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
@@ -100,7 +100,7 @@ class VnetTurnRelayTest {
     // ---- an inline TURN client, the pattern the ICE relay driver automates in step 4 --------------
 
     private suspend fun allocate(
-        client: DatagramChannel,
+        client: AddressedDatagramChannel,
         turn: SocketAddress,
     ): SocketAddress? {
         val txid = TransactionId.random(Random(client.hashCode().toLong()))
@@ -122,7 +122,7 @@ class VnetTurnRelayTest {
     }
 
     private suspend fun createPermission(
-        client: DatagramChannel,
+        client: AddressedDatagramChannel,
         turn: SocketAddress,
         peer: SocketAddress,
     ) {
@@ -141,7 +141,7 @@ class VnetTurnRelayTest {
     }
 
     private suspend fun sendIndication(
-        client: DatagramChannel,
+        client: AddressedDatagramChannel,
         turn: SocketAddress,
         peer: SocketAddress,
         data: String,
@@ -157,7 +157,7 @@ class VnetTurnRelayTest {
     }
 
     // Receive a Data indication and return (peer, payloadText).
-    private suspend fun DatagramChannel.receiveData(within: Duration): Pair<SocketAddress, String>? {
+    private suspend fun AddressedDatagramChannel.receiveData(within: Duration): Pair<SocketAddress, String>? {
         val message = receiveStun(within) ?: return null
         if (message.messageType.method != StunMethod.Data) return null
         val peer =
@@ -167,7 +167,7 @@ class VnetTurnRelayTest {
         return peer to data.readString(data.remaining(), Charset.UTF8)
     }
 
-    private suspend fun DatagramChannel.receiveStun(within: Duration): StunMessage? {
+    private suspend fun AddressedDatagramChannel.receiveStun(within: Duration): StunMessage? {
         val datagram = receiveWithin(within) ?: return null
         return when (val decoded = StunMessage.decode(datagram.payload)) {
             is StunDecodeResult.Success -> decoded.message
@@ -175,7 +175,7 @@ class VnetTurnRelayTest {
         }
     }
 
-    private suspend fun DatagramChannel.receiveWithin(within: Duration): Datagram? =
+    private suspend fun AddressedDatagramChannel.receiveWithin(within: Duration): Datagram? =
         withTimeoutOrNull(within) {
             when (val result = receive()) {
                 is DatagramReadResult.Received -> result.datagram

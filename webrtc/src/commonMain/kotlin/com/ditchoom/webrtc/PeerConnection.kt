@@ -99,8 +99,8 @@ public fun interface IceGatheringPolicy {
  *
  * The monitor is the **webrtc-owned** [NetworkMonitor] seam rather than socket's, and for a reason that
  * survives scrutiny: socket's monitor answers *"is the network up, and what link am I on"*
- * (`availability` plus a sealed `NetworkId` of `Link(kind, handle)`), and carries **no addresses at
- * all** — while the question this policy asks is *"does the selected pair's local IP still exist"*. So
+ * (one sealed `NetworkState` carrying a `NetworkId` of `Link(kind, handle)`), and carries **no
+ * addresses at all** — while the question this policy asks is *"does the selected pair's local IP still exist"*. So
  * the two are complements, not alternatives. `webrtc-ice`'s `systemNetworkMonitor()` composes them: it
  * takes the *reactivity* from `com.ditchoom:network-monitor` (and, at the two K/N leaves only, socket
  * core) and supplies the *address enumeration* itself. Neither `webrtc` nor `webrtc-ice` `commonMain`

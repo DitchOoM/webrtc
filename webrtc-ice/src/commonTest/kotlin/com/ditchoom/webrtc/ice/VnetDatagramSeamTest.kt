@@ -4,7 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
@@ -19,12 +19,12 @@ import kotlin.test.assertTrue
 
 /**
  * **The W3 seam gate** (HANDOFF.md → EXECUTION_PLAN W3): before a line of ICE is written, prove that
- * two peers exchange datagrams over the in-memory [Vnet] — the buffer-flow [DatagramChannel] seam that
+ * two peers exchange datagrams over the in-memory [Vnet] — the buffer-flow [AddressedDatagramChannel] seam that
  * production rides via `socket-udp` — entirely under `runTest` **virtual time**, on every platform.
  *
  * This is the whole determinism thesis in miniature: no OS sockets, no wall-clock, no dispatcher; the
  * echo completes at zero simulated time and replays identically forever. The ICE agent, DTLS, and SCTP
- * all plug into this same [DatagramChannel] with no code change from production.
+ * all plug into this same [AddressedDatagramChannel] with no code change from production.
  *
  * Assertion discipline (standing directive #4): observable state + the `runTest` watchdog, never a
  * wall-clock budget. A hang (a lost datagram, a mis-keyed route) trips `runTest`'s timeout rather than
@@ -142,7 +142,7 @@ class VnetDatagramSeamTest {
     private fun ReadBuffer.readUtf8(): String = readString(remaining(), Charset.UTF8)
 
     @OptIn(ExperimentalDatagramApi::class)
-    private suspend fun receiveUtf8(ch: DatagramChannel): String =
+    private suspend fun receiveUtf8(ch: AddressedDatagramChannel): String =
         when (val r = ch.receive()) {
             is DatagramReadResult.Received -> r.datagram.payload.readUtf8()
             is DatagramReadResult.Closed -> error("channel closed before a datagram arrived")

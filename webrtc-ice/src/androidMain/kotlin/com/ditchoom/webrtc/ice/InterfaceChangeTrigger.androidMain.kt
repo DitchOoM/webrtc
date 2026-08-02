@@ -3,6 +3,7 @@ package com.ditchoom.webrtc.ice
 import com.ditchoom.socket.MonitorMechanism
 import com.ditchoom.socket.androidOrNull
 import com.ditchoom.socket.hasAndroidApplicationContext
+import kotlinx.coroutines.flow.map
 import kotlin.time.Duration
 import com.ditchoom.socket.NetworkMonitor as SocketNetworkMonitor
 
@@ -33,7 +34,7 @@ internal actual fun platformInterfaceChangeTrigger(pollInterval: Duration): Inte
     // An app-installed monitor is app-owned and long-lived, so we never close it: tearing it down would
     // take QUIC's network awareness with it.
     SocketNetworkMonitor.installedProcessDefaultOrNull()?.let { installed ->
-        return triggerFor(installed.mechanism, pollInterval, open = { installed }, close = { })
+        return triggerFor(installed.capability.mechanism, pollInterval, open = { installed }, close = { })
     }
 
     // Nothing installed: decide on the captured context, WITHOUT constructing anything.
@@ -76,8 +77,13 @@ private fun triggerFor(
             InterfaceChangeTrigger.Signalled(
                 platformMonitorSignals(
                     open = open,
+                    // Android is the one platform whose `resolution` is `RouteAndInternet`, so it is the
+                    // one platform where [linkTopology]'s erasure of the reachability verdict actually
+                    // suppresses anything: without it every Wi-Fi reassociation's ~0.7-1s
+                    // INTERNET-before-VALIDATED window would signal a network change that moved no
+                    // address. See [platformMonitorSignals].
                     signals = { monitor ->
-                        if (monitor == null) emptyList() else listOf(monitor.availability, monitor.networkId)
+                        if (monitor == null) emptyList() else listOf(monitor.state.map { it.linkTopology() })
                     },
                     close = close,
                 ),

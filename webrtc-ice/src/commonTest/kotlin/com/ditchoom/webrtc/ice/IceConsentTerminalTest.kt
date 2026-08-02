@@ -2,7 +2,7 @@
 
 package com.ditchoom.webrtc.ice
 
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
@@ -367,7 +367,7 @@ class IceConsentTerminalTest {
         val checkArrivals: MutableList<Instant> = mutableListOf()
 
         private lateinit var agentCredentials: IceCredentials
-        private lateinit var channel: DatagramChannel
+        private lateinit var channel: AddressedDatagramChannel
         private var agentAddress: SocketAddress? = null
 
         /** Learn the agent's *current* credentials — re-read after a restart, as a renegotiation would. */

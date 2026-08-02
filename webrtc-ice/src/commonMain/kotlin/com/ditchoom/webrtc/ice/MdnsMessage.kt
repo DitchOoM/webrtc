@@ -62,7 +62,7 @@ internal object MdnsMessage {
      * Encode a one-shot mDNS query for [name] (`<uuid>.local`) asking for [qType] (A or AAAA). The
      * transaction id is 0 (RFC 6762 §18.1: responders ignore it for multicast queries) and the QCLASS
      * carries the QU bit so a responder MAY unicast the reply straight back to our source port. Returns a
-     * read-positioned [ReadBuffer] ready to hand to `DatagramChannel.send`.
+     * read-positioned [ReadBuffer] ready to hand to `AddressedDatagramChannel.send`.
      */
     fun encodeQuery(
         name: String,

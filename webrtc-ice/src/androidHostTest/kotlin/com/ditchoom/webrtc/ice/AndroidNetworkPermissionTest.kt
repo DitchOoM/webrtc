@@ -101,6 +101,13 @@ class AndroidNetworkPermissionTest {
  * `ACCESS_NETWORK_STATE`. Mirrors socket's own `PermissionDeniedConnectivityManager`; duplicated rather
  * than shared because socket does not publish its test fixtures, and a shadow is compile-time wiring that
  * cannot be injected.
+ *
+ * **Both registration entry points, deliberately.** socket picks between them on `Build.VERSION.SDK_INT`
+ * — `registerDefaultNetworkCallback` on O+, the `NetworkRequest` form below it — so a shadow covering
+ * only one silently stops denying on the other. That is exactly what happened across the 4.0.0 bump:
+ * network-monitor moved to the default-network callback, this shadow still overrode only the request
+ * form, and the SecurityException path this whole file exists to exercise went unreachable. The test
+ * caught it because it asserts a failure *is* raised rather than that none is.
  */
 @Implements(ConnectivityManager::class)
 class PermissionDeniedConnectivityManager : ShadowConnectivityManager() {
@@ -108,8 +115,13 @@ class PermissionDeniedConnectivityManager : ShadowConnectivityManager() {
     override fun registerNetworkCallback(
         request: NetworkRequest?,
         networkCallback: ConnectivityManager.NetworkCallback?,
-    ): Unit =
-        throw SecurityException(
+    ): Unit = throw permissionDenied()
+
+    @Implementation
+    override fun registerDefaultNetworkCallback(networkCallback: ConnectivityManager.NetworkCallback?): Unit = throw permissionDenied()
+
+    private fun permissionDenied() =
+        SecurityException(
             "ConnectivityService: Neither user 10001 nor current process has " +
                 "android.permission.ACCESS_NETWORK_STATE.",
         )

@@ -5,10 +5,10 @@ package com.ditchoom.webrtc.ice
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramSink
 import com.ditchoom.buffer.flow.Datagram
-import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
-import com.ditchoom.buffer.flow.DatagramSink
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.webrtc.stun.IpAddress
@@ -195,7 +195,7 @@ public sealed interface MdnsSilenceReason {
  * one from the absence of a packet.
  */
 public suspend fun MdnsResponder.serveOne(
-    channel: DatagramSink,
+    channel: AddressedDatagramSink,
     datagram: Datagram,
     group: SocketAddress,
 ): MdnsResponse {
@@ -222,7 +222,7 @@ public suspend fun MdnsResponder.serveOne(
  * response; [onResponse] observes every decision, answers and silences alike.
  */
 public suspend fun MdnsResponder.serve(
-    channel: DatagramChannel,
+    channel: AddressedDatagramChannel,
     group: SocketAddress,
     onResponse: (MdnsResponse) -> Unit = {},
 ) {

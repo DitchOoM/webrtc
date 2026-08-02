@@ -25,7 +25,7 @@ import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 // CORRECTION (#69): this comment used to say we depend only on socket-udp and "never socket core /
 // socket-quic (they vendor a SECOND BoringSSL → the duplicate-symbol link break)". That is **obsolete**.
 // Since socket 3.15.1, socket core's LinuxSockets cinterop klib embeds only liburing.a — the libssl.a /
-// libcrypto.a it carried in 3.9.5 are gone — and socket:3.15.1 and buffer-crypto:6.22.0 both resolve to
+// libcrypto.a it carried in 3.9.5 are gone — and socket:4.0.0 and buffer-crypto:6.23.0 both resolve to
 // the SAME com.ditchoom.boringssl:boringssl-canonical:0.0.6, which Gradle dedupes. There is one BoringSSL
 // on the link line, not two. Proven, not assumed: this very executable was linked on linuxX64 AND
 // linuxArm64 with socket core present, and socket's netlink monitor was constructed and read at runtime

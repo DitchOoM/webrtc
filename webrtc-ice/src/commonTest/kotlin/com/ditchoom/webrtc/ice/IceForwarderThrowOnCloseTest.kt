@@ -3,8 +3,8 @@
 package com.ditchoom.webrtc.ice
 
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramCapabilities
-import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
@@ -27,7 +27,7 @@ import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
 /**
- * The forwarder must survive a [DatagramChannel] that **throws** from an in-flight `receive()` when its
+ * The forwarder must survive an [AddressedDatagramChannel] that **throws** from an in-flight `receive()` when its
  * socket is closed underneath it, rather than returning [DatagramReadResult.Closed].
  *
  * This is not hypothetical and not a vnet quirk. socket-udp's `NioDatagramChannel.receive()` reaches into
@@ -116,19 +116,19 @@ class IceForwarderThrowOnCloseTest {
         }
 
     /**
-     * A [DatagramChannel] that raises from an in-flight [receive] once closed, the way a selector-backed
+     * A [AddressedDatagramChannel] that raises from an in-flight [receive] once closed, the way a selector-backed
      * real-UDP actual does — instead of politely returning [DatagramReadResult.Closed].
      */
     private class ThrowOnCloseChannel(
-        private val delegate: DatagramChannel,
-    ) : DatagramChannel {
+        private val delegate: AddressedDatagramChannel,
+    ) : AddressedDatagramChannel {
         var closed: Boolean = false
             private set
 
         /** Completes the first time [receive] actually raises, so the fixture can prove it did. */
         val threw: CompletableDeferred<Unit> = CompletableDeferred()
 
-        override val localAddress: SocketAddress? get() = delegate.localAddress
+        override val localAddress: SocketAddress get() = delegate.localAddress
         override val isOpen: Boolean get() = !closed && delegate.isOpen
         override val maxWritableSize: Int get() = delegate.maxWritableSize
         override val capabilities: DatagramCapabilities get() = delegate.capabilities
@@ -144,7 +144,7 @@ class IceForwarderThrowOnCloseTest {
 
         override suspend fun send(
             payload: ReadBuffer,
-            to: SocketAddress?,
+            to: SocketAddress,
             options: DatagramSendOptions,
         ) = delegate.send(payload, to, options)
 

@@ -2,7 +2,7 @@
 
 package com.ditchoom.webrtc.ice
 
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import kotlinx.coroutines.CancellationException
@@ -27,7 +27,7 @@ import kotlinx.coroutines.CancellationException
  * ends the read, which never wedges the agent: the pair simply stops receiving, and ICE's own consent and
  * establishment backstops reach a typed terminal on their own schedule.
  */
-internal suspend fun DatagramChannel.receiveOrClosed(): DatagramReadResult =
+internal suspend fun AddressedDatagramChannel.receiveOrClosed(): DatagramReadResult =
     try {
         receive()
     } catch (e: CancellationException) {

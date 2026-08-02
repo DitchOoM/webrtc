@@ -13,7 +13,7 @@ import kotlin.time.ExperimentalTime
 
 /**
  * An in-memory [SctpDatagramTransport] pair — the plaintext stand-in for the DTLS record layer over an
- * ICE pair (HANDOFF W5: the DatagramChannel-shaped seam DTLS later fills). Datagrams cross via unbounded
+ * ICE pair (HANDOFF W5: the AddressedDatagramChannel-shaped seam DTLS later fills). Datagrams cross via unbounded
  * channels; an optional seeded loss/delay lets a test drive the association's retransmission paths under
  * `runTest` virtual time (delays ride `delay()`, so wall-clock stays zero).
  */

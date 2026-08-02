@@ -6,7 +6,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.encodeToPlatformBuffer
 import com.ditchoom.buffer.flow.AddressFamily
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
@@ -20,7 +20,7 @@ import kotlin.time.Duration.Companion.seconds
  * The out-of-band **signaling** channel between the two container peers — a tiny UDP client to the
  * rendezvous relay (a stateless keyed mailbox on the public network, reachable from both peers exactly
  * the way coturn is). It moves the ~4 signaling blobs (offer, answer, each side's trickled candidates)
- * with **zero disk and zero TCP**: it rides the SAME `socket-udp` / buffer-flow [DatagramChannel] the peer
+ * with **zero disk and zero TCP**: it rides the SAME `socket-udp` / buffer-flow [AddressedDatagramChannel] the peer
  * already links for ICE, so it adds no dependency and no BoringSSL duplicate-symbol risk that a WebSocket/
  * MQTT/QUIC signaling client would (see `~/git/cinterop-issues`). It is not production WebRTC signaling —
  * it is a harness rendezvous, deliberately minimal. The wire format is the KSP-generated buffer-codec
@@ -88,7 +88,7 @@ internal enum class Slot(
 // value classes are only legal in common sources, not this per-target-compiled shared srcDir.
 
 internal class UdpSignaling internal constructor(
-    private val channel: DatagramChannel,
+    private val channel: AddressedDatagramChannel,
     private val rendezvous: SocketAddress,
     private val session: String,
     // Native factory (deterministic() → malloc-backed): socket-udp's io_uring `send` rejects a GC-heap

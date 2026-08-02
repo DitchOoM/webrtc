@@ -4,7 +4,7 @@ package com.ditchoom.webrtc.ice
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
@@ -48,9 +48,9 @@ public data class LocalInterface(
  * deterministically. Injected, so a `NetworkId` change is a scripted timeline event, not a real Wi-Fi radio.
  *
  * This is **not** a duplicate of `com.ditchoom:network-monitor`'s contract, and the distinction is
- * structural. Socket's monitor reports *availability* and a sealed link identity (`Link(kind, handle)`,
- * whose discriminator is documented as a numeric OS handle, "never an interface-name string"); it carries
- * no addresses. This one reports the **addresses** ICE can gather on, because
+ * structural. Socket's monitor reports one sealed `NetworkState` carrying a link identity
+ * (`Link(kind, handle)`, whose discriminator is documented as a numeric OS handle, "never an
+ * interface-name string"); it carries no addresses. This one reports the **addresses** ICE can gather on, because
  * [IceAgentDriver.pathRidesOneOf] compares the selected pair's local IP against them. So
  * [SystemNetworkMonitor] consumes socket's monitor as its *trigger* and enumerates the addresses itself —
  * the two answer different questions and both are needed.
@@ -121,7 +121,7 @@ public suspend fun MdnsResolver.resolveHostCandidate(mdns: CandidateParse.MdnsHo
  */
 @OptIn(ExperimentalTime::class)
 public suspend fun gatherServerReflexive(
-    socket: DatagramChannel,
+    socket: AddressedDatagramChannel,
     stunServer: SocketAddress,
     random: Random,
     timeout: Duration = DEFAULT_GATHER_TIMEOUT,
@@ -195,7 +195,7 @@ public sealed interface ServerReflexiveResult {
 // channel closes. The caller bounds this with a timeout to drive retransmission.
 @OptIn(ExperimentalTime::class)
 private suspend fun receiveMatchingResponse(
-    socket: DatagramChannel,
+    socket: AddressedDatagramChannel,
     transactionId: TransactionId,
 ): StunMessage? {
     while (true) {

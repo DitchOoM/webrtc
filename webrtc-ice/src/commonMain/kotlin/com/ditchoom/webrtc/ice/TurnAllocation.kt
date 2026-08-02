@@ -9,9 +9,9 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.AddressFamily
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramCapabilities
-import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.Ecn
@@ -40,7 +40,7 @@ import kotlin.time.Duration
 import kotlin.time.ExperimentalTime
 
 /**
- * A **TURN relay allocation** (RFC 8656) presented as an ordinary [DatagramChannel] — the trick that
+ * A **TURN relay allocation** (RFC 8656) presented as an ordinary [AddressedDatagramChannel] — the trick that
  * keeps the relay's complexity out of the sans-io [IceAgent] and its driver. The agent gathers a relay
  * candidate whose base is the allocation's relayed address and simply sends from it; this wrapper
  * encapsulates each datagram in a Send indication to the TURN server (creating a permission first) and
@@ -60,14 +60,14 @@ import kotlin.time.ExperimentalTime
  * safe against the vnet's copy-on-receive; a receive-buffer-pooling channel would want it copied too.
  */
 public class TurnAllocation(
-    private val underlying: DatagramChannel,
+    private val underlying: AddressedDatagramChannel,
     private val server: SocketAddress,
     private val username: String,
     private val password: String,
     private val random: Random,
     private val scope: CoroutineScope,
     private val bufferFactory: BufferFactory = BufferFactory.Default,
-) : DatagramChannel {
+) : AddressedDatagramChannel {
     private val pending = HashMap<TransactionId, CompletableDeferred<StunMessage>>()
     private val inbound = Channel<Datagram>(Channel.UNLIMITED)
     private val permitted = HashSet<String>()
@@ -77,7 +77,10 @@ public class TurnAllocation(
     private var closed = false
     private var loopStarted = false
 
-    override val localAddress: SocketAddress get() = relayed ?: underlying.localAddress ?: server
+    // The relayed address once allocated, else the address we are actually bound to. `underlying` is
+    // addressed-mode, so it is bound by construction and its localAddress needs no unwrap — the old
+    // `?: server` fallback stood only for a getsockname that could not fail here anyway.
+    override val localAddress: SocketAddress get() = relayed ?: underlying.localAddress
     override val capabilities: DatagramCapabilities get() = underlying.capabilities
     override val isOpen: Boolean get() = !closed && underlying.isOpen
     override val maxWritableSize: Int get() = (underlying.maxWritableSize - TURN_OVERHEAD_BYTES).coerceAtLeast(0)
@@ -105,10 +108,12 @@ public class TurnAllocation(
 
     override suspend fun send(
         payload: ReadBuffer,
-        to: SocketAddress?,
+        to: SocketAddress,
         options: DatagramSendOptions,
     ) {
-        val peer = requireNotNull(to) { "a relay send needs a destination" }
+        // No `requireNotNull` any more: a relay send needs a destination, and the addressed sink type
+        // now says so — the call that used to trip that check no longer parses.
+        val peer = to
         ensurePermission(peer)
         val transactionId = TransactionId.random(random)
         val indication =

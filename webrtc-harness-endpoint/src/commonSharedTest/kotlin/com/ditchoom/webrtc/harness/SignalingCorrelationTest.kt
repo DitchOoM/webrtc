@@ -9,7 +9,7 @@ import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.encodeToPlatformBuffer
 import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramCapabilities
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.Ecn
@@ -56,16 +56,19 @@ class SignalingCorrelationTest {
 }
 
 /**
- * A fake [DatagramChannel] that replies to every GET with a stale reply (a mismatched nonce) followed by the
+ * A fake [AddressedDatagramChannel] that replies to every GET with a stale reply (a mismatched nonce) followed by the
  * correct one (echoing the request's nonce, carrying one record). It never touches a real socket.
  */
 private class StaleThenCorrectChannel(
     private val factory: BufferFactory,
-) : DatagramChannel {
+) : AddressedDatagramChannel {
     private val inbound = Channel<Datagram>(Channel.UNLIMITED)
     private var closed = false
 
-    override val localAddress: SocketAddress? = null
+    // An addressed channel is bound by construction, so this is non-null even for a fake that never
+    // touches a socket. The value is unread by this fixture — the correlation under test is on the
+    // response nonce — but a plausible ephemeral bind is the honest stand-in for `null`.
+    override val localAddress: SocketAddress = SocketAddress.ofLiteral("127.0.0.1", 0)
     override val isOpen: Boolean get() = !closed
     override val maxWritableSize: Int = MAX_UDP_PAYLOAD
     override val capabilities: DatagramCapabilities = CAPABILITIES
@@ -77,12 +80,12 @@ private class StaleThenCorrectChannel(
 
     override suspend fun send(
         payload: ReadBuffer,
-        to: SocketAddress?,
+        to: SocketAddress,
         options: DatagramSendOptions,
     ) {
         check(!closed) { "channel is closed" }
         val nonce = GetRequestCodec.decode(payload.slice(), DecodeContext.Empty).nonce
-        val peer = requireNotNull(to)
+        val peer = to
         // Stale first (wrong nonce, no records) — then the correct reply (this request's nonce, one record).
         val stale = MailboxResponseCodec.encodeToPlatformBuffer(MailboxResponse(0u, nonce + 4321u, 0u, emptyList()), factory)
         val correct = MailboxResponseCodec.encodeToPlatformBuffer(MailboxResponse(0u, nonce, 1u, listOf(MailboxRecord(RECORD))), factory)

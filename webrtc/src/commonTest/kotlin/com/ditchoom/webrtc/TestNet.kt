@@ -6,9 +6,9 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramCapabilities
-import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.Ecn
@@ -19,7 +19,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlin.random.Random
 
 /**
- * A minimal **flat** in-memory [DatagramChannel] network for the `webrtc` module's own tests — the same
+ * A minimal **flat** in-memory [AddressedDatagramChannel] network for the `webrtc` module's own tests — the same
  * buffer-flow seam production binds real UDP to, with no OS sockets. It is a deliberately small copy of
  * the essential flat path of `webrtc-ice`'s richer vnet (NAT/TURN/impairment), which lives in that
  * module's test source set and is not visible here. The full-stack fixtures that need NAT topologies stay
@@ -48,7 +48,7 @@ internal class TestNet(
     private val endpoints = HashMap<SocketAddress, Channel<Datagram>>()
     private val groups = HashMap<SocketAddress, MutableSet<SocketAddress>>()
 
-    fun bind(local: SocketAddress): DatagramChannel {
+    fun bind(local: SocketAddress): AddressedDatagramChannel {
         require(local !in endpoints) { "address already bound: $local" }
         val inbound = Channel<Datagram>(Channel.UNLIMITED)
         endpoints[local] = inbound
@@ -110,7 +110,7 @@ internal class TestNet(
         override val localAddress: SocketAddress,
         private val inbound: Channel<Datagram>,
         private val net: TestNet,
-    ) : DatagramChannel {
+    ) : AddressedDatagramChannel {
         private var closed = false
 
         override val isOpen: Boolean get() = !closed
@@ -124,11 +124,11 @@ internal class TestNet(
 
         override suspend fun send(
             payload: ReadBuffer,
-            to: SocketAddress?,
+            to: SocketAddress,
             options: DatagramSendOptions,
         ) {
             check(!closed) { "channel is closed" }
-            net.route(localAddress, requireNotNull(to) { "unconnected endpoint; `to` is required" }, payload)
+            net.route(localAddress, to, payload)
         }
 
         override fun close() {

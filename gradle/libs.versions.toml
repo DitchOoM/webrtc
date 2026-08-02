@@ -32,7 +32,17 @@ kotlinxCoroutines = "1.11.0"
 # migrated buffer-crypto onto the canonical (unprefixed) BoringSSL bundle whose libssl duplicate-collided
 # with the oracle's own libssl at the linuxTest link — the prefixing permanently decouples the two, so
 # buffer/socket bump freely with the full DTLS-1.3 oracle intact. All on Maven Central.
-buffer = "6.22.0"
+# 6.23.0 (buffer PR #325) de-nulls the @ExperimentalDatagramApi surface, breaking, no shim: the
+# datagram's addressing mode becomes a TYPE split (ConnectedDatagram{Source,Sink,Channel} with a fixed
+# `peer` and no address parameter / AddressedDatagram* whose `send` requires `to` and whose
+# `localAddress` is non-null by construction — ICE gathering reads it with no unwrap); the read
+# sentinels `hopLimit == -1` and `localAddress == null` become zero-alloc @JvmInline value classes
+# (`HopLimit` / `LocalAddress`, proven flat by a javap witness + an allocation test); `Closed.reason`
+# becomes the open `DatagramCloseReason` (Normal / OsError, supertyped downstream); and send-side ECN
+# becomes `EcnPreference` (OsDefault | NotEct | Ect1 | Ect0 | Ce), since `Ecn.Unknown` was double-booked
+# as both "cannot report" and "do not set". One class cannot implement both source refinements — their
+# `localAddress` types conflict — so an endpoint's addressing mode is fixed at construction.
+buffer = "6.23.0"
 # DitchOoM socket sibling — the UDP `DatagramChannel` **actuals** webrtc's transport track binds to for
 # real-network candidate gathering (host/srflx/relay). The seam itself is buffer-flow's
 # `DatagramChannel` (on Central, above); `socket-udp` is only the platform real-socket implementation
@@ -59,7 +69,20 @@ buffer = "6.22.0"
 # the sealed `MonitorMechanism` accessor, and the `reset*ForTesting` seams our Robolectric fixtures use.
 # The initializer is deliberately CAPTURE-ONLY: it installs no process default, so a seam reading
 # `installedProcessDefaultOrNull()` sees nothing and reports Polled. That is the bug #104 turned out to be.
-socket = "3.16.0"
+# 4.0.0 is a MAJOR on two axes, both breaking by design with no compatibility shim, and they are
+# coupled: socket-udp 4.0.0 pins buffer 6.23.0, and network-monitor cannot be bumped alone because
+# socket core would resolve up to an API it was not compiled against.
+#   (a) socket PR #273 is the socket-side of buffer #325 above (UdpSocket.bind/bindMulticast now return
+#       AddressedDatagramChannel, connect() returns ConnectedDatagramChannel).
+#   (b) socket PR #272 replaces `availability` + `networkId` — two StateFlows nothing kept coherent, so
+#       a consumer could read UNAVAILABLE beside a live Link — with ONE sealed `NetworkState` on ONE
+#       flow: Unknown / Offline / LinkLocal(id) / Routable(id, InternetAccess), the link -> route ->
+#       internet ladder. `mechanism` becomes `capability`, whose `resolution` is answerable BEFORE
+#       subscribing (Android RouteAndInternet, Apple/Linux/JVM RouteOnly, Node/browser LinkOnly).
+#       `isTransient` is the predicate that matters to us: on real hardware (Realme RMX3933, API 35)
+#       Android grants INTERNET ~0.7-1s before VALIDATED on every reassociation, so without it an
+#       IceRestartPolicy.OnNetworkChange would restart the session on every Wi-Fi reassociation.
+socket = "4.0.0"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"

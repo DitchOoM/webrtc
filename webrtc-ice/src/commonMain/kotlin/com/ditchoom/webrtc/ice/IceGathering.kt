@@ -18,6 +18,7 @@ import com.ditchoom.webrtc.stun.TransactionId
 import com.ditchoom.webrtc.stun.TransportAddress
 import com.ditchoom.webrtc.stun.asXorMappedAddress
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.jvm.JvmInline
 import kotlin.random.Random
@@ -61,6 +62,17 @@ public interface NetworkMonitor {
 
     /** Emits the new interface set whenever it changes (an interface up/down, Wi-Fi↔cellular). */
     public val changes: Flow<List<LocalInterface>>
+
+    /**
+     * Emits when a probe **failed**, so a caller can tell "the interfaces did not change" from "we could
+     * not find out" — two very different things that [changes] alone renders identically, since a failed
+     * probe correctly emits nothing (an empty set would read as *"the selected pair's interface is
+     * gone"*, restarting a healthy session).
+     *
+     * Defaulted to empty so a test double or an existing implementation need not supply one; a monitor
+     * whose enumeration cannot fail has nothing to report here.
+     */
+    public val probeFailures: Flow<InterfaceEnumerationFailure> get() = emptyFlow()
 }
 
 /**

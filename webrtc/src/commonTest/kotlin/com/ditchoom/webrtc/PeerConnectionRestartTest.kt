@@ -10,6 +10,8 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.managed
 import com.ditchoom.webrtc.dtls.DtlsFailureReason
+import com.ditchoom.webrtc.ice.CandidateDiscardReason
+import com.ditchoom.webrtc.ice.CandidateGeneration
 import com.ditchoom.webrtc.ice.DatagramBinder
 import com.ditchoom.webrtc.ice.IceAgentDriver
 import com.ditchoom.webrtc.ice.IceCandidate
@@ -24,12 +26,14 @@ import com.ditchoom.webrtc.ice.NetworkId
 import com.ditchoom.webrtc.ice.NetworkMonitor
 import com.ditchoom.webrtc.ice.ReactivityDegradation
 import com.ditchoom.webrtc.ice.SystemNetworkMonitor
+import com.ditchoom.webrtc.ice.Ufrag
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sdp.SdpType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
@@ -323,6 +327,75 @@ class PeerConnectionRestartTest {
                 f.alice.connectionState.value,
                 "…and stays Connected rather than being cancelled by an exception escaping the watcher",
             )
+
+            // webrtc#106: surviving silently was the residue. The app opted into automatic restart and
+            // has just stopped getting it, and before this the only way to find out was to register a
+            // SECOND collector on a monitor the session already holds — which nobody does.
+            val stopped =
+                assertNotNull(
+                    withTimeoutOrNull(QUIET) {
+                        f.alice.diagnostics
+                            .filterIsInstance<SessionDiagnostic.NetworkWatcherStopped>()
+                            .first()
+                    },
+                    "the watcher died and the session never said so — the exact silence #106 exists to end",
+                )
+            assertEquals(
+                PERMISSION_FAILURE,
+                stopped.cause.message,
+                "the cause must pass through intact, or the app cannot tell a stripped permission from " +
+                    "a platform that simply has no monitor",
+            )
+        }
+
+    @Test
+    fun a_candidate_for_a_superseded_generation_is_reported_rather_than_vanishing() =
+        runTest {
+            // The third diagnostic (webrtc#106), on the path that produces it in the field. A peer that
+            // is still trickling when our restart offer lands sends candidates tagged with the generation
+            // we have just left; the core refuses them by design (RFC 8838 §3.1) and the driver has
+            // nothing to do with the refusal. Before this the candidate simply evaporated, and "the peer
+            // never sent it" and "we threw it away, and here is why" were the same observation.
+            val f = connectedPeers()
+            val channel = f.alice.createDataChannel(DataChannelConfig(label = "restart/discard"))
+            assertEquals("before", echo(channel, "before"))
+
+            // A tag names the SENDER's own a=ice-ufrag, which is the receiver's remote ufrag — so this is
+            // bob's. Captured before the restart replaces it (an ICE restart mints fresh credentials on
+            // both sides, RFC 8445 §9), so the line below names a generation alice is about to abandon.
+            val supersededUfrag = Ufrag(ufragOf(f.bob.createOffer()))
+
+            f.alice.restartIce()
+            renegotiate(f.alice, f.bob)
+            assertNotNull(
+                withTimeoutOrNull(timeout) { f.alice.connectionState.first { it is PeerConnectionState.Connected } },
+                "alice reconverged after the restart",
+            )
+
+            // A late candidate from the generation that just ended.
+            val late = "candidate:9 1 udp 2130706431 ${BOB_IP} 60999 typ host"
+            f.alice.addIceCandidate(late, CandidateGeneration.Tagged(supersededUfrag))
+
+            val discarded =
+                assertNotNull(
+                    withTimeoutOrNull(QUIET) {
+                        f.alice.diagnostics
+                            .filterIsInstance<SessionDiagnostic.RemoteCandidateDiscarded>()
+                            .first()
+                    },
+                    "a candidate was refused and the session reported nothing — indistinguishable from a " +
+                        "candidate the peer never sent, which is the diagnosis that costs an hour at 3 a.m.",
+                )
+            assertEquals(
+                CandidateDiscardReason.SupersededGeneration(supersededUfrag),
+                discarded.reason,
+                "the typed reason must name the generation, not merely say 'discarded'",
+            )
+            assertTrue(
+                discarded.candidate.contains("60999"),
+                "the reported line must be matchable against the wire: ${discarded.candidate}",
+            )
+            assertEquals("after", echo(channel, "after"), "…and refusing it changed nothing about the session")
         }
 
     @Test
@@ -349,6 +422,25 @@ class PeerConnectionRestartTest {
             assertTrue(enumerator.reads > 1, "…and it stayed quiet by reading the failure, not by never probing")
             assertEquals(pairBefore, knownPair(f.alice.connectionState.value), "the healthy session is untouched")
             assertEquals("after", echo(channel, "after"))
+
+            // webrtc#106: quiet is correct, but indistinguishable from a network that never moved.
+            // Automatic restart is now running on a STALE view of the local addresses, and this is the
+            // only place that knows it.
+            val probe =
+                assertNotNull(
+                    withTimeoutOrNull(QUIET) {
+                        f.alice.diagnostics
+                            .filterIsInstance<SessionDiagnostic.InterfaceProbeFailed>()
+                            .first()
+                    },
+                    "the probe failed repeatedly and the session reported nothing, so 'no change' and " +
+                        "'could not tell' look identical to the app",
+                )
+            assertEquals(
+                InterfaceEnumerationFailure.EnumerationFailed("scripted enumeration failure"),
+                probe.reason,
+                "the typed reason must survive: NoPlatformApi is permanent, EnumerationFailed may not be",
+            )
         }
 
     @Test

@@ -56,12 +56,15 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.receiveAsFlow
@@ -326,6 +329,28 @@ public interface RtcPeerConnection {
      */
     public val renegotiationNeeded: Flow<Unit>
 
+    /**
+     * Non-fatal observations the session would otherwise drop on the floor (webrtc#106) — see
+     * [SessionDiagnostic] for why these are not [PeerConnectionState]s.
+     *
+     * **Lossy on purpose.** Emission never suspends and never blocks: a slow or absent collector loses
+     * the oldest diagnostics rather than back-pressuring the ICE loop that produced them. A diagnostic
+     * channel that can stall the session it describes is worse than none, and the failures it reports
+     * are ones the session has already survived.
+     *
+     * **Buffered from construction, and delivered to one collector.** Diagnostics accumulate whether or
+     * not anyone is listening, so a caller that starts collecting after `setLocalDescription` still sees
+     * what happened during start-up — which matters because
+     * [SessionDiagnostic.NetworkWatcherStopped] is emitted from inside the first ICE start, a race no
+     * caller can reliably win. The cost is that this is a hand-off, not a broadcast: a second collector
+     * competes with the first rather than seeing a copy. Fan out in your own code if you need that.
+     *
+     * Defaults to empty, which is the honest answer for a delegating implementation: a browser's
+     * `RTCPeerConnection` owns its own restarts and candidate filtering, so this session has nothing it
+     * observed to report.
+     */
+    public val diagnostics: Flow<SessionDiagnostic> get() = emptyFlow()
+
     /** Open a data channel (RFC 8832). Returns immediately; the channel becomes live once SCTP is up. */
     public suspend fun createDataChannel(config: DataChannelConfig = DataChannelConfig()): Connection<ReadBuffer>
 
@@ -474,6 +499,25 @@ public class NativePeerConnection(
 
     private val renegotiationChannel = Channel<Unit>(Channel.CONFLATED)
     override val renegotiationNeeded: Flow<Unit> get() = renegotiationChannel.receiveAsFlow()
+
+    // Diagnostics (webrtc#106). Channel-backed like every other event flow on this class, and for a
+    // reason a SharedFlow could not give: a Channel buffers from CONSTRUCTION, whereas a SharedFlow with
+    // replay = 0 delivers only to collectors already subscribed. The single most important diagnostic —
+    // NetworkWatcherStopped — is emitted from `startIce`, during the very first setLocalDescription, so
+    // a caller would have to win a race against the session's own start-up to see it at all. Measured:
+    // an earlier SharedFlow draft dropped it in exactly that window.
+    //
+    // DROP_OLDEST rather than UNLIMITED, unlike the candidate/channel flows above: those have finite,
+    // self-inflicted producers, while a peer can trickle refusable candidates indefinitely, so an
+    // uncollected diagnostic flow must never become an unbounded buffer a peer controls.
+    private val diagnosticChannel = Channel<SessionDiagnostic>(DIAGNOSTIC_BUFFER, BufferOverflow.DROP_OLDEST)
+    override val diagnostics: Flow<SessionDiagnostic> get() = diagnosticChannel.receiveAsFlow()
+
+    // The one place a diagnostic is published. Non-suspending by construction — see above — so it is
+    // safe to call from the ICE drive loop, from a collector, or from a catch block.
+    private fun report(diagnostic: SessionDiagnostic) {
+        diagnosticChannel.trySend(diagnostic)
+    }
 
     // Asks the establishment loop for another attempt, on an ICE generation that has just been restarted
     // — the session half of RFC 7675 §5.1's "a new session, or an ICE restart, is needed". CONFLATED
@@ -963,6 +1007,23 @@ public class NativePeerConnection(
                 localCandidateChannel.trySend(IceCandidateLine.format(it.candidate, localGenerationOf(it.ufrag), privacy))
             }
         }
+        scope.launch {
+            // The candidates the core refused on purpose (RFC 8838 §3.1) — routine during a restart, and
+            // otherwise the difference between "the peer's candidate never arrived" and "we threw it
+            // away, and here is why". Re-formatted through the same writer the wire uses, so what a
+            // caller reads back matches what it signaled; the discard is by definition not ours to
+            // obfuscate, so no privacy policy is applied.
+            d.remoteCandidateDiscarded.collect {
+                report(
+                    SessionDiagnostic.RemoteCandidateDiscarded(
+                        // Defaults: Untagged + Disclosed. A discarded candidate is the PEER's, so there
+                        // is no generation of ours to stamp and nothing of ours to obfuscate.
+                        candidate = IceCandidateLine.format(it.candidate),
+                        reason = it.reason,
+                    ),
+                )
+            }
+        }
         establishJob = scope.launch { runEstablishment(d, sctpRandom) }
         when (val policy = config.iceRestartPolicy) {
             IceRestartPolicy.Manual -> Unit
@@ -1013,16 +1074,27 @@ public class NativePeerConnection(
         monitor: NetworkMonitor,
     ) {
         try {
-            monitor.changes.collect { interfaces ->
-                if (recoveryFor(_connectionState.value) != Recovery.Resume && d.pathRidesOneOf(interfaces)) return@collect
-                negotiationLock.withLock { requestIceRestart() }
+            // A failed probe is reported, never acted on: the monitor deliberately keeps the last good
+            // set rather than publishing an empty one, so nothing arrives on `changes` and automatic
+            // restart quietly runs on a stale view. Collected as a sibling of `changes` in the same
+            // coroutine, so it shares this function's lifetime and its guard below.
+            coroutineScope {
+                launch { monitor.probeFailures.collect { report(SessionDiagnostic.InterfaceProbeFailed(it)) } }
+                monitor.changes.collect { interfaces ->
+                    if (recoveryFor(_connectionState.value) != Recovery.Resume && d.pathRidesOneOf(interfaces)) return@collect
+                    negotiationLock.withLock { requestIceRestart() }
+                }
+                coroutineContext.cancelChildren()
             }
         } catch (cancellation: CancellationException) {
             throw cancellation
-        } catch (_: Throwable) {
+        } catch (failure: Throwable) {
             // Permanent by nature (a missing install-time permission, a platform API that is simply not
             // there), so there is nothing to retry and no backoff worth writing: stop watching and leave
             // the session exactly as it was — which is what IceRestartPolicy.Manual would have given it.
+            // Reported rather than swallowed (webrtc#106): the app opted into automatic restart and has
+            // just silently stopped getting it, and this is the only place that knows.
+            report(SessionDiagnostic.NetworkWatcherStopped(failure))
         }
     }
 
@@ -1520,3 +1592,10 @@ public class NativePeerConnection(
         const val FOUNDATION_DIGITS = 16
     }
 }
+
+/**
+ * How many [SessionDiagnostic]s a session buffers for a collector that has not caught up, before the
+ * oldest are dropped. Diagnostics are bursty and low-volume — a watcher stops once, a restart discards a
+ * handful of superseded candidates — so this is sized to hold a whole burst rather than to be a queue.
+ */
+private const val DIAGNOSTIC_BUFFER = 64

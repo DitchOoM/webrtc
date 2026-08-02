@@ -486,6 +486,11 @@ internal suspend fun runSemanticsPhases(
                     add(Phase("s8", RESTART_PHASE_TIMEOUT) { phaseIceRestart(pc, ctl, restart, restartPhase) })
                 is IceRestartPhase.ForeignInitiated ->
                     add(Phase("s10", RESTART_PHASE_TIMEOUT) { phaseForeignRestart(pc, ctl, restart, restartPhase) })
+                // s11 (issue #102) is s8's phase body with its trigger removed — same window, same
+                // assertions, same second offer/answer round. Only the decision to restart moves, from us
+                // to IceRestartPolicy.OnNetworkChange reacting to a real interface disappearing.
+                is IceRestartPhase.Automatic ->
+                    add(Phase("s11", RESTART_PHASE_TIMEOUT) { phaseIceRestart(pc, ctl, restart, restartPhase) })
             }
         }
 
@@ -989,12 +994,24 @@ private suspend fun phaseIceRestart(
         return Verdict(false, "the harness never reported a carrier switch — the peer was never moved, so a restart would reconverge on the same path")
     }
 
-    pc.restartIce()
+    // WHO decides to restart is the one thing s8 and s11 do not share, and it is the entire property s11
+    // exists to prove. s8 calls restartIce() itself; s11 (issue #102) calls NOTHING — the harness has just
+    // taken this peer's local address away, and IceRestartPolicy.OnNetworkChange, watching the production
+    // systemNetworkMonitor(), is what has to notice. If the automatic path is broken, s11 sits here until
+    // the timeout and says so; s8 could never detect that, because it does the deciding itself.
+    val trigger =
+        when (expectation) {
+            is IceRestartPhase.Automatic -> "the network change alone (nothing called restartIce())"
+            else -> {
+                pc.restartIce()
+                "restartIce()"
+            }
+        }
     // The signal is half the API: a session cannot renegotiate on its own (it does not own the signaling
     // channel), so a restart that recorded its intent but never asked for a round would strand the session
     // on a path that has just stopped working — silently, which is the failure worth pinning.
     if (withTimeoutOrNull(RENEGOTIATION_WAIT) { pc.renegotiationNeeded.first() } == null) {
-        return Verdict(false, "restartIce() never signaled that a renegotiation round is owed within $RENEGOTIATION_WAIT")
+        return Verdict(false, "$trigger never signaled that a renegotiation round is owed within $RENEGOTIATION_WAIT")
     }
     signaling.reoffer()
 
@@ -1056,6 +1073,20 @@ private suspend fun phaseIceRestart(
             Verdict(false, "s8 ran with the restart phase disabled — the phase list and the config disagree")
         IceRestartPhase.AnyNewPath ->
             Verdict(true, "$moved; $survived")
+        is IceRestartPhase.Automatic ->
+            if (signaling.awaitCarrierPublicAddress()) {
+                Verdict(
+                    true,
+                    "the interface carrying the session went away and NOTHING called restartIce(): " +
+                        "$moved, reachable at the new carrier ${expectation.carrierIp}; $survived",
+                )
+            } else {
+                Verdict(
+                    false,
+                    "$moved, but never published a candidate at the new carrier ${expectation.carrierIp} — " +
+                        "the automatic restart re-gathered somewhere the far side cannot reach",
+                )
+            }
         is IceRestartPhase.ExpectCarrier ->
             if (signaling.awaitCarrierPublicAddress()) {
                 Verdict(true, "$moved, reachable at the new carrier ${expectation.carrierIp}; $survived")

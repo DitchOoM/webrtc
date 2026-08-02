@@ -239,6 +239,10 @@ services:
       WEBRTC_ROLE: offerer
       WEBRTC_SESSION: "${SESSION:-l2}"
       WEBRTC_LOCAL_IP: "${PEER_A_IP}"
+      # The address the `interface-swap` topology moves this peer ONTO after deleting the one
+      # above (s11, issue #102). Empty on every other lane, and then gathering never consults
+      # the live interface table at all. See harness.env's PEER_A2_IP.
+      WEBRTC_LOCAL_IP_ALT: "${PEER_A_IP_ALT:-}"
       WEBRTC_LOCAL_PORT: "${ICE_PORT}"
       WEBRTC_RELAY_PORT: "${RELAY_BIND_PORT}"
       WEBRTC_STUN_HOST: "${COTURN_IP}"

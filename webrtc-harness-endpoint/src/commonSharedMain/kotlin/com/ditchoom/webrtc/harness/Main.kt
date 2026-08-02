@@ -8,6 +8,9 @@ import com.ditchoom.buffer.flow.AddressFamily
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.webrtc.PureKotlinDtls
 import com.ditchoom.webrtc.IceGatheringPolicy
+import com.ditchoom.webrtc.IceRestartPolicy
+import com.ditchoom.webrtc.ice.NetworkMonitorSupport
+import com.ditchoom.webrtc.ice.systemNetworkMonitor
 import com.ditchoom.webrtc.MdnsAdvertisePolicy
 import com.ditchoom.webrtc.NativePeerConnection
 import com.ditchoom.webrtc.PeerConnectionConfig
@@ -166,6 +169,30 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
         val mdnsAdvertising =
             if (mdnsEndpoint == null) MdnsAdvertisePolicy.Disabled else MdnsAdvertisePolicy.Advertise(mdnsEndpoint)
 
+        // ── s11 (issue #102): the automatic-restart lane's two halves ────────────────────────────────
+        // Built ONLY for that lane, so every other lane's behaviour is byte-identical to what it has
+        // always been — an automatic restart is a renegotiation the app must carry, and turning it on
+        // where no phase expects it would be a silent behaviour change, not a test improvement.
+        val automaticRestart = cfg.iceRestart is IceRestartPhase.Automatic
+        val networkMonitor =
+            if (!automaticRestart) {
+                null
+            } else {
+                // The PRODUCTION monitor, not a double. On Linux native that is socket's AF_NETLINK
+                // monitor for reactivity plus our getifaddrs(3) enumeration — the exact composition a
+                // consumer gets from systemNetworkMonitor(), which is what makes this lane a proof of
+                // anything. A platform that cannot watch says so in the type, and we refuse rather than
+                // run a lane that would pass by never restarting.
+                when (val support = systemNetworkMonitor()) {
+                    is NetworkMonitorSupport.Available -> support.monitor
+                    is NetworkMonitorSupport.Unavailable ->
+                        error("s11 needs a working NetworkMonitor and this platform has none: ${support.reason}")
+                }
+            }
+        networkMonitor?.let { println("[harness] s11: automatic restart armed on the production monitor (detection=${it.detection})") }
+        val iceRestartPolicy =
+            networkMonitor?.let { IceRestartPolicy.OnNetworkChange(it) } ?: IceRestartPolicy.Manual
+
         // Which ICE generation the next gather belongs to. The stack re-invokes this policy once per
         // RFC 8445 §9 restart (s8), and the OUTGOING generation's sockets deliberately stay bound until the
         // new one nominates — that is the continuity guarantee — so re-gathering onto the same pinned port
@@ -182,7 +209,14 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
                 // single-stack lane advertises exactly one. Real WebRTC stacks (pion, the browsers) gather
                 // per family by enumerating interfaces — our explicit-bind peer mirrors that by looping the
                 // injected per-family [FamilyBinding]s, each with its own coturn address for that family.
-                for (b in cfg.bindings) {
+                // On the interface-swap lane the configured primary address may no longer EXIST — the
+                // harness has deleted it, which is the network event the lane is built around — so
+                // gathering consults the live interface table and binds whichever address this host
+                // currently holds. That is what pion and the browsers do anyway; the harness pins an
+                // address only so the NAT rules can name it. Off this lane the table is never read and
+                // the configured bindings are used exactly as before.
+                val live = networkMonitor?.interfaces()?.map { it.address.host }?.toSet()
+                for (b in cfg.bindingsPresentIn(live)) {
                     val stun = resolveAddress(b.stunHost, cfg.stunPort)
                     val turn = resolveAddress(b.turnHost, cfg.turnPort)
                     if (cfg.icePolicy != IcePolicy.RelayOnly) {
@@ -231,6 +265,12 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
                                 rtoInitial = 500.milliseconds,
                                 rtoMin = 100.milliseconds,
                             ),
+                        // s11 (issue #102) is the only lane that opts in, and it is the whole point of that
+                        // lane: the PRODUCTION monitor — real netlink on Linux, through
+                        // systemNetworkMonitor() — decides when to restart, with nothing in this peer
+                        // calling restartIce(). Everywhere else the default `Manual` stands, which is also
+                        // the library's default and the browser's behaviour.
+                        iceRestartPolicy = iceRestartPolicy,
                     ),
             )
 
@@ -357,6 +397,8 @@ private suspend fun runOfferer(
             // s10 moves us onto the same carrier; only the initiator of the restart differs, so the
             // re-gathered generation has to reach exactly the same public address to prove it followed.
             is IceRestartPhase.ForeignInitiated -> restart.carrierIp
+            // s11 lands on the same carrier as s8; what differs is who noticed it had to.
+            is IceRestartPhase.Automatic -> restart.carrierIp
         }
     val publicAddressSeen = CompletableDeferred<Unit>()
 

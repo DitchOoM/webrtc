@@ -84,6 +84,7 @@ identical (`nat_a2` and the same route flip); what differs is who asks for the n
 |---|---|---|---|
 | `carrier-switch` | `s8` | **we** do (`restartIce()` → re-offer) | a production stack correctly **answers** a restart we initiate |
 | `foreign-restart` | `s10` | **the peer** does | **we** correctly **detect and answer** a restart a production stack initiates |
+| `interface-swap` | `s11` | **nobody** — the network does | `IceRestartPolicy.OnNetworkChange` on the **production** monitor notices a real interface going away and restarts by itself |
 
 Six lanes run `carrier-switch`: **`restart-native`** (native ⇄ native), **`jvm-restart`** (JVM offerer ⇄
 native), and — since issue #71 — one per foreign answerer family that can complete one: **`restart-pion`**,
@@ -93,9 +94,42 @@ family now re-answers a later round, which is a mailbox read and not scenario lo
 design doc).
 
 Five lanes run `foreign-restart` (issue #87): **`foreign-restart-native`**, **`foreign-restart-pion`**,
-**`foreign-restart-chrome`**, **`foreign-restart-firefox`**, **`foreign-restart-webkit`**. All eleven are
+**`foreign-restart-chrome`**, **`foreign-restart-firefox`**, **`foreign-restart-webkit`**. Two run
+`interface-swap` (issue #102): **`auto-restart-native`** and **`auto-restart-pion`**. All thirteen are
 v4-only (a v6 analog needs a second v6 router, and "our public address changed" is a v4 mapping statement),
-and all eleven **gate**.
+and all thirteen **gate**.
+
+#### `interface-swap` — the automatic direction (issue #102)
+
+`carrier-switch` moves the default **route**, which changes peer A's public identity while every local
+address stays exactly where it was. That is why it needs an explicit `restartIce()`:
+`IceRestartPolicy.OnNetworkChange` asks a different question — *"is the selected pair's local base still on
+a live interface"* — and after a route flip the honest answer is yes, so the automatic policy correctly
+does nothing. Proving the automatic path needs the **local address itself** to go away.
+
+So `interface-swap` runs `ip addr del` + `ip addr add` + `ip route replace` on `peer_a` in one step: the
+address the session is riding disappears, `172.31.0.101` takes its place, and the default route moves to
+`nat_a2`. The kernel emits real `RTM_DELADDR`/`RTM_NEWADDR`, socket's **AF_NETLINK** monitor sees them
+(the peer logs `detection=PlatformSignalled`, so this is not a poll), our `getifaddrs(3)` enumeration
+confirms the address set moved, and `pathRidesOneOf` finds the selected pair's base gone. **Nothing in the
+peer calls `restartIce()`** — that is the whole property.
+
+Two ordering details, both learned the hard way and both load-bearing:
+
+- **Delete before add.** The obvious order — add the new address, then remove the old — silently destroys
+  the container's networking: Linux flushes every *secondary* address in a subnet when that subnet's
+  *primary* is removed unless `promote_secondaries` is set, and it is `0` by default and the sysctl is
+  read-only inside the container. Measured: the peer was left holding no `lan_a` address at all, could not
+  reach the rendezvous mailbox, and `s11` failed as *"the harness never reported a carrier switch"* — a
+  message blaming the orchestrator for a fault entirely in the peer's netns.
+- **Re-add the address, then replace the default route.** Deleting the only address in a subnet withdraws
+  that subnet's connected route, and the default route through it goes with it.
+
+The lane's own anti-vacuity guard is in `run-interop.sh`: it greps the offerer's log for the `s11` verdict's
+`NOTHING called restartIce()` token, because everything else `s11` asserts is equally true of a manual
+restart. And the check issue #102 asked for was run directly — with `IceRestartPolicy.Manual` forced in the
+peer, the lane fails with *"the network change alone (nothing called restartIce()) never signaled that a
+renegotiation round is owed within 5s"*, which is what makes the green run mean something.
 
 What the foreign `carrier-switch` lanes add over ours is the one thing our own answerer cannot testify to:
 whether a *production* stack, handed a restart offer, replaces **both** ICE credentials and **keeps** its

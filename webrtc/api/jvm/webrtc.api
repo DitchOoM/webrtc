@@ -117,6 +117,7 @@ public final class com/ditchoom/webrtc/NativePeerConnection : com/ditchoom/webrt
 	public fun createDataChannel (Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun createOffer (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun getConnectionState ()Lkotlinx/coroutines/flow/StateFlow;
+	public fun getDiagnostics ()Lkotlinx/coroutines/flow/Flow;
 	public fun getIncomingDataChannels ()Lkotlinx/coroutines/flow/Flow;
 	public fun getLocalIceCandidates ()Lkotlinx/coroutines/flow/Flow;
 	public fun getRenegotiationNeeded ()Lkotlinx/coroutines/flow/Flow;
@@ -303,6 +304,7 @@ public abstract interface class com/ditchoom/webrtc/RtcPeerConnection {
 	public static synthetic fun createDataChannel$default (Lcom/ditchoom/webrtc/RtcPeerConnection;Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public abstract fun createOffer (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public abstract fun getConnectionState ()Lkotlinx/coroutines/flow/StateFlow;
+	public fun getDiagnostics ()Lkotlinx/coroutines/flow/Flow;
 	public abstract fun getIncomingDataChannels ()Lkotlinx/coroutines/flow/Flow;
 	public abstract fun getLocalIceCandidates ()Lkotlinx/coroutines/flow/Flow;
 	public abstract fun getRenegotiationNeeded ()Lkotlinx/coroutines/flow/Flow;
@@ -315,6 +317,7 @@ public abstract interface class com/ditchoom/webrtc/RtcPeerConnection {
 public final class com/ditchoom/webrtc/RtcPeerConnection$DefaultImpls {
 	public static fun addIceCandidate (Lcom/ditchoom/webrtc/RtcPeerConnection;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static synthetic fun createDataChannel$default (Lcom/ditchoom/webrtc/RtcPeerConnection;Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static fun getDiagnostics (Lcom/ditchoom/webrtc/RtcPeerConnection;)Lkotlinx/coroutines/flow/Flow;
 }
 
 public final class com/ditchoom/webrtc/SdpFormatException : java/lang/IllegalArgumentException {
@@ -339,6 +342,44 @@ public final class com/ditchoom/webrtc/SelectedPath$Known : com/ditchoom/webrtc/
 public final class com/ditchoom/webrtc/SelectedPath$Opaque : com/ditchoom/webrtc/SelectedPath {
 	public static final field INSTANCE Lcom/ditchoom/webrtc/SelectedPath$Opaque;
 	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/SessionDiagnostic {
+}
+
+public final class com/ditchoom/webrtc/SessionDiagnostic$InterfaceProbeFailed : com/ditchoom/webrtc/SessionDiagnostic {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure;)Lcom/ditchoom/webrtc/SessionDiagnostic$InterfaceProbeFailed;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/SessionDiagnostic$InterfaceProbeFailed;Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure;ILjava/lang/Object;)Lcom/ditchoom/webrtc/SessionDiagnostic$InterfaceProbeFailed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReason ()Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/SessionDiagnostic$NetworkWatcherStopped : com/ditchoom/webrtc/SessionDiagnostic {
+	public fun <init> (Ljava/lang/Throwable;)V
+	public final fun component1 ()Ljava/lang/Throwable;
+	public final fun copy (Ljava/lang/Throwable;)Lcom/ditchoom/webrtc/SessionDiagnostic$NetworkWatcherStopped;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/SessionDiagnostic$NetworkWatcherStopped;Ljava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/webrtc/SessionDiagnostic$NetworkWatcherStopped;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Ljava/lang/Throwable;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/SessionDiagnostic$RemoteCandidateDiscarded : com/ditchoom/webrtc/SessionDiagnostic {
+	public fun <init> (Ljava/lang/String;Lcom/ditchoom/webrtc/ice/CandidateDiscardReason;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Lcom/ditchoom/webrtc/ice/CandidateDiscardReason;
+	public final fun copy (Ljava/lang/String;Lcom/ditchoom/webrtc/ice/CandidateDiscardReason;)Lcom/ditchoom/webrtc/SessionDiagnostic$RemoteCandidateDiscarded;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/SessionDiagnostic$RemoteCandidateDiscarded;Ljava/lang/String;Lcom/ditchoom/webrtc/ice/CandidateDiscardReason;ILjava/lang/Object;)Lcom/ditchoom/webrtc/SessionDiagnostic$RemoteCandidateDiscarded;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCandidate ()Ljava/lang/String;
+	public final fun getReason ()Lcom/ditchoom/webrtc/ice/CandidateDiscardReason;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }

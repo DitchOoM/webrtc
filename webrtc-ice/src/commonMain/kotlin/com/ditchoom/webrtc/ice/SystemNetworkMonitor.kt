@@ -12,7 +12,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import kotlin.time.Duration
@@ -309,6 +311,19 @@ public class SystemNetworkMonitor(
      * carries its typed reason rather than being inferred from a suspiciously empty interface list.
      */
     public val lastSnapshot: StateFlow<InterfaceSnapshot> get() = _lastSnapshot
+
+    /**
+     * The failure half of [lastSnapshot], as an event stream (webrtc#106) — so a session can report
+     * *"automatic restart is running on a stale view"* without a caller polling a `StateFlow` it would
+     * have to diff itself.
+     *
+     * Derived rather than separately maintained, so it cannot drift from what [probe] actually saw.
+     * Consecutive identical failures collapse, because the underlying `StateFlow` conflates by equality —
+     * which is the behaviour worth having: a `getifaddrs` that fails the same way on every signal is one
+     * condition, not a stream of news.
+     */
+    override val probeFailures: Flow<InterfaceEnumerationFailure> =
+        _lastSnapshot.filterIsInstance<InterfaceSnapshot.Unavailable>().map { it.reason }
 
     /** The last **successfully** read interface set — a failed probe leaves the previous one standing. */
     override fun interfaces(): List<LocalInterface> = probe()

@@ -98,6 +98,19 @@ seam now reads `hasAndroidApplicationContext()` (side-effect-free) and builds vi
 collection. Proven against a **real `ConnectivityManager`** under Robolectric in `androidHostTest` — the
 one target that previously had no runtime proof at all, on the platform where Wi-Fi→cellular is routine.
 
+**Sessions report what they decided** (#106): `PeerConnection.diagnostics: Flow<SessionDiagnostic>` is a
+sealed, **non-fatal** observation stream — three variants, all previously computed, typed, and then
+dropped on the floor for want of anywhere to put them. `NetworkWatcherStopped(cause)` (the app opted into
+`OnNetworkChange` and silently stopped getting it), `RemoteCandidateDiscarded(candidate, reason)` (the
+refusal `IceAgentDriver` already emitted an output for, with a comment anticipating this surface), and
+`InterfaceProbeFailed(reason)` (automatic restart running on a stale address view, because a failed probe
+correctly publishes nothing). None is a `PeerConnectionState`: in all three the session is genuinely still
+`Connected`, and folding them into the lifecycle would make "connected" mean two things. **Channel-backed,
+not a `SharedFlow`**, and that is load-bearing rather than stylistic: a Channel buffers from construction,
+while `replay = 0` would drop `NetworkWatcherStopped` outright — it is emitted from `startIce`, so a
+caller would have to beat the session's own start-up to see it. Bounded with `DROP_OLDEST`, because a peer
+controls how many candidate refusals it can provoke.
+
 **The stack rides socket 4.0.0 + buffer 6.23.0**, a two-axis breaking bump taken as one coherent PR
 because the two are coupled (socket-udp 4.0.0 pins buffer 6.23.0, and network-monitor cannot move alone
 without socket core resolving up to an API it was not compiled against).

@@ -6,9 +6,9 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramCapabilities
-import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.Ecn
@@ -19,19 +19,19 @@ import kotlinx.coroutines.channels.Channel
 
 /**
  * The **WebRTC virtual network** (RFC_KMP_WEBRTC.md §5.2) — an in-memory implementation of the
- * buffer-flow [DatagramChannel] seam, the datagram analogue of a UDP socket with **no OS sockets**.
+ * buffer-flow [AddressedDatagramChannel] seam, the datagram analogue of a UDP socket with **no OS sockets**.
  * ICE / DTLS / SCTP run end-to-end over this under `runTest` virtual time on every platform, exactly
- * as production runs them over `socket-udp`'s real `DatagramChannel` actuals — the cores never know
+ * as production runs them over `socket-udp`'s real `AddressedDatagramChannel` actuals — the cores never know
  * the difference (they are caller-clocked and sans-io, RFC §5.1).
  *
  * This is deliberately **ours**, not consumed from socket: socket's deterministic simulation (#225) is
  * QUIC-specific, unpublished test code that drives the internal quiche `UdpChannel`, not the public
- * `DatagramChannel`, and models no NAT. RFC §5.2 calls the vnet "the WebRTC-specific addition" — so
+ * `AddressedDatagramChannel`, and models no NAT. RFC §5.2 calls the vnet "the WebRTC-specific addition" — so
  * NAT profiles ([Nat]), a virtual TURN server ([TurnServer]), and the impairment pipe ([Impairment])
  * are layered on the [Fabric] seam. The flat [DirectFabric] keeps the seam gate honest.
  *
  * Datagram semantics are honored faithfully (mirroring buffer-flow's own `MemoryDatagramNetwork`):
- * message boundaries preserved (one [DatagramChannel.send] → the [Fabric] decides zero-or-more
+ * message boundaries preserved (one [AddressedDatagramChannel.send] → the [Fabric] decides zero-or-more
  * delivered [Datagram]s), per-packet source ([Datagram.peer] is the source **as the receiver observes
  * it** — the sender's private address on a LAN, or its NAT-mapped external address across a NAT), a
  * copy per delivery so senders may pool their own buffers, and unreliable (an unroutable datagram is
@@ -51,7 +51,7 @@ internal class Vnet(
     val boundAddresses: Set<SocketAddress> get() = endpoints.keys.toSet()
 
     /** Bind an **unconnected** endpoint at [local]; datagrams delivered toward [local] arrive here. */
-    fun bind(local: SocketAddress): DatagramChannel {
+    fun bind(local: SocketAddress): AddressedDatagramChannel {
         require(local !in endpoints) { "address already bound: $local" }
         val inbound = Channel<Datagram>(Channel.UNLIMITED)
         endpoints[local] = inbound
@@ -122,7 +122,7 @@ internal class Vnet(
     }
 
     // Copy [payload] into a receiver-owned buffer (a real socket copies into the kernel), reading from a
-    // slice so the caller's position is untouched (the DatagramSink "ownership is not transferred" rule).
+    // slice so the caller's position is untouched (the AddressedDatagramSink "ownership is not transferred" rule).
     private fun copyOf(payload: ReadBuffer): PlatformBuffer {
         val slice = payload.slice()
         val len = slice.remaining()
@@ -162,7 +162,7 @@ private class VnetChannel(
     private val inbound: Channel<Datagram>,
     private val vnet: Vnet,
     override val capabilities: DatagramCapabilities,
-) : DatagramChannel {
+) : AddressedDatagramChannel {
     private var closed = false
 
     override val isOpen: Boolean get() = !closed
@@ -177,12 +177,12 @@ private class VnetChannel(
 
     override suspend fun send(
         payload: ReadBuffer,
-        to: SocketAddress?,
+        to: SocketAddress,
         options: DatagramSendOptions,
     ) {
         check(!closed) { "channel is closed" }
-        val dest = requireNotNull(to) { "the vnet binds unconnected endpoints; `to` is required" }
-        vnet.route(from = localAddress, to = dest, payload = payload)
+        // `to` was always required here; since buffer 6.23.0 the addressed sink type says so.
+        vnet.route(from = localAddress, to = to, payload = payload)
     }
 
     override fun close() {

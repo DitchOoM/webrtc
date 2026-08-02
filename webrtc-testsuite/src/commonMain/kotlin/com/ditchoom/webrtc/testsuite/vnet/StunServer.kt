@@ -2,7 +2,7 @@
 
 package com.ditchoom.webrtc.testsuite.vnet
 
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
@@ -29,7 +29,7 @@ internal class StunServer(
     private val vnet: Vnet,
     private val scope: CoroutineScope,
 ) {
-    private val channel: DatagramChannel = vnet.bind(address)
+    private val channel: AddressedDatagramChannel = vnet.bind(address)
 
     fun start(): Job =
         scope.launch {

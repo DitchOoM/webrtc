@@ -1,6 +1,7 @@
 package com.ditchoom.webrtc.ice
 
 import com.ditchoom.socket.default
+import kotlinx.coroutines.flow.map
 import kotlin.time.Duration
 import com.ditchoom.socket.NetworkMonitor as SocketNetworkMonitor
 
@@ -22,8 +23,8 @@ import com.ditchoom.socket.NetworkMonitor as SocketNetworkMonitor
  * **The historical objection to this dependency no longer holds, and was verified rather than assumed.**
  * socket core once vendored its own BoringSSL, which duplicate-collided with buffer-crypto's at the K/N
  * Linux link. Since socket 3.15.1 it does not: its `LinuxSockets` cinterop klib embeds only `liburing.a`
- * (the `libssl.a`/`libcrypto.a` still present in 3.9.5 are gone), and both `socket:3.15.1` and
- * `buffer-crypto:6.22.0` now resolve to the **same** `com.ditchoom.boringssl:boringssl-canonical:0.0.6`,
+ * (the `libssl.a`/`libcrypto.a` still present in 3.9.5 are gone), and both `socket:4.0.0` and
+ * `buffer-crypto:6.23.0` now resolve to the **same** `com.ditchoom.boringssl:boringssl-canonical:0.0.6`,
  * which Gradle dedupes. There is one BoringSSL on the link line, not two. Confirmed by linking the
  * production `webrtc-harness-endpoint` executable on linuxX64 **and** linuxArm64 with this dependency in
  * place, and by running socket's netlink monitor in `linuxX64Test`.
@@ -32,7 +33,7 @@ internal actual fun platformInterfaceChangeTrigger(pollInterval: Duration): Inte
     InterfaceChangeTrigger.Signalled(
         platformMonitorSignals(
             open = { SocketNetworkMonitor.default() },
-            signals = { listOf(it.availability, it.networkId) },
+            signals = { monitor -> listOf(monitor.state.map { it.linkTopology() }) },
             close = { it.close() },
         ),
     )

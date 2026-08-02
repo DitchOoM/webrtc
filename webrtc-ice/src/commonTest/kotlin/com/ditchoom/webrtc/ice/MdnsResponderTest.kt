@@ -5,7 +5,7 @@ package com.ditchoom.webrtc.ice
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
@@ -214,7 +214,7 @@ class MdnsResponderTest {
     private class Fixture(
         val vnet: Vnet,
         val responder: MdnsResponder,
-        val querier: DatagramChannel,
+        val querier: AddressedDatagramChannel,
         val decisions: MutableList<MdnsResponse>,
     ) {
         /** Send a one-shot legacy query (our source port is ephemeral, so RFC 6762 §6.7 applies). */
@@ -290,7 +290,7 @@ class MdnsResponderTest {
         const val RESPONSE_FLAGS = 0x8400
         const val CLASS_IN = 0x0001
 
-        suspend fun received(channel: DatagramChannel): ReadBuffer? =
+        suspend fun received(channel: AddressedDatagramChannel): ReadBuffer? =
             when (val result = channel.receive()) {
                 is DatagramReadResult.Received -> result.datagram.payload
                 is DatagramReadResult.Closed -> null

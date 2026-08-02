@@ -78,12 +78,13 @@ different places.
 the two K/N leaves only, socket core's: `ConnectivityManager.NetworkCallback`, the JDK-21 FFM routing
 socket, `AF_NETLINK`, `NWPathMonitor`. We do not hand-roll it. *Enumeration* — **which local addresses
 exist** — is ours (`java.net.NetworkInterface` / POSIX `getifaddrs(3)`), because socket's monitor reports
-availability plus a sealed `NetworkId(kind, handle)` and carries no addresses at all, while
+one sealed `NetworkState` carrying a `NetworkId(kind, handle)` and no addresses at all, while
 `pathRidesOneOf` compares the selected pair's local **IP**. The two answer different questions; both are
 needed. Polling survives only as the fallback where no push path exists (JDK < 21, Windows, a browser),
 and `SystemNetworkMonitor.detection` says which you got — coarsely, but that is now a *choice*: since
-socket 3.16.0 a sealed `MonitorMechanism` names what socket resolved, but reading it means **constructing**
-socket's monitor, which is what registers the platform callback. We decline to charge every
+socket 3.16.0 a sealed `MonitorMechanism` names what socket resolved (since 4.0.0 inside a
+`MonitorCapability` pairing it with the ladder rungs that monitor can reach), but reading it means
+**constructing** socket's monitor, which is what registers the platform callback. We decline to charge every
 `PeerConnectionConfig` a `NetworkCallback` registration just to describe ourselves, and read it only where
 it is free — Android's `hasAndroidApplicationContext()`. `PlatformSignalled` therefore promises *"we do not
 poll"*, never *"the OS pushes"*. (DitchOoM/socket#269 stays open on its other half: the Apple/Linux native
@@ -96,6 +97,31 @@ initializer is deliberately *capture-only*, so it installs no process default, a
 seam now reads `hasAndroidApplicationContext()` (side-effect-free) and builds via `androidOrNull()` per
 collection. Proven against a **real `ConnectivityManager`** under Robolectric in `androidHostTest` — the
 one target that previously had no runtime proof at all, on the platform where Wi-Fi→cellular is routine.
+
+**The stack rides socket 4.0.0 + buffer 6.23.0**, a two-axis breaking bump taken as one coherent PR
+because the two are coupled (socket-udp 4.0.0 pins buffer 6.23.0, and network-monitor cannot move alone
+without socket core resolving up to an API it was not compiled against).
+
+*Axis 1 — the datagram split* (buffer#325 / socket#273): `DatagramChannel` refines into
+`Connected`/`Addressed`. Everything of ours is **addressed** — one bound socket serving many peers — so
+`DatagramBinder.bind` returns an `AddressedDatagramChannel`, `send` requires its destination, and
+`localAddress` is non-null by construction, which is what lets candidate gathering read the base with no
+unwrap. Four runtime guards (`requireNotNull(to)`, `localAddress ?: …`) deleted as unreachable. Read
+sentinels became zero-alloc value classes, so hot receive paths construct `Datagram` with **all five
+arguments explicit** — the defaulted form boxes `LocalAddress` through the default-args bridge.
+
+*Axis 2 — the `NetworkState` ladder* (socket#272): `availability` + `networkId` (two flows nothing kept
+coherent) collapse into one `state` flow over `Unknown / Offline / LinkLocal(id) / Routable(id,
+InternetAccess)`, and `mechanism` becomes `capability`. **The one judgement call this forced is
+`linkTopology()`**: the ladder carries a rung the old pair did not — the reachability verdict inside
+`Routable` — and on real hardware Android grants `INTERNET` ~0.7-1s before `VALIDATED` on *every*
+reassociation. Forwarding `Routable(id, Pending) → Routable(id, Confirmed)` as an interface change would
+re-enumerate on a link whose addresses never moved. So the trigger projects the verdict away and keeps
+everything else (rung changes = a route appeared/vanished; `id` changes = the link was replaced), which
+*preserves* pre-4.0.0 behaviour rather than altering it. `LinkTopologyTest` pins both halves and is
+mutation-checked. This is also why #102 wants building on 4.0.0: `isTransient` is what distinguishes a
+validation window from a genuine change, and without it an `OnNetworkChange` default would restart a
+healthy session on every Wi-Fi reassociation.
 
 A platform that cannot see NICs at all says so in the type: js/wasmJs return
 `NetworkMonitorSupport.Unavailable(NoPlatformApi)`, so an app cannot build an

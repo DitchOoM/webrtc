@@ -10,7 +10,7 @@ package com.ditchoom.webrtc.ice
  *  1. **A browser page cannot enumerate NICs**, by design — and does not need to: on a browser
  *     `peerConnectionSupport()` returns `BrowserDelegated`, so ICE (including restarting it on a network
  *     change) is the platform `RTCPeerConnection`'s job, not ours.
- *  2. **There is no raw-UDP `DatagramChannel` actual on js at all** — `socket-udp` publishes no js
+ *  2. **There is no raw-UDP `AddressedDatagramChannel` actual on js at all** — `socket-udp` publishes no js
  *     artifact (see `webrtc-ice/build.gradle.kts`), so even under Node, where `os.networkInterfaces()`
  *     exists, there is no ICE agent of ours to restart. Reading the table would be reporting on a
  *     network nothing here can bind to.

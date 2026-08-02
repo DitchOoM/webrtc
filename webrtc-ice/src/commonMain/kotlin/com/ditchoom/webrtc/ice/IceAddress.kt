@@ -10,7 +10,7 @@ import com.ditchoom.webrtc.stun.TransportAddress
 
 /**
  * Bridges the two address vocabularies ICE straddles at its I/O edge: buffer-flow's [SocketAddress]
- * (host literal + port, what the [DatagramChannel][com.ditchoom.buffer.flow.DatagramChannel] seam and
+ * (host literal + port, what the [AddressedDatagramChannel][com.ditchoom.buffer.flow.AddressedDatagramChannel] seam and
  * the gathering drivers speak) and webrtc-stun's array-free [TransportAddress] (an [IpAddress] + port,
  * what the sans-io core and every STUN/TURN attribute carry). The **core never touches these** — it is
  * pure [TransportAddress]; only the driver converts, exactly once, per datagram at the boundary.

@@ -13,7 +13,7 @@ import com.ditchoom.webrtc.sctp.StreamId
 public sealed interface SctpOutput {
     /**
      * Send [packet] over the transport below (DTLS → the selected ICE pair). It is positioned for
-     * reading with the CRC32c already placed — the driver just hands it to `DatagramChannel.send`.
+     * reading with the CRC32c already placed — the driver just hands it to `AddressedDatagramChannel.send`.
      *
      * **Read-only, and not the driver's to free.** [packet] is a private read view: for a DATA chunk it
      * spans the encoded packet the retransmission queue still owns (so a retransmit can re-emit the same

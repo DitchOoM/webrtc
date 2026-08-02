@@ -3,7 +3,7 @@
 package com.ditchoom.webrtc.ice
 
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
@@ -73,7 +73,7 @@ internal class IceDriver(
     @Suppress("UnseamedEntropy") // test-only seam; the seed is the injected gathering entropy
     private val random = Random(seed * SEED_SPREAD + 1)
     private val inbox = Channel<IceEvent>(Channel.UNLIMITED)
-    private val channels = HashMap<TransportAddress, DatagramChannel>()
+    private val channels = HashMap<TransportAddress, AddressedDatagramChannel>()
 
     // Mirror the production IceAgentDriver's per-family gather ordinal so the harness ranks candidates
     // exactly as production does (RFC 8445 §5.1.2.2 via CandidatePreferencePolicy) — the dual-stack
@@ -240,7 +240,7 @@ internal class IceDriver(
 
     private fun forward(
         base: TransportAddress,
-        channel: DatagramChannel,
+        channel: AddressedDatagramChannel,
     ) {
         scope.launch {
             while (true) {

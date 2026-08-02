@@ -67,7 +67,7 @@ kotlin {
         //
         //  ENUMERATION (which local ADDRESSES exist) is ours: `systemInterfaceEnumerator()`. It has to
         //  be — `com.ditchoom:network-monitor` answers "is the network up, and what link am I on"
-        //  (availability + a sealed NetworkId of Link(kind, handle)), and carries no addresses at all,
+        //  (one sealed NetworkState carrying a NetworkId of Link(kind, handle)), and carries no addresses,
         //  while IceAgentDriver.pathRidesOneOf compares the selected pair's local IP against the set.
         //  jvm and android read the SAME API for it (`java.net.NetworkInterface`), so that actual is one
         //  physical file in a REAL shared source set both leaves `dependsOn`, exactly as `socketMain`
@@ -85,19 +85,21 @@ kotlin {
         //
         //     The old "socket core vendors a SECOND BoringSSL → duplicate-symbol link break" objection is
         //     OBSOLETE, verified not assumed: socket 3.15.1's LinuxSockets klib embeds only liburing.a
-        //     (the libssl.a/libcrypto.a in 3.9.5 are gone), and socket:3.15.1 + buffer-crypto:6.22.0 both
+        //     (the libssl.a/libcrypto.a in 3.9.5 are gone), and socket:4.0.0 + buffer-crypto:6.23.0 both
         //     resolve to the SAME com.ditchoom.boringssl:boringssl-canonical:0.0.6, which Gradle dedupes.
         //     Proven by linking the production webrtc-harness-endpoint executable on linuxX64 AND
         //     linuxArm64 with this dependency present, and by running socket's netlink monitor under
         //     linuxX64Test. js/wasmJs need neither dependency — they report NoPlatformApi and are moot.
+        // network-monitor is declared on the SHARED set rather than per-leaf, so `linkTopology()` — the
+        // projection that decides what counts as "the network moved" — can be written once for jvm and
+        // android instead of once each. It has to be repeated in nativeMain regardless (different
+        // artifact, same type), which is exactly the getifaddrs situation above.
         val javaMain by creating {
             dependsOn(commonMain.get())
+            dependencies { implementation(libs.network.monitor) }
         }
         for (leaf in listOf("jvmMain", "androidMain")) {
-            named(leaf) {
-                dependsOn(javaMain)
-                dependencies { implementation(libs.network.monitor) }
-            }
+            named(leaf) { dependsOn(javaMain) }
         }
         named("nativeMain") {
             dependencies { implementation(libs.socket.core) }

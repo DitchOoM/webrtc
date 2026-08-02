@@ -7,9 +7,9 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramCapabilities
-import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.Ecn
@@ -132,16 +132,16 @@ class GatheringBufferFactoryTest {
 }
 
 /**
- * Wraps a vnet [DatagramChannel] and rejects any `send` whose payload was NOT allocated by [factory] —
+ * Wraps a vnet [AddressedDatagramChannel] and rejects any `send` whose payload was NOT allocated by [factory] —
  * modeling io_uring's native-buffer requirement over the vnet's lossless channel. Only the driver's own
  * channels are wrapped (the binder), so the vnet's STUN/TURN servers reply normally; this asserts purely
  * that the DRIVER's outbound gathering datagrams came from the injected factory.
  */
 private class FactoryAssertingChannel(
-    private val inner: DatagramChannel,
+    private val inner: AddressedDatagramChannel,
     private val factory: TaggingBufferFactory,
-) : DatagramChannel {
-    override val localAddress: SocketAddress? get() = inner.localAddress
+) : AddressedDatagramChannel {
+    override val localAddress: SocketAddress get() = inner.localAddress
     override val isOpen: Boolean get() = inner.isOpen
     override val maxWritableSize: Int get() = inner.maxWritableSize
     override val capabilities: DatagramCapabilities get() = inner.capabilities
@@ -150,7 +150,7 @@ private class FactoryAssertingChannel(
 
     override suspend fun send(
         payload: ReadBuffer,
-        to: SocketAddress?,
+        to: SocketAddress,
         options: DatagramSendOptions,
     ) {
         check(factory.owns(payload)) { "send requires a native-memory buffer" }
@@ -185,7 +185,7 @@ private class TaggingBufferFactory(
 }
 
 /**
- * An in-memory [DatagramChannel] that rejects any datagram NOT allocated by [factory] — the exact
+ * An in-memory [AddressedDatagramChannel] that rejects any datagram NOT allocated by [factory] — the exact
  * behavior of `socket-udp`'s io_uring `send` on a heap buffer, which the vnet's lossless channel does
  * not enforce. On an accepted Binding it answers as the STUN server would (XOR-MAPPED-ADDRESS = [srflx])
  * so the gather completes, proving the round-trip works when (and only when) the injected factory is used.
@@ -194,7 +194,7 @@ private class NativeOnlyChannel(
     override val localAddress: SocketAddress,
     private val factory: TaggingBufferFactory,
     private val srflx: TransportAddress,
-) : DatagramChannel {
+) : AddressedDatagramChannel {
     private val inbound = Channel<Datagram>(Channel.UNLIMITED)
     private var closed = false
 
@@ -209,7 +209,7 @@ private class NativeOnlyChannel(
 
     override suspend fun send(
         payload: ReadBuffer,
-        to: SocketAddress?,
+        to: SocketAddress,
         options: DatagramSendOptions,
     ) {
         check(!closed) { "channel is closed" }
@@ -225,7 +225,7 @@ private class NativeOnlyChannel(
                 .add(RawAttribute.ofXorMappedAddress(srflx, request.transactionId))
                 .addFingerprint()
                 .encode()
-        inbound.trySend(Datagram(payload = response, peer = requireNotNull(to), ecn = Ecn.Unknown))
+        inbound.trySend(Datagram(payload = response, peer = to, ecn = Ecn.Unknown))
     }
 
     override fun close() {

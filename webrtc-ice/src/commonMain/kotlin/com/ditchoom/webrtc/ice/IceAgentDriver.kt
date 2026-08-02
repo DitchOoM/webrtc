@@ -3,7 +3,7 @@
 package com.ditchoom.webrtc.ice
 
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
@@ -28,14 +28,20 @@ import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
 /**
- * Binds an **unconnected** [DatagramChannel] at a local [SocketAddress] — the one network seam the
+ * Binds an [AddressedDatagramChannel] at a local [SocketAddress] — the one network seam the
  * [IceTransport] driver rides. Production supplies a real-UDP binder (socket-udp `UdpSocket.bind`, at
  * the platform edge — no wasm, RFC §1.1); tests supply the in-memory vnet. Both honor the same
- * buffer-flow `DatagramChannel` contract, so the driver above is identical on either (DESIGN §7).
+ * buffer-flow contract, so the driver above is identical on either (DESIGN §7).
+ *
+ * **Addressed, in the type, since buffer 6.23.0.** ICE is the addressed case by nature — one bound
+ * socket serving every candidate pair — and the split makes that structural rather than documented:
+ * `send` requires its destination, and `localAddress` is non-null because a bound socket has one, so
+ * candidate gathering reads the base with no unwrap. The prose here used to say "unconnected"; the
+ * type says it now.
  */
 public fun interface DatagramBinder {
     /** Bind and return a channel receiving datagrams sent toward [address]. */
-    public suspend fun bind(address: SocketAddress): DatagramChannel
+    public suspend fun bind(address: SocketAddress): AddressedDatagramChannel
 }
 
 /**
@@ -111,7 +117,7 @@ public class IceAgentDriver(
     public val localCredentials: IceCredentials get() = agent.localCredentials
 
     private val inbox = Channel<Command>(Channel.UNLIMITED)
-    private val channels = HashMap<TransportAddress, DatagramChannel>()
+    private val channels = HashMap<TransportAddress, AddressedDatagramChannel>()
 
     // The sockets and candidates of the generation currently being gathered, and — across a restart —
     // those of the outgoing one, which stay BOUND until the new generation nominates (RFC 8445 §9). The
@@ -402,7 +408,7 @@ public class IceAgentDriver(
 
     private fun bind(
         base: TransportAddress,
-        channel: DatagramChannel,
+        channel: AddressedDatagramChannel,
     ) {
         channels[base] = channel
         gathering.bases += base
@@ -456,7 +462,7 @@ public class IceAgentDriver(
 
     private fun forward(
         base: TransportAddress,
-        channel: DatagramChannel,
+        channel: AddressedDatagramChannel,
     ) {
         scope.launch {
             while (true) {

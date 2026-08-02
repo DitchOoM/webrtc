@@ -17,7 +17,7 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * Resolution + parity smoke test for the **real** `socket-udp` actual (the production seam webrtc's
  * gathering drivers bind for host/srflx/relay candidates). It binds two loopback [UdpSocket] channels
- * and echoes a datagram between them over the *same* buffer-flow `DatagramChannel` interface the
+ * and echoes a datagram between them over the *same* buffer-flow `AddressedDatagramChannel` interface the
  * virtual [com.ditchoom.webrtc.ice.vnet.Vnet] implements — so the ICE code that passes over the vnet
  * runs unchanged over a real socket. Its real job is to prove `socket-udp` (3.11.0, Maven Central)
  * **resolves** (KMP metadata + JVM actual) and honors the seam contract.

@@ -10,7 +10,7 @@ import kotlin.time.Duration
  *
  * (network-monitor *does* publish a js artifact, but its `JsNetworkMonitor` polls
  * `os.networkInterfaces()` / reads `navigator.connection` — and it would have nothing to drive anyway:
- * there is no raw-UDP `DatagramChannel` actual on js, so there is no ICE agent of ours to restart.)
+ * there is no raw-UDP `AddressedDatagramChannel` actual on js, so there is no ICE agent of ours to restart.)
  */
 internal actual fun platformInterfaceChangeTrigger(pollInterval: Duration): InterfaceChangeTrigger =
     InterfaceChangeTrigger.Polled(pollInterval, ReactivityDegradation.NoPlatformSignal)

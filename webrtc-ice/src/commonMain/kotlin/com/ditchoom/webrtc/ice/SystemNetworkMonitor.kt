@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.merge
@@ -64,9 +65,9 @@ public sealed interface InterfaceEnumerationFailure {
  *
  * This is deliberately **not** delegated to `com.ditchoom:network-monitor`, and the reason is structural
  * rather than a preference: socket's `NetworkMonitor` answers *"is the network up, and what link am I
- * on"* — `availability` plus a sealed `NetworkId` of `Link(kind, handle)` / `KindOnly` / `Unidentified`,
- * whose per-link discriminator is documented as a numeric OS handle, "never an interface-name string".
- * It carries **no addresses at all**. But [IceAgentDriver.pathRidesOneOf] compares the selected pair's
+ * on"* — one sealed `NetworkState` on the link -> route -> internet ladder, carrying a `NetworkId` of
+ * `Link(kind, handle)` / `KindOnly` / `Unidentified`, whose per-link discriminator is documented as a
+ * numeric OS handle, "never an interface-name string". It carries **no addresses at all**. But [IceAgentDriver.pathRidesOneOf] compares the selected pair's
  * local **IP** against the interface set, so ICE needs an address list socket structurally cannot
  * provide. Socket supplies the *trigger* ([InterfaceChangeTrigger.Signalled]); this supplies the
  * addresses. The two halves are why this file exists alongside the dependency rather than instead of it.
@@ -84,7 +85,7 @@ public fun interface InterfaceEnumerator {
  *  - **js / wasmJs** — [InterfaceEnumerationFailure.NoPlatformApi], always. A browser cannot enumerate
  *    NICs, and it does not need to: on a browser `peerConnectionSupport()` delegates to the platform
  *    `RTCPeerConnection`, which restarts ICE on a network change itself. Under Node the answer is the
- *    same and for a stronger reason — there is no raw-UDP `DatagramChannel` actual on those targets, so
+ *    same and for a stronger reason — there is no raw-UDP `AddressedDatagramChannel` actual on those targets, so
  *    there is no ICE agent of ours to restart.
  */
 public expect fun systemInterfaceEnumerator(): InterfaceEnumerator
@@ -155,9 +156,10 @@ public sealed interface ReactivityDegradation {
  * How a [SystemNetworkMonitor] learns that the network moved — the answer to *"why did this session not
  * notice my Wi-Fi drop for four seconds?"*, readable from a bug report without opening the source.
  *
- * Deliberately **coarse**, and since socket 3.16.0 that is a *choice* rather than a limit. Socket now
+ * Deliberately **coarse**, and since socket 3.16.0 that is a *choice* rather than a limit. Socket
  * publishes a sealed `MonitorMechanism` naming what it resolved (`ConnectivityManager` / `NWPathMonitor` /
- * netlink / the JDK-21 FFM routing socket, or its own poller), so we could mirror it — but reading it
+ * netlink / the JDK-21 FFM routing socket, or its own poller) — since 4.0.0 inside a `MonitorCapability`
+ * that pairs it with the ladder rungs that monitor can reach — so we could mirror it, but reading it
  * means **constructing socket's monitor**, and construction is exactly what registers the platform
  * callback. Paying a `NetworkCallback` registration, or an FFM routing socket, merely to describe
  * ourselves would be a side effect charged to every `PeerConnectionConfig` built. So we read the mechanism
@@ -214,10 +216,25 @@ internal expect fun platformInterfaceChangeTrigger(pollInterval: Duration): Inte
  * cancelling the collector unregisters the platform callback. There is no `close()` for a caller to
  * forget, and the teardown is observable in a fixture.
  *
- * [signals] are the monitor's state flows. Each is `drop(1)`-ed because a `StateFlow` replays its
- * current value to a new collector, and that replay is not a network *change* — without the drop, every
- * collection would re-enumerate immediately and a session would be told its interfaces "changed" the
- * instant it started watching.
+ * [signals] are the monitor's state flows, already projected by each actual down to the dimension that
+ * means *"the set of local addresses may have moved"*. Each is `distinctUntilChanged()`-ed here rather
+ * than in the actuals, because that projection is exactly what makes the dedup necessary and it must not
+ * be possible to supply one without the other.
+ *
+ * **Why the projection exists at all.** Socket 4.0.0 collapsed `availability` + `networkId` into one
+ * `NetworkState` ladder, which carries a rung we deliberately do *not* react to: the reachability
+ * verdict inside `Routable`. On real hardware (Realme RMX3933, API 35) Android grants `INTERNET` about
+ * 0.7-1s before `VALIDATED` on **every** reassociation, so `Routable(id, Pending) -> Routable(id,
+ * Confirmed)` is a distinct `NetworkState` on the same link with the same addresses. Reacting to it
+ * would re-enumerate on every Wi-Fi reassociation for nothing. Under the old two-flow API that window
+ * changed neither `availability` nor `networkId`, so projecting the verdict away is what *preserves*
+ * the behaviour across the bump rather than changing it. Everything else on the ladder is kept:
+ * a rung change (`Offline`/`LinkLocal`/`Routable`) means a route appeared or vanished, and an `id`
+ * change means the link itself was replaced — both genuinely move addresses.
+ *
+ * Each is then `drop(1)`-ed because a `StateFlow` replays its current value to a new collector, and that
+ * replay is not a network *change* — without the drop, every collection would re-enumerate immediately
+ * and a session would be told its interfaces "changed" the instant it started watching.
  */
 internal fun <M> platformMonitorSignals(
     open: () -> M,
@@ -227,7 +244,8 @@ internal fun <M> platformMonitorSignals(
     flow {
         val monitor = open()
         try {
-            merge(*signals(monitor).map { it.drop(1) }.toTypedArray()).collect { emit(Unit) }
+            merge(*signals(monitor).map { it.distinctUntilChanged().drop(1) }.toTypedArray())
+                .collect { emit(Unit) }
         } finally {
             close(monitor)
         }
@@ -313,7 +331,7 @@ public class SystemNetworkMonitor(
             launch { wakeups.collect { nudges.trySend(Unit) } }
             for (wakeup in nudges) {
                 // Coalesce the burst. One physical event (Wi-Fi→cellular) surfaces as several platform
-                // callbacks — availability drops, the link id changes, addresses settle — and probing on
+                // callbacks — the link goes down, the id changes, addresses settle — and probing on
                 // each would re-enumerate repeatedly and could publish a half-configured interface set as
                 // though it were a network change. Tens of milliseconds: a settling window, never a
                 // polling interval in disguise, and it rides the collector's virtual clock so a fixture

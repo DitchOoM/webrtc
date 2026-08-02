@@ -2,7 +2,7 @@
 
 package com.ditchoom.webrtc.harness
 
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.socket.udp.UdpSocket
@@ -10,7 +10,7 @@ import com.ditchoom.webrtc.ice.DatagramBinder
 
 /**
  * The production real-UDP [DatagramBinder]: binds an unconnected socket-udp [UdpSocket] at the requested
- * local address and hands back its buffer-flow [DatagramChannel] — the exact seam the in-memory vnet
+ * local address and hands back its buffer-flow [AddressedDatagramChannel] — the exact seam the in-memory vnet
  * implements in tests. Per `webrtc-ice`'s [DatagramBinder] contract, this one lambda is the ONLY
  * substitution between a vnet run and a real-kernel run; the ICE agent, gathering drivers, DTLS and SCTP
  * above are byte-for-byte identical on either.

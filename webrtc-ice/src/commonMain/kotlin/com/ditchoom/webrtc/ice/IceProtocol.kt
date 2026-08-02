@@ -103,7 +103,7 @@ public sealed interface IcePath {
 public sealed interface IceOutput {
     /**
      * Send [data] from the socket bound to [fromBase] to [to] — a connectivity check, its response, or a
-     * consent refresh. The driver maps [fromBase] to the [DatagramChannel][com.ditchoom.buffer.flow.DatagramChannel]
+     * consent refresh. The driver maps [fromBase] to the [AddressedDatagramChannel][com.ditchoom.buffer.flow.AddressedDatagramChannel]
      * it gathered that candidate on. [data] is a fresh caller-owned buffer.
      */
     public data class Transmit(

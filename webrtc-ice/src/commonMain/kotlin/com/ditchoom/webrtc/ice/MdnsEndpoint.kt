@@ -5,7 +5,7 @@ package com.ditchoom.webrtc.ice
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.AddressFamily
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
@@ -27,7 +27,7 @@ import kotlin.time.Duration.Companion.seconds
  * the link-local group, which is also where a shared (multicast) response is sent.
  */
 public class MdnsGroupSocket(
-    public val channel: DatagramChannel,
+    public val channel: AddressedDatagramChannel,
     public val group: SocketAddress,
 )
 

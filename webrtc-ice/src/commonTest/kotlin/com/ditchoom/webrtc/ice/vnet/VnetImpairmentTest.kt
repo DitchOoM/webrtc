@@ -6,8 +6,8 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.Datagram
-import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import kotlinx.coroutines.CoroutineScope
@@ -67,7 +67,7 @@ class VnetImpairmentTest {
         return drain(inbound)
     }
 
-    private suspend fun drain(channel: DatagramChannel): List<String> {
+    private suspend fun drain(channel: AddressedDatagramChannel): List<String> {
         val arrivals = mutableListOf<String>()
         while (true) {
             val datagram = channel.receiveWithin(DRAIN_WINDOW) ?: break
@@ -85,7 +85,7 @@ class VnetImpairmentTest {
 
     private fun Datagram.text(): String = payload.readString(payload.remaining(), Charset.UTF8)
 
-    private suspend fun DatagramChannel.receiveWithin(within: Duration): Datagram? =
+    private suspend fun AddressedDatagramChannel.receiveWithin(within: Duration): Datagram? =
         withTimeoutOrNull(within) {
             when (val result = receive()) {
                 is DatagramReadResult.Received -> result.datagram

@@ -3,7 +3,7 @@
 package com.ditchoom.webrtc.testsuite.vnet
 
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
@@ -26,7 +26,7 @@ import kotlin.random.Random
 
 /**
  * A **virtual TURN server** (RFC 8656) — a faithful relay bound as an ordinary [Vnet] endpoint: it
- * speaks the same [DatagramChannel] seam as everything else, so a peer behind a symmetric NAT reaches
+ * speaks the same [AddressedDatagramChannel] seam as everything else, so a peer behind a symmetric NAT reaches
  * it exactly as it would reach real coturn. It is the load-bearing piece of the canonical
  * `dual-symmetric-NAT → relay` fixture (RFC §5.2): when srflx candidates are useless, the relay is the
  * only path that connects.
@@ -54,7 +54,7 @@ internal class TurnServer(
 ) {
     @Suppress("UnseamedEntropy") // test-only seam; the seed is the injected entropy (Data-indication txids)
     private val rng = Random(seed)
-    private val control: DatagramChannel = vnet.bind(address)
+    private val control: AddressedDatagramChannel = vnet.bind(address)
     private var nextRelayPort = firstRelayPort
 
     // Allocations keyed by the client's reflexive address as the server observes it (its 5-tuple).
@@ -63,7 +63,7 @@ internal class TurnServer(
     private class Allocation(
         val client: SocketAddress,
         val relayed: SocketAddress,
-        val relayChannel: DatagramChannel,
+        val relayChannel: AddressedDatagramChannel,
         val permissions: MutableSet<String> = HashSet(),
     )
 

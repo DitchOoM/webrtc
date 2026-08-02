@@ -4,8 +4,8 @@ package com.ditchoom.webrtc.ice.vnet
 
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.Datagram
-import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
@@ -188,8 +188,8 @@ class VnetNatTest {
     // Send a probe to [reflectorAddress] and read back the source the reflector observed — the host's
     // external mapping for that destination (endpoint-independent NATs reuse it; symmetric NATs don't).
     private suspend fun probeMapping(
-        sender: DatagramChannel,
-        reflectorChannel: DatagramChannel,
+        sender: AddressedDatagramChannel,
+        reflectorChannel: AddressedDatagramChannel,
         reflectorAddress: SocketAddress,
     ): SocketAddress {
         sender.send(payload("probe"), to = reflectorAddress)
@@ -201,7 +201,7 @@ class VnetNatTest {
 
     private fun Datagram.text(): String = payload.readString(payload.remaining(), Charset.UTF8)
 
-    private suspend fun DatagramChannel.receiveWithin(within: Duration): Datagram? =
+    private suspend fun AddressedDatagramChannel.receiveWithin(within: Duration): Datagram? =
         withTimeoutOrNull(within) {
             when (val result = receive()) {
                 is DatagramReadResult.Received -> result.datagram

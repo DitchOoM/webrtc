@@ -14,6 +14,7 @@ import com.ditchoom.webrtc.stun.TransportAddress
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -201,6 +202,9 @@ public class IceAgentDriver(
 
     private val gathered = Channel<GatheredCandidate>(Channel.UNLIMITED)
 
+    private val discarded =
+        Channel<IceOutput.RemoteCandidateDiscarded>(DISCARD_DIAGNOSTIC_BUFFER, BufferOverflow.DROP_OLDEST)
+
     /**
      * Every local candidate as it is gathered (host/srflx/relay) — the trickle (RFC 8838) source — paired
      * with the ufrag of the ICE generation it actually landed in, so the session layer can stamp RFC 8838
@@ -213,6 +217,20 @@ public class IceAgentDriver(
      * exact defect the tag exists to prevent, so the tag is taken where the answer cannot be stale.
      */
     public val localCandidateGathered: Flow<GatheredCandidate> get() = gathered.receiveAsFlow()
+
+    /**
+     * Remote candidates the core deliberately refused (RFC 8838 §3.1) — the diagnostics half of
+     * [IceOutput.RemoteCandidateDiscarded], which the drive loop otherwise has nothing to do with.
+     *
+     * **Bounded and lossy, unlike [localCandidateGathered].** That channel is `UNLIMITED` because its
+     * producer is our own gathering, which is finite per generation. This one's producer is the *peer*,
+     * and a peer that trickles candidates for generations it never signals is either broken or hostile —
+     * exactly the case [CandidateDiscardReason.UnappliedGenerationOverflow] already exists to bound.
+     * An unbounded channel here would let that peer grow our heap through a diagnostic nobody is
+     * required to collect, and a rendezvous channel would let it stall the drive loop. Dropping the
+     * oldest is the only option that is neither.
+     */
+    public val remoteCandidateDiscarded: Flow<IceOutput.RemoteCandidateDiscarded> get() = discarded.receiveAsFlow()
 
     /** Launch the serialized drive loop. Gather candidates and feed remote state after this. */
     public fun start() {
@@ -541,9 +559,11 @@ public class IceAgentDriver(
                 }
                 // Nothing for the driver to *do*: the candidate was refused by the core on purpose
                 // (RFC 8838 §3.1), there is no socket to touch and no state to unwind. It is an output
-                // rather than a silent return so a fixture — and a future diagnostics surface — can see
-                // the difference between a candidate discarded and a candidate that never arrived.
-                is IceOutput.RemoteCandidateDiscarded -> Unit
+                // rather than a silent return so a fixture — and now a diagnostics surface (webrtc#106)
+                // — can see the difference between a candidate discarded and one that never arrived.
+                // trySend, never send: the drive loop is serialized, so suspending it on a diagnostic
+                // nobody is obliged to collect would let a peer stall ICE by trickling junk.
+                is IceOutput.RemoteCandidateDiscarded -> discarded.trySend(output).let { }
             }
         }
     }
@@ -589,3 +609,12 @@ public class IceAgentDriver(
         ) : RetiringGeneration
     }
 }
+
+/**
+ * How many refused remote candidates [IceAgentDriver.remoteCandidateDiscarded] holds for a collector
+ * that has not caught up. Sized against the thing that produces them in bulk: the agent's own hold
+ * buffer for unapplied generations is 32, so one full overflow of that buffer fits here without loss.
+ * Beyond it the oldest go — they are diagnostics about a peer misbehaving, and the newest are the ones
+ * that describe what it is doing now.
+ */
+private const val DISCARD_DIAGNOSTIC_BUFFER = 32

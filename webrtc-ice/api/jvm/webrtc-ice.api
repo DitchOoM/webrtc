@@ -230,6 +230,7 @@ public final class com/ditchoom/webrtc/ice/IceAgentDriver {
 	public final fun getLocalCandidates ()Ljava/util/List;
 	public final fun getLocalCredentials ()Lcom/ditchoom/webrtc/ice/IceCredentials;
 	public final fun getPath ()Lkotlinx/coroutines/flow/StateFlow;
+	public final fun getRemoteCandidateDiscarded ()Lkotlinx/coroutines/flow/Flow;
 	public final fun getState ()Lkotlinx/coroutines/flow/StateFlow;
 	public final fun pathRidesOneOf (Ljava/util/List;)Z
 	public final fun post (Lcom/ditchoom/webrtc/ice/IceEvent;)V
@@ -1097,7 +1098,12 @@ public final class com/ditchoom/webrtc/ice/NetworkId {
 
 public abstract interface class com/ditchoom/webrtc/ice/NetworkMonitor {
 	public abstract fun getChanges ()Lkotlinx/coroutines/flow/Flow;
+	public fun getProbeFailures ()Lkotlinx/coroutines/flow/Flow;
 	public abstract fun interfaces ()Ljava/util/List;
+}
+
+public final class com/ditchoom/webrtc/ice/NetworkMonitor$DefaultImpls {
+	public static fun getProbeFailures (Lcom/ditchoom/webrtc/ice/NetworkMonitor;)Lkotlinx/coroutines/flow/Flow;
 }
 
 public abstract interface class com/ditchoom/webrtc/ice/NetworkMonitorSupport {
@@ -1210,6 +1216,7 @@ public final class com/ditchoom/webrtc/ice/SystemNetworkMonitor : com/ditchoom/w
 	public fun getChanges ()Lkotlinx/coroutines/flow/Flow;
 	public final fun getDetection ()Lcom/ditchoom/webrtc/ice/InterfaceChangeDetection;
 	public final fun getLastSnapshot ()Lkotlinx/coroutines/flow/StateFlow;
+	public fun getProbeFailures ()Lkotlinx/coroutines/flow/Flow;
 	public fun interfaces ()Ljava/util/List;
 	public final fun refresh ()V
 }

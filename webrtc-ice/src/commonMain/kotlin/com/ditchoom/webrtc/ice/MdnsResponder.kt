@@ -36,6 +36,29 @@ private const val TYPE_ANY: Int = 255
  * because the name→address binding must outlive the candidate that prompted it: a peer resolves a name at
  * whatever moment its own gathering gets round to it, which is routinely after our candidate has been
  * signaled, paired and superseded.
+ *
+ * ## RFC 6762 §8.1 probing and §9 conflict resolution are deliberately NOT implemented
+ *
+ * Written down (webrtc#105) so that a future reader — or an RFC-conformance audit — finds an argument here
+ * rather than an oversight. This is a decision, not a gap:
+ *
+ *  - **A collision cannot realistically happen.** Names are 122-bit random UUIDs ([MdnsHostName.random]).
+ *    An accidental clash needs on the order of 2^61 names on one link.
+ *  - **§9 is cooperative, so it is not a security control.** It resolves honest misconfiguration between
+ *    responders that both follow the RFC. An adversary claiming our name simply does not follow it.
+ *  - **The security case is covered a layer up, and covered properly.** ICE connectivity checks are STUN
+ *    with MESSAGE-INTEGRITY keyed by the ufrag/pwd carried in the SDP, so someone who hijacks a name and
+ *    answers with their own address still cannot answer a check. The result is a *failed candidate pair*
+ *    that ICE fails over from — not a compromise.
+ *  - **Probing would cost latency on the critical path.** §8.1 wants three probes 250 ms apart: roughly
+ *    750 ms added before the first host candidate can be published, to prevent a collision that cannot
+ *    occur. On a privacy feature whose whole risk is "a name nobody answers costs the peer the candidate",
+ *    spending that is the wrong trade.
+ *
+ * The one piece worth revisiting if this ever changes is the *defensive* half of §9 — noticing that some
+ * other responder is answering for a name we hold and giving it up. It costs no latency. It is not here
+ * because, per the point above, a hijack already degrades to a failed pair rather than to a leak, so it
+ * would buy tidiness rather than safety.
  */
 public class MdnsResponder(
     private val bufferFactory: BufferFactory = BufferFactory.Default,
@@ -63,9 +86,42 @@ public class MdnsResponder(
         records[name.value.lowercase()] = address
     }
 
-    /** Stop answering for [name]. Answering for a name whose candidate is gone would leak a stale address. */
-    public fun withdraw(name: MdnsHostName) {
-        records.remove(name.value.lowercase())
+    /**
+     * Stop answering for [name], and hand back the RFC 6762 §10.1 **goodbye** to multicast — a TTL-0 record
+     * that retracts the binding instead of leaving it to expire.
+     *
+     * **Why the retraction matters now, when it barely used to.** Answering for a withdrawn name would leak
+     * a stale address, so we stop locally either way; but the shared TTL is
+     * [MdnsMessage.SHARED_TTL_SECONDS] = 120 s, so without a goodbye a peer keeps resolving a name we no
+     * longer honour for up to two minutes. That window was nearly harmless while interfaces were static.
+     * Since #98 made [IceRestartPolicy][com.ditchoom.webrtc.IceRestartPolicy]`.OnNetworkChange` reactive, an
+     * interface can vanish mid-session; [MdnsEndpoint] mints names per *address*, so the replacement
+     * interface gets a NEW name while the peer is still resolving the dead one — a stale binding sitting
+     * directly on the path that reactivity exists to make fast.
+     *
+     * **The honest counterweight, recorded rather than left implicit.** A goodbye is a multicast
+     * announcement that this address has stopped hosting this name: a small session-lifetime signal to
+     * anything passively watching the link, which cuts slightly against a privacy feature. It is judged
+     * worth it, because an observer on that link already saw the original response — the goodbye tells them
+     * *when it ended*, not *that it existed*, and the peer's stale-binding cost is concrete.
+     *
+     * Sans-io, like everything else here: this returns the bytes and never touches a socket. [MdnsEndpoint]
+     * is what puts them on the group.
+     */
+    public fun withdraw(name: MdnsHostName): MdnsWithdrawal {
+        val address = records.remove(name.value.lowercase()) ?: return MdnsWithdrawal.NotAdvertised
+        return MdnsWithdrawal.Goodbye(
+            name = name,
+            address = address,
+            payload =
+                MdnsMessage.encodeResponse(
+                    // Under the spelling WE published, not a lowercased one: this is unsolicited, so there
+                    // is no querier's spelling to echo and the record must match what went out originally.
+                    answers = listOf(MdnsMessage.AnswerRecord(name.value, address)),
+                    shape = MdnsMessage.ResponseShape.Goodbye,
+                    bufferFactory = bufferFactory,
+                ),
+        )
     }
 
     /**
@@ -234,4 +290,21 @@ public suspend fun MdnsResponder.serve(
             }
         onResponse(serveOne(channel, datagram, group))
     }
+}
+
+/**
+ * What [MdnsResponder.withdraw] produced — sealed, so "there is a goodbye to send" and "we were not
+ * advertising that name" are different values rather than a nullable buffer a caller might send anyway.
+ */
+public sealed interface MdnsWithdrawal {
+    /** The name was ours; [payload] is the RFC 6762 §10.1 TTL-0 record to multicast on the group. */
+    public data class Goodbye(
+        public val name: MdnsHostName,
+        /** The address the retracted record carried — diagnostics, and what makes a fixture readable. */
+        public val address: IpAddress,
+        public val payload: ReadBuffer,
+    ) : MdnsWithdrawal
+
+    /** We were not advertising that name, so there is nothing to retract and nothing to send. */
+    public data object NotAdvertised : MdnsWithdrawal
 }

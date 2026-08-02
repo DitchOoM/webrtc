@@ -5,6 +5,8 @@ package com.ditchoom.webrtc.ice
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.AddressFamily
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
+import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.webrtc.ice.vnet.CountingBufferFactory
@@ -15,11 +17,14 @@ import com.ditchoom.webrtc.stun.IpAddress
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * The **whole** mDNS story end to end, deterministically: one [MdnsEndpoint] advertises a `<uuid>.local`
@@ -112,6 +117,56 @@ class MdnsEndpointTest {
             )
         }
 
+    /**
+     * …and the withdrawal is **announced**, not merely local (RFC 6762 §10.1, webrtc#105).
+     *
+     * Going quiet is not enough: the shared TTL is 120 s, so a peer that already resolved the name keeps
+     * using it for up to two minutes. Since network reactivity landed (#98) an interface can vanish
+     * mid-session and the replacement gets a *different* name, which puts that stale binding directly on
+     * the path reactivity exists to make fast.
+     *
+     * Read off the wire on a third endpoint joined to the group — an observer, not either participant —
+     * because "the retraction reached the link" is the property, and a return value cannot show it.
+     */
+    @Test
+    fun a_withdrawal_multicasts_a_ttl_zero_goodbye_to_the_group() =
+        runTest {
+            val link = MdnsLink(this)
+            val advertiser = link.endpoint(ALICE_IP, seed = 1)
+            val observer = link.observer(OBSERVER_IP)
+            val name = assertIs<MdnsAdvertisement.Advertised>(advertiser.advertise(ALICE_ADDRESS)).name
+
+            advertiser.withdraw(name)
+
+            val datagram =
+                assertNotNull(
+                    withTimeoutOrNull(TIMEOUT) {
+                        when (val result = observer.receive()) {
+                            is DatagramReadResult.Received -> result.datagram.payload
+                            is DatagramReadResult.Closed -> null
+                        }
+                    },
+                    "nothing reached the group: the name was dropped locally and every peer holding it was " +
+                        "left resolving a dead address for the remaining 120s shared TTL",
+                )
+
+            // Header: an authoritative response with one answer and no echoed question.
+            datagram.readUnsignedShort() // ID
+            datagram.readUnsignedShort() // flags
+            assertEquals(0, datagram.readUnsignedShort().toInt(), "unsolicited — nothing to echo")
+            assertEquals(1, datagram.readUnsignedShort().toInt(), "exactly the record being retracted")
+            datagram.readUnsignedShort() // NSCOUNT
+            datagram.readUnsignedShort() // ARCOUNT
+            while (true) {
+                val length = datagram.readUnsignedByte().toInt()
+                if (length == 0) break
+                repeat(length) { datagram.readUnsignedByte() }
+            }
+            datagram.readUnsignedShort() // TYPE
+            datagram.readUnsignedShort() // CLASS
+            assertEquals(0u, datagram.readUnsignedInt(), "TTL 0 is the retraction; any other value is an announcement")
+        }
+
     @Test
     fun a_family_the_endpoint_does_not_serve_is_declined_rather_than_published_unanswerable() =
         runTest {
@@ -177,6 +232,17 @@ class MdnsEndpointTest {
                 random = Random(seed),
             )
 
+        /**
+         * A bare channel joined to the group — neither advertiser nor resolver, just something on the link
+         * that can read what was multicast. The only way to assert that a goodbye actually left.
+         */
+        fun observer(ip: String): AddressedDatagramChannel {
+            val local = vnetAddress(ip, MDNS_UDP_PORT)
+            val channel = vnet.bind(local)
+            vnet.join(GROUP, local)
+            return channel
+        }
+
         /** Binds `<ip>:5353` on the vnet and joins the group — the [MdnsMulticastBinder] actual, in memory. */
         private class VnetBinder(
             private val vnet: Vnet,
@@ -194,6 +260,8 @@ class MdnsEndpointTest {
     private companion object {
         const val ALICE_IP = "10.0.0.1"
         const val BOB_IP = "10.0.0.2"
+        const val OBSERVER_IP = "10.0.0.3"
+        val TIMEOUT = 10.seconds
         val GROUP: SocketAddress = vnetAddress("224.0.0.251", MDNS_UDP_PORT)
         val ALICE_ADDRESS: IpAddress = IpAddress.V4(0x0A000001u) // 10.0.0.1
         val SECOND_ADDRESS: IpAddress = IpAddress.V4(0x0A000005u) // 10.0.0.5

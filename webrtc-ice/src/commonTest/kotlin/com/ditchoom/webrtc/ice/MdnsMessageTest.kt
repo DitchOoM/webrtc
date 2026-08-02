@@ -237,6 +237,47 @@ class MdnsMessageTest {
         assertEquals(v6, decoded[1].address)
     }
 
+    /**
+     * A TTL-0 record is a **goodbye** (RFC 6762 §10.1) and must never decode as an answer.
+     *
+     * This was a live defect until webrtc#105: [MdnsMessage.decodeAnswers] read the TTL and discarded it,
+     * so a retraction was indistinguishable from a resolution and would bind an ICE candidate to an address
+     * that had just gone away. Not self-inflicted — Chrome, Firefox and avahi all multicast goodbyes when an
+     * interface disappears or a page closes, so this arrives from foreign peers on any shared link.
+     */
+    @Test
+    fun a_ttl_zero_goodbye_is_not_an_answer() {
+        val goodbye =
+            MdnsMessage.encodeResponse(
+                answers = listOf(MdnsMessage.AnswerRecord(NAME, ADDRESS)),
+                shape = MdnsMessage.ResponseShape.Goodbye,
+                bufferFactory = BufferFactory.Default,
+            )
+
+        assertEquals(
+            emptyList(),
+            MdnsMessage.decodeAnswers(goodbye),
+            "a retraction decoded as an answer binds a candidate to an address that has just been withdrawn",
+        )
+    }
+
+    /** …and the same message shape with a live TTL still decodes, so the filter is TTL-specific. */
+    @Test
+    fun the_same_record_with_a_live_ttl_still_decodes() {
+        val announcement =
+            MdnsMessage.encodeResponse(
+                answers = listOf(MdnsMessage.AnswerRecord(NAME, ADDRESS)),
+                shape = MdnsMessage.ResponseShape.Shared,
+                bufferFactory = BufferFactory.Default,
+            )
+
+        assertEquals(
+            listOf(MdnsMessage.AnswerRecord(NAME, ADDRESS)),
+            MdnsMessage.decodeAnswers(announcement),
+            "only TTL 0 is a goodbye — filtering more than that would drop ordinary resolutions",
+        )
+    }
+
     @Test
     fun a_trailing_record_we_cannot_parse_does_not_cost_the_address_already_decoded() {
         val response =
@@ -295,5 +336,7 @@ class MdnsMessageTest {
     private companion object {
         const val RESPONSE_CAPACITY = 128
         const val HEADER_ONLY_CAPACITY = 12
+        const val NAME = "a1b2c3d4-0000-4000-8000-000000000001.local"
+        val ADDRESS: IpAddress = IpAddress.V4(0x0A000001u) // 10.0.0.1
     }
 }

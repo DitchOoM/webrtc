@@ -25,7 +25,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -50,6 +52,31 @@ import kotlin.time.Instant
 class PeerConnectionMdnsPrivacyTest {
     private val timeout = 60.seconds
     private val epoch = Instant.fromEpochSeconds(0)
+
+    /**
+     * [withMulticastMdns] wires **both** halves from one endpoint (webrtc#100).
+     *
+     * The two failure modes it removes are silent, which is why they are worth a fixture: advertising
+     * without resolving drops every `.local` candidate the peer sends, and using a *second* endpoint for
+     * the resolver mints a second set of names on a second socket — telling an observer the two belong to
+     * one host, which is the leak the names exist to close.
+     */
+    @Test
+    fun with_multicast_mdns_wires_the_resolver_and_the_advertiser_from_one_endpoint() =
+        runTest {
+            val endpoint = MdnsEndpoint(scope = backgroundScope, binder = { MdnsGroupBinding.Unavailable })
+
+            val config = PeerConnectionConfig().withMulticastMdns(endpoint)
+
+            assertSame(endpoint, config.mdnsResolver, "the resolver must be the endpoint itself")
+            val advertise = assertIs<MdnsAdvertisePolicy.Advertise>(config.mdnsAdvertising)
+            assertSame(
+                endpoint,
+                advertise.advertiser,
+                "the advertiser must be the SAME object as the resolver — two endpoints means two sockets " +
+                    "and two sets of minted names, which is the correlation the names exist to prevent",
+            )
+        }
 
     @Test
     fun an_advertising_session_publishes_a_name_its_peer_resolves_and_never_its_address() =

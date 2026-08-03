@@ -17,10 +17,10 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 
 /**
- * The ICE **lifecycle** fixtures (EXECUTION_PLAN W3 exit criteria + the typed-failure surface): a
+ * The ICE **lifecycle** fixtures (and the typed-failure surface): a
  * candidate flapping mid-check, a `NetworkId` change forcing an ICE restart, RFC 7675 consent expiry,
  * and the all-pairs-failed terminal. Each asserts the agent reaches a definite observable state and
- * never hangs — the liveness invariant (RFC §5.3 #5), enforced by the `runTest` watchdog.
+ * never hangs — the liveness invariant (ARCHITECTURE §5.3 #5), enforced by the `runTest` watchdog.
  */
 @OptIn(ExperimentalTime::class, ExperimentalCoroutinesApi::class, ExperimentalDatagramApi::class)
 class IceLifecycleTest {

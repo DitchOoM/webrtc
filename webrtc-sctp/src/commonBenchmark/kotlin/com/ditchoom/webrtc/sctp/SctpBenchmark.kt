@@ -18,7 +18,7 @@ import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
 /**
- * SCTP codec throughput benchmarks (RFC §7 / PERFORMANCE.md) over an INIT packet — the hot receive
+ * SCTP codec throughput benchmarks (ARCHITECTURE §7 / PERFORMANCE.md) over an INIT packet — the hot receive
  * path: common-header decode + chunk TLV walk + parameter sub-TLV walk, and the in-place CRC32c
  * verification (Castagnoli, the table-driven fold). Run:
  * `./gradlew :webrtc-sctp:jvmBenchmarkBenchmark`.
@@ -132,7 +132,7 @@ class SctpBenchmark {
 
     // Advance virtual time to each armed deadline in turn until neither side has a timer — the delayed
     // SACK flushes, the sender's window reopens, and any remaining fragments go out. `nextDeadline` being
-    // null on both sides is exactly "nothing outstanding, nothing pending" (RFC §5.1).
+    // null on both sides is exactly "nothing outstanding, nothing pending" (ARCHITECTURE §5.1).
     private fun drainTimers() {
         var steps = 0
         while (steps++ < MAX_DRAIN_STEPS) {

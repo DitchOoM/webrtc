@@ -50,7 +50,7 @@ import kotlin.time.Instant
  *
  * It owns a sans-io [SctpAssociation] and drives it over an injected [SctpDatagramTransport] (the
  * DTLS-shaped seam) on an injected [scope] + [clock] — all I/O and timing are seams, so the whole stack
- * runs under `runTest` virtual time (RFC §5.1). Every `association.handle(...)` call is serialized
+ * runs under `runTest` virtual time (ARCHITECTURE §5.1). Every `association.handle(...)` call is serialized
  * through the single [driveLoop]; consumer `open`/`send`/`close` calls post commands into the same
  * inbox, so the non-thread-safe core is only ever touched from one coroutine.
  *
@@ -706,7 +706,7 @@ internal class PendingInbound(
  *
  * The typed [reason] is the discriminant, never the string. Re-parenting this onto socket's abstract
  * `SocketClosedException` (the QUIC-module extension point) — so a data-channel consumer catches it
- * uniformly with every other transport failure (RFC §3.1 "one thrown vocabulary") — is deferred with the
+ * uniformly with every other transport failure (ARCHITECTURE §3.1 "one thrown vocabulary") — is deferred with the
  * rest of the `SocketException` bridge: depending on `com.ditchoom:socket` collides socket's vendored
  * BoringSSL against buffer-crypto's on native (documented on the webrtc root's PeerConnectionFailureReason).
  */

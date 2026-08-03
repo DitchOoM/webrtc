@@ -38,7 +38,7 @@ public value class StunMethod(
         /** STUN Binding (RFC 8489 §3). */
         public val Binding: StunMethod = StunMethod(0x001u)
 
-        // TURN methods (RFC 8656 §5) — codec-only in W1.
+        // TURN methods (RFC 8656 §5) — codec-only in this module.
         public val Allocate: StunMethod = StunMethod(0x003u)
         public val Refresh: StunMethod = StunMethod(0x004u)
         public val Send: StunMethod = StunMethod(0x006u)

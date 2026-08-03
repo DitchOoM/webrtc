@@ -29,7 +29,7 @@ import kotlin.js.toJsString
 
 /**
  * The browser [PeerConnectionSupport] (wasmJs). wasmJs is a browser target where — like js — we **wrap,
- * not reimplement** (RFC §1.1): there is no real-UDP binder on wasm (socket-udp has no wasm target), so a
+ * not reimplement** (ARCHITECTURE §1.1): there is no real-UDP binder on wasm (socket-udp has no wasm target), so a
  * [NativePeerConnection] cannot run here and delegation to the browser `RTCPeerConnection` is the only
  * path.
  *
@@ -38,7 +38,7 @@ import kotlin.js.toJsString
  * `JsString`) instead of js `dynamic` — the pattern buffer-crypto's WebCrypto bridges use. Data-channel
  * payloads cross the wasm↔JS boundary as **lowercase hex `JsString`** (byte-faithful, no `ByteArray` and
  * no webgl typed-array externals): the send side hex-encodes a [ReadBuffer]; the receive side decodes a
- * hex string — text or binary — back into one. Closing the W6 wasmJs follow-up: this actual now delegates
+ * hex string — text or binary — back into one. This actual delegates
  * for real (Karma-tested via the loopback in `wasmJsTest`), not `NotImplementedError`.
  */
 public actual fun peerConnectionSupport(): PeerConnectionSupport =

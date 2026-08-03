@@ -23,7 +23,7 @@ import kotlin.time.Duration.Companion.seconds
  * The W6 browser-delegation Karma test: drives two real in-browser `RTCPeerConnection`s through our
  * [RtcPeerConnection] delegation (offer/answer, trickle, a data-channel message) over a localhost
  * loopback — proving `peerConnectionSupport()` as a `BrowserDelegated.create(...)` maps our API onto the browser's own
- * `RTCPeerConnection` (RFC §1.1: the one target we wrap). Under Node (`RTCPeerConnection` absent) it
+ * `RTCPeerConnection` (ARCHITECTURE §1.1: the one target we wrap). Under Node (`RTCPeerConnection` absent) it
  * returns [PeerConnectionSupport.Native] and the test no-ops, so the same suite is green on jsNodeTest.
  */
 @OptIn(DelicateCoroutinesApi::class)

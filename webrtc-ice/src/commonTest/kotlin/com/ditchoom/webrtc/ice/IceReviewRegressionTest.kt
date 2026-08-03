@@ -32,7 +32,7 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 
 /**
- * Regression fixtures for the defects the adversarial review gate (EXECUTION_PLAN §1) confirmed — each
+ * Regression fixtures for the defects the adversarial review gate confirmed — each
  * ships with the fix (directive #5). They cover the role-conflict inversion, the MESSAGE-INTEGRITY
  * splice, the typed-`NoCandidatePairs` liveness backstop, and the "nomination can't complete → terminal,
  * never hang" invariant.

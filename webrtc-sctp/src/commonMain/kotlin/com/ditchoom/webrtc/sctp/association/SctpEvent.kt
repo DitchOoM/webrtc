@@ -3,7 +3,7 @@ package com.ditchoom.webrtc.sctp.association
 import com.ditchoom.buffer.ReadBuffer
 
 /**
- * An input to the sans-io [SctpAssociation] (RFC §5.1). The driver owns I/O and the clock; it feeds
+ * An input to the sans-io [SctpAssociation] (ARCHITECTURE §5.1). The driver owns I/O and the clock; it feeds
  * these and applies the returned [SctpOutput]s. Every `handle(event, now)` call carries `now` — the
  * core never reads a clock — so the whole association (handshake, RTO/T3-rtx, delayed SACK, shutdown)
  * runs under `runTest` virtual time on every platform.

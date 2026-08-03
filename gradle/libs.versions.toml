@@ -15,10 +15,10 @@ binaryCompatibilityValidator = "0.18.1"
 kotlinxCoroutines = "1.11.0"
 # DitchOoM buffer stack — the zero-copy substrate this library is built on.
 # 6.9.4 (latest): raw ByteStreamMux primitive (data-channel mux target), buffer-pool use-after-release
-# fail-fast, codec-framed streaming layer + typed pipe, okio/sqldelight bridges. See RFC §4 (reuse audit).
+# fail-fast, codec-framed streaming layer + typed pipe, okio/sqldelight bridges. See ARCHITECTURE §4.
 # 6.10.0 adds HMAC-SHA1 (buffer-crypto) + ReadBuffer.crc32 (buffer core) — DitchOoM/buffer#288 —
 # consumed by webrtc-stun for STUN MESSAGE-INTEGRITY (HMAC-SHA1/SHA256) + FINGERPRINT (CRC-32). The
-# 6.9.4 raw ByteStreamMux / pool fail-fast / codec-framing surface (RFC §4 reuse audit) still applies.
+# 6.9.4 raw ByteStreamMux / pool fail-fast / codec-framing surface (ARCHITECTURE §4) still applies.
 # 6.11.0 adds the buffer-flow **datagram trichotomy** (DatagramSource/Sink/Channel + SocketAddress +
 # DatagramMux) under @ExperimentalDatagramApi — DitchOoM/buffer#291, on Maven Central. This is the
 # UDP seam webrtc's transport track (W3+) rides, and the version socket-udp pins; bump keeps webrtc's
@@ -47,12 +47,12 @@ buffer = "6.23.0"
 # real-network candidate gathering (host/srflx/relay). The seam itself is buffer-flow's
 # `DatagramChannel` (on Central, above); `socket-udp` is only the platform real-socket implementation
 # (UdpSocket.bind/connect/resolve). It ships jvm/android/js-node/linux/apple — **NOT wasmJs/browser**
-# (RFC §1.1: browsers have no raw UDP), so it is consumed at the platform-edge gathering driver, never
+# (ARCHITECTURE §1.1: browsers have no raw UDP), so it is consumed at the platform-edge gathering driver, never
 # in a common/core or wasm source set. The deterministic vnet tests ride an in-memory `DatagramChannel`
 # (buffer-flow interface), so they need neither socket-udp nor socket-testsuite.
 # NOTE: socket's #225 "vnet" is QUIC-specific, unpublished test code (drives the internal quiche seam,
 # not the public DatagramChannel; no NAT/TURN models) and `socket-testsuite` can't publish without the
-# whole quiche/rust/BoringSSL stack — so webrtc builds its own vnet (RFC §5.2: "the WebRTC-specific
+# whole quiche/rust/BoringSSL stack — so webrtc builds its own vnet (ARCHITECTURE §5.2: "the WebRTC-specific
 # addition"). No socket-testsuite entry here by design.
 # 3.11.0 (socket PR #239) is the first release with socket-udp on Maven Central — it pins buffer 6.11.0
 # and publishes all of jvm/android/js/linux/apple. The earlier merge-gate (dev against a

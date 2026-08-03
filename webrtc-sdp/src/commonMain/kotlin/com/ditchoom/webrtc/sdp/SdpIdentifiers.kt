@@ -47,7 +47,7 @@ public enum class SetupRole(
 
 /**
  * A certificate fingerprint carried in SDP (`a=fingerprint:<hash-func> <hex>`, RFC 8122 §5). This is
- * the SDP-line representation only — the DTLS layer (W4) owns certificate identity; here it is a pair
+ * the SDP-line representation only — the DTLS layer owns certificate identity; here it is a pair
  * of text fields interpreted from the attribute value, kept exactly as written for round-trip fidelity.
  */
 public data class Fingerprint(

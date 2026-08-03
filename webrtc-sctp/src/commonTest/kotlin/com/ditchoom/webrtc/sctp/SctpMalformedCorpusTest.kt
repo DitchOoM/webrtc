@@ -11,7 +11,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
- * T0 floor (RFC §7): a hostile or truncated datagram must yield a **typed** [SctpDecodeResult.Reject],
+ * T0 floor (ARCHITECTURE §7): a hostile or truncated datagram must yield a **typed** [SctpDecodeResult.Reject],
  * never a throw-through or a crash. The committed cases pin specific reject reasons; the seeded
  * property loops assert the stronger invariant — decode is total (Success or Reject) over arbitrary
  * bytes, and every Success re-encodes and re-verifies without throwing, on every platform.

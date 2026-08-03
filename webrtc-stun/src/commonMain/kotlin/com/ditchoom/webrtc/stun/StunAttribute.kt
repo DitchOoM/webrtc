@@ -14,7 +14,7 @@ import com.ditchoom.buffer.ReadBuffer
  * MESSAGE-INTEGRITY / FINGERPRINT are computed over the padding bytes too (RFC 8489 §14.5): a
  * received signed message must re-emit its exact padding or its integrity breaks. [value] is the
  * declared-length view the typed interpreters read; [length] excludes padding. On decode both are
- * slices over the datagram (RFC §6 — never an array), so a `RawAttribute` must not outlive that
+ * slices over the datagram (ARCHITECTURE §6 — never an array), so a `RawAttribute` must not outlive that
  * buffer's scope; the [companion] builders produce caller-owned buffers with zero padding.
  */
 public class RawAttribute internal constructor(

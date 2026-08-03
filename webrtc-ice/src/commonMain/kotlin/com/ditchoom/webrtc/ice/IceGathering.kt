@@ -28,7 +28,7 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 
 /**
- * A network interface identity (RFC §5.3 timelines: a Wi-Fi→cellular flip is a `NetworkId` change).
+ * A network interface identity (ARCHITECTURE §5.3 timelines: a Wi-Fi→cellular flip is a `NetworkId` change).
  * When the id set changes under a live session, the driver triggers an ICE restart — the
  * `NetworkId`-change→restart fixture. Wrapped so it is never a bare `String`.
  */
@@ -76,7 +76,7 @@ public interface NetworkMonitor {
 }
 
 /**
- * The mDNS resolution seam (RFC 8838 privacy candidates; RFC §11.4 decision: **resolve-only** in W3,
+ * The mDNS resolution seam (RFC 8838 privacy candidates; ARCHITECTURE §11.4: **resolve-only** here,
  * responder deferred). A browser peer advertises an `<uuid>.local` host candidate to hide its private
  * IP; before we can send checks to it we must resolve it to an address. Injected — a deterministic stub
  * in tests, a real multicast resolver in production — never a hardwired `224.0.0.251` socket in a core.
@@ -140,7 +140,7 @@ public suspend fun gatherServerReflexive(
     retransmitInterval: Duration = DEFAULT_GATHER_RTO,
     // The datagram allocator — MUST be the injected one on a real socket: a native-UDP send (socket-udp's
     // io_uring) rejects a GC-heap buffer, so the default is only safe on the in-memory vnet. The driver
-    // threads `IceConfig.bufferFactory` here (W7 real-network fix; the vnet never exercised this).
+    // threads `IceConfig.bufferFactory` here (a real-network fix; the vnet never exercised this).
     bufferFactory: BufferFactory = BufferFactory.Default,
 ): ServerReflexiveResult {
     val transactionId = TransactionId.random(random)

@@ -33,7 +33,7 @@ public value class StunAttributeType(
         public val AlternateServer: StunAttributeType = StunAttributeType(0x8023u)
         public val Fingerprint: StunAttributeType = StunAttributeType(0x8028u)
 
-        // TURN (RFC 8656 §14) — codec-only in W1.
+        // TURN (RFC 8656 §14) — codec-only in this module.
         public val ChannelNumber: StunAttributeType = StunAttributeType(0x000Cu)
         public val Lifetime: StunAttributeType = StunAttributeType(0x000Du)
         public val XorPeerAddress: StunAttributeType = StunAttributeType(0x0012u)

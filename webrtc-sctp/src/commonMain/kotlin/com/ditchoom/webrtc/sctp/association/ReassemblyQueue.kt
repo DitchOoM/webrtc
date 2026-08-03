@@ -35,7 +35,7 @@ private class Fragment(
  * Number while delivering unordered messages as soon as they are complete.
  *
  * Serial-number wrap of TSN/SSN is not modeled (the dcSCTP data-channel subset never approaches 2³²
- * within a session, RFC §11.2) — comparisons use plain unsigned order; this is the one documented
+ * within a session, ARCHITECTURE §11.2) — comparisons use plain unsigned order; this is the one documented
  * simplification, mirrored by the codec's [Tsn.sackPrecedes] being available if wrap handling is added.
  */
 internal class ReassemblyQueue(

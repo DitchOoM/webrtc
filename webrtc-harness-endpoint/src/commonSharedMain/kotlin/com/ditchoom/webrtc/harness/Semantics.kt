@@ -870,7 +870,7 @@ private suspend fun phaseCloseOneChannel(pc: NativePeerConnection): Verdict {
  * that long.
  *
  * **Why it is a real assertion and not a sleep.** During the hold the association is silent — the dcSCTP
- * subset has no HEARTBEAT on purpose (RFC §11.2), because ICE consent freshness owns path liveness — so the
+ * subset has no HEARTBEAT on purpose (ARCHITECTURE §11.2), because ICE consent freshness owns path liveness — so the
  * only thing keeping the pair alive is the consent exchange itself. If the peer does not answer, our agent
  * revokes at [consentTimeout] and the session goes [PeerConnectionState.Failed], which this phase sees and
  * reports. It also proves the NAT mapping survives on nothing but consent traffic, which is the same

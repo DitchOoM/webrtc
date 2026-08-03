@@ -18,15 +18,15 @@ import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.channels.Channel
 
 /**
- * The **WebRTC virtual network** (RFC_KMP_WEBRTC.md §5.2) — an in-memory implementation of the
+ * The **WebRTC virtual network** (ARCHITECTURE §5.2) — an in-memory implementation of the
  * buffer-flow [AddressedDatagramChannel] seam, the datagram analogue of a UDP socket with **no OS sockets**.
  * ICE / DTLS / SCTP run end-to-end over this under `runTest` virtual time on every platform, exactly
  * as production runs them over `socket-udp`'s real `AddressedDatagramChannel` actuals — the cores never know
- * the difference (they are caller-clocked and sans-io, RFC §5.1).
+ * the difference (they are caller-clocked and sans-io, ARCHITECTURE §5.1).
  *
  * This is deliberately **ours**, not consumed from socket: socket's deterministic simulation (#225) is
  * QUIC-specific, unpublished test code that drives the internal quiche `UdpChannel`, not the public
- * `AddressedDatagramChannel`, and models no NAT. RFC §5.2 calls the vnet "the WebRTC-specific addition" — so
+ * `AddressedDatagramChannel`, and models no NAT. ARCHITECTURE §5.2 calls the vnet "the WebRTC-specific addition" — so
  * NAT profiles ([Nat]), a virtual TURN server ([TurnServer]), and the impairment pipe ([Impairment])
  * are layered on the [Fabric] seam. The flat [DirectFabric] keeps the seam gate honest.
  *

@@ -7,7 +7,7 @@ import com.ditchoom.buffer.WriteBuffer
 
 /**
  * A minimal DER (ASN.1 Distinguished Encoding Rules) writer — only the productions a self-signed
- * WebRTC certificate needs (RFC §11.5's "a bounded ASN.1 DER slice is webrtc's own"). Not a general
+ * WebRTC certificate needs (ARCHITECTURE §11.5's "a bounded ASN.1 DER slice is webrtc's own"). Not a general
  * ASN.1 library: no parsing, no indefinite lengths, no BER. Every element is built innermost-first as a
  * complete `tag ‖ length ‖ value` [ReadBuffer], then composed. Definite lengths use the short form
  * below 128 and the big-endian long form above — the DER-canonical minimal encoding.

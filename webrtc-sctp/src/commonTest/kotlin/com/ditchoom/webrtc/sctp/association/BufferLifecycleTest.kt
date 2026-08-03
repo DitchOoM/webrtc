@@ -19,7 +19,7 @@ import kotlin.time.Instant
  * **bounded** — proportional to real protocol work (packets, reassembly), never leaking per timer tick.
  * The SCTP core allocates every encoded packet and every reassembly/send copy via
  * [SctpConfig.bufferFactory]; injecting a [CountingBufferFactory] proves the seam is threaded end to end
- * and that an idle established association does not allocate on each tick (steady RSS, RFC §5.3 #1).
+ * and that an idle established association does not allocate on each tick (steady RSS, ARCHITECTURE §5.3 #1).
  */
 class BufferLifecycleTest {
     private val stream = StreamId(0)

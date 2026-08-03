@@ -15,7 +15,7 @@ import kotlin.test.assertTrue
  * our ClientHello/ServerHello, our ECDHE ServerKeyExchange signature, our CertificateVerify, our TLS-1.2
  * PRF `verify_data`, and our AES-128-GCM record protection are all byte-correct. We test both roles
  * (our-client ⇄ oracle-server and oracle-client ⇄ our-server), since each exercises the opposite half of
- * the flight logic. The oracle is pinned to DTLS 1.2 (our engine's version this wave); 1.3 is W4b #6.
+ * the flight logic. This oracle is pinned to DTLS 1.2; the 1.3 differential lives in its own fixture.
  */
 class DtlsHandshakeTest {
     private fun config() = DtlsConfig(enableDtls13 = false)

@@ -1,7 +1,7 @@
 name: "Standing Directives"
 
-# Tripwire greps for the project's non-negotiable disciplines (CLAUDE.md / EXECUTION_PLAN §4). These
-# run on every PR and are the automated half of the per-wave adversarial review gate:
+# Tripwire greps for the project's non-negotiable disciplines (CLAUDE.md, "Standing directives"). These
+# run on every PR and are the automated half of the adversarial review gate:
 #
 #   1. No ByteArray or any primitive array in production (`*Main/`) source sets — zero-copy is the
 #      reason this library exists. Genuine platform edges annotate the line `@Suppress("NoByteArrayInProd")`

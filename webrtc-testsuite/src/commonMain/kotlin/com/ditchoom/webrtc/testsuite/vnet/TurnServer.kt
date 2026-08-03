@@ -28,7 +28,7 @@ import kotlin.random.Random
  * A **virtual TURN server** (RFC 8656) — a faithful relay bound as an ordinary [Vnet] endpoint: it
  * speaks the same [AddressedDatagramChannel] seam as everything else, so a peer behind a symmetric NAT reaches
  * it exactly as it would reach real coturn. It is the load-bearing piece of the canonical
- * `dual-symmetric-NAT → relay` fixture (RFC §5.2): when srflx candidates are useless, the relay is the
+ * `dual-symmetric-NAT → relay` fixture (ARCHITECTURE §5.2): when srflx candidates are useless, the relay is the
  * only path that connects.
  *
  * Implemented: the long-term-credential challenge (401 + REALM + NONCE), Allocate, CreatePermission,

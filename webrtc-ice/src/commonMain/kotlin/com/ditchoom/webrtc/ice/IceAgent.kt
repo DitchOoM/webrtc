@@ -41,7 +41,7 @@ public data class IceConfig(
     /** Pacing interval Ta (RFC 8445 §14.2) — one new connectivity check is started per tick. */
     public val ta: Duration = 50.milliseconds,
     /**
-     * Retransmission policy for each *connectivity* check (RFC 8489 §6.2.1, via the W1 [StunTransaction]).
+     * Retransmission policy for each *connectivity* check (RFC 8489 §6.2.1, via [StunTransaction]).
      *
      * Consent checks deliberately do **not** use it: RFC 7675 §4.1 transmits each consent request once
      * and paces the next independently, rather than retransmitting one request into a backoff chain.
@@ -62,7 +62,7 @@ public data class IceConfig(
     /**
      * The global establishment failsafe: once checking has begun, if no pair is nominated within this
      * budget the agent gives up with a typed failure rather than hanging. This is the liveness backstop
-     * (RFC §5.3 #5) that guarantees a terminal state even when the peer wedges nomination, never
+     * (ARCHITECTURE §5.3 #5) that guarantees a terminal state even when the peer wedges nomination, never
      * nominates, or offers no compatible candidate.
      */
     public val establishmentTimeout: Duration = 30.seconds,
@@ -72,7 +72,7 @@ public data class IceConfig(
 /**
  * The **sans-io ICE agent** (RFC 8445 + trickle 8838 + consent 7675) — a pure
  * `handle(event, now): List<Output>` plus [nextDeadline], with **no dispatcher, clock, RNG, or socket
- * inside** (RFC §5.1). It owns the checklist, the connectivity-check state machine (driven by the W1
+ * inside** (ARCHITECTURE §5.1). It owns the checklist, the connectivity-check state machine (driven by the
  * [StunTransaction] for retransmission), regular nomination, RFC 7675 consent, role-conflict
  * resolution, and ICE restart. The driver ([IceEvent.DatagramReceived] in, [IceOutput.Transmit] out)
  * owns all I/O; the same machine therefore establishes a full session under `runTest` virtual time on

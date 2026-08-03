@@ -7,7 +7,7 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 
 /**
- * Shared fixtures for the SDP T0 floor (RFC §7 / TESTING.md): real-world data-channel offers/answers
+ * Shared fixtures for the SDP T0 floor (ARCHITECTURE §7 / TESTING.md): real-world data-channel offers/answers
  * captured from the dominant stacks, plus buffer helpers. The vectors are the interop-grade corpus —
  * SDP has no RFC sample-vector suite (TESTING.md §3), so these stand in: each must parse to typed
  * fields and round-trip byte-for-byte. Every vector is built via [crlf] so it is canonical CRLF text

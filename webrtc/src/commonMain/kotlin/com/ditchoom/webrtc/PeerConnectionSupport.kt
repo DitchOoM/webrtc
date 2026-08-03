@@ -3,14 +3,14 @@ package com.ditchoom.webrtc
 import kotlinx.coroutines.CoroutineScope
 
 /**
- * The per-platform WebRTC capability (RFC §3.1 last bullet): how this target provides a
+ * The per-platform WebRTC capability (ARCHITECTURE §3.1 last bullet): how this target provides a
  * [RtcPeerConnection]. A **sealed** hierarchy, so the two ways a platform can provide one are mutually
  * exclusive *and* checked by the compiler — there is no runtime "unsupported operation" for asking a
  * native target to delegate (DESIGN §4: make illegal states unrepresentable, never a runtime reject for a
  * statically-known-impossible call).
  *
  *  - [BrowserDelegated] — a browser (js/wasmJs), the one place we **wrap rather than reimplement**
- *    (RFC §1.1): [BrowserDelegated.create] returns an [RtcPeerConnection] backed by the browser's own
+ *    (ARCHITECTURE §1.1): [BrowserDelegated.create] returns an [RtcPeerConnection] backed by the browser's own
  *    `RTCPeerConnection`, and is reachable **only** after narrowing to this type.
  *  - [Native] — every non-browser target: we **own** the protocol, so there is nothing to delegate to and
  *    — by construction — no delegation method exists. The app builds a [NativePeerConnection] directly

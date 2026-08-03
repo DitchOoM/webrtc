@@ -69,7 +69,7 @@ public value class ParameterType(
  * pad to the 4-byte boundary (bounded to the chunk's declared region, so a final unpadded parameter
  * keeps only its real bytes) — so decode→encode reproduces the chunk byte-for-byte. [value] is the
  * declared-length view the typed interpreters read; [length] excludes padding. On decode both are
- * slices over the datagram (never an array — RFC §6), so a parameter must not outlive that buffer's
+ * slices over the datagram (never an array — ARCHITECTURE §6), so a parameter must not outlive that buffer's
  * scope; the companion builders produce caller-owned buffers with zero padding.
  */
 public class SctpParameter internal constructor(

@@ -38,7 +38,7 @@ import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
 /**
- * The published consumer harness (RFC §7 "Consumer" tier, §8 harness): drive a full two-peer WebRTC
+ * The published consumer harness (ARCHITECTURE §7 "Consumer" tier, §8 harness): drive a full two-peer WebRTC
  * establishment — ICE + DTLS + SCTP + a DataChannel — over the deterministic in-memory **vnet**, under
  * `runTest` virtual time, with a typed scenario DSL. It is the Kotlin front-end a downstream project
  * uses to reproduce the scenarios the L2/L3 container harness (`test-harness/`) runs against real
@@ -60,8 +60,10 @@ import kotlin.time.Instant
  * `runTest` virtual clock), [seed] all entropy (each peer derives a `Random`), [bufferFactory] every
  * allocation (wrapped in a counting decorator — the `TrackingBufferFactory` invariant, exposed as
  * [WebRtcHarnessScope.allocationCount]), and [dtlsFactory] the DTLS backend. The default DTLS is
- * [PlaintextDtls] — the vnet needs no real crypto and it is the only backend on every platform until
- * W4b lands cross-platform DTLS; a native consumer can pass `{ PureKotlinDtls(scope, clock) }`.
+ * [PlaintextDtls]: a scenario about NAT traversal and data-channel semantics gets nothing from a real
+ * handshake but the time it takes, and this is the one backend that exists on **every** platform the
+ * harness runs on, browsers included. Pass `{ PureKotlinDtls(scope, clock) }` for the real thing on any
+ * non-browser target.
  *
  * **Typed errors, never stringly** (directive #3): an establishment that fails surfaces as a
  * [WebRtcException] carrying the sealed [PeerConnectionFailureReason] (`Ice`/`Dtls`/`Sctp`), exactly as

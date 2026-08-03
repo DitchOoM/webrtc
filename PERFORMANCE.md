@@ -17,18 +17,18 @@ and regression-checked at release.
 
 Benchmarks are on-demand — they are not part of `build` / `check`.
 
-## Planned coverage
+## Coverage
 
-| Benchmark | Module | Wave |
+| Benchmark | Module | Status |
 |---|---|---|
-| STUN attribute decode + MESSAGE-INTEGRITY verify over a datagram slice | `webrtc-stun` | W1 |
-| SDP parse | `webrtc-sdp` | W6 |
-| SCTP chunk decode / reassembly | `webrtc-sctp` | W5 |
-| RTP header parse, SRTP seal/open ops/sec | `webrtc-rtp` / `webrtc-srtp` | P2 |
+| STUN attribute decode + MESSAGE-INTEGRITY verify over a datagram slice | `webrtc-stun` | measured |
+| SDP parse / encode | `webrtc-sdp` | measured |
+| SCTP chunk decode / reassembly | `webrtc-sctp` | measured |
+| RTP header parse, SRTP seal/open ops/sec | `webrtc-rtp` / `webrtc-srtp` | with media |
 
 ## Results
 
-### `webrtc-stun` (W1)
+### `webrtc-stun`
 
 `StunBenchmark` over the RFC 5769 §2.2 IPv4 response (an 80-byte datagram: header + SOFTWARE +
 XOR-MAPPED-ADDRESS + MESSAGE-INTEGRITY + FINGERPRINT):
@@ -44,7 +44,7 @@ verify path is dominated by the two message-spanning digests. Re-run with
 `./gradlew :webrtc-stun:jvmBenchmarkBenchmark` for the `main` profile, and add the Linux K/N column
 from `linuxX64BenchmarkBenchmark` at release.
 
-### `webrtc-sdp` (W6)
+### `webrtc-sdp`
 
 `SdpBenchmark` over a realistic Chrome data-channel offer (a 16-line, ~430-byte document: session
 block + BUNDLE + one `m=application … webrtc-datachannel` section with the ICE/DTLS/SCTP attributes):
@@ -62,7 +62,7 @@ walk produces value substrings, so `parse` is dominated by that single decode + 
 `parseAndReadFields` costs a further pass. Re-run with `./gradlew :webrtc-sdp:jvmBenchmarkBenchmark`
 for the `main` profile, and add the Linux K/N column at release.
 
-### `webrtc-sctp` (W5, codec floor)
+### `webrtc-sctp` (codec floor)
 
 `SctpBenchmark` over a 44-byte INIT packet (common header + INIT chunk with Forward-TSN-Supported and
 Supported-Extensions parameters):

@@ -3,7 +3,7 @@ package com.ditchoom.webrtc.sdp
 /**
  * The parameters needed to lay out a data-channel `m=application` section (RFC 8841 + the JSEP
  * data-channel convention). The ICE and DTLS values ([iceUfrag], [icePwd], [fingerprint], [setup])
- * are produced by the ICE (W3) and DTLS (W4) layers — out of scope for this module; SDP only carries
+ * are produced by the ICE and DTLS layers — out of scope for this module; SDP only carries
  * them. The SCTP values default to the JSEP/browser norms.
  */
 public data class DataChannelParameters(

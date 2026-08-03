@@ -11,10 +11,10 @@ import kotlin.time.ExperimentalTime
 
 /**
  * The timing, sizing, and buffer seams of an [SctpAssociation] (RFC 4960 defaults, tuned for the
- * WebRTC dcSCTP subset — RFC 8831 / RFC §11.2: no multihoming, no stream interleaving). Every value is
+ * WebRTC dcSCTP subset — RFC 8831 / ARCHITECTURE §11.2: no multihoming, no stream interleaving). Every value is
  * injected so a test can compress the schedule and assert **observable state**, never a wall-clock
  * budget (directive #4). Nothing here is read from an ambient clock or RNG — the association is pure
- * `handle(event, now)` (RFC §5.1); `now` and the injected [BufferFactory]/`Random` are the only seams.
+ * `handle(event, now)` (ARCHITECTURE §5.1); `now` and the injected [BufferFactory]/`Random` are the only seams.
  */
 public data class SctpConfig(
     /** RTO.Initial (RFC 4960 §15) — the retransmission timeout before any RTT sample. */

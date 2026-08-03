@@ -8,16 +8,18 @@ import com.ditchoom.webrtc.sctp.association.SctpFailureReason
  * The exhaustive, typed cause of a WebRTC session failure. It composes the sub-layer sealed reasons
  * unchanged ([IceFailureReason], [DtlsFailureReason], [SctpFailureReason]) rather than flattening them,
  * so a caller recovers the exact ICE/DTLS/SCTP condition, and `when` is exhaustive at every level
- * (DESIGN §3/§6). This realizes "typed errors, never stringly" (directive #3) at the session boundary —
- * the ICE and SCTP handoffs explicitly deferred mapping their reasons into a shared vocabulary to W6.
+ * (DESIGN §3/§6). This realizes "typed errors, never stringly" (directive #3) at the session boundary.
  *
- * Unifying this *further* into socket's `SocketException`/`ConnectionFailureReason` hierarchy (RFC §3.1
- * "one thrown vocabulary") is blocked on a real cross-repo constraint discovered this wave: depending on
- * `com.ditchoom:socket` links socket's `LinuxSockets` cinterop, whose vendored **BoringSSL** duplicate-
- * symbols against `buffer-crypto`'s BoringSSL on every native target (`AES_set_decrypt_key`, …). Until
- * socket and buffer-crypto share one BoringSSL build upstream, webrtc cannot take that dependency on
- * native — so the `SocketException` bridge is deferred exactly like DTLS is deferred to W4, and this
- * self-contained typed vocabulary is the discriminant callers use in the meantime.
+ * Unifying this *further* into socket's `SocketException`/`ConnectionFailureReason` hierarchy
+ * (ARCHITECTURE §3.1 "one thrown vocabulary") is simply **not done yet**. It used to be *blocked*, and
+ * the note here said so: depending on `com.ditchoom:socket` linked its `LinuxSockets` cinterop, whose
+ * vendored BoringSSL duplicate-symboled against `buffer-crypto`'s on every native target. **That is
+ * obsolete** — socket's klib embeds only `liburing.a` now, and socket and `buffer-crypto` resolve to the
+ * same `boringssl-canonical`, which Gradle dedupes; `webrtc-ice`'s native leaf already depends on socket
+ * core and links on both Linux architectures. The remaining cost is a real one but ordinary: a
+ * `commonMain` dependency on socket would put it in front of every target, browsers included, which
+ * ARCHITECTURE §11.6 keeps out on purpose. So this self-contained vocabulary stands on its own merits
+ * rather than on an expired constraint.
  */
 public sealed interface PeerConnectionFailureReason {
     /** One-line summary for the exception message; the sealed value is the API surface. */
@@ -31,7 +33,7 @@ public sealed interface PeerConnectionFailureReason {
     }
 
     /**
-     * The DTLS handshake over the selected pair failed, or its `a=fingerprint` check did (W4). The
+     * The DTLS handshake over the selected pair failed, or its `a=fingerprint` check did. The
      * webrtc-dtls layer owns this vocabulary — including the RFC 8122 fingerprint verdicts, which the
      * session driver makes because the sans-io engine is signaling-agnostic (see [DtlsFailureReason]).
      */
@@ -80,13 +82,13 @@ public class SdpFormatException(
 
 /**
  * The single thrown vocabulary for a WebRTC session failure. It carries the typed [failure] as the
- * discriminant (directive #3), never a string. When the upstream BoringSSL constraint above is resolved,
- * this is intended to become a `SocketClosedException` subtype (as W5's
- * [com.ditchoom.webrtc.sctp.datachannel.SctpClosedException] will) so a WebRTC failure is caught uniformly
- * with every other transport failure (RFC §3.1). Note that re-parenting is **binary-breaking** (a
- * superclass change alters the ABI and which `catch` clauses match); keeping the cause on the typed
- * [failure] field keeps a `when (e.failure)` branch source-stable across that change, but the supertype
- * migration itself is a breaking bump, tracked for when the dependency is unblocked.
+ * discriminant (directive #3), never a string. If the socket dependency question above is ever settled
+ * the other way, this becomes a `SocketClosedException` subtype (as
+ * [com.ditchoom.webrtc.sctp.datachannel.SctpClosedException] would) so a WebRTC failure is caught
+ * uniformly with every other transport failure (ARCHITECTURE §3.1). Re-parenting is **binary-breaking**
+ * — a superclass change alters the ABI and which `catch` clauses match — but keeping the cause on the
+ * typed [failure] field keeps a `when (e.failure)` branch source-stable across it, so only the supertype
+ * migration itself would need a major bump.
  */
 public class WebRtcException(
     public val failure: PeerConnectionFailureReason,

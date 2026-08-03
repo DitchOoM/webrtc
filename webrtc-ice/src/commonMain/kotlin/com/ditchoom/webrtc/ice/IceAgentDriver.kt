@@ -31,7 +31,7 @@ import kotlin.time.Instant
 /**
  * Binds an [AddressedDatagramChannel] at a local [SocketAddress] — the one network seam the
  * [IceTransport] driver rides. Production supplies a real-UDP binder (socket-udp `UdpSocket.bind`, at
- * the platform edge — no wasm, RFC §1.1); tests supply the in-memory vnet. Both honor the same
+ * the platform edge — no wasm, ARCHITECTURE §1.1); tests supply the in-memory vnet. Both honor the same
  * buffer-flow contract, so the driver above is identical on either (DESIGN §7).
  *
  * **Addressed, in the type, since buffer 6.23.0.** ICE is the addressed case by nature — one bound
@@ -48,7 +48,7 @@ public fun interface DatagramBinder {
 /**
  * The point-to-point application-data seam over the ICE-selected pair — the RFC 7983 non-STUN half of
  * the nominated socket. [send] rides the [IcePath]'s `local.base → remote.address`; [receive]
- * yields the demuxed non-STUN datagrams (DTLS/SCTP). This is **the boundary where DTLS slots in** (W4):
+ * yields the demuxed non-STUN datagrams (DTLS/SCTP). This is **the boundary where DTLS slots in**:
  * it is deliberately shaped identically to `webrtc-sctp`'s `SctpDatagramTransport` so the SCTP stack (or
  * a real DTLS record layer wrapping it) drops in as a swap, without `webrtc-ice` depending on `webrtc-sctp`.
  */
@@ -79,9 +79,9 @@ public data class GatheredCandidate(
 )
 
 /**
- * The production **driver** the sans-io [IceAgent] lacks by design (RFC §5.1: cores own truth, drivers
- * own I/O) — promoted from the W5 `IceDriver` composition proof so `PeerConnection` and a future media
- * layer compose the *same* transport-over-the-selected-pair rather than re-deriving it.
+ * The production **driver** the sans-io [IceAgent] lacks by design (ARCHITECTURE §5.1: cores own truth, drivers
+ * own I/O). `PeerConnection` and a future media layer compose the *same* transport over the selected
+ * pair rather than re-deriving it — which is why this is one class and not a pattern.
  *
  * One merged inbox carries datagrams (from per-socket forwarder loops) and externally posted [IceEvent]s;
  * a single loop pumps `handle(event, now)`, so every `handle` call is serialized and [IceAgent.nextDeadline]
@@ -418,7 +418,7 @@ public class IceAgentDriver(
     }
 
     /**
-     * The application-data seam over the nominated pair (the W6 composition point where DTLS sits). Start
+     * The application-data seam over the nominated pair (the composition point where DTLS sits). Start
      * the SCTP stack over this only after [state] reaches [IceConnectionState.Connected]/[Completed].
      */
     public fun appDataTransport(): IceDataTransport =

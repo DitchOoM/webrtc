@@ -16,7 +16,7 @@ import com.ditchoom.webrtc.sdp.SdpParseResult.Success
  * CRLF document byte-for-byte, and the typed readers ([origin], [SdpSection.fingerprints], …) interpret
  * lines on demand without mutating the model (the SDP analogue of STUN's view-based decode).
  *
- * Text is decoded from the datagram exactly once (RFC §6, zero-copy as far as a text grammar allows);
+ * Text is decoded from the datagram exactly once (ARCHITECTURE §6, zero-copy as far as a text grammar allows);
  * from there parsing is index-based over that single [CharSequence] and produces line-value substrings
  * only, never a re-encode or per-token buffer.
  */

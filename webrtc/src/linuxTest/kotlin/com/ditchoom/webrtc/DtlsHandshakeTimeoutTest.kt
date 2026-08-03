@@ -20,7 +20,7 @@ import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
 /**
- * Regression fixture for the adversarial-gate liveness criterion (RFC §5.3 #5, EXECUTION_PLAN W4 exit):
+ * Regression fixture for the liveness invariant (TESTING §4 #5):
  * DTLS retransmits a lost flight with exponential backoff and **never gives up on its own**, so a peer
  * that vanishes mid-handshake would hang the session forever without a driver-enforced budget. The
  * sans-io engine has no clock; [PureKotlinDtls] owns [DtlsConfig.handshakeTimeout] and must turn a silent

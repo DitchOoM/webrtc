@@ -139,7 +139,7 @@ kotlin {
     // This set MATCHES com.ditchoom:buffer-crypto's Apple matrix (webrtc-dtls depends on it), so every
     // module resolves: notably watchosArm64 — the 32-bit arm64_32 device — is omitted exactly as
     // buffer-crypto omits it. The x64 tiers stay (deprecation suppressed file-wide) for consumer
-    // compatibility, matching buffer/socket (RFC §8: same target matrix as socket).
+    // compatibility, matching buffer/socket (ARCHITECTURE §8: same target matrix as socket).
     if (HostManager.hostIsMac) {
         macosX64()
         macosArm64()

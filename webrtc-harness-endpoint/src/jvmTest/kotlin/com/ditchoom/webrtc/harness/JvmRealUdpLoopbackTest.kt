@@ -58,17 +58,17 @@ class JvmRealUdpLoopbackTest {
                 val clock: () -> Instant = { Clock.System.now() }
                 val scope = CoroutineScope(coroutineContext + Job())
 
-                fun peer(
-                    seed: Long,
-                    port: Int,
-                ): NativePeerConnection =
+                fun peer(seed: Long): NativePeerConnection =
                     NativePeerConnection(
                         scope = scope,
                         clock = clock,
                         random = Random(seed),
                         binder = realUdpBinder(),
-                        // Host candidates only — direct loopback, no coturn.
-                        gathering = IceGatheringPolicy { it.gatherHost("127.0.0.1", port) },
+                        // Host candidates only — direct loopback, no coturn. Port 0 = ephemeral: the
+                        // candidate names whatever the kernel assigned, which is what a production policy
+                        // must do (a pinned port cannot be re-bound across an ICE restart) and what
+                        // removes this test's only cross-run collision hazard on a shared runner.
+                        gathering = IceGatheringPolicy { it.gatherHost("127.0.0.1", port = 0) },
                         dtls = PureKotlinDtls(scope, clock, DtlsConfig(bufferFactory = net)),
                         config =
                             PeerConnectionConfig(
@@ -77,8 +77,8 @@ class JvmRealUdpLoopbackTest {
                             ),
                     )
 
-                val offerer = peer(seed = 1L, port = OFFERER_PORT)
-                val answerer = peer(seed = 2L, port = ANSWERER_PORT)
+                val offerer = peer(seed = 1L)
+                val answerer = peer(seed = 2L)
 
                 // In-process trickle — no rendezvous needed for a same-JVM loopback pair.
                 scope.launch { offerer.localIceCandidates.collect { answerer.addIceCandidate(it) } }
@@ -121,10 +121,5 @@ class JvmRealUdpLoopbackTest {
 
     private companion object {
         private val WATCHDOG = 60.seconds
-
-        // Fixed loopback ports (gatherHost advertises the literal port, so these must be concrete). Chosen
-        // high + uncommon to avoid collisions on a clean CI runner.
-        private const val OFFERER_PORT = 45011
-        private const val ANSWERER_PORT = 45012
     }
 }

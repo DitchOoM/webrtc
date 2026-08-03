@@ -1,6 +1,6 @@
 name: "Consumer Smoke"
 
-# W7 exit criterion, the last unmet one: a REAL downstream consumer of the published artifacts —
+# A REAL downstream consumer of the published artifacts —
 # `.ci/consumer-smoke`, a standalone Gradle build with its own settings.gradle.kts that declares
 # `com.ditchoom:webrtc` and `com.ditchoom:webrtc-testsuite` by coordinate and nothing else from this repo.
 #

@@ -82,10 +82,10 @@ import kotlin.time.Instant
 
 /**
  * How the [NativePeerConnection] gathers local ICE candidates — the seam over "which sockets to bind"
- * (RFC §5.2: gathering rides an injected driver). A test supplies host addresses over the vnet
+ * (ARCHITECTURE §5.2: gathering rides an injected driver). A test supplies host addresses over the vnet
  * (`{ it.gatherHost("10.0.0.1", 5000) }`); a production policy enumerates interfaces via socket's
  * `NetworkMonitor` and adds srflx/relay from the configured ICE servers (the real-UDP default lands with
- * the platform edge in W7).
+ * the platform edge: `udpDatagramBinder()`).
  *
  * It runs **once per ICE generation** — when negotiation starts, and again on every ICE restart (RFC 8445
  * §9), which exists precisely because the interfaces may have changed underneath the session. A policy
@@ -299,7 +299,7 @@ public sealed interface TrickleGenerationPolicy {
 public annotation class ExternalRtcPeerConnectionImplementation
 
 /**
- * The consumer session API (RFC §3.1) — a **Layer-2 session** (`establish` is signaling-shaped, not
+ * The consumer session API (ARCHITECTURE §3.1) — a **Layer-2 session** (`establish` is signaling-shaped, not
  * host:port-shaped, so WebRTC is only ever a session type, never a `Transport.connect`). It is
  * transport-agnostic by shape: a data channel *is* a buffer-flow [Connection]<[ReadBuffer]>
  * ([createDataChannel] / [incomingDataChannels]), so any `StreamMux`-style consumer code runs over it
@@ -309,7 +309,7 @@ public annotation class ExternalRtcPeerConnectionImplementation
  * `RTCPeerConnection` and the SDP wire speak — so the same interface backs both the native stack
  * ([NativePeerConnection]) and the browser delegate, and the app ships them over *its* signaling. Every
  * failure surfaces as [PeerConnectionState.Failed] with a typed [PeerConnectionFailureReason] and, where
- * thrown, a [WebRtcException] in socket's `SocketException` vocabulary (RFC §3.1).
+ * thrown, a [WebRtcException] in socket's `SocketException` vocabulary (ARCHITECTURE §3.1).
  */
 
 @SubclassOptInRequired(ExternalRtcPeerConnectionImplementation::class)
@@ -442,13 +442,13 @@ public interface RtcPeerConnection {
 }
 
 /**
- * The **native-stack** [RtcPeerConnection] (RFC §1.1: we own the protocol on every non-browser target).
+ * The **native-stack** [RtcPeerConnection] (ARCHITECTURE §1.1: we own the protocol on every non-browser target).
  * It is a driver composing the sans-io cores: the [JsepSession] offer/answer machine (webrtc-sdp), the
  * [IceAgentDriver] (webrtc-ice) over an injected [IceGatheringPolicy], the injected [DtlsTransportFactory]
  * ([PureKotlinDtls] on any non-browser target), and the [SctpDataChannelStack]
  * (webrtc-sctp) over the nominated pair. Every seam — [scope], [clock], [random], the network binder
  * inside the gathering policy — is injected, so the whole session replays under `runTest` virtual time
- * (RFC §5.1). Its own mutable negotiation state is confined behind [negotiationLock]; the cores beneath
+ * (ARCHITECTURE §5.1). Its own mutable negotiation state is confined behind [negotiationLock]; the cores beneath
  * are each internally single-threaded.
  *
  * Roles: the **offerer** is ICE-controlling, the **answerer** ICE-controlled (RFC 8445 §6.1.1). The
@@ -459,7 +459,7 @@ public interface RtcPeerConnection {
  *
  * The injected [dtls] factory is both the security boundary and the endpoint's certificate identity:
  * pass [PureKotlinDtls] for real DTLS (every non-browser target — the engine is pure Kotlin), or
- * [PlaintextDtls] for the W5-proven
+ * [PlaintextDtls] for the
  * plaintext stand-in — which is **not** wire-secure. There is deliberately no default, so the insecure
  * choice is greppable at every call site.
  */
@@ -1130,7 +1130,7 @@ public class NativePeerConnection(
         sctpRandom: Random,
     ) {
         while (true) {
-            // The liveness invariant (RFC §5.3 #5): an attempt reaches Connected or a typed terminal
+            // The liveness invariant (ARCHITECTURE §5.3 #5): an attempt reaches Connected or a typed terminal
             // failure, never hangs — so the whole body is guarded and a DTLS/SCTP throw becomes a typed
             // Failed rather than an establishment coroutine that dies silently.
             try {
@@ -1138,7 +1138,7 @@ public class NativePeerConnection(
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e // close() cancelled us — structured cancellation, not a failure
             } catch (e: WebRtcException) {
-                fail(e.failure) // a real DTLS/SCTP-establishment failure (W4) — typed, never a hang
+                fail(e.failure) // a real DTLS/SCTP-establishment failure — typed, never a hang
             } catch (e: Exception) {
                 fail(PeerConnectionFailureReason.Unknown(e.message ?: e::class.simpleName ?: "establishment error"))
             }
@@ -1629,7 +1629,7 @@ private const val DIAGNOSTIC_BUFFER = 64
  * returns the marker [PeerConnectionSupport.Native] on every non-browser target — the app constructs
  * [NativePeerConnection] itself. Creating such a factory purely to hang a default on it would pre-empt a
  * deliberately deferred decision (a native factory must not own its UDP socket: WebRTC and QUIC-P2P share
- * one demuxed socket, RFC §11.6). So this closes the ergonomics half — the gap #100 is really about is
+ * one demuxed socket, ARCHITECTURE §11.6). So this closes the ergonomics half — the gap #100 is really about is
  * that privacy costs the consumer *anything at all* — and leaves the default flip to that decision.
  *
  * Browsers need none of this: there `peerConnectionSupport()` delegates to `RTCPeerConnection`, which

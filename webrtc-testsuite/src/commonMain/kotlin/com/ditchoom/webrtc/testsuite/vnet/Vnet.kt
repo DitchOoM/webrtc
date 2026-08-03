@@ -20,11 +20,11 @@ import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.channels.Channel
 
 /**
- * The **WebRTC virtual network** (RFC_KMP_WEBRTC.md §5.2) — an in-memory implementation of the
+ * The **WebRTC virtual network** (ARCHITECTURE §5.2) — an in-memory implementation of the
  * buffer-flow [AddressedDatagramChannel] seam, the datagram analogue of a UDP socket with **no OS sockets**.
  * ICE / DTLS / SCTP run end-to-end over this under `runTest` virtual time on every platform, exactly
  * as production runs them over `socket-udp`'s real `AddressedDatagramChannel` actuals — the cores never know
- * the difference (they are caller-clocked and sans-io, RFC §5.1). This is what the published
+ * the difference (they are caller-clocked and sans-io, ARCHITECTURE §5.1). This is what the published
  * `withWebRtcHarness { }` DSL drives.
  *
  * **Provenance / de-dup finding.** This vnet (plus [Nat], [StunServer], [TurnServer], [Impairment],
@@ -34,7 +34,7 @@ import kotlinx.coroutines.channels.Channel
  * own tests (`webrtc/commonTest/TestNet.kt`) for the same reason. The RFC lists the vnet as a
  * `webrtc-testsuite` deliverable, so its home is here; the minimal promotion that removes the
  * duplication is to have `webrtc-ice`'s test source set depend on this published module (test-scope) —
- * a follow-up, tracked in the W7 Phase 3 handoff.
+ * a tracked follow-up.
  *
  * Datagram semantics are honored faithfully (mirroring buffer-flow's own `MemoryDatagramNetwork`):
  * message boundaries preserved (one [AddressedDatagramChannel.send] → the [Fabric] decides zero-or-more

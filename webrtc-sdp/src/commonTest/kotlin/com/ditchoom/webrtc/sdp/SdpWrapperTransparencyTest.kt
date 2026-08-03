@@ -11,7 +11,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 
 /**
- * Wrapper-transparency (RFC §7 / TESTING.md §4): the parser must work when handed a buffer wrapper —
+ * Wrapper-transparency (ARCHITECTURE §7 / TESTING.md §4): the parser must work when handed a buffer wrapper —
  * a pooled buffer, or a slice view over a larger datagram at a non-zero offset — not only a raw
  * `PlatformBuffer` at offset 0. SDP reads from `position()` to `limit()`, so this guards that the
  * single UTF-8 decode honors a non-zero start and a wrapper's own remaining-length accounting.

@@ -16,7 +16,7 @@ import kotlin.time.Instant
  * The sans-io JSEP offer/answer machine ([JsepSession]) driven with no I/O and no wall clock — the
  * offer/answer values arrive through a scripted "signaling seam" (just method calls here). Because the
  * core arms no timers and reads no ambient clock, the whole exchange is a synchronous, deterministic
- * fold over injected time (`t0`) that runs identically on every platform (RFC §5.1). Asserts observable
+ * fold over injected time (`t0`) that runs identically on every platform (ARCHITECTURE §5.1). Asserts observable
  * state: the RFC 8829 §3.5.1 transition table, rollback, and that illegal edges are typed rejects that
  * leave the state untouched (directive #3/#4), never throws.
  */

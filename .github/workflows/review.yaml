@@ -21,7 +21,7 @@ jobs:
   build-apple:
     uses: ./.github/workflows/build-apple.yaml
 
-  # T0′ (RFC §7): time-boxed coverage-guided Jazzer fuzzing of the pure-Kotlin STUN decoder, warm-
+  # T0′ (ARCHITECTURE §7): time-boxed coverage-guided Jazzer fuzzing of the pure-Kotlin STUN decoder, warm-
   # started from the committed seed corpus. A crash-free run is the gate; findings are demoted to
   # committed regression fixtures + corpus seeds (the two Jazzer finds in W1 already were).
   fuzz:
@@ -52,7 +52,7 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
-  # T0′ (RFC §7): time-boxed coverage-guided Jazzer fuzzing of the pure-Kotlin SDP parser, warm-started
+  # T0′ (ARCHITECTURE §7): time-boxed coverage-guided Jazzer fuzzing of the pure-Kotlin SDP parser, warm-started
   # from the committed seed corpus. A crash-free run is the gate; findings are demoted to committed
   # regression fixtures + corpus seeds.
   fuzz-sdp:
@@ -80,7 +80,7 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
-  # T0′ (RFC §7): time-boxed coverage-guided Jazzer fuzzing of the pure-Kotlin SCTP + DCEP decoders,
+  # T0′ (ARCHITECTURE §7): time-boxed coverage-guided Jazzer fuzzing of the pure-Kotlin SCTP + DCEP decoders,
   # warm-started from the committed seed corpus. A crash-free run is the gate; findings are demoted to
   # committed regression fixtures + corpus seeds (the W5 valueSize-vs-truncated-TLV find already was).
   fuzz-sctp:
@@ -114,7 +114,7 @@ jobs:
     with:
       version: ${{ needs.build-linux.outputs.version }}
 
-  # W7 exit criterion: a real downstream consumer resolves the artifacts this PR would publish, compiles
+  # A real downstream consumer resolves the artifacts this PR would publish, compiles
   # against them on every target, links them into a K/N binary, and RUNS the harness scenarios. Needs
   # `validate` for its merged maven-local repo, so a shape problem is reported by the cheaper lane first.
   #

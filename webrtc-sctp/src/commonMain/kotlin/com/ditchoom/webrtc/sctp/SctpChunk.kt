@@ -72,7 +72,7 @@ public data class ForwardTsnStream(
  * The TLV framing (1-byte type, 1-byte flags, 2-byte length that counts the 4-byte header + value but
  * not the pad to a 4-byte boundary) is owned by [SctpPacket]; a variant owns only its value. Variable
  * regions (user data, cookies, parameter/cause values) are **zero-copy views** over the datagram
- * (RFC §6), so a decoded chunk must not outlive that buffer's scope. Decoded chunks re-encode
+ * (ARCHITECTURE §6), so a decoded chunk must not outlive that buffer's scope. Decoded chunks re-encode
  * byte-for-byte; reserved flag bits on the flagless chunks are canonicalized to zero (RFC 4960: a
  * sender sets them to 0).
  */

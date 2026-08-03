@@ -152,7 +152,7 @@ class VnetNatTest {
             val bobAddr = vnetAddress("10.0.1.2", 5000)
             val bob = vnet.bind(bobAddr)
 
-            // A private address in another segment is unreachable — the relay-forcing drop (RFC §5.2).
+            // A private address in another segment is unreachable — the relay-forcing drop (ARCHITECTURE §5.2).
             alice.send(payload("straight to your LAN"), to = bobAddr)
             assertNull(bob.receiveWithin(TIMEOUT), "two private LANs have no route except through the public segment")
         }

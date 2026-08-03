@@ -10,7 +10,7 @@ implementation("com.ditchoom:webrtc-testsuite:$webrtcVersion")  // the withWebRt
 
 by coordinate and touches this repo in no other way.
 
-This is the W7 "Consumer" tier (`TESTING.md` §1) and the last unmet W7 exit criterion.
+This is the "Consumer" tier of `TESTING.md` §1.
 
 ## Why it exists, given `validate-artifacts`
 

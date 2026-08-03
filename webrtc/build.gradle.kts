@@ -7,7 +7,7 @@ plugins {
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            // The consumer API (RFC §3.1): PeerConnection as a Layer-2 session, DataChannel as StreamMux.
+            // The consumer API (ARCHITECTURE §3.1): PeerConnection as a Layer-2 session, DataChannel as StreamMux.
             // Browser/wasmJs peerConnectionSupport() delegates to RTCPeerConnection (added in W6).
             api(project(":webrtc-ice"))
             api(project(":webrtc-sctp"))
@@ -27,4 +27,15 @@ kotlin {
             implementation(libs.kotlinx.coroutines.test)
         }
     }
+}
+
+// ReadmeQuickstartTest reads README.md and fails if the documented wiring has drifted from the code it
+// runs. Declaring the file as a task input is what makes that guard honest: without it, editing only the
+// README leaves `jvmTest` UP-TO-DATE and the check silently does not run — which is precisely the failure
+// mode (an unnoticed edit to a snippet nothing compiles) the test exists to close.
+tasks.named<Test>("jvmTest") {
+    inputs
+        .file(rootProject.file("README.md"))
+        .withPropertyName("readme")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
 }

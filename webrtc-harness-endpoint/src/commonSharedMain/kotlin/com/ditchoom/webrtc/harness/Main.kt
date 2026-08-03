@@ -109,7 +109,7 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
         // frames — must be encoded into NATIVE memory. Inject buffer's Linux native factory
         // (deterministic() → malloc-backed NativeBuffer) into every layer's bufferFactory seam. (These
         // buffers are manual-free; the peer is a short-lived establish-and-echo process, so the bounded
-        // native allocation is acceptable here — pooled release is the W3/W5-deferred production refactor.)
+        // native allocation is acceptable here — pooled release is a deferred production refactor.)
         val net = BufferFactory.deterministic()
 
         // Seed the DTLS entropy off the SAME cfg.seed (a fixed derivation, xor 0xD715) so the handshake

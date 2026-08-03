@@ -10,7 +10,7 @@ package com.ditchoom.webrtc.sctp
  * [com.ditchoom.webrtc.sctp.dcep.DataChannelMessage] (DCEP), and [Crc32c] (the SCTP checksum).
  *
  * The SCTP association state machine (handshake, TSN/SACK/RTO, congestion control, reassembly over
- * `StreamProcessor`) and the `DataChannel` implementing buffer-flow `StreamMux` are the rest of W5:
+ * `StreamProcessor`) and the `DataChannel` implementing buffer-flow `StreamMux` are the rest of it:
  * they sit above this codec floor on the DTLS/UDP track and are intentionally out of scope here.
  */
 public object Sctp {

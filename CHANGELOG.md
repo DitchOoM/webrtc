@@ -22,7 +22,7 @@ implementation we shipped lived in the non-published interop peer.
   that reaches for a binder there does not compile.
 - It is a helper, **not** a factory: it binds when asked, owns no lifecycle and holds no state, because a
   WebRTC session and a QUIC-P2P connection are meant to share one demuxed socket and a binder that owned
-  its sockets could not be composed into that (RFC §11.6). An app in that position keeps
+  its sockets could not be composed into that (ARCHITECTURE §11.6). An app in that position keeps
   supplying its own binder, unchanged.
 - **Two overloads, no defaulted buffer factory.** `udpDatagramBinder()` allocates received datagrams from
   socket-udp's own per-platform factory and offers no way to say otherwise;
@@ -59,6 +59,25 @@ macOS/iOS on a mac host) and proves the seam itself — a datagram out through a
 same datagram back, at the port the kernel actually assigned. A JVM-only version of it was green
 throughout, because the JVM is precisely the platform where the wrong default is right. The fuller ICE
 establishment stays on the JVM as `UdpDatagramBinderIceTest`.
+
+### Changed — documentation is for consumers now
+
+The README is rewritten for someone who wants to use the library: a quickstart with real wiring, the
+honest platform matrix (including where the stack **cannot** establish — Node, tvOS/watchOS), and no
+internal vocabulary. Its wiring block is compiled, run against real loopback UDP, and diff-checked
+against the test that runs it, so it cannot rot silently.
+
+`RFC_KMP_WEBRTC.md` becomes `ARCHITECTURE.md` — a description rather than a proposal, with `RFC §n`
+citations throughout the source renamed to `ARCHITECTURE §n` (they were easy to confuse with the IETF
+documents cited on nearly every adjacent line). `EXECUTION_PLAN.md` is deleted. `TESTING.md`, `CLAUDE.md`,
+`MODULE.md` and `PERFORMANCE.md` lose their wave scaffolding and keep what is current.
+
+Four stale claims were corrected in passing, three of them in published KDoc: that unifying into socket's
+`SocketException` hierarchy is *blocked* by a BoringSSL symbol collision (it has not been for many
+releases), that `DtlsFailureReason.BackendUnavailable` means "JVM/Android/Apple DTLS is deferred" (it
+means js/wasmJs, one async-only primitive — and it is exactly why a Node session cannot establish), that
+the end-to-end session fixture runs BoringSSL (it runs `PureKotlinDtls`), and that the harness's JVM peer
+cannot do a real handshake (it does, in the lanes right below the claim).
 
 ### Added — we advertise our own `<uuid>.local` candidates, and answer for them (RFC 8828 / RFC 6762) (#88)
 

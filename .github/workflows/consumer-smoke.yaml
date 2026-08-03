@@ -70,7 +70,7 @@ jobs:
         # why the PR lane is Linux-only.
         host: ${{ fromJSON(inputs.include-macos && '[{"label":"linuxX64","runs-on":"ubuntu-latest"},{"label":"macosArm64","runs-on":"macos-latest"}]' || '[{"label":"linuxX64","runs-on":"ubuntu-latest"}]') }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-java@v5
         with:
@@ -81,7 +81,7 @@ jobs:
       # `central` flow, where the artifacts come off the network instead.
       - name: Download merged maven-local
         if: inputs.source == 'maven-local'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: maven-local-merged
           path: /tmp/maven-local-merged
@@ -168,7 +168,7 @@ jobs:
 
       - name: Upload consumer test reports (on failure)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: consumer-smoke-reports-${{ inputs.source || 'central' }}-${{ matrix.host.label }}
           path: |

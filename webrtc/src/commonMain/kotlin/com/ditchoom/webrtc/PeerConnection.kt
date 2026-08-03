@@ -20,6 +20,7 @@ import com.ditchoom.webrtc.ice.IcePath
 import com.ditchoom.webrtc.ice.IceRole
 import com.ditchoom.webrtc.ice.MdnsAdvertisement
 import com.ditchoom.webrtc.ice.MdnsAdvertiser
+import com.ditchoom.webrtc.ice.MdnsEndpoint
 import com.ditchoom.webrtc.ice.MdnsResolution
 import com.ditchoom.webrtc.ice.MdnsResolver
 import com.ditchoom.webrtc.ice.NetworkMonitor
@@ -158,8 +159,16 @@ public data class PeerConnectionConfig(
      * Resolves a peer's `<uuid>.local` mDNS host candidate (RFC 8838 privacy) to an address before a
      * connectivity check is sent to it. The `commonMain` default is a **no-op** — it resolves nothing, so
      * a `.local` candidate is simply dropped (the safe prior behaviour, and correct where no multicast
-     * responder exists). Platform `peerConnectionSupport()` factories inject a real multicast resolver;
-     * tests inject a deterministic stub. Never a hardwired `224.0.0.251` socket in the session core.
+     * responder exists). Tests inject a deterministic stub. Never a hardwired `224.0.0.251` socket in the
+     * session core.
+     *
+     * On a platform that ships one, build a real endpoint with `MulticastMdnsEndpoint(scope)` and pass it
+     * through [withMulticastMdns], which wires this **and** [mdnsAdvertising] from the same object.
+     *
+     * (This KDoc used to say "Platform `peerConnectionSupport()` factories inject a real multicast
+     * resolver". They do not, and never did: `peerConnectionSupport()` returns the marker
+     * [PeerConnectionSupport.Native] on every non-browser target and builds no config at all. Corrected
+     * rather than deleted, because webrtc#100 was written on top of that sentence — see the issue.)
      */
     public val mdnsResolver: MdnsResolver = MdnsResolver { MdnsResolution.Unresolved },
     /**
@@ -1599,3 +1608,35 @@ public class NativePeerConnection(
  * handful of superseded candidates — so this is sized to hold a whole burst rather than to be a queue.
  */
 private const val DIAGNOSTIC_BUFFER = 64
+
+/**
+ * Turn on RFC 8828 mDNS privacy — **both halves, from one endpoint** (webrtc#100).
+ *
+ * ```kotlin
+ * val mdns = MulticastMdnsEndpoint(scope)              // socketMain: jvm/android/linux, macos+ios on a mac
+ * val config = PeerConnectionConfig().withMulticastMdns(mdns)
+ * ```
+ *
+ * **Why a helper rather than two arguments.** [PeerConnectionConfig.mdnsResolver] and
+ * [PeerConnectionConfig.mdnsAdvertising] are independent fields, and the two mistakes they invite are both
+ * silent: advertising `.local` names while resolving nobody else's (the peer's candidates are dropped), or
+ * building a *second* endpoint for the resolver (two multicast sockets, two sets of minted names, and an
+ * observer learns the two belong to one host — which is the leak the names exist to close). Passing one
+ * object once makes both unrepresentable.
+ *
+ * **This is not the same as defaulting it on**, which is what webrtc#100 actually asks for. That needs a
+ * platform factory which builds a [PeerConnectionConfig], and none exists: `peerConnectionSupport()`
+ * returns the marker [PeerConnectionSupport.Native] on every non-browser target — the app constructs
+ * [NativePeerConnection] itself. Creating such a factory purely to hang a default on it would pre-empt a
+ * deliberately deferred decision (a native factory must not own its UDP socket: WebRTC and QUIC-P2P share
+ * one demuxed socket, RFC §11.6). So this closes the ergonomics half — the gap #100 is really about is
+ * that privacy costs the consumer *anything at all* — and leaves the default flip to that decision.
+ *
+ * Browsers need none of this: there `peerConnectionSupport()` delegates to `RTCPeerConnection`, which
+ * obfuscates its own host candidates unconditionally.
+ */
+public fun PeerConnectionConfig.withMulticastMdns(endpoint: MdnsEndpoint): PeerConnectionConfig =
+    copy(
+        mdnsResolver = endpoint,
+        mdnsAdvertising = MdnsAdvertisePolicy.Advertise(endpoint),
+    )

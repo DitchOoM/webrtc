@@ -205,6 +205,10 @@ public final class com/ditchoom/webrtc/PeerConnectionFailureReason$Unknown : com
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/PeerConnectionKt {
+	public static final fun withMulticastMdns (Lcom/ditchoom/webrtc/PeerConnectionConfig;Lcom/ditchoom/webrtc/ice/MdnsEndpoint;)Lcom/ditchoom/webrtc/PeerConnectionConfig;
+}
+
 public abstract interface class com/ditchoom/webrtc/PeerConnectionState {
 }
 

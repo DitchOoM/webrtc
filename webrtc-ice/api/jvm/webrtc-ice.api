@@ -977,7 +977,7 @@ public final class com/ditchoom/webrtc/ice/MdnsResponder {
 	public final fun advertise-s_WYxZ0 (Ljava/lang/String;Lcom/ditchoom/webrtc/stun/IpAddress;)V
 	public final fun getAdvertisedNames ()Ljava/util/Set;
 	public final fun respond (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/flow/SocketAddress;)Lcom/ditchoom/webrtc/ice/MdnsResponse;
-	public final fun withdraw-p44HJuY (Ljava/lang/String;)V
+	public final fun withdraw-p44HJuY (Ljava/lang/String;)Lcom/ditchoom/webrtc/ice/MdnsWithdrawal;
 }
 
 public final class com/ditchoom/webrtc/ice/MdnsResponderKt {
@@ -1058,6 +1058,31 @@ public final class com/ditchoom/webrtc/ice/MdnsSilenceReason$UnsupportedType : c
 	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/MdnsSilenceReason$UnsupportedType;IILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/MdnsSilenceReason$UnsupportedType;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getQType ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/MdnsWithdrawal {
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsWithdrawal$Goodbye : com/ditchoom/webrtc/ice/MdnsWithdrawal {
+	public synthetic fun <init> (Ljava/lang/String;Lcom/ditchoom/webrtc/stun/IpAddress;Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-G48gZ24 ()Ljava/lang/String;
+	public final fun component2 ()Lcom/ditchoom/webrtc/stun/IpAddress;
+	public final fun component3 ()Lcom/ditchoom/buffer/ReadBuffer;
+	public final fun copy-pg2avgs (Ljava/lang/String;Lcom/ditchoom/webrtc/stun/IpAddress;Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/ice/MdnsWithdrawal$Goodbye;
+	public static synthetic fun copy-pg2avgs$default (Lcom/ditchoom/webrtc/ice/MdnsWithdrawal$Goodbye;Ljava/lang/String;Lcom/ditchoom/webrtc/stun/IpAddress;Lcom/ditchoom/buffer/ReadBuffer;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/MdnsWithdrawal$Goodbye;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAddress ()Lcom/ditchoom/webrtc/stun/IpAddress;
+	public final fun getName-G48gZ24 ()Ljava/lang/String;
+	public final fun getPayload ()Lcom/ditchoom/buffer/ReadBuffer;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/MdnsWithdrawal$NotAdvertised : com/ditchoom/webrtc/ice/MdnsWithdrawal {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/MdnsWithdrawal$NotAdvertised;
+	public fun equals (Ljava/lang/Object;)Z
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }

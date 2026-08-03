@@ -123,11 +123,31 @@ public class MdnsEndpoint(
         }
     }
 
-    /** Stop answering for [name]; a later query for it becomes an ordinary [MdnsSilenceReason.NotOurs]. */
+    /**
+     * Stop answering for [name] and multicast the RFC 6762 §10.1 **goodbye** that retracts it, so peers
+     * flush the binding now rather than holding it for the remaining 120 s (see [MdnsResponder.withdraw]
+     * for why that window stopped being harmless once network reactivity landed).
+     *
+     * Best-effort by design: the local withdrawal has already happened by the time the send is attempted,
+     * and a group we cannot reach is exactly the case where the record was unreachable anyway. A failed
+     * goodbye must never leave us still answering for a name — so the retraction is unconditional and only
+     * the announcement of it is not.
+     */
     public suspend fun withdraw(name: MdnsHostName) {
-        lock.withLock {
-            names.entries.firstOrNull { it.value == name }?.let { names.remove(it.key) }
-            responder.withdraw(name)
+        val goodbye =
+            lock.withLock {
+                names.entries.firstOrNull { it.value == name }?.let { names.remove(it.key) }
+                responder.withdraw(name)
+            }
+        when (goodbye) {
+            MdnsWithdrawal.NotAdvertised -> Unit
+            is MdnsWithdrawal.Goodbye -> {
+                val family = familyOf(goodbye.address)
+                // Sent OUTSIDE the lock: it is I/O, and holding the registration lock across a socket send
+                // would let a slow group stall an unrelated advertise().
+                val bound = lock.withLock { if (closed) null else socketFor(family) }
+                bound?.socket?.let { runCatching { it.channel.send(goodbye.payload, to = it.group) } }
+            }
         }
     }
 

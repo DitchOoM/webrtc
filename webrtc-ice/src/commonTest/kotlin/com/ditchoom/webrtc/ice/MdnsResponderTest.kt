@@ -238,6 +238,55 @@ class MdnsResponderTest {
         }
     }
 
+    // ── RFC 6762 §10.1 goodbye (webrtc#105) ─────────────────────────────────────────────────────────
+
+    /**
+     * Withdrawing a name we hold produces the TTL-0 record that retracts it.
+     *
+     * The zero is the entire mechanism, so it is read off the **wire bytes** rather than from a decoded
+     * object: the shared TTL is 120 s, and a peer that keeps our binding for two minutes after the
+     * interface behind it disappeared is precisely the stale binding #105 exists to remove.
+     */
+    @Test
+    fun withdrawing_a_held_name_produces_a_ttl_zero_retraction() =
+        runTest {
+            val responder = MdnsResponder()
+            responder.advertise(OUR_NAME, OUR_IP)
+
+            val goodbye = assertIs<MdnsWithdrawal.Goodbye>(responder.withdraw(OUR_NAME))
+            assertEquals(OUR_NAME, goodbye.name)
+            assertEquals(OUR_IP, goodbye.address, "the retraction must name the address it is retracting")
+
+            val header = Header.read(goodbye.payload)
+            assertEquals(RESPONSE_FLAGS, header.flags, "a goodbye is an authoritative RESPONSE, not a query")
+            assertEquals(0, header.questionCount, "unsolicited: there is no question to echo")
+            assertEquals(1, header.answerCount)
+            skipName(goodbye.payload)
+            goodbye.payload.readUnsignedShort() // TYPE
+            goodbye.payload.readUnsignedShort() // CLASS (cache-flush set — it is a shared response)
+            assertEquals(
+                0u,
+                goodbye.payload.readUnsignedInt(),
+                "TTL must be 0: anything else leaves the peer resolving a name we have stopped honouring, " +
+                    "for up to the 120s shared TTL",
+            )
+        }
+
+    /** Withdrawing a name we never held is a typed nothing, not an empty datagram put on the group. */
+    @Test
+    fun withdrawing_a_name_we_never_held_retracts_nothing() =
+        runTest {
+            val responder = MdnsResponder()
+            responder.advertise(OUR_NAME, OUR_IP)
+
+            assertEquals(
+                MdnsWithdrawal.NotAdvertised,
+                responder.withdraw(NOT_OUR_NAME),
+                "speaking about a name we never advertised is exactly what this responder refuses to do",
+            )
+            assertEquals(setOf(OUR_NAME), responder.advertisedNames, "…and it must not disturb what we do hold")
+        }
+
     private fun TestScope.fixture(bufferFactory: BufferFactory = BufferFactory.Default): Fixture {
         val vnet = Vnets.flat()
         val responder = MdnsResponder(bufferFactory)

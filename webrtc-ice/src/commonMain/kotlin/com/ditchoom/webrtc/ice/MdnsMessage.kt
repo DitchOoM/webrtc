@@ -31,6 +31,12 @@ internal object MdnsMessage {
     /** RFC 6762 §10 address-record TTL for a shared (multicast) response — 120 seconds. */
     const val SHARED_TTL_SECONDS: UInt = 120u
 
+    /**
+     * RFC 6762 §10.1: the TTL a **goodbye** announces. Zero is the whole mechanism — a resolver that has
+     * our record cached for the remaining [SHARED_TTL_SECONDS] flushes it on seeing this instead.
+     */
+    const val GOODBYE_TTL_SECONDS: UInt = 0u
+
     private const val HEADER_BYTES = 12
     private const val QUESTION_TAIL_BYTES = 4 // QTYPE(u16) + QCLASS(u16)
     private const val RECORD_TAIL_BYTES = 10 // TYPE(2) + CLASS(2) + TTL(4) + RDLENGTH(2)
@@ -132,10 +138,18 @@ internal object MdnsMessage {
             if (payload.remaining() < RECORD_TAIL_BYTES) return records
             val type = payload.readUnsignedShort().toInt()
             payload.readUnsignedShort() // CLASS (top bit = cache-flush, RFC 6762 §10.2 — irrelevant here)
-            payload.readUnsignedInt() // TTL
+            val ttl = payload.readUnsignedInt()
             val rdLength = payload.readUnsignedShort().toInt()
             if (rdLength < 0 || payload.remaining() < rdLength) return records
             when {
+                // RFC 6762 §10.1: TTL 0 is a GOODBYE — "this record is going away". It is the exact
+                // opposite of an answer, and returning it as one binds a candidate to an address that has
+                // just been retracted. The TTL used to be read and thrown away here, which made a goodbye
+                // indistinguishable from a resolution; not a hypothetical, since Chrome, Firefox and avahi
+                // all multicast goodbyes when a peer's interface goes away or the page closes. Stepped
+                // over rather than aborting the message: a response may carry a retraction for one name
+                // beside a live record for another.
+                ttl == GOODBYE_TTL_SECONDS -> skip(payload, rdLength)
                 type == TYPE_A && rdLength == V4_RDLENGTH -> records += AnswerRecord(name, readV4(payload))
                 type == TYPE_AAAA && rdLength == V6_RDLENGTH -> records += AnswerRecord(name, readV6(payload))
                 else -> skip(payload, rdLength) // a record we have no grammar for — step over its RDATA
@@ -196,10 +210,17 @@ internal object MdnsMessage {
     ): ReadBuffer {
         val echoed =
             when (shape) {
-                ResponseShape.Shared -> emptyList()
+                // A goodbye is unsolicited, so like Shared there is no question to echo.
+                ResponseShape.Shared, ResponseShape.Goodbye -> emptyList()
                 is ResponseShape.Legacy -> shape.query.questions
             }
-        val ttl = if (shape is ResponseShape.Legacy) LEGACY_TTL_SECONDS else SHARED_TTL_SECONDS
+        val ttl =
+            when (shape) {
+                is ResponseShape.Legacy -> LEGACY_TTL_SECONDS
+                // §10.1: zero means "stop believing this now", and it is the entire content of a goodbye.
+                ResponseShape.Goodbye -> GOODBYE_TTL_SECONDS
+                ResponseShape.Shared -> SHARED_TTL_SECONDS
+            }
         // A legacy resolver has no cache to flush and would not understand the bit (RFC 6762 §6.7 / §18.12).
         val recordClass = if (shape is ResponseShape.Legacy) CLASS_IN else (CLASS_IN or CACHE_FLUSH_BIT)
         val size =
@@ -285,6 +306,18 @@ internal object MdnsMessage {
         data class Legacy(
             val query: Query,
         ) : ResponseShape
+
+        /**
+         * RFC 6762 §10.1 **goodbye**: an unsolicited shared response carrying **TTL 0**, which tells every
+         * resolver on the link to flush the record now instead of holding it for the remaining
+         * [SHARED_TTL_SECONDS].
+         *
+         * Identical to [Shared] in every other respect — no question section, cache-flush set — because it
+         * IS a shared response; only the lifetime it announces differs. Kept as its own case rather than a
+         * `ttl` parameter on [Shared] so that "an announcement" and "a retraction" cannot be confused at a
+         * call site, and so a reader finds §10.1 named where the zero is produced.
+         */
+        data object Goodbye : ResponseShape
     }
 
     private fun rdLengthOf(address: IpAddress): Int =

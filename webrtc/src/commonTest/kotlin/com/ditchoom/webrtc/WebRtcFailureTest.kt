@@ -13,7 +13,7 @@ import kotlin.test.assertTrue
  * The W6 error sweep (HANDOFF step 4): every WebRTC failure surfaces as one exception type carrying a
  * **typed** cause that composes the sub-layer sealed reason unchanged — so a caller catches one type and
  * still recovers the exact ICE/DTLS/SCTP condition, and `when` is exhaustive at every level (directive #3).
- * (Re-parenting these onto socket's `SocketException` — RFC §3.1 — is deferred on the upstream BoringSSL
+ * (Re-parenting these onto socket's `SocketException` — ARCHITECTURE §3.1 — is deferred on the upstream BoringSSL
  * constraint documented on [PeerConnectionFailureReason].)
  */
 class WebRtcFailureTest {

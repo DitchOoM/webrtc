@@ -13,7 +13,7 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.ExperimentalTime
 
 /**
- * The W5 **loop-until-dry invariant campaign** (RFC §5.3 / TESTING §4): the sans-io association is run
+ * The W5 **loop-until-dry invariant campaign** (ARCHITECTURE §5.3 / TESTING §4): the sans-io association is run
  * across many seeds with randomized loss / duplication / delay / jitter, and every run must uphold the
  * SCTP standing invariants — no crash, liveness (never hangs — the `SctpSim` conductor throws on a
  * livelock), no intra-stream reorder, no unacked drop on a reliable stream, and no duplicate delivery.

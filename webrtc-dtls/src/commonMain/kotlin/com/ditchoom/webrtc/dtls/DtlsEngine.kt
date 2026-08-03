@@ -41,7 +41,7 @@ public enum class KeyExchangeGroup { X25519, Secp256r1 }
 /**
  * Construction parameters for a [DtlsEngine], all seams with production defaults (directive #2/#6).
  * The one un-seamed source of entropy is BoringSSL's internal RNG shaping the ClientHello / keys —
- * the documented ±1-datagram Tier-B drift residue (RFC §5.1), not a Kotlin `Random.Default`.
+ * the documented ±1-datagram Tier-B drift residue (ARCHITECTURE §5.1), not a Kotlin `Random.Default`.
  *
  * @param bufferFactory pooled buffers for the record I/O edge. Pass a **pooled native** factory in
  *   production: a native-backed buffer hands BoringSSL its own address (no staging copy), while a
@@ -59,7 +59,7 @@ public enum class KeyExchangeGroup { X25519, Secp256r1 }
  * @param handshakeTimeout how long a driver waits for the handshake before failing it with
  *   [DtlsFailureReason.HandshakeTimeout]. DTLS itself retransmits a lost flight with exponential
  *   backoff and never gives up, so without a budget a peer that goes silent mid-handshake would hang
- *   the session forever; this is the liveness bound (RFC §5.3 #5: reach a state or a typed failure,
+ *   the session forever; this is the liveness bound (ARCHITECTURE §5.3 #5: reach a state or a typed failure,
  *   never hang). Unused by the sans-io engine, which has no clock of its own — the driver enforces it.
  * @param random the injected entropy seam for the parts of the handshake the pure-Kotlin engine shapes
  *   itself — the `ClientHello`/`ServerHello` 32-byte `Random`, the cert serial, DTLS cookies. Seedable,
@@ -116,14 +116,14 @@ public class DtlsStep(
 )
 
 /**
- * A caller-clocked, sans-io DTLS endpoint (RFC §5.1) — the swap that replaces the plaintext seam at
+ * A caller-clocked, sans-io DTLS endpoint (ARCHITECTURE §5.1) — the swap that replaces the plaintext seam at
  * `DtlsTransportFactory.secure(...)`. There is no dispatcher, no `Clock.System`, no I/O and no
  * coroutine inside it: the driver (webrtc root) owns the socket and the clock, feeds this engine
  * inbound records + a virtual `now`, and puts the returned records on the wire. The DTLS
  * retransmission timers are driven off that injected `now`, so a lost-flight recovery replays
  * under `runTest` virtual time.
  *
- * This is a **pure-Kotlin** implementation (W4b): a single `commonMain` class over buffer-crypto's
+ * This is a **pure-Kotlin** implementation: a single `commonMain` class over buffer-crypto's
  * primitives, running on every non-browser target (JVM/Android/Apple/Linux) with no native dependency.
  * It negotiates **DTLS 1.3** (`TLS_AES_128_GCM_SHA256`, RFC 9147) by default and falls back to **DTLS 1.2**
  * (`TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256`) — a client picks its version FSM from

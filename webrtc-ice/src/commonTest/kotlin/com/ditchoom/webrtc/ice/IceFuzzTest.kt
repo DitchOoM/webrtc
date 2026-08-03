@@ -20,7 +20,7 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 
 /**
- * The W3 **timeline fuzz smoke lane** (pinned seeds) and the ICE **invariant set** (RFC §5.3): across a
+ * The W3 **timeline fuzz smoke lane** (pinned seeds) and the ICE **invariant set** (ARCHITECTURE §5.3): across a
  * spread of seeds and NAT profiles the agent must (1) reach a definite state and never hang — liveness;
  * (2) select a valid, role-symmetric pair; and (3) replay bit-for-bit for a fixed seed — the
  * determinism a ddmin shrinker needs. A deep-run campaign with a shrinker is a JVM lane (W5+); this is

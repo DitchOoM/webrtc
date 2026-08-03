@@ -240,7 +240,7 @@ internal object Tls13Bodies {
 
     // ── EncryptedExtensions (RFC 8446 §4.3.1) ──────────────────────────────────────────────────────
 
-    /** An empty EncryptedExtensions body (no negotiated extensions this wave — SRTP is Phase 2 media). */
+    /** An empty EncryptedExtensions body — we negotiate no extensions; SRTP arrives with media. */
     fun encryptedExtensionsEmpty(factory: BufferFactory): ReadBuffer {
         val b = factory.allocate(2, ByteOrder.BIG_ENDIAN)
         b.writeShort(0) // extensions<0..2^16-1> = empty

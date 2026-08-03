@@ -1,7 +1,7 @@
 package com.ditchoom.webrtc.testsuite
 
 /**
- * Module marker for the published consumer harness (RFC §7 "Consumer" tier). The real surface is the
+ * Module marker for the published consumer harness (ARCHITECTURE §7 "Consumer" tier). The real surface is the
  * [com.ditchoom.webrtc.testsuite.harness.withWebRtcHarness] `{ natType(); relayOnly(); impaired() }`
  * DSL, which drives a full two-peer establishment over the deterministic in-memory vnet under `runTest`
  * virtual time; the JVM [com.ditchoom.webrtc.testsuite.controller.HarnessController] bridges those

@@ -18,7 +18,7 @@ public sealed interface StunDecodeResult {
 /**
  * Why a datagram is not a well-formed STUN message. A sealed, exhaustive vocabulary — the
  * discriminant is the type, never a string (directive #3); the diagnostic detail rides as data.
- * These map into the `SocketException` hierarchy at the session layer (W6).
+ * These map into the `SocketException` hierarchy at the session layer.
  */
 public sealed interface StunRejectReason {
     /** Fewer than the 20-byte header, or the header's own fixed fields ran off the end. */

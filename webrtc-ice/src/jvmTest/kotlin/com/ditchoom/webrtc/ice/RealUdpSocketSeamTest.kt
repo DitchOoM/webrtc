@@ -24,7 +24,7 @@ import kotlin.time.Duration.Companion.seconds
  *
  * JVM-only and **not** virtual-time: real sockets need a real dispatcher and real time, so this uses
  * `runBlocking` + `withTimeout` (the watchdog, directive #4), not `runTest`. socket-udp has no
- * wasm/browser target (RFC §1.1), so there is nothing to run there.
+ * wasm/browser target (ARCHITECTURE §1.1), so there is nothing to run there.
  */
 @OptIn(ExperimentalDatagramApi::class)
 class RealUdpSocketSeamTest {

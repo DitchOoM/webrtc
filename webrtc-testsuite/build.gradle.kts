@@ -7,7 +7,7 @@ plugins {
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            // Published consumer harness (RFC §7): withWebRtcHarness { natType(); relayOnly(); impaired() }.
+            // Published consumer harness (ARCHITECTURE §7): withWebRtcHarness { natType(); relayOnly(); impaired() }.
             // Wired into validate-artifacts from its first release (the socket #188 lesson).
             api(project(":webrtc"))
             api(libs.kotlinx.coroutines.core)

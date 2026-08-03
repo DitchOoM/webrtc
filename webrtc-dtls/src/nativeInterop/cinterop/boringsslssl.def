@@ -3,7 +3,7 @@ package = com.ditchoom.webrtc.dtls.cinterop.boringssl
 
 # ── webrtc-dtls · Kotlin/Native DTLS differential-oracle over BoringSSL (symbol-prefixed) ────────
 #
-# LINKAGE (the load-bearing decision — see EXECUTION_PLAN "W4 sequencing" row): this oracle links its
+# LINKAGE (the load-bearing decision): this oracle links its
 # OWN complete, symbol-PREFIXED BoringSSL — both `libssl.a` and `libcrypto.a`, built from commit
 # 63893acb (API 42 / DTLS 1.3) with `-DBORINGSSL_PREFIX=webrtc_dtls_oracle`, so every exported symbol
 # is `webrtc_dtls_oracle_*`. It does NOT resolve against buffer-crypto's `libcrypto.a`. This is the
@@ -19,7 +19,7 @@ package = com.ditchoom.webrtc.dtls.cinterop.boringssl
 # BoringSSL functions declared only via `headers =`. Every entry point is therefore a `static inline`
 # C wrapper (`bd_*`) in the body below, and Kotlin calls those wrappers, never the raw library symbols.
 #
-# CALLER-CLOCKED (RFC §5.1 determinism): BoringSSL's DTLS timers read time via a
+# CALLER-CLOCKED (ARCHITECTURE §5.1 determinism): BoringSSL's DTLS timers read time via a
 # `SSL_CTX_set_current_time_cb` callback. Its `ssl` argument is ALWAYS NULL (documented), so the
 # injected virtual time is carried in a thread-local (`bd_now_us`) that every driving wrapper sets from
 # the caller's `now` before entering libssl — making `DTLSv1_get_timeout` relative to virtual time and

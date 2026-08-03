@@ -9,13 +9,13 @@ plugins {
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            // Pure codec module (RFC §3): zero platform code, zero I/O — runs everywhere including
+            // Pure codec module (ARCHITECTURE §3): zero platform code, zero I/O — runs everywhere including
             // browsers. STUN/TURN schemas are buffer-codec KSP-generated, decoded as views over the
-            // datagram buffer (RFC §6), never extracted to arrays.
+            // datagram buffer (ARCHITECTURE §6), never extracted to arrays.
             api(libs.buffer)
             api(libs.buffer.codec)
             // MESSAGE-INTEGRITY (HMAC-SHA1) + FINGERPRINT (CRC-32) are verified in place over slices
-            // (RFC §6). CRC-32 is ReadBuffer.crc32 in buffer core; HMAC-SHA1 is buffer-crypto.
+            // (ARCHITECTURE §6). CRC-32 is ReadBuffer.crc32 in buffer core; HMAC-SHA1 is buffer-crypto.
             implementation(libs.buffer.crypto)
         }
     }
@@ -66,10 +66,10 @@ tasks
         dependsOn("kspCommonMainKotlinMetadata")
     }
 
-// ── Coverage-guided fuzzing (Jazzer) — T0′ (RFC §7) ──
+// ── Coverage-guided fuzzing (Jazzer) — T0′ (ARCHITECTURE §7) ──
 // `stunCodecFuzz` drives StunCodecFuzzer (src/jvmTest) — the pure-Kotlin STUN decoder — under
 // Jazzer/libFuzzer. Because the parser is JVM bytecode (not opaque native), Jazzer gets REAL edge
-// coverage, so the JVM fuzzer finally earns the coverage feedback the quiche lanes never had (RFC §7
+// coverage, so the JVM fuzzer finally earns the coverage feedback the quiche lanes never had (ARCHITECTURE §7
 // T0′). Jazzer is runtime-only: the target uses the `byte[]` entry point, so nothing in jvmTest
 // compiles against Jazzer — the driver comes from the dedicated `jazzer` configuration. The committed
 // seed corpus (fuzz/corpus/stun-codec) starts every run warm. Time-box with -PstunFuzzSeconds=<n>.

@@ -10,7 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertTrue
 
 /**
- * Wrapper-transparency (RFC §7 / TESTING.md §4): the codec must work when handed a buffer wrapper —
+ * Wrapper-transparency (ARCHITECTURE §7 / TESTING.md §4): the codec must work when handed a buffer wrapper —
  * a pooled buffer, or a slice view over a larger datagram at a non-zero offset — not only a raw
  * `PlatformBuffer` at offset 0. This guards the absolute-offset arithmetic in the TLV walk and the
  * in-place integrity checks against a hidden "position 0 == storage 0" assumption.

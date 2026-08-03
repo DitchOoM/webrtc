@@ -15,7 +15,7 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 
 /**
- * The canonical W3 NAT fixtures (EXECUTION_PLAN W3 exit criteria), driven end-to-end through the vnet's
+ * The canonical NAT fixtures, driven end-to-end through the vnet's
  * NAT profiles, STUN, and TURN — all under `runTest` virtual time on every platform. Each is a full
  * gather → trickle → check → nominate saga; the assertions are on observable state (the selected pair's
  * candidate types), never a wall-clock budget (directive #4).
@@ -48,7 +48,7 @@ class IceNatFixtureTest {
     @Test
     fun dual_symmetric_nats_connect_only_via_relay() =
         runTest {
-            // The load-bearing fixture (RFC §5.2): behind symmetric NATs, srflx is per-destination and
+            // The load-bearing fixture (ARCHITECTURE §5.2): behind symmetric NATs, srflx is per-destination and
             // mutually filtered, so host and srflx both fail — only the TURN relay connects.
             val meetup = Vnets.meetup(backgroundScope, profileA = NatProfile.Symmetric, profileB = NatProfile.Symmetric)
             val clock = IceDriver.clockOf { testScheduler.currentTime }

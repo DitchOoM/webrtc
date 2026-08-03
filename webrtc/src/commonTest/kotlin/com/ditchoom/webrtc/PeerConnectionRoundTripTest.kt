@@ -34,7 +34,7 @@ import kotlin.time.Instant
  * The W6 exit fixture: a **full PeerConnection API round-trip** with scripted signaling, over the vnet,
  * under `runTest` virtual time. Two [NativePeerConnection]s negotiate offer/answer, trickle candidates,
  * establish ICE + (plaintext) DTLS + SCTP, and exchange data-channel messages both ways — exercising the
- * whole consumer API (RFC §3.1) end to end. The real-DTLS end-to-end is the exit gate once W4 lands.
+ * whole consumer API (ARCHITECTURE §3.1) end to end. The real-DTLS end-to-end is the exit gate once W4 lands.
  */
 class PeerConnectionRoundTripTest {
     private val timeout = 60.seconds

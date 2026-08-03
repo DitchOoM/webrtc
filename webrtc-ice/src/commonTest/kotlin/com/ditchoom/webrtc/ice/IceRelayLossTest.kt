@@ -38,7 +38,7 @@ import kotlin.time.ExperimentalTime
  *
  * **Deviation from the lossless template:** the production [TurnAllocation.allocate] is single-shot (no
  * Allocate retransmit — a documented W3/W7 limitation), so a dropped Allocate request/response fails the
- * gather outright. Gathering is driver-owned I/O (RFC §5.1), so we retry the allocation on a fresh local
+ * gather outright. Gathering is driver-owned I/O (ARCHITECTURE §5.1), so we retry the allocation on a fresh local
  * port until it succeeds — exactly what a production relay driver does. The convergence property under test
  * is at the ICE connectivity-check layer (which *does* retransmit via the W1 [StunTransaction]), not the
  * TURN-gather layer.

@@ -7,7 +7,7 @@ plugins {
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            // The consumer API (RFC §3.1): PeerConnection as a Layer-2 session, DataChannel as StreamMux.
+            // The consumer API (ARCHITECTURE §3.1): PeerConnection as a Layer-2 session, DataChannel as StreamMux.
             // Browser/wasmJs peerConnectionSupport() delegates to RTCPeerConnection (added in W6).
             api(project(":webrtc-ice"))
             api(project(":webrtc-sctp"))

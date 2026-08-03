@@ -10,9 +10,9 @@ import org.jetbrains.kotlin.konan.target.HostManager
 // Parameterised into three modes, so the same consumer proves the artifacts at both ends of the release:
 //   -PmavenRepoPath=<dir>  PRE-release  — the merged maven-local repo the CI build just produced.
 //   -PcentralOnly=true     POST-release — Maven Central and NOTHING else, so the coordinates under test
-//                          can only resolve if they are genuinely PUBLISHED. This is the W7 exit
-//                          criterion's "resolving from Central as a real consumer": no mavenLocal
-//                          fallback to silently satisfy a module that never made it out.
+//                          can only resolve if they are genuinely PUBLISHED — resolving from Central
+//                          as a real consumer does, with no mavenLocal fallback to silently satisfy a
+//                          module that never made it out.
 //   (neither)              a developer's own `publishToMavenLocal` run.
 // -PwebrtcVersion selects the version in every mode.
 plugins {

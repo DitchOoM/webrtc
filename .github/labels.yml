@@ -20,32 +20,6 @@
   color: "fef2c0"
   description: "Publish to Central staging as a draft, awaiting manual completion"
 
-# ── Wave tracking (EXECUTION_PLAN.md W0–W7) ──
-- name: "wave:W0"
-  color: "5319e7"
-  description: "Foundations — repo skeleton, upstream promotions"
-- name: "wave:W1-stun"
-  color: "5319e7"
-  description: "webrtc-stun codec + sans-io transactions"
-- name: "wave:W2-vnet"
-  color: "5319e7"
-  description: "Virtual network (NAT models, virtual TURN)"
-- name: "wave:W3-ice"
-  color: "5319e7"
-  description: "webrtc-ice agent + gathering"
-- name: "wave:W4-dtls"
-  color: "5319e7"
-  description: "webrtc-dtls BoringSSL backends"
-- name: "wave:W5-sctp"
-  color: "5319e7"
-  description: "webrtc-sctp + DCEP + DataChannel"
-- name: "wave:W6-pc"
-  color: "5319e7"
-  description: "PeerConnection + JSEP/SDP + browser actuals"
-- name: "wave:W7-harness"
-  color: "5319e7"
-  description: "Container harness, interop, testsuite publish"
-
 # ── General (parity with buffer/socket) ──
 - name: dependencies
   color: "0366d6"

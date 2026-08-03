@@ -32,7 +32,7 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * The canonical **dual-symmetric-NAT → relay** path (RFC §5.2), proven at the vnet layer before ICE
+ * The canonical **dual-symmetric-NAT → relay** path (ARCHITECTURE §5.2), proven at the vnet layer before ICE
  * rides it: two peers each behind a symmetric NAT cannot reach one another directly (their srflx
  * mappings are per-destination and mutually filtered), so they meet on the [TurnServer]. This drives a
  * faithful TURN client inline — authed Allocate, CreatePermission, and Send/Data relaying — so the

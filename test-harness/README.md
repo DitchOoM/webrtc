@@ -1,14 +1,15 @@
-# L2 interop harness (W7)
+# L2 interop harness
 
-Two **native** WebRTC peers establish a full data channel — ICE → **real BoringSSL DTLS** → SCTP →
-`ping`/`pong` — across **real Linux NAT kernels**, gathering `srflx`/`relay` candidates from real
-**coturn** and signaling over a UDP **rendezvous**. This is the L2 (Integration) tier of `TESTING.md`:
-the vnet models NAT, but real kernels have quirks a model can't, so we run against real ones.
+WebRTC peers establish a full data channel — ICE → **real DTLS** → SCTP → `ping`/`pong` — across **real
+Linux NAT kernels**, gathering `srflx`/`relay` candidates from real **coturn** and signaling over a UDP
+**rendezvous**. This is the L2 (Integration) tier of `TESTING.md`: the vnet models NAT, but real kernels
+have quirks a model can't, so we run against real ones.
 
-> The "our side" endpoint is the native `linuxX64`/`linuxArm64` binary, not JVM — JVM has no DTLS backend
-> (W4 is native-only), so the native peer is the only one that does a real DTLS handshake. Built from
-> `:webrtc-harness-endpoint` (a non-published module that composes the production `NativePeerConnection` +
-> `BoringSslDtls` over real UDP via `socket-udp`).
+> The "our side" endpoint is built from `:webrtc-harness-endpoint`, a non-published module composing the
+> production `NativePeerConnection` + `PureKotlinDtls` over real UDP via `socket-udp`. It ships as both a
+> native `linuxX64`/`linuxArm64` binary **and** a JVM fat jar, and both do a real DTLS handshake — the
+> engine is pure Kotlin in `commonMain`. (This note used to say the JVM had no DTLS backend and only the
+> native peer could handshake. That has not been true since the engine moved to `commonMain`.)
 
 ## Topology
 
@@ -23,11 +24,12 @@ directly** — that is what ICE establishes. All IPs/ports/creds are pinned in `
 
 - **coturn** — real STUN + TURN (short-term creds). Gives genuine `srflx` + `relay` candidates.
 - **rendezvous** — a stateless in-memory keyed mailbox that relays the offer/answer/candidate blobs,
-  reachable two ways onto the *same* mailbox: a **UDP** face for the native/Pion peers (they can only
-  link `socket-udp` — linking socket core / socket-quic would duplicate-symbol its BoringSSL against
-  buffer-crypto's, see `~/git/cinterop-issues` — so they speak raw UDP; wire format = the peer's
-  KSP-generated buffer-codec schema) and an **HTTP** face (`POST /put` + `GET /poll`) for the browser
-  (Chrome) lane, which has no raw UDP. A browser and a native peer therefore still meet in the same slot.
+  reachable two ways onto the *same* mailbox: a **UDP** face for the native/Pion peers (wire format =
+  the peer's KSP-generated buffer-codec schema) and an **HTTP** face (`POST /put` + `GET /poll`) for the
+  browser lanes, which have no raw UDP. A browser and a native peer therefore still meet in the same
+  slot. (The UDP face was originally forced — linking socket core was believed to duplicate-symbol its
+  BoringSSL against buffer-crypto's. That premise is obsolete; the UDP face stays because it works and
+  keeps the peer's dependency surface to `socket-udp`, not because it must.)
 - **nat_a / nat_b** — Alpine routers applying one RFC 4787 profile each (below).
 - **peer_a / peer_b** — the native binary; `peer_a` offers, `peer_b` answers.
 - **peer_a_jvm** — the SAME peer program on the **JVM** (the pure-Kotlin engine over socket-udp's NIO
@@ -321,7 +323,7 @@ foreign stacks. Its deterministic siblings are `DataChannelCloseTest` (the SCTP 
 `PeerConnectionRoundTripTest.closing_one_channel_keeps_its_neighbour_and_recycles_the_stream_id` (the whole
 stack over the vnet) — the L1↔L2 parity `TESTING.md` asks for.
 
-## Interop: the Pion lane (W7 Phase 2a)
+## Interop: the Pion lane
 
 The `pion-interop` scenario swaps the native answerer `peer_b` for a real **Pion (Go) echo-peer**
 (`pion/`), so our native offerer establishes against an independent WebRTC implementation — the
@@ -348,7 +350,7 @@ buffer-codec wire schema). Pion accepts the data channel and echoes `ping`→`po
 ./run-interop.sh pion-interop       # our native offerer ⇄ Pion answerer, DTLS 1.2, over port-restricted NAT
 ```
 
-## Interop: the browser lanes — Chrome + Firefox + WebKit (W7 Phase 2b)
+## Interop: the browser lanes — Chrome + Firefox + WebKit
 
 The `chrome-interop`, `firefox-interop`, and `webkit-interop` scenarios swap the native answerer `peer_b`
 for a real **headless browser** (`browser/`, driven by Playwright), so our native offerer establishes
@@ -426,15 +428,15 @@ echoing `ping`→`pong`.
 ./run-interop.sh webkit-interop     # our native offerer ⇄ headless-WebKit (Safari engine) answerer, DTLS 1.3
 ```
 
-## Interop: the JVM-offerer lanes (W7 test-matrix expansion)
+## Interop: the JVM-offerer lanes
 
 The `jvm-*` scenarios swap the native offerer `peer_a` for **`peer_a_jvm`** — the SAME peer program
-running on the **JVM**. Since the W4b flip, DTLS is pure-Kotlin `commonMain` on every target (BoringSSL
-demoted to a test oracle), so the JVM has a real handshake too: `peer_a_jvm` composes the identical
-production stack (`NativePeerConnection` + `PureKotlinDtls`) over **socket-udp's NIO datapath** and
-establishes over real NAT kernels against any answerer — our native peer, Pion, Chrome, or Firefox. This
-proves the pure engine on the real wire from a managed runtime (previously "we support JVM" rested on unit
-tests + compile alone).
+running on the **JVM**. DTLS is pure-Kotlin `commonMain` on every target (BoringSSL survives only as a
+test oracle), so the JVM has a real handshake too: `peer_a_jvm` composes the identical production stack
+(`NativePeerConnection` + `PureKotlinDtls`) over **socket-udp's NIO datapath** and establishes over real
+NAT kernels against any answerer — our native peer, Pion, Chrome, or Firefox. This proves the pure engine
+on the real wire from a managed runtime, where "we support JVM" once rested on unit tests and compilation
+alone.
 
 - **`jvm-native`** ⇄ our native answerer · **`jvm-pion`** ⇄ Pion (DTLS 1.2) · **`jvm-chrome`** /
   **`jvm-firefox`** / **`jvm-webkit`** ⇄ the real browser engines (DTLS 1.3).

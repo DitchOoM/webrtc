@@ -28,7 +28,7 @@ public class MediaDescription internal constructor(
 
     /**
      * The trickle-ICE candidate lines (`a=candidate`, RFC 8839 §5.1) as **raw strings** — the ICE
-     * layer (W3) owns candidate parsing; SDP only carries them. Order is preserved.
+     * layer owns candidate parsing; SDP only carries them. Order is preserved.
      */
     public fun candidates(): List<String> = attributeValues("candidate")
 

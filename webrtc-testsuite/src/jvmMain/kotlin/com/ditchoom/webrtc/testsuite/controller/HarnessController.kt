@@ -9,7 +9,7 @@ import com.ditchoom.webrtc.testsuite.harness.NetworkImpairment
  * (`test-harness/run-interop.sh`), the webrtc analogue of socket's `HarnessController`.
  *
  * Socket's controller is an HTTP server the container stack runs; the webrtc harness has no such live
- * control plane in the *published* path — the vnet is entirely in-process (RFC §7 "Consumer" tier). So
+ * control plane in the *published* path — the vnet is entirely in-process (ARCHITECTURE §7 "Consumer" tier). So
  * this controller is a **pure, side-effect-free translator**: it maps a typed DSL scenario to the exact
  * `NAT_*_PROFILE` / `ICE_POLICY` / netem vocabulary `run-interop.sh` consumes ([describe]), so a JVM CI
  * lane can assert that an in-memory scenario and its real-kernel L2 counterpart line up (same NAT

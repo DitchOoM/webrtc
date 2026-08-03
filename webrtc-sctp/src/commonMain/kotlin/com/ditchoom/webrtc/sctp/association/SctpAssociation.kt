@@ -32,9 +32,9 @@ import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
 /**
- * The **sans-io SCTP association** (RFC 4960 subset per RFC 8831 / RFC §11.2 — dcSCTP-style: one path,
+ * The **sans-io SCTP association** (RFC 4960 subset per RFC 8831 / ARCHITECTURE §11.2 — dcSCTP-style: one path,
  * no multihoming, no stream interleaving) — a pure `handle(event, now): List<Output>` plus
- * [nextDeadline], with **no dispatcher, clock, RNG, or I/O inside** (RFC §5.1). It owns the four-way
+ * [nextDeadline], with **no dispatcher, clock, RNG, or I/O inside** (ARCHITECTURE §5.1). It owns the four-way
  * handshake, TSN assignment, SACK-driven reliability, RTO/congestion control, fragmentation and
  * ordered/unordered reassembly, RFC 3758 partial reliability, and graceful/abort shutdown. The driver
  * ([SctpEvent.DatagramReceived] in over the DTLS transport, [SctpOutput.Transmit] out) owns all I/O; the
@@ -46,7 +46,7 @@ import kotlin.time.Instant
  *
  * **Path liveness** is intentionally delegated, not duplicated: this subset sends no SCTP HEARTBEATs, so
  * an association with no outstanding data does not itself detect a silently-dead peer. In WebRTC that is
- * covered a layer down by ICE consent freshness (RFC 7675, W3), which tears down the transport on a dead
+ * covered a layer down by ICE consent freshness (RFC 7675), which tears down the transport on a dead
  * path and thereby closes the association — so a redundant SCTP heartbeat timer is deliberately omitted.
  */
 public class SctpAssociation(
@@ -223,7 +223,7 @@ public class SctpAssociation(
         ) : RequestAdmission
     }
 
-    // ── Timers as absolute deadlines (RFC §5.1: nextDeadline is the whole clock contract) ──
+    // ── Timers as absolute deadlines (ARCHITECTURE §5.1: nextDeadline is the whole clock contract) ──
     private var handshakeDeadline: Instant? = null
     private var handshakeRetransmits = 0
     private var t3Deadline: Instant? = null
@@ -236,13 +236,13 @@ public class SctpAssociation(
     private var packetsSinceSack = 0
 
     /**
-     * The earliest armed timer's deadline, or null when no timer is armed (RFC §5.1). The driver waits
+     * The earliest armed timer's deadline, or null when no timer is armed (ARCHITECTURE §5.1). The driver waits
      * until here, then feeds [SctpEvent.TimerFired]; every due timer fires in that one call.
      */
     public fun nextDeadline(now: Instant): Instant? =
         listOfNotNull(handshakeDeadline, t3Deadline, sackDeadline, shutdownDeadline, reConfigDeadline).minOrNull()
 
-    /** Feed one event; returns the side effects for the driver to apply (RFC §5.1). Never throws. */
+    /** Feed one event; returns the side effects for the driver to apply (ARCHITECTURE §5.1). Never throws. */
     public fun handle(
         event: SctpEvent,
         now: Instant,

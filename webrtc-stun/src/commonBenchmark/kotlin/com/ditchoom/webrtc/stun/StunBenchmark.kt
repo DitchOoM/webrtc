@@ -10,7 +10,7 @@ import kotlinx.benchmark.Setup
 import kotlinx.benchmark.State
 
 /**
- * STUN parse-throughput benchmarks (RFC §7 / PERFORMANCE.md) over the RFC 5769 §2.2 response — the
+ * STUN parse-throughput benchmarks (ARCHITECTURE §7 / PERFORMANCE.md) over the RFC 5769 §2.2 response — the
  * hot receive path: header decode + TLV walk + XOR-MAPPED-ADDRESS un-XOR, and the in-place
  * FINGERPRINT (CRC-32) / MESSAGE-INTEGRITY (HMAC-SHA1) verifications. Run:
  * `./gradlew :webrtc-stun:jvmBenchmarkBenchmark`.

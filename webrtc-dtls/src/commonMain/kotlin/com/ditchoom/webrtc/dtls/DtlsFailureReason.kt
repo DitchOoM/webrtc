@@ -73,8 +73,16 @@ public sealed interface DtlsFailureReason {
     public object DowngradeDetected : DtlsFailureReason
 
     /**
-     * *(engine)* No DTLS backend on this platform this wave — JVM/Android/Apple DTLS is deferred to
-     * `boringssl-kmp` (see EXECUTION_PLAN "W4 sequencing"); browsers delegate to `RTCPeerConnection`.
+     * *(engine)* This platform cannot run the handshake. Only **js/wasmJs** ever report it, and only for
+     * one primitive: the key schedule needs a *blocking* raw-ECDH premaster, and `buffer-crypto`'s key
+     * agreement there is WebCrypto, which is suspend-only. Every non-browser target has the pure-Kotlin
+     * engine in `commonMain`, so none of them can produce this.
+     *
+     * In a browser it is unreachable by construction — `peerConnectionSupport()` delegates to
+     * `RTCPeerConnection` and the engine is never driven. Under **Node** it is reachable, and it is the
+     * concrete reason a Node session cannot establish: there is no `RTCPeerConnection` to delegate to,
+     * so the native path runs and stops here. (Node's own `crypto.createECDH()` is synchronous, so this
+     * is closable upstream rather than a platform limit.)
      */
     public object BackendUnavailable : DtlsFailureReason
 

@@ -29,9 +29,9 @@ import kotlin.time.Instant
 import com.ditchoom.webrtc.dtls.DtlsRole as EngineRole
 
 /**
- * The real DTLS transport (W4) — a **driver** for the caller-clocked, sans-io [DtlsEngine] (RFC §5.1:
+ * The real DTLS transport — a **driver** for the caller-clocked, sans-io [DtlsEngine] (ARCHITECTURE §5.1:
  * cores own truth, drivers own I/O). The [DtlsEngine] it drives is now the **pure-Kotlin** DTLS 1.3/1.2
- * engine (W4b — no native dependency), which is why this class is named for that, not for BoringSSL: it
+ * engine (no native dependency), which is why this class is named for that, not for BoringSSL: it
  * has never been a BoringSSL wrapper on this branch, and BoringSSL now lives only as a `linuxTest`
  * differential oracle. It is the swap that replaces [PlaintextDtls] at [DtlsTransportFactory.secure]:
  * nothing above (SCTP, PeerConnection) or below (ICE) changes shape.
@@ -223,7 +223,7 @@ public class PureKotlinDtls(
                 engine.close()
                 // Close outbound BEFORE draining it: once closed, send()'s trySend fails fast with a
                 // typed reason. Draining first would leave the window where a send() lands in an open
-                // channel that no pump will ever read, and awaits its ack forever (RFC §5.3 #5).
+                // channel that no pump will ever read, and awaits its ack forever (ARCHITECTURE §5.3 #5).
                 outbound.close()
                 failPendingSends()
                 appData.close()
@@ -268,7 +268,7 @@ public class PureKotlinDtls(
         private suspend fun apply(step: DtlsStep) {
             // A whole flight is drained and sent as ONE datagram. Valid: DTLS records self-delimit, and
             // it is correct on the vnet — a real-MTU path may need per-record datagram framing / PMTU
-            // fragmentation (a W7 concern, documented in HANDOFF).
+            // fragmentation (a tracked follow-up).
             for (record in step.records) iceData.send(record)
             for (data in step.applicationData) {
                 // trySend can fail if a concurrent close() already closed appData (a final inbound

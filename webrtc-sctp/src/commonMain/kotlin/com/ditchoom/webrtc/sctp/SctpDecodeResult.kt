@@ -18,7 +18,7 @@ public sealed interface SctpDecodeResult {
 /**
  * Why a datagram is not a well-formed SCTP packet. A sealed, exhaustive vocabulary — the discriminant
  * is the type, never a string (directive #3); the diagnostic detail rides as data. These map into the
- * `SocketException` hierarchy at the association layer (the rest of W5).
+ * `SocketException` hierarchy at the association layer.
  */
 public sealed interface SctpRejectReason {
     /** Fewer than the 12-byte common header (RFC 4960 §3.1). */

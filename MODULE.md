@@ -1,11 +1,17 @@
 # Module webrtc
 
-Zero-copy, deterministic, sans-io WebRTC data channels for Kotlin Multiplatform.
+WebRTC data channels for Kotlin Multiplatform — zero-copy, sans-io, and deterministic under test.
 
-Phase 1 delivers `RTCDataChannel` semantics (ICE + DTLS + SCTP + DCEP + JSEP/SDP) built in common
-Kotlin over the DitchOoM `buffer` and `socket` libraries. The protocol cores are sans-io and
-caller-clocked, so the whole stack runs under virtual time. Browser targets delegate to
-`RTCPeerConnection`; every other target runs our own stack over a `DatagramChannel` seam.
+`com.ditchoom:webrtc` implements ICE, DTLS, SCTP, DCEP and JSEP/SDP in common Kotlin over the DitchOoM
+`buffer` and `socket` libraries. It is not a libwebrtc wrapper: the protocol cores are ours, sans-io and
+caller-clocked, so a full establishment replays under virtual time on every platform. Browsers are the
+one exception — there `peerConnectionSupport()` delegates to the platform's own `RTCPeerConnection`;
+every other target runs our stack over an injected `AddressedDatagramChannel`.
 
-See `README.md` for the module map and `RFC_KMP_WEBRTC.md` for the architecture. This file is the
-Dokka module descriptor (rendered into the API docs site).
+Start at `RtcPeerConnection` (the session API), `NativePeerConnection` (the native implementation and
+its injected seams), and `udpDatagramBinder()` in `webrtc-ice` (the real-UDP seam to hand it). A data
+channel is a buffer-flow `Connection<ReadBuffer>`.
+
+Media (RTP/SRTP) is not implemented.
+
+The project's `README.md` has a quickstart; `ARCHITECTURE.md` explains how the pieces fit and why.

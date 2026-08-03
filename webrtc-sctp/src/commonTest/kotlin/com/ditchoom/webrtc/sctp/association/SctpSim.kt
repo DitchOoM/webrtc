@@ -10,7 +10,7 @@ import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
 /**
- * A deterministic two-endpoint conductor for the sans-io [SctpAssociation] (RFC §5.1 test discipline):
+ * A deterministic two-endpoint conductor for the sans-io [SctpAssociation] (ARCHITECTURE §5.1 test discipline):
  * it steps two associations, routes [SctpOutput.Transmit] packets between them through an [Impairment]
  * pipe, fires [SctpEvent.TimerFired] when a [SctpAssociation.nextDeadline] comes due, and advances a
  * virtual clock with zero wall-clock. No coroutines, no sockets — the whole session (handshake,
@@ -84,7 +84,7 @@ internal class SctpSim(
     /**
      * Run the event loop until both endpoints are quiescent (no packets, no armed timers). Returns the
      * step count. **Throws** if [maxSteps] is exhausted — a livelocked/hung association must never pass
-     * silently regardless of what the caller asserts afterward (the liveness invariant, RFC §5.3 #5, is
+     * silently regardless of what the caller asserts afterward (the liveness invariant, ARCHITECTURE §5.3 #5, is
      * enforced here in the conductor, not left to each test to remember).
      */
     fun run(maxSteps: Int = 200_000): Int = drive(deadline = null, maxSteps = maxSteps)
@@ -185,7 +185,7 @@ internal class SctpSim(
 /**
  * A seeded impairment model for [SctpSim] — each datagram is dropped, delivered once, or duplicated, and
  * each delivery may be delayed. Deterministic: one [Random] draw sequence per session so a scenario
- * replays bit-for-bit (RFC §5.3). Mirrors the ICE vnet's `Impairment` shape.
+ * replays bit-for-bit (ARCHITECTURE §5.3). Mirrors the ICE vnet's `Impairment` shape.
  */
 internal class Impairment(
     private val lossRate: Double = 0.0,

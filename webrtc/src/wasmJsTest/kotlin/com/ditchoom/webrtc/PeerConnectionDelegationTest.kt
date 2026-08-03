@@ -28,7 +28,7 @@ import kotlin.time.Duration.Companion.seconds
  * driven through our wasmJs [RtcPeerConnection] delegation (offer/answer, trickle, a data-channel
  * message) over a localhost loopback — proving `peerConnectionSupport()` as a `BrowserDelegated.create(...)` maps our
  * API onto the browser's own `RTCPeerConnection` through the `@JsFun`/`JsString` wasm-interop bridge
- * (RFC §1.1). This is the runtime validation of the W6 wasmJs follow-up. Under Node (`RTCPeerConnection`
+ * (ARCHITECTURE §1.1). This is the runtime validation of the W6 wasmJs follow-up. Under Node (`RTCPeerConnection`
  * absent) it returns [PeerConnectionSupport.Native] and the test no-ops, so the suite is green on
  * wasmJsNodeTest too.
  */

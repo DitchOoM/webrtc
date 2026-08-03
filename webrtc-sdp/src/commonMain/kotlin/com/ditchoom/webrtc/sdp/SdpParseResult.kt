@@ -18,7 +18,7 @@ public sealed interface SdpParseResult {
 /**
  * Why a byte sequence is not a well-formed SDP document. A sealed, exhaustive vocabulary — the
  * discriminant is the type, never a string (directive #3); the diagnostic detail rides as data.
- * These map into the `SocketException` hierarchy at the session layer (W6).
+ * These map into the `SocketException` hierarchy at the session layer.
  *
  * Only **structural** failures are rejects here (the line grammar of RFC 8866 §5). Semantic
  * interpretation of a specific line — a malformed `o=`, `m=`, or `a=fingerprint` — is deferred to the

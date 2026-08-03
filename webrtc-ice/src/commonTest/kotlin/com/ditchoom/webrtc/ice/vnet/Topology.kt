@@ -9,7 +9,7 @@ import com.ditchoom.buffer.flow.SocketAddress
 import kotlinx.coroutines.CoroutineScope
 
 /**
- * Topologies as data (RFC §5.2 — "topologies as data, not lab setups"). A fixture picks a builder,
+ * Topologies as data (ARCHITECTURE §5.2 — "topologies as data, not lab setups"). A fixture picks a builder,
  * drives the agents, and the whole NAT/relay/impairment scenario is a value it can diff, replay, and
  * shrink. The addressing convention is fixed so fixtures read the same way everywhere:
  *
@@ -77,7 +77,7 @@ internal object Vnets {
     }
 
     /**
-     * The canonical **dual-symmetric-NAT → relay** meetup (RFC §5.2): Alice and Bob each behind their
+     * The canonical **dual-symmetric-NAT → relay** meetup (ARCHITECTURE §5.2): Alice and Bob each behind their
      * own symmetric NAT, with a public STUN and TURN server. Direct and srflx paths cannot connect —
      * only the relay does. The two servers are already started on [scope]; the caller binds the two
      * host addresses and drives the agents. Pass [profileA]/[profileB] to reuse the wiring for the

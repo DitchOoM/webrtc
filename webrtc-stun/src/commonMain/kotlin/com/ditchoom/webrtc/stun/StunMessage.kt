@@ -58,7 +58,7 @@ public class StunMessage internal constructor(
     /**
      * The comprehension-required attribute types present that are not in [recognized] (RFC 8489 §6.3):
      * a receiver that hits any of these must reply 420 with UNKNOWN-ATTRIBUTES listing them. Drives
-     * that response at the ICE/TURN layer (W3).
+     * that response at the ICE/TURN layer.
      */
     public fun unknownComprehensionRequired(recognized: Set<StunAttributeType>): List<StunAttributeType> =
         attributes

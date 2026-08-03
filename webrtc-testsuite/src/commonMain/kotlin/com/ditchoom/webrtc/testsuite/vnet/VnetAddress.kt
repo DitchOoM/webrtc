@@ -20,12 +20,12 @@ import com.ditchoom.webrtc.stun.TransportAddress
  * **Why these live here and not in `webrtc-ice`:** the production `SocketAddress`↔`TransportAddress`
  * bridge (`com.ditchoom.webrtc.ice.toTransportAddress` / `toSocketAddress`) is `internal` to
  * `webrtc-ice`, so a published `commonMain` testsuite cannot call it. These are a faithful copy of that
- * bridge (IPv4, RFC §1.1), kept private to the vnet. See the module KDoc in [Vnet] for the promotion
+ * bridge (IPv4, ARCHITECTURE §1.1), kept private to the vnet. See the module KDoc in [Vnet] for the promotion
  * finding this duplication documents.
  */
 internal fun SocketAddress.toTransportAddress(): TransportAddress {
     val octets = host.split(".")
-    require(octets.size == IPV4_OCTETS) { "phase-1 vnet addressing is IPv4 (RFC §1.1); got host=$host" }
+    require(octets.size == IPV4_OCTETS) { "phase-1 vnet addressing is IPv4 (ARCHITECTURE §1.1); got host=$host" }
     val bits =
         octets.fold(0u) { acc, octet ->
             val value = octet.toUIntOrNull()
@@ -39,7 +39,7 @@ internal fun SocketAddress.toTransportAddress(): TransportAddress {
 internal fun TransportAddress.toSocketAddress(): SocketAddress =
     when (val addr = ip) {
         is IpAddress.V4 -> SocketAddress.ofLiteral(addr.toString(), port.toInt()) // IpAddress.V4.toString() is dotted-quad
-        is IpAddress.V6 -> error("phase-1 vnet addressing is IPv4 (RFC §1.1); got an IPv6 transport address")
+        is IpAddress.V6 -> error("phase-1 vnet addressing is IPv4 (ARCHITECTURE §1.1); got an IPv6 transport address")
     }
 
 /** The IP literal of a [SocketAddress] (the vnet works entirely in literals — no resolution). */

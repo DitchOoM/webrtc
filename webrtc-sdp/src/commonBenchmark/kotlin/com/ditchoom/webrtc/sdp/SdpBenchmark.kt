@@ -11,7 +11,7 @@ import kotlinx.benchmark.Setup
 import kotlinx.benchmark.State
 
 /**
- * SDP parse/serialize throughput (RFC §7 / PERFORMANCE.md) over a realistic Chrome data-channel offer
+ * SDP parse/serialize throughput (ARCHITECTURE §7 / PERFORMANCE.md) over a realistic Chrome data-channel offer
  * — the hot signaling path: the single UTF-8 decode, the line walk, the session/media split, then the
  * typed field reads a session layer performs on every applied description. Run:
  * `./gradlew :webrtc-sdp:jvmBenchmarkBenchmark`.

@@ -7,7 +7,7 @@ import com.ditchoom.webrtc.stun.TransportAddress
 import kotlin.time.ExperimentalTime
 
 /**
- * An input to the sans-io [IceAgent] (RFC §5.1). The driver owns I/O and the clock; it feeds these and
+ * An input to the sans-io [IceAgent] (ARCHITECTURE §5.1). The driver owns I/O and the clock; it feeds these and
  * applies the returned [IceOutput]s. Every event carries `now` at the call site — the core never reads
  * a clock — so the whole agent runs under `runTest` virtual time.
  */

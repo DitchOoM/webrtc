@@ -6,8 +6,8 @@ import com.ditchoom.buffer.Default
 
 /**
  * Codec-only typed builders/interpreters for the fixed-shape TURN attributes (RFC 8656) and the core
- * STUN UNKNOWN-ATTRIBUTES (RFC 8489 §14.9). W1 ships the wire codec for these; the TURN client state
- * machine is W3. XOR-PEER-ADDRESS / XOR-RELAYED-ADDRESS share XOR-MAPPED-ADDRESS's wire form, so
+ * STUN UNKNOWN-ATTRIBUTES (RFC 8489 §14.9). This module ships the wire codec for these; the TURN client
+ * state machine lives in `webrtc-ice`. XOR-PEER-ADDRESS / XOR-RELAYED-ADDRESS share XOR-MAPPED-ADDRESS's wire form, so
  * [RawAttribute.asXorMappedAddress] / [RawAttribute.ofXorMappedAddress] already cover them.
  */
 

@@ -50,7 +50,7 @@ internal val IceConnectionState.nominatedPair: CandidatePair
         }
 
 /**
- * The **driver** the sans-io [IceAgent] lacks by design (RFC §5.1: cores own truth, drivers own I/O).
+ * The **driver** the sans-io [IceAgent] lacks by design (ARCHITECTURE §5.1: cores own truth, drivers own I/O).
  * It wires one agent to the [Vnet]: a single merged inbox carries datagrams (from per-socket forwarder
  * loops) and externally posted [IceEvent]s, and one loop pumps `handle(event, now)` — so every
  * `handle` call is serialized and [IceAgent.nextDeadline] is realized as a [withTimeoutOrNull] against

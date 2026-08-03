@@ -9,10 +9,10 @@ plugins {
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            // Pure-Kotlin sans-io SCTP subset (RFC §3, §5.1): the chunk/DCEP wire codec is
+            // Pure-Kotlin sans-io SCTP subset (ARCHITECTURE §3, §5.1): the chunk/DCEP wire codec is
             // commonMain-only, zero platform code, zero I/O — it runs everywhere including browsers,
             // exactly as webrtc-stun/webrtc-sdp do. Chunk values are zero-copy slice views over the
-            // datagram (RFC §6), never extracted to arrays. The SCTP CRC32c checksum is self-contained
+            // datagram (ARCHITECTURE §6), never extracted to arrays. The SCTP CRC32c checksum is self-contained
             // (Crc32c.kt) — a managed-ReadBuffer table (no primitive array, directive #1), so no
             // buffer-crypto dependency.
             api(libs.buffer)
@@ -82,11 +82,11 @@ tasks
         dependsOn("kspCommonMainKotlinMetadata")
     }
 
-// ── Coverage-guided fuzzing (Jazzer) — T0′ (RFC §7) ──
+// ── Coverage-guided fuzzing (Jazzer) — T0′ (ARCHITECTURE §7) ──
 // `sctpCodecFuzz` drives SctpCodecFuzzer (src/jvmTest) — the pure-Kotlin SCTP packet + DCEP decoders —
 // under Jazzer/libFuzzer. Because the parser is JVM bytecode (not opaque native), Jazzer gets REAL
 // edge coverage of the common-header decode, the chunk TLV walk, the parameter/error-cause sub-TLV
-// walks, the in-place CRC32c, and the DCEP field parse (RFC §7 T0′). Jazzer is runtime-only: the
+// walks, the in-place CRC32c, and the DCEP field parse (ARCHITECTURE §7 T0′). Jazzer is runtime-only: the
 // target uses the `byte[]` entry point, so nothing in jvmTest compiles against Jazzer — the driver
 // comes from the dedicated `jazzer` configuration. The committed seed corpus (fuzz/corpus/sctp-codec)
 // starts every run warm. Time-box with -PsctpFuzzSeconds=<n>.

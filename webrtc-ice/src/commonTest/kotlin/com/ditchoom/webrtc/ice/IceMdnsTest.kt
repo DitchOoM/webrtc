@@ -15,11 +15,11 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 
 /**
- * mDNS **resolve-only** (RFC 8838 privacy candidates; EXECUTION_PLAN §11.4 W3 decision): a peer hides
+ * mDNS **resolve-only** (RFC 8838 privacy candidates; ARCHITECTURE §11.4): a peer hides
  * its private IP behind an `<uuid>.local` name, and we must resolve it — via the injected
  * [MdnsResolver] seam, never a hardwired multicast socket — before a check can be sent. Here the
  * resolver is a deterministic stub; the resolved address becomes an ordinary remote host candidate and
- * the session establishes. Advertising *our own* `.local` (the responder) is deferred (RFC §11.4).
+ * the session establishes. Advertising *our own* `.local` (the responder) is deferred (ARCHITECTURE §11.4).
  */
 @OptIn(ExperimentalTime::class, ExperimentalCoroutinesApi::class, ExperimentalDatagramApi::class)
 class IceMdnsTest {

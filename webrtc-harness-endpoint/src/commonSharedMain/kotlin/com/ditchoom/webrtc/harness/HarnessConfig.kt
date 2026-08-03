@@ -143,7 +143,7 @@ internal data class HarnessConfig(
     /**
      * Negotiate up to DTLS 1.3 (the production default). Set `WEBRTC_DTLS13=false` for the Pion interop
      * lane: Pion's released v3 speaks DTLS 1.2 only, so our side must pin 1.2 to talk to it (the version
-     * would otherwise negotiate up to 1.3 with another of our peers). Our 1.2 fallback is W4-tested.
+     * would otherwise negotiate up to 1.3 with another of our peers). Our 1.2 fallback is tested.
      */
     val enableDtls13: Boolean,
     /**

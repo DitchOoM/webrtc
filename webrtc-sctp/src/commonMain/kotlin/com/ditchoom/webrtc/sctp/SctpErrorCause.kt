@@ -41,7 +41,7 @@ public value class ErrorCauseCode(
  * Stores [paddedValue] (padding-inclusive, bounded to the chunk region) so decode→encode is byte-exact
  * — the same discipline as [SctpParameter] / STUN's `RawAttribute`. [value] is the declared-length
  * view; [length] excludes padding. On decode both are slices over the datagram (never an array —
- * RFC §6), so a cause must not outlive that buffer's scope.
+ * ARCHITECTURE §6), so a cause must not outlive that buffer's scope.
  */
 public class SctpErrorCause internal constructor(
     public val code: ErrorCauseCode,

@@ -29,18 +29,20 @@ import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
 /**
- * **The W4 exit fixture** (TESTING §7 W4; the gate W5/W6 deferred): two [NativePeerConnection]s complete
- * a full session over the vnet with **real BoringSSL DTLS** in the seam — ICE nomination → DTLS handshake
- * → SCTP association → data channels — under `runTest` virtual time, at zero wall-clock. This is what
- * W5 and W6 could only prove with the plaintext stand-in.
+ * **The real-crypto session fixture:** two [NativePeerConnection]s complete a full session over the vnet
+ * with a genuine [PureKotlinDtls] handshake in the seam — ICE nomination → DTLS → SCTP association →
+ * data channels — under `runTest` virtual time, at zero wall-clock. The `commonTest` siblings run the
+ * same shapes over the plaintext stand-in, which proves the composition but never the handshake.
  *
- * Native-only: linuxX64/linuxArm64 are the targets with a DTLS backend this wave (EXECUTION_PLAN "W4
- * sequencing"). The plaintext-seam fixtures in `commonTest` still run everywhere.
+ * It sits in `linuxTest` for historical reasons rather than technical ones: when it was written, Linux
+ * was the only target with a DTLS backend. The engine is `commonMain` now and this would run on every
+ * non-browser target — but `commonTest` includes js/wasmJs, where the engine is deliberately never
+ * driven (ARCHITECTURE §1.1), and there is no shared "every target except the browsers" test source set
+ * to hold it. Widening it needs that source set, not a code change.
  *
- * Determinism note: virtual time drives every timer, but BoringSSL's internal RNG shapes the handshake
- * bytes, so the exact datagram count can differ run to run (the documented ±1-datagram Tier-B residue,
- * RFC §5.1). These assertions are on observable state with a watchdog, never on a wall-clock budget or a
- * datagram count (directive #4).
+ * Determinism note: there is no RNG residue to bound — every source of entropy is injected, so the
+ * handshake is byte-identical from its seed. Assertions are still on observable state with a watchdog,
+ * never on a datagram count or a wall-clock budget (directive #4).
  */
 class PeerConnectionDtlsEndToEndTest {
     private val timeout = 60.seconds

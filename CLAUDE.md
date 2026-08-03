@@ -2,222 +2,133 @@
 
 Guidance for Claude Code (claude.ai/code) when working in this repository.
 
-## Project Overview
+## Project overview
 
-`com.ditchoom:webrtc` — a **zero-copy, deterministic, sans-io WebRTC stack** for Kotlin Multiplatform,
-built on the DitchOoM `buffer` (zero-copy buffers, codec, crypto, flow) and `socket` (transport model,
-typed errors, `NetworkMonitor`, deterministic simulation engine) libraries.
-
-Phase 1 delivers **data channels** (ICE + DTLS + SCTP + DCEP + JSEP/SDP); media (RTP/SRTP) is Phase 2.
-The protocol cores are **ours**, built in common Kotlin — we do **not** wrap libwebrtc on any non-browser
-target. Browsers are the sole exception: there `peerConnectionSupport()` delegates to `RTCPeerConnection`.
+`com.ditchoom:webrtc` — WebRTC **data channels** for Kotlin Multiplatform: zero-copy, sans-io, and
+deterministic under test. Built on DitchOoM `buffer` (buffers, codec, crypto, flow) and `socket`
+(transport model, typed errors, `NetworkMonitor`, real UDP actuals). The protocol cores are **ours**, in
+common Kotlin — we do not wrap libwebrtc on any non-browser target. Browsers are the sole exception:
+there `peerConnectionSupport()` delegates to `RTCPeerConnection`. Media (RTP/SRTP) is not implemented.
 
 **Read these first, in order** (a resumed session starts here):
-1. `RFC_KMP_WEBRTC.md` — the architecture (the *what* and *why*).
-2. `EXECUTION_PLAN.md` — wave sequencing W0–W7, orchestration, exit criteria.
-3. `DESIGN_PRINCIPLES.md` — the type-safety + zero-copy manifesto, with code patterns.
-4. `TESTING.md` — unit → integration → interop strategy, the harness, external vectors, per-wave test exit criteria.
 
-Current state (2026-07-27): **Phase 1 is substantively complete and released.** W0–W7 are all merged;
-`com.ditchoom:webrtc` + `webrtc-testsuite` are on Maven Central at **v0.5.0**. The stack establishes and
-carries data channels against Chrome, Firefox, WebKit, Pion and werift over real NAT kernels in CI, across
+1. [`ARCHITECTURE.md`](./ARCHITECTURE.md) — how the pieces fit and why. Sections are cited from KDoc
+   throughout the source as `ARCHITECTURE §n`, so keep the numbering stable.
+2. [`DESIGN_PRINCIPLES.md`](./DESIGN_PRINCIPLES.md) — the type-safety + zero-copy manifesto, with code
+   patterns.
+3. [`TESTING.md`](./TESTING.md) — the tiers, the harness, the L1↔L2 parity matrix, external vectors.
+4. [`README.md`](./README.md) — what a consumer sees. Its quickstart is compiled and diff-checked by
+   `ReadmeQuickstartTest`; edit the two together or the build fails.
+
+## Current state
+
+Released on Maven Central; the data-channel stack is complete. It establishes and carries data channels
+against Chrome, Firefox, WebKit, Pion and werift over real NAT kernels in CI across
 `{x64, arm64} × {v4, v6, dual}`, and every lane also gates on the data-channel *semantics* sequence
-(fragmentation, unordered, PR-SCTP, multiplexing, reverse-direction, per-channel close, graceful shutdown).
-DTLS is **pure Kotlin in `commonMain`** on every target since the W4b flip (1.2 + 1.3; BoringSSL survives
-only as a `linuxTest` differential oracle), so there is no longer a platform without a DTLS backend.
+(fragmentation, unordered, PR-SCTP, multiplexing, reverse-direction, per-channel close, graceful
+shutdown). Pinned at socket 4.0.0 + buffer 6.23.0.
 
-Two consequences for a session starting here: **the old "do not merge webrtc transport code until
-`socket-udp` is on Central" gate is LIFTED** (socket is pinned at 3.15.0 from Central, buffer at 6.22.0),
-and W2 (vnet) remains a socket deliverable rather than a webrtc wave. See `EXECUTION_PLAN.md` §2 for the
-per-wave record.
+What works that is easy to under-estimate:
 
-**ICE restart / renegotiation through JSEP now works** (RFC 8445 §9): `restartIce()` records intent and
-the next `createOffer()` carries a fresh ICE generation, the peer's own restart is detected from an offer
-whose ufrag *and* pwd both changed, `setLocalDescription(Rollback)` restores the retained generation, and
-`PeerConnectionState.Restarting` names the window. The session **survives** it — DTLS and SCTP never
-renegotiate (RFC 8842 §5.5: unchanged fingerprint, re-offered `actpass`), and data keeps riding the old
-pair until the new one nominates. An injected `IceRestartPolicy.OnNetworkChange` restarts automatically
-when the selected pair's interface goes away.
+- **ICE restart survives the session.** `restartIce()` records intent; the next `createOffer()` carries a
+  fresh generation; a peer's own restart is detected from an offer whose ufrag *and* pwd both changed;
+  `setLocalDescription(Rollback)` restores the retained generation. DTLS and SCTP never renegotiate
+  (RFC 8842 §5.5), open channels keep their stream ids, and data keeps riding the old pair until the new
+  one nominates.
+- **Trickled candidates carry their generation** (RFC 8838 §3.1), stamped inside the driver's serialized
+  loop so a candidate cannot be tagged with a generation it is not in. An incoming candidate is *routed*
+  by that tag: one for a superseded generation is discarded with a typed reason, one for a generation
+  whose offer has not arrived is held (bounded, oldest evicted) and released by the credentials event —
+  never by a timer, so the core stays sans-io. Untagged candidates apply to the current generation
+  exactly as before. Opt out with `TrickleGenerationPolicy.Untagged`.
+- **mDNS goes both ways** (RFC 8828) — opt-in, and it also redacts the `raddr` and the foundation, both
+  of which would otherwise spell the host address out on the same line.
+- **`systemNetworkMonitor()` is push-first**, composing socket's *reactivity* with our own *address
+  enumeration* (see ARCHITECTURE §4 — they answer different questions). A platform with no interface
+  table says so in the type (`NetworkMonitorSupport.Unavailable`); one that can enumerate but has nothing
+  pushing returns `Degraded(monitor, reason)`, so "it will be slower, and here is why" is answerable at
+  config time rather than by inspecting a live session.
+- **`PeerConnection.diagnostics`** is a sealed, non-fatal observation stream (watcher stopped, remote
+  candidate discarded, interface probe failed). Channel-backed rather than a `SharedFlow` on purpose: a
+  Channel buffers from construction, and the most important diagnostic is emitted during start-up, which
+  no caller can reliably subscribe ahead of.
+- **`IceRestartPolicy` defaults to `Manual`** deliberately — an automatic restart is a renegotiation only
+  the app's signaling channel can carry, so it is opt-in rather than a default flip.
 
-**Trickled candidates carry their generation** (RFC 8838 §3.1): each candidate we signal is stamped with
-the ufrag of the generation that gathered it — taken inside the driver's serialized loop, so a candidate
-cannot be tagged with a generation it is not in — and an incoming one is *routed* by that tag instead of
-applied to whatever is current. A candidate for a superseded generation is discarded with a typed
-`CandidateDiscardReason` (observably, on `IceOutput`); one for a generation whose offer has not arrived
-yet is **held** — bounded at 32, oldest evicted first — and released by the credentials event, never by a
-timer, so the core stays sans-io. Both carriers are honoured: an explicit
-`addIceCandidate(candidate, generation)` mirroring the browser's `usernameFragment`, and the `ufrag`
-extension attribute libwebrtc has stamped on candidate lines for years. An **untagged** candidate is
-applied to the current generation exactly as before — that is the path every peer that carries no ufrag
-uses — and the whole behaviour is opt-out with
-`PeerConnectionConfig(trickleGeneration = TrickleGenerationPolicy.Untagged)`. What it buys is measured
-rather than asserted: `PeerConnectionRestartTest` now converges on the *signaled* `Host` pair, and
-`PeerConnectionTrickleGenerationTest` runs one scripted overtake (candidates released **before** the offer
-that names them) twice, differing only in that policy — tagged it converges on the signaled candidate,
-untagged it still converges, but **peer-reflexively**, because the re-gathered candidates were naturalized
-into the generation being abandoned and RFC 8445 §7.3.1.3 had to rediscover the path.
+What is genuinely left: foreign-peer renegotiation is proven in one direction only (they re-answer a
+restart *we* initiate; the foreign-**initiated** direction is unexercised), and media.
 
-**mDNS goes both ways** (RFC 8828, #88): a session configured with
-`PeerConnectionConfig(mdnsAdvertising = MdnsAdvertisePolicy.Advertise(MulticastMdnsEndpoint(scope)))` mints a
-stable-per-address `<uuid>.local` for each host candidate, publishes *that* instead of the address, and
-answers the peer's A/AAAA queries for it (RFC 6762 §6, including the one-shot legacy shape a resolve-only
-peer sends). It also redacts what a name alone would leave behind: the `raddr` of every reflexive/relayed
-candidate — which *is* the host base — and the **foundation**, which this stack derives from the base IP and
-would otherwise spell the private address out in field 1 of the same line. Everything but the socket is
-`commonMain`: `MdnsEndpoint` + `MdnsResponder` run over the vnet under `runTest`, and only
-`MdnsMulticastBinder` (bind 5353, join the group) is a platform actual. It is **opt-in**, because a name
-nothing answers costs the peer the candidate outright and `commonMain` cannot construct a responder — the
-`mdns-{chrome,firefox}` lanes turn it on and gate on the browser having resolved *ours* (`mdns answered` on
-our side, a `type=host` remote candidate at our IP on the browser's).
+## Traps and standing corrections
 
-**A production `NetworkMonitor` now exists** (#69): `systemNetworkMonitor()` in `webrtc-ice` returns a
-`SystemNetworkMonitor`, which is **push-first** and composes two halves that deliberately come from
-different places.
+Things that have cost real time here. Read before acting on a premise that sounds settled.
 
-*Reactivity* — **when** did the network change — is `com.ditchoom:network-monitor`'s (jvm/android) and, at
-the two K/N leaves only, socket core's: `ConnectivityManager.NetworkCallback`, the JDK-21 FFM routing
-socket, `AF_NETLINK`, `NWPathMonitor`. We do not hand-roll it. *Enumeration* — **which local addresses
-exist** — is ours (`java.net.NetworkInterface` / POSIX `getifaddrs(3)`), because socket's monitor reports
-one sealed `NetworkState` carrying a `NetworkId(kind, handle)` and no addresses at all, while
-`pathRidesOneOf` compares the selected pair's local **IP**. The two answer different questions; both are
-needed. Polling survives only as the fallback where no push path exists (JDK < 21, Windows, a browser),
-and `SystemNetworkMonitor.detection` says which you got — coarsely, but that is now a *choice*: since
-socket 3.16.0 a sealed `MonitorMechanism` names what socket resolved (since 4.0.0 inside a
-`MonitorCapability` pairing it with the ladder rungs that monitor can reach), but reading it means
-**constructing** socket's monitor, which is what registers the platform callback. We decline to charge every
-`PeerConnectionConfig` a `NetworkCallback` registration just to describe ourselves, and read it only where
-it is free — Android's `hasAndroidApplicationContext()`. `PlatformSignalled` therefore promises *"we do not
-poll"*, never *"the OS pushes"*. (DitchOoM/socket#269 stays open on its other half: the Apple/Linux native
-monitors still live in socket core, which is why the two K/N leaves depend on it.)
+- **"socket core vendors a second BoringSSL" is FALSE, and has been for a long time.** It was true once,
+  outlived its truth in four separate comments, and acting on it produced a hand-rolled implementation of
+  something already published. socket's `LinuxSockets` cinterop klib embeds only `liburing.a`, and socket
+  and `buffer-crypto` resolve to the *same* `boringssl-canonical`, which Gradle dedupes. Verified by
+  linking the native peer on linuxX64 **and** linuxArm64 with socket core present.
+- **Stale premises are this codebase's recurring failure mode** — four separate instances so far, each
+  costing between a wrong comment and ~1000 wrong lines. When a comment explains why something *cannot*
+  be done, check whether it still can't before building around it.
+- **`linkTopology()` erases the reachability verdict on purpose.** socket's `NetworkState` ladder carries
+  `Routable(id, Pending|Confirmed)`, and on real hardware Android grants `INTERNET` ~1s before
+  `VALIDATED` on *every* reassociation. Forwarding that transition as an interface change would
+  re-enumerate on a link whose addresses never moved, so the trigger projects the verdict away and keeps
+  everything else. `LinkTopologyTest` pins both halves.
+- **`InterfaceSnapshot` is sealed for one specific reason:** a failed `getifaddrs` reported as an *empty*
+  interface set reads to `pathRidesOneOf` as "the selected pair's interface is gone", which would restart
+  a healthy session on every probe failure. A failure is `Unavailable(reason)`, never an empty
+  `Enumerated`.
+- **A deterministic "flake" is usually a harness observation bug, not a stack bug.** A red lane whose peer
+  logs show success has, more than once, been the harness reading `docker compose logs` twice or matching
+  only RUNNING containers.
+- **`webrtc-ice`'s `socketMain` is the only place `socket-udp` may appear in production code**, and the
+  cores must never depend on socket in `commonMain` (ARCHITECTURE §11.6). A binder that owns its socket
+  forecloses sharing one demuxed UDP socket with QUIC-P2P.
 
-**Android is reactive out of the box** (#104), and it did not used to be. socket#270 added an
-androidx.startup initializer that captures the application `Context` before app code runs — but that
-initializer is deliberately *capture-only*, so it installs no process default, and our seam was reading
-`installedProcessDefaultOrNull()`. socket could hand us reactivity and we reported `Polled` anyway. The
-seam now reads `hasAndroidApplicationContext()` (side-effect-free) and builds via `androidOrNull()` per
-collection. Proven against a **real `ConnectivityManager`** under Robolectric in `androidHostTest` — the
-one target that previously had no runtime proof at all, on the platform where Wi-Fi→cellular is routine.
+## Standing directives
 
-**Sessions report what they decided** (#106): `PeerConnection.diagnostics: Flow<SessionDiagnostic>` is a
-sealed, **non-fatal** observation stream — three variants, all previously computed, typed, and then
-dropped on the floor for want of anywhere to put them. `NetworkWatcherStopped(cause)` (the app opted into
-`OnNetworkChange` and silently stopped getting it), `RemoteCandidateDiscarded(candidate, reason)` (the
-refusal `IceAgentDriver` already emitted an output for, with a comment anticipating this surface), and
-`InterfaceProbeFailed(reason)` (automatic restart running on a stale address view, because a failed probe
-correctly publishes nothing). None is a `PeerConnectionState`: in all three the session is genuinely still
-`Connected`, and folding them into the lifecycle would make "connected" mean two things. **Channel-backed,
-not a `SharedFlow`**, and that is load-bearing rather than stylistic: a Channel buffers from construction,
-while `replay = 0` would drop `NetworkWatcherStopped` outright — it is emitted from `startIce`, so a
-caller would have to beat the session's own start-up to see it. Bounded with `DROP_OLDEST`, because a peer
-controls how many candidate refusals it can provoke.
+Non-negotiable. The first two are enforced by CI (`.github/workflows/standing-directives.yaml`); all are
+checked in the adversarial review gate.
 
-**The stack rides socket 4.0.0 + buffer 6.23.0**, a two-axis breaking bump taken as one coherent PR
-because the two are coupled (socket-udp 4.0.0 pins buffer 6.23.0, and network-monitor cannot move alone
-without socket core resolving up to an API it was not compiled against).
-
-*Axis 1 — the datagram split* (buffer#325 / socket#273): `DatagramChannel` refines into
-`Connected`/`Addressed`. Everything of ours is **addressed** — one bound socket serving many peers — so
-`DatagramBinder.bind` returns an `AddressedDatagramChannel`, `send` requires its destination, and
-`localAddress` is non-null by construction, which is what lets candidate gathering read the base with no
-unwrap. Four runtime guards (`requireNotNull(to)`, `localAddress ?: …`) deleted as unreachable. Read
-sentinels became zero-alloc value classes, so hot receive paths construct `Datagram` with **all five
-arguments explicit** — the defaulted form boxes `LocalAddress` through the default-args bridge.
-
-*Axis 2 — the `NetworkState` ladder* (socket#272): `availability` + `networkId` (two flows nothing kept
-coherent) collapse into one `state` flow over `Unknown / Offline / LinkLocal(id) / Routable(id,
-InternetAccess)`, and `mechanism` becomes `capability`. **The one judgement call this forced is
-`linkTopology()`**: the ladder carries a rung the old pair did not — the reachability verdict inside
-`Routable` — and on real hardware Android grants `INTERNET` ~0.7-1s before `VALIDATED` on *every*
-reassociation. Forwarding `Routable(id, Pending) → Routable(id, Confirmed)` as an interface change would
-re-enumerate on a link whose addresses never moved. So the trigger projects the verdict away and keeps
-everything else (rung changes = a route appeared/vanished; `id` changes = the link was replaced), which
-*preserves* pre-4.0.0 behaviour rather than altering it. `LinkTopologyTest` pins both halves and is
-mutation-checked. This is also why #102 wants building on 4.0.0: `isTransient` is what distinguishes a
-validation window from a genuine change, and without it an `OnNetworkChange` default would restart a
-healthy session on every Wi-Fi reassociation.
-
-A platform that cannot see NICs at all says so in the type: js/wasmJs return
-`NetworkMonitorSupport.Unavailable(NoPlatformApi)`, so an app cannot build an
-`IceRestartPolicy.OnNetworkChange` on a monitor that would never fire. And a platform that *can* watch
-interfaces but has nothing pushing to it returns `NetworkMonitorSupport.Degraded(monitor, reason)` — a
-third state, because the two axes are independent: `Degraded` still hands back a working monitor (slower
-is not off) while naming, at **config time**, why it will be slower. On Android
-`ReactivityDegradation.NoAndroidContext` is actionable (install a `Context`); `NoPlatformSignal` is not.
-Before that state existed the answer was only findable by inspecting `detection` on a monitor already
-wired into a session, which is exactly how the Android gap survived to become #104. `InterfaceSnapshot` is sealed for
-one specific reason: a failed `getifaddrs` reported as an *empty* interface set is exactly what
-`pathRidesOneOf` reads as "the selected pair's interface is gone", so a transient probe failure would
-restart a healthy session on every signal — instead the last good set stands and the failure is reported
-on `lastSnapshot`. **`IceRestartPolicy` still defaults to `Manual`** deliberately: an automatic restart is
-a renegotiation only the app's signaling channel can carry, so the mechanism is opt-in, not a default flip.
-
-**The "socket core vendors a second BoringSSL" claim is obsolete — do not propagate it.** It was true
-once, it outlived its truth in four separate comments, and acting on it produced a hand-rolled
-implementation of something already published for us. Since socket 3.15.1 its `LinuxSockets` cinterop klib
-embeds only `liburing.a`, and socket and `buffer-crypto` both resolve to the *same*
-`com.ditchoom.boringssl:boringssl-canonical`, which Gradle dedupes. Verified by linking the production
-native peer on linuxX64 **and** linuxArm64 with socket core present, and by running socket's netlink
-monitor under `linuxX64Test`.
-
-**What is genuinely left** (none of it blocking; each item has a tracking issue): foreign-peer renegotiation
-is proven in one direction only — Pion, Chrome, Firefox and WebKit each re-answer a restart *we* initiate
-on the `carrier-switch` topology (lanes `restart-{pion,chrome,firefox,webkit}`), and s8 now reads the
-peer's own re-answer rather than inferring a restart from reconvergence (both ICE credentials replaced,
-DTLS fingerprint unchanged — RFC 8842 §5.5), while the **foreign-initiated** direction (they offer, we
-answer) is unexercised (#87);
-those lanes are v4-only, because `carrier-switch` is, so the v6/dual families skip them, and there is
-deliberately no `restart-node` lane — werift publishes a correct re-answer but never runs a connectivity
-check on the new generation, so its session does not survive the restart at all (measured, with capture
-counts, in `test-harness/README.md`); and media (RTP/SRTP) is Phase 2, untouched.
-Deliberate non-goals, not gaps: the dcSCTP subset (no multihoming, no RFC 8260
-interleaving, no HEARTBEAT — ICE consent freshness owns path liveness), RFC 6525's four non-originated
-request types (decoded and explicitly refused), and establishing a *new* DTLS association on
-renegotiation (a re-answer implying the opposite role is refused with a typed reason).
-
-## Standing directives (every session, every wave)
-
-These are non-negotiable. The first two are enforced by CI (`.github/workflows/standing-directives.yaml`);
-all are checked in the per-wave adversarial review gate.
-
-1. **No `ByteArray` — and no primitive array of any kind** (`IntArray`, `LongArray`, `ShortArray`, …) —
-   in production (`*Main/`) source sets. A primitive array in a hot path is a guaranteed copy; this
-   library exists to avoid that. Use `ReadBuffer` / `WriteBuffer` / `PlatformBuffer` and slice views.
-   Genuine platform edges (an FFI call that demands a `ByteArray`) annotate the line
+1. **No `ByteArray` — and no primitive array of any kind** (`IntArray`, `LongArray`, `ShortArray`, …) in
+   production (`*Main/`) source sets. A primitive array in a hot path is a guaranteed copy; this library
+   exists to avoid that. Use `ReadBuffer` / `WriteBuffer` / `PlatformBuffer` and slice views. Genuine
+   platform edges (an FFI call that demands a `ByteArray`) annotate the line
    `@Suppress("NoByteArrayInProd")` with a comment naming the specific API surface.
 2. **No hardwired `Clock.System` / `Random.Default` / `Dispatchers.*` inside cores.** Every source of
-   time, entropy, and concurrency is a constructor-injected seam with a production default. This is
-   what lets the whole stack run under `runTest` virtual time. A genuine production-default
-   construction annotates the line `@Suppress("UnseamedEntropy")`.
-3. **Errors are typed, never stringly.** Everything maps into the `SocketException` sealed hierarchy
-   with exhaustive sealed reasons (`IceFailureReason.NoCandidatePairs`, `.ConsentExpired`, …). Strings
-   are diagnostics, never discriminants.
+   time, entropy and concurrency is a constructor-injected seam with a production default. This is what
+   lets the whole stack run under `runTest` virtual time. A genuine production-default construction
+   annotates the line `@Suppress("UnseamedEntropy")`.
+3. **Errors are typed, never stringly.** Everything maps into the `SocketException` sealed hierarchy with
+   exhaustive sealed reasons (`IceFailureReason.NoCandidatePairs`, `.ConsentExpired`, …). Strings are
+   diagnostics, never discriminants.
 4. **Assert observable state + a watchdog, never wall-clock budgets.**
 5. **Every bug fix ships with its deterministic fixture in the same PR.** The corpus only grows.
-6. **Buffers are factory-injected, pooled in hot paths, `use {}`/scoped lifecycle**, with
-   `TrackingBufferFactory` in every test harness (invariant: no leaks).
-7. **The PR description states which platform lanes were runtime-validated vs compile-faithful**
-   (the `V6_MAC_VALIDATION` convention: Apple/Android runtime-validated on runners).
+6. **Buffers are factory-injected, pooled in hot paths, `use {}`/scoped lifecycle**, with a tracking
+   factory in every test harness (invariant: no leaks).
+7. **The PR description states which platform lanes were runtime-validated vs compile-faithful** (the
+   `V6_MAC_VALIDATION` convention: Apple/Android runtime-validated on runners).
 
 ## Type-safety house style (make illegal states unrepresentable)
 
 The cores are state machines; the type system is the first line of correctness. See
-`DESIGN_PRINCIPLES.md` for worked examples. In short:
+[`DESIGN_PRINCIPLES.md`](./DESIGN_PRINCIPLES.md) for worked examples. In short:
 
-- **Value classes wrap every identifier.** A `TransactionId`, `Ufrag`, `StreamId`, `Tsn`,
-  `DataChannelId`, `Mid`, `CertificateFingerprint` are each `@JvmInline value class` around their
-  payload — zero runtime cost, but the compiler refuses to pass a `Ufrag` where an `IcePassword` is
-  expected. IDs are never bare `String`/`Int`/`Long` at an API boundary.
-- **Sealed hierarchies + exhaustive `when`, no `else`.** Message classes, connection states, and
-  failure reasons are sealed. A `when` over them compiles without an `else`; adding a case is a
-  compile error at every call site until handled. Prefer this to enums when variants carry data.
+- **Value classes wrap every identifier.** `TransactionId`, `Ufrag`, `StreamId`, `Tsn`, `DataChannelId`,
+  `Mid`, `CertificateFingerprint` are each `@JvmInline value class` around their payload — zero runtime
+  cost, but the compiler refuses to pass a `Ufrag` where an `IcePassword` is expected. IDs are never bare
+  `String`/`Int`/`Long` at an API boundary.
+- **Sealed hierarchies + exhaustive `when`, no `else`.** Message classes, connection states and failure
+  reasons are sealed. A `when` over them compiles without an `else`; adding a case is a compile error at
+  every call site until handled. Prefer this to enums when variants carry data.
 - **No boolean or nullable soup.** Do not model a state as `connected: Boolean` + nullable
-  `failureReason` (which can encode "connected AND failed"). Model it as a sealed
-  `PeerConnectionState` where each state carries exactly the data valid in it — the illegal
-  combinations are simply unrepresentable.
-- **Nullability is a deliberate signal, not a default.** A nullable type means "genuinely absent";
-  it is never a stand-in for an error (that's a typed reason) or an uninitialized field (that's a
-  different state in the sealed hierarchy). `nextDeadline(now): Instant?` returns null to mean
-  "no timer armed" — a real, single meaning.
+  `failureReason` (which can encode "connected AND failed"). Model it as a sealed `PeerConnectionState`
+  where each state carries exactly the data valid in it — the illegal combinations are unrepresentable.
+- **Nullability is a deliberate signal, not a default.** A nullable type means "genuinely absent"; never a
+  stand-in for an error (that is a typed reason) or an uninitialized field (that is a different state in
+  the sealed hierarchy). `nextDeadline(now): Instant?` returns null to mean "no timer armed" — one real
+  meaning.
 - **Parse failures are typed rejects, never throws-through or crashes** (T0 discipline).
 
 ## Build commands
@@ -229,49 +140,19 @@ The cores are state machines; the type system is the first line of correctness. 
 ./gradlew apiDump               # regenerate .api files after an intentional public-API change
 ./gradlew ktlintCheck           # lint  (ktlintFormat to auto-fix)
 ./gradlew detektAll             # multiplatform static analysis (non-blocking; sees Native/JS/WASM)
-./gradlew publishToMavenLocal   # publish 0.0.x to ~/.m2  (runs prePublishCheck first)
+./gradlew publishToMavenLocal   # publish to ~/.m2  (runs prePublishCheck first)
 ./gradlew :webrtc-stun:jvmTest --tests "com.ditchoom.webrtc.stun.StunTest"
 ```
 
 Requires **JDK 21** (enforced via toolchain). Apple targets build on macOS only.
 
-## Architecture
-
-### Module map (`RFC_KMP_WEBRTC.md` §3) — one core, thin layers, each depends only downward
-
-```
-webrtc            PeerConnection + JSEP state machine + DataChannel (the consumer API)   [W6]
-├── webrtc-sdp    SDP parse/serialize — hand-written text codec, no I/O                  [W6]
-├── webrtc-stun   STUN/TURN wire codec (RFC 8489/8656) + sans-io client machines         [W1]
-├── webrtc-ice    ICE agent (RFC 8445 + trickle 8838) — sans-io core + gathering seams   [W3]
-├── webrtc-dtls   DTLS 1.2/1.3 + DTLS-SRTP exporter — BoringSSL backends (the one native dep) [W4]
-├── webrtc-sctp   SCTP subset over DTLS (RFC 8831) + DCEP (RFC 8832) — pure Kotlin, sans-io  [W5]
-└── webrtc-testsuite  published consumer harness: vnet, timeline engine, control plane    [W7]
-```
-
-Pure-codec modules (`-sdp`, `-stun`) have **zero** platform code and zero I/O — `commonMain`-only,
-run everywhere including browsers. Platform code exists in exactly two places: `webrtc-dtls` backends
-and the UDP/mDNS gathering actuals in `webrtc-ice`.
-
-### Sans-io, caller-clocked cores (the determinism architecture — `RFC_KMP_WEBRTC.md` §5)
-
-Every protocol state machine (ICE checklist, STUN transactions, SCTP, DCEP, JSEP) is a pure
-`handle(event, now): List<Output>` plus a `nextDeadline(now): Instant?`. **No dispatcher, no
-`Clock.System`, no `Random.Default`, no I/O, no coroutine inside a core.** Drivers own I/O; cores own
-truth. Consequence: a full ICE + SCTP establishment completes under `runTest` at zero wall-clock on
-every target, and a 90-second field saga replays in milliseconds, forever.
-
-Testing against real UDP is **not** needed until W7 interop. Everything from W1–W6 tests against an
-in-memory `DatagramChannel` (the vnet) — the same seam production uses — exactly as socket's QUIC
-stack already does with its `TimelineUdpChannel`.
-
 ## Build logic — the convention plugin (no copy-paste)
 
 All per-module build configuration lives in **one** convention plugin,
-`build-logic/src/main/kotlin/webrtc.multiplatform-library.gradle.kts`. It owns the KMP target matrix,
-the JDK-21 toolchain, Android, ktlint, dokka, kover, binary-compatibility validation, Maven Central
-publishing, signing, and version derivation. A module's own `build.gradle.kts` therefore contains
-**only its dependencies**:
+`build-logic/src/main/kotlin/webrtc.multiplatform-library.gradle.kts`. It owns the KMP target matrix, the
+JDK-21 toolchain, Android, ktlint, dokka, kover, binary-compatibility validation, Maven Central
+publishing, signing and version derivation. A module's own `build.gradle.kts` therefore contains **only
+its dependencies**:
 
 ```kotlin
 plugins { id("webrtc.multiplatform-library") }
@@ -283,24 +164,25 @@ namespace `com.ditchoom.<name-dots>`). Per-module POM prose lives in `<module>/g
 (`POM_NAME`, `POM_DESCRIPTION`); shared POM/developer/license fields are in the root `gradle.properties`.
 Plugin versions are declared once in `gradle/libs.versions.toml`.
 
-To add a module: create the dir + `src/commonMain`+`src/commonTest`, add a `build.gradle.kts` (as
+To add a module: create the dir + `src/commonMain` + `src/commonTest`, add a `build.gradle.kts` (as
 above) and a `gradle.properties`, and `include(":…")` it in `settings.gradle.kts`. Nothing else.
 
 ## CI/CD
 
-- **PR** (`review.yaml`): `standing-directives` greps → `build-linux` + `build-apple` → `validate-artifacts`
-  → `consumer-smoke` (`.ci/consumer-smoke`, a standalone build resolving `com.ditchoom:webrtc` +
-  `webrtc-testsuite` by coordinate; compiles, K/N-links, and runs `withWebRtcHarness { natType();
-  relayOnly(); impaired() }` against a **cold** resolve — throwaway `GRADLE_USER_HOME`, no build cache).
+- **PR** (`review.yaml`): `standing-directives` greps → `build-linux` + `build-apple` →
+  `validate-artifacts` → `consumer-smoke` (`.ci/consumer-smoke`, a standalone build resolving
+  `com.ditchoom:webrtc` + `webrtc-testsuite` by coordinate; compiles, K/N-links, and runs
+  `withWebRtcHarness { natType(); relayOnly(); impaired() }` against a **cold** resolve — throwaway
+  `GRADLE_USER_HOME`, no build cache).
 - **Release** (`merged.yaml`): version bump controlled by PR labels (`major` / `minor`, else patch;
   `skip-release` / `draft-release` change the flow) → build → validate → `consumer-smoke` (maven-local,
   both hosts — `publish` needs it, so a consumer-breaking release never reaches Central) →
   `publish-to-central` → finalize (tag + GitHub release). `release.yaml` completes/cancels a draft;
   `released.yaml` mirrors a pushed tag **and then re-runs `consumer-smoke` against Maven Central only**
   (no `mavenLocal()` fallback), which is what proves the publish itself.
-- Version is auto-derived from Maven Central metadata + the label bump; greenfield starts at 0.0.1.
+- Version is auto-derived from Maven Central metadata + the label bump.
 - Every published artifact (including `webrtc-testsuite`) goes through `validate-artifacts` from its
-  first release (the socket #188 lesson).
+  first release.
 
 ## Source docs in sibling repos to consult
 

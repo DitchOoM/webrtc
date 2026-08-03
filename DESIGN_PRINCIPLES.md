@@ -11,7 +11,7 @@ tree — grep for them.
 
 A `ByteArray`/`IntArray`/`LongArray` in a hot path is a guaranteed memory copy. This library exists to
 avoid that, so production (`*Main/`) source sets use `ReadBuffer` / `WriteBuffer` / `PlatformBuffer`
-and positional **slice views** end to end (RFC §6, the zero-copy datapath):
+and positional **slice views** end to end (ARCHITECTURE §6, the zero-copy datapath):
 
 - Received datagrams are one pooled `PlatformBuffer`; RFC-7983 demux routes the *same buffer* to STUN
   / DTLS / RTP parsers by first byte.
@@ -249,7 +249,7 @@ close-out fixed what that commitment actually means, so Phase 2 (media) does not
   equivalent that survives that: implementing it is a deliberate act that accepts Phase-2 additions;
   *using* one needs no opt-in.
 - **The protocol codecs are public products.** `webrtc-stun`, `webrtc-sdp`, and `webrtc-sctp`'s chunk
-  codec are deliverables in their own right (`RFC_KMP_WEBRTC.md` §3), not implementation detail that
+  codec are deliverables in their own right (`ARCHITECTURE.md` §3), not implementation detail that
   leaked. They are held to the same promise as the consumer surface.
 
 What the lock verified mechanically, and what CI keeps true: **no primitive array appears in any public

@@ -9,7 +9,7 @@ import com.ditchoom.buffer.flow.SocketAddress
 import kotlinx.coroutines.CoroutineScope
 
 /**
- * Topologies as data (RFC §5.2 — "topologies as data, not lab setups"). The [withWebRtcHarness]
+ * Topologies as data (ARCHITECTURE §5.2 — "topologies as data, not lab setups"). The [withWebRtcHarness]
  * [com.ditchoom.webrtc.testsuite.harness.withWebRtcHarness] DSL picks a builder, drives two
  * [com.ditchoom.webrtc.NativePeerConnection]s over the resulting [Vnet], and the whole
  * NAT/relay/impairment scenario is a value it can diff, replay, and shrink. The addressing convention

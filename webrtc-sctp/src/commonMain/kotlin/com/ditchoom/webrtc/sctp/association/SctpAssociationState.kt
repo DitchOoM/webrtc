@@ -36,7 +36,7 @@ public sealed interface SctpAssociationState {
 /**
  * Why an [SctpAssociation] failed — a sealed, exhaustive vocabulary; the discriminant is the type,
  * never a string (directive #3). These map into the `SocketException` hierarchy at the PeerConnection
- * layer (W6). Diagnostic detail rides as data on the variant.
+ * layer. Diagnostic detail rides as data on the variant.
  */
 public sealed interface SctpFailureReason {
     /** The peer sent an ABORT (RFC 4960 §3.3.7). Carries whether the T-bit reflected our tag. */

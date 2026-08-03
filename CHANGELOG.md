@@ -500,7 +500,7 @@ recoverable in place, so the state had nothing left to describe.
     short-term MI; the long-term-key derivation is a pre-existing, documented L3/real-TURN follow-up).
 
 ### Added — W4: `webrtc-dtls` — real BoringSSL DTLS 1.2/1.3, wired into `PeerConnection`
-- **`DtlsEngine`** — a caller-clocked, sans-io DTLS endpoint (`expect class`; RFC §5.1): `start` /
+- **`DtlsEngine`** — a caller-clocked, sans-io DTLS endpoint (`expect class`; ARCHITECTURE §5.1): `start` /
   `onDatagram` / `onTimeout` / `send` / `beginClose` + `nextTimeoutMicros`, all in epoch-micros from the
   driver's injected clock. No dispatcher, no `Clock.System`, no I/O, no coroutine inside it. BoringSSL's
   DTLS timers are driven through an injected `current_time_cb`, so a whole handshake — **retransmissions
@@ -579,7 +579,7 @@ Each confirmed defect ships its regression fixture (directive #5):
   the engine. (`…malformed_datagrams…`.)
 
 ### Added — W6: `webrtc` root — `PeerConnection` + browser delegation + typed error sweep
-- **`RtcPeerConnection` + `NativePeerConnection`** (the consumer session API, RFC §3.1) — a caller-clocked,
+- **`RtcPeerConnection` + `NativePeerConnection`** (the consumer session API, ARCHITECTURE §3.1) — a caller-clocked,
   seam-injected driver composing the sans-io cores: the `JsepSession` offer/answer machine (webrtc-sdp),
   the `IceAgentDriver` (webrtc-ice) over an injected `IceGatheringPolicy`, the injected
   `DtlsTransportFactory` (`PlaintextDtls` while W4 is parked — the same seam W5 proved SCTP over), and the
@@ -595,14 +595,14 @@ Each confirmed defect ships its regression fixture (directive #5):
   `IceSctpEndToEndTest` proved. `IceCandidateLine` — the RFC 8839 §5.1 `candidate` ↔ typed `IceCandidate`
   codec (typed-reject on malformed, phase-1 UDP/IPv4).
 - **Browser delegation (js, Karma-tested)** — `peerConnectionSupport()` (`expect`/`actual`); on a browser
-  the js actual maps our API onto the native `RTCPeerConnection` (RFC §1.1: the one target we wrap), with
+  the js actual maps our API onto the native `RTCPeerConnection` (ARCHITECTURE §1.1: the one target we wrap), with
   a real in-browser loopback Karma test in headless Chrome. Non-browser targets report `Native` and build
   `NativePeerConnection` directly; wasmJs reports `BrowserDelegated` with the external-interface mapping as
   the one documented remaining follow-up.
 - **Typed error sweep** — `PeerConnectionFailureReason` (sealed `Ice`/`Dtls`/`Sctp`/`Unknown`, composing
   each layer's typed reason unchanged) + `DtlsFailureReason` (defined ahead of W4) + `WebRtcException`;
   signaling-API misuse is typed `JsepStateException`/`SdpFormatException` (directive #3). Mapping into
-  socket's `SocketException` hierarchy (RFC §3.1) is **deferred**: depending on `com.ditchoom:socket`
+  socket's `SocketException` hierarchy (ARCHITECTURE §3.1) is **deferred**: depending on `com.ditchoom:socket`
   duplicate-symbols socket's vendored BoringSSL against buffer-crypto's on every native target — gated on
   an upstream BoringSSL dedup, exactly as DTLS is gated on W4.
 - **Tests (all platforms, `runTest` virtual time):** the full offer/answer → ICE → (plaintext DTLS) → SCTP
@@ -615,7 +615,7 @@ Each confirmed defect ships its regression fixture (directive #5):
 
 ### Added — W5: `webrtc-sctp` association + DataChannel (SCTP RFC 4960 subset + RFC 3758 + DCEP 8832 + RFC 8831)
 - **Sans-io SCTP association (`SctpAssociation`)** — a pure `handle(event, now): List<Output>` plus
-  `nextDeadline(now): Instant?`, **no dispatcher, clock, RNG, or I/O inside** (RFC §5.1). It owns the
+  `nextDeadline(now): Instant?`, **no dispatcher, clock, RNG, or I/O inside** (ARCHITECTURE §5.1). It owns the
   **four-way handshake** (INIT / INIT-ACK / COOKIE-ECHO / COOKIE-ACK with a stateless State Cookie),
   TSN assignment and **SACK**-driven reliability, **RTO** estimation (RFC 4960 §6.3.1), **congestion
   control** (slow start / congestion avoidance / T3 + fast-retransmit collapse, §7.2), message
@@ -665,7 +665,7 @@ Each confirmed defect ships its regression fixture (directive #5):
 
 ### Added — W3: `webrtc-ice` (ICE agent — RFC 8445 + trickle 8838 + consent 7675)
 - **Sans-io ICE agent core (`IceAgent`)** — a pure `handle(event, now): List<Output>` plus
-  `nextDeadline(now): Instant?`, with **no dispatcher, clock, RNG, or socket inside** (RFC §5.1). It
+  `nextDeadline(now): Instant?`, with **no dispatcher, clock, RNG, or socket inside** (ARCHITECTURE §5.1). It
   owns the checklist, the connectivity-check state machine (retransmission via the W1 `StunTransaction`),
   Ta-paced scheduling, triggered checks, peer-reflexive learning, **regular nomination**, RFC 7675
   **consent freshness**, **role-conflict** resolution (487 + tie-breaker), and **ICE restart**. Entropy
@@ -690,7 +690,7 @@ Each confirmed defect ships its regression fixture (directive #5):
   bound as an ordinary endpoint, a **virtual STUN server**, and a **seeded impairment pipe**
   (loss/reorder/dup/delay on virtual time) — topologies-as-data builders (`Vnets`).
 - **Canonical fixtures + invariants (all under `runTest`, all platforms):** two-agent host-to-host,
-  role-conflict glare, full-cone srflx hole-punch, **dual-symmetric-NAT → relay** (the RFC §5.2
+  role-conflict glare, full-cone srflx hole-punch, **dual-symmetric-NAT → relay** (the ARCHITECTURE §5.2
   load-bearing case), candidate-flap mid-check, `NetworkId`-change → restart, consent expiry, and a
   typed `AllPairsFailed` terminal; RFC-formula conformance for priority/foundation; a pinned-seed
   **timeline fuzz smoke** (establishes under 20% loss + jitter, deterministic replay, every NAT profile
@@ -727,7 +727,7 @@ Each confirmed defect ships its regression fixture (directive #5):
   ABORT, SHUTDOWN, SHUTDOWN-ACK, ERROR, COOKIE-ECHO, COOKIE-ACK, SHUTDOWN-COMPLETE, FORWARD-TSN
   (RFC 3758), plus an `Unrecognized` variant that preserves an unknown chunk verbatim (RFC 4960 §3.2
   forward-compat). A receiver's `when(chunk)` is exhaustive with no `else`. Variable regions (user
-  data, cookies, parameter/cause values) are **zero-copy slice views** over the datagram (RFC §6).
+  data, cookies, parameter/cause values) are **zero-copy slice views** over the datagram (ARCHITECTURE §6).
 - **CRC32c (RFC 4960 §6.8 / RFC 3309):** the Castagnoli checksum, self-contained (`Crc32c`) — a
   256-entry table held in a **managed `ReadBuffer`, not an `IntArray`** (directive #1), word-batched
   input read matching buffer's `crc32`. Stored little-endian per RFC 4960 Appendix B; verified/placed
@@ -789,7 +789,7 @@ Each confirmed defect ships its regression fixture (directive #5):
 - **STUN message codec (RFC 8489):** the 20-byte header (bit-interleaved message type, magic cookie,
   96-bit transaction id) as a `buffer-codec` KSP `@ProtocolMessage` schema (`StunHeaderCodec`); the
   TLV attribute layer hand-written for STUN's 4-byte value padding and the in-place MESSAGE-INTEGRITY /
-  FINGERPRINT computations. Attributes decode as **zero-copy slice views** over the datagram (RFC §6).
+  FINGERPRINT computations. Attributes decode as **zero-copy slice views** over the datagram (ARCHITECTURE §6).
 - **Typed attribute surface:** value-class `StunMessageType` / `StunMethod` / `StunAttributeType` /
   `TransactionId`; MAPPED-ADDRESS + XOR-MAPPED-ADDRESS (IPv4/IPv6, array-free `IpAddress`), USERNAME /
   REALM / NONCE / SOFTWARE, ERROR-CODE, plus TURN (RFC 8656) attribute types (codec-only).
@@ -828,7 +828,7 @@ mavenLocal during development — swap to the released `buffer` before merge.
   `build-linux` / `build-apple` / `validate-artifacts`, `publish-to-central` / `release` / `released`
   (Central Portal), and `standing-directives.yaml` (No-array + seamed-entropy greps).
 - PR labels (`.github/labels.yml` + sync workflow), dependabot.
-- Docs: `RFC_KMP_WEBRTC.md`, `EXECUTION_PLAN.md`, `CLAUDE.md`, `DESIGN_PRINCIPLES.md`, `TESTING.md`
+- Docs: `ARCHITECTURE.md`, `EXECUTION_PLAN.md`, `CLAUDE.md`, `DESIGN_PRINCIPLES.md`, `TESTING.md`
   (unit → integration → interop strategy, harness, external vectors, per-wave test exit criteria),
   `PERFORMANCE.md`, `README.md`.
 

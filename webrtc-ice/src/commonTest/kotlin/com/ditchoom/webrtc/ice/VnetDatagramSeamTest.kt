@@ -18,7 +18,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * **The W3 seam gate** (HANDOFF.md → EXECUTION_PLAN W3): before a line of ICE is written, prove that
+ * **The seam gate**: before a line of ICE was written, this proved that
  * two peers exchange datagrams over the in-memory [Vnet] — the buffer-flow [AddressedDatagramChannel] seam that
  * production rides via `socket-udp` — entirely under `runTest` **virtual time**, on every platform.
  *

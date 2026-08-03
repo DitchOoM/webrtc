@@ -3,8 +3,8 @@ package com.ditchoom.webrtc.ice
 import kotlin.jvm.JvmInline
 
 /**
- * W3 placeholder. The real module is a sans-io agent core — `handle(event, now): List<Output>` plus
- * `nextDeadline(now): Instant?`, no dispatcher/clock/random/I/O inside it (RFC §5.1). Placeholder only.
+ * Module marker. The real module is a sans-io agent core — `handle(event, now): List<Output>` plus
+ * `nextDeadline(now): Instant?`, no dispatcher/clock/random/I/O inside it (ARCHITECTURE §5.1). Placeholder only.
  */
 public object Ice {
     public const val MODULE: String = "webrtc-ice"

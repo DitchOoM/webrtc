@@ -7,7 +7,7 @@ plugins {
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            // Pure text codec (RFC §3): a hand-written line parser/writer, zero platform code, zero
+            // Pure text codec (ARCHITECTURE §3): a hand-written line parser/writer, zero platform code, zero
             // I/O — runs everywhere including browsers. SDP is text, so unlike webrtc-stun there is no
             // buffer-codec KSP schema; the only dependency is buffer core (ReadBuffer/WriteBuffer,
             // the single UTF-8 decode of the datagram, and the size-class allocator for encode).
@@ -16,10 +16,10 @@ kotlin {
     }
 }
 
-// ── Coverage-guided fuzzing (Jazzer) — T0′ (RFC §7) ──
+// ── Coverage-guided fuzzing (Jazzer) — T0′ (ARCHITECTURE §7) ──
 // `sdpCodecFuzz` drives SdpCodecFuzzer (src/jvmTest) — the pure-Kotlin SDP parser — under
 // Jazzer/libFuzzer. Because the parser is JVM bytecode (not opaque native), Jazzer gets REAL edge
-// coverage of the line walk, the session/media split, and every typed field interpreter (RFC §7 T0′).
+// coverage of the line walk, the session/media split, and every typed field interpreter (ARCHITECTURE §7 T0′).
 // Jazzer is runtime-only: the target uses the `byte[]` entry point, so nothing in jvmTest compiles
 // against Jazzer — the driver comes from the dedicated `jazzer` configuration. The committed seed
 // corpus (fuzz/corpus/sdp-codec) starts every run warm. Time-box with -PsdpFuzzSeconds=<n>.

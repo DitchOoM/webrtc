@@ -28,7 +28,7 @@ import org.khronos.webgl.set
 import kotlin.js.Promise
 
 /**
- * The browser [PeerConnectionSupport] (js): the one target where we **wrap, not reimplement** (RFC §1.1)
+ * The browser [PeerConnectionSupport] (js): the one target where we **wrap, not reimplement** (ARCHITECTURE §1.1)
  * — [PeerConnectionSupport.BrowserDelegated.create] maps our [RtcPeerConnection] onto the browser's own
  * `RTCPeerConnection`. Under Node (no `RTCPeerConnection`) it returns [PeerConnectionSupport.Native], so a
  * caller isn't handed a delegator it cannot back.

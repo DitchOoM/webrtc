@@ -7,10 +7,10 @@ plugins {
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            // Sans-io agent core (RFC §5.1): handle(event, now) + nextDeadline. Gathering drivers ride
+            // Sans-io agent core (ARCHITECTURE §5.1): handle(event, now) + nextDeadline. Gathering drivers ride
             // the DatagramChannel/NetworkMonitor seams; UDP/mDNS actuals arrive in W3.
             // buffer-flow carries the @ExperimentalDatagramApi DatagramChannel seam (buffer 6.11.0); the
-            // core targets it, NOT socket-udp — socket-udp is real-socket only (no wasm/browser, RFC §1.1)
+            // core targets it, NOT socket-udp — socket-udp is real-socket only (no wasm/browser, ARCHITECTURE §1.1)
             // and is consumed at the platform-edge gathering driver, keeping the core all-platform.
             api(project(":webrtc-stun"))
             api(libs.buffer.flow)

@@ -8,7 +8,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * T0 interop-grade vectors (RFC §7 / TESTING.md §3): the real-world data-channel offers/answers must
+ * T0 interop-grade vectors (ARCHITECTURE §7 / TESTING.md §3): the real-world data-channel offers/answers must
  * parse to the expected typed fields and round-trip byte-for-byte through parse→encode. SDP has no RFC
  * sample-vector suite, so these captured browser/Pion descriptions are the corpus (TESTING.md §3).
  */

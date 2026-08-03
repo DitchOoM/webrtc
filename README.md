@@ -23,33 +23,33 @@ bytes, and the part with no codec or hardware dependencies.
 
 ## Quickstart
 
-Three things have to be decided before a session exists, and the library asks for all three rather than
-guessing: **which sockets to bind**, **which addresses to gather on**, and **what identity to present**.
+One thing has to be decided before a session exists, and the library asks rather than guessing: **which
+sockets to bind**. Everything else — interface enumeration, STUN/TURN gathering, the DTLS identity, mDNS
+candidate privacy — is defaulted by `nativePeerConnection`.
+
+The binder stays a parameter on purpose. A factory that bound its own UDP socket could never share one
+with a QUIC-P2P connection, which is the arrangement this stack is built for, so the constraint is
+structural rather than documented.
 
 ```kotlin
 fun peerConnection(
     scope: CoroutineScope,
-    clock: () -> Instant, // Clock.System::now in production
     seed: Long,
-    stunServer: SocketAddress? = null, // SocketAddress.resolve("stun.example.org", 3478)
-) = NativePeerConnection(
+    iceServers: List<IceServer> = emptyList(), // listOf(IceServer("stun:stun.example.org"))
+) = nativePeerConnection(
     scope = scope,
-    clock = clock,
-    random = Random(seed),
-    // The one seam between a virtual-time test and a real kernel.
+    // The one seam between a virtual-time test and a real kernel — and a *parameter*, never
+    // something the factory binds for itself, so one demuxed UDP socket can carry more than
+    // this session.
     binder = udpDatagramBinder(),
-    // Which sockets to bind. Port 0 asks the OS for an ephemeral one — a pinned port cannot
-    // survive an ICE restart, which re-gathers while the old sockets are still bound.
-    gathering =
-        IceGatheringPolicy { driver ->
-            val snapshot = systemInterfaceEnumerator().enumerate()
-            val interfaces = (snapshot as? InterfaceSnapshot.Enumerated)?.interfaces.orEmpty()
-            for (local in interfaces) {
-                driver.gatherHost(local.address.host, port = 0, stunServer = stunServer)
-            }
-        },
-    // One factory is one endpoint identity: its certificate is the a=fingerprint we offer.
-    dtls = PureKotlinDtls(scope, clock),
+    // `stun:` / `turn:` URLs. Parsed, resolved, and gathered on per address family; whatever is
+    // unusable (a `turns:` URL, a TURN server with no credential) is reported, never dropped.
+    iceServers = iceServers,
+    // Off here ONLY because both peers share this process: mDNS publishes host candidates as a
+    // `<uuid>.local` name the peer must resolve over real multicast. Leave it on in an app —
+    // that is the default, and what a browser does unconditionally.
+    mdns = false,
+    random = Random(seed),
 )
 ```
 
@@ -60,7 +60,7 @@ stands two peers up over real loopback UDP and echoes a message between them.
 Then run the ordinary offer/answer dance and ship the results over **your** signaling:
 
 ```kotlin
-val pc = peerConnection(scope, Clock.System::now, seed = Random.nextLong(), stunServer = stun)
+val pc = peerConnection(scope, seed = Random.nextLong(), iceServers = listOf(IceServer("stun:stun.example.org")))
 val chat = pc.createDataChannel(DataChannelConfig(label = "chat"))
 
 val offer = pc.createOffer()
@@ -105,7 +105,7 @@ discovered at runtime:
 ```kotlin
 val pc = when (val support = peerConnectionSupport()) {
     is PeerConnectionSupport.BrowserDelegated -> support.create(scope, iceServers)
-    PeerConnectionSupport.Native              -> NativePeerConnection(/* as above */)
+    PeerConnectionSupport.Native              -> nativePeerConnection(scope, binder, iceServers)
 }
 ```
 
@@ -133,7 +133,13 @@ where the handshake depends on a native library being present.
   it. DTLS and SCTP are not renegotiated (RFC 8842 §5.5), open channels keep their stream ids, and data
   keeps riding the old pair until the new one nominates.
 - **mDNS candidate privacy** (RFC 8828), both directions — resolve a peer's `<uuid>.local` and publish
-  your own instead of your LAN address. Opt-in via `PeerConnectionConfig(mdnsAdvertising = …)`.
+  your own instead of your LAN address. **On by default** in `nativePeerConnection` (`mdns = false` opts
+  out); a hand-built `NativePeerConnection` still wires it explicitly via `withMulticastMdns(…)`.
+- **STUN/TURN from `IceServer` URLs** — `stun:` and `turn:` are parsed, resolved and gathered on per
+  address family by `systemIceGathering()`. What we cannot honour is refused *by reason* rather than
+  dropped: `turns:` and `?transport=tcp` (no TCP TURN client), a `turn:` server with no credential, a
+  name that does not resolve. Each arrives as a typed `IceGatheringNotice`, so an absent candidate is
+  never indistinguishable from a server that failed to answer.
 - **DTLS 1.2 / 1.3** with the RFC 8122 fingerprint check binding the signaling channel to the data path.
 - **SCTP** (RFC 8831) + **DCEP** (RFC 8832): ordered/unordered, reliable/partially-reliable, fragmentation
   and reassembly, per-channel and graceful shutdown.

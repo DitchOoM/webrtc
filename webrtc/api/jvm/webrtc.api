@@ -14,10 +14,6 @@ public abstract interface class com/ditchoom/webrtc/DtlsTransportFactory {
 public abstract interface annotation class com/ditchoom/webrtc/ExternalRtcPeerConnectionImplementation : java/lang/annotation/Annotation {
 }
 
-public abstract interface class com/ditchoom/webrtc/IceGatheringPolicy {
-	public abstract fun gather (Lcom/ditchoom/webrtc/ice/IceAgentDriver;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-}
-
 public abstract interface class com/ditchoom/webrtc/IceRestartPolicy {
 }
 
@@ -35,46 +31,6 @@ public final class com/ditchoom/webrtc/IceRestartPolicy$OnNetworkChange : com/di
 	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/IceRestartPolicy$OnNetworkChange;Lcom/ditchoom/webrtc/ice/NetworkMonitor;ILjava/lang/Object;)Lcom/ditchoom/webrtc/IceRestartPolicy$OnNetworkChange;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getMonitor ()Lcom/ditchoom/webrtc/ice/NetworkMonitor;
-	public fun hashCode ()I
-	public fun toString ()Ljava/lang/String;
-}
-
-public final class com/ditchoom/webrtc/IceServer {
-	public fun <init> (Ljava/lang/String;Lcom/ditchoom/webrtc/IceServerCredentials;)V
-	public synthetic fun <init> (Ljava/lang/String;Lcom/ditchoom/webrtc/IceServerCredentials;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V
-	public fun <init> (Ljava/util/List;Lcom/ditchoom/webrtc/IceServerCredentials;)V
-	public synthetic fun <init> (Ljava/util/List;Lcom/ditchoom/webrtc/IceServerCredentials;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public final fun component1 ()Ljava/util/List;
-	public final fun component2 ()Lcom/ditchoom/webrtc/IceServerCredentials;
-	public final fun copy (Ljava/util/List;Lcom/ditchoom/webrtc/IceServerCredentials;)Lcom/ditchoom/webrtc/IceServer;
-	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/IceServer;Ljava/util/List;Lcom/ditchoom/webrtc/IceServerCredentials;ILjava/lang/Object;)Lcom/ditchoom/webrtc/IceServer;
-	public fun equals (Ljava/lang/Object;)Z
-	public final fun getCredentials ()Lcom/ditchoom/webrtc/IceServerCredentials;
-	public final fun getUrls ()Ljava/util/List;
-	public fun hashCode ()I
-	public fun toString ()Ljava/lang/String;
-}
-
-public abstract interface class com/ditchoom/webrtc/IceServerCredentials {
-}
-
-public final class com/ditchoom/webrtc/IceServerCredentials$LongTerm : com/ditchoom/webrtc/IceServerCredentials {
-	public fun <init> (Ljava/lang/String;Ljava/lang/String;)V
-	public final fun component1 ()Ljava/lang/String;
-	public final fun component2 ()Ljava/lang/String;
-	public final fun copy (Ljava/lang/String;Ljava/lang/String;)Lcom/ditchoom/webrtc/IceServerCredentials$LongTerm;
-	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/IceServerCredentials$LongTerm;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/IceServerCredentials$LongTerm;
-	public fun equals (Ljava/lang/Object;)Z
-	public final fun getCredential ()Ljava/lang/String;
-	public final fun getUsername ()Ljava/lang/String;
-	public fun hashCode ()I
-	public fun toString ()Ljava/lang/String;
-}
-
-public final class com/ditchoom/webrtc/IceServerCredentials$None : com/ditchoom/webrtc/IceServerCredentials {
-	public static final field INSTANCE Lcom/ditchoom/webrtc/IceServerCredentials$None;
-	public fun equals (Ljava/lang/Object;)Z
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -108,8 +64,8 @@ public final class com/ditchoom/webrtc/MdnsAdvertisePolicy$Disabled : com/ditcho
 public final class com/ditchoom/webrtc/NativePeerConnection : com/ditchoom/webrtc/RtcPeerConnection {
 	public static final field FOUNDATION_DIGITS I
 	public static final field FOUNDATION_RADIX I
-	public fun <init> (Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lkotlin/random/Random;Lcom/ditchoom/webrtc/ice/DatagramBinder;Lcom/ditchoom/webrtc/IceGatheringPolicy;Lcom/ditchoom/webrtc/DtlsTransportFactory;Lcom/ditchoom/webrtc/PeerConnectionConfig;)V
-	public synthetic fun <init> (Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lkotlin/random/Random;Lcom/ditchoom/webrtc/ice/DatagramBinder;Lcom/ditchoom/webrtc/IceGatheringPolicy;Lcom/ditchoom/webrtc/DtlsTransportFactory;Lcom/ditchoom/webrtc/PeerConnectionConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lkotlin/random/Random;Lcom/ditchoom/webrtc/ice/DatagramBinder;Lcom/ditchoom/webrtc/ice/IceGatheringPolicy;Lcom/ditchoom/webrtc/DtlsTransportFactory;Lcom/ditchoom/webrtc/PeerConnectionConfig;)V
+	public synthetic fun <init> (Lkotlinx/coroutines/CoroutineScope;Lkotlin/jvm/functions/Function0;Lkotlin/random/Random;Lcom/ditchoom/webrtc/ice/DatagramBinder;Lcom/ditchoom/webrtc/ice/IceGatheringPolicy;Lcom/ditchoom/webrtc/DtlsTransportFactory;Lcom/ditchoom/webrtc/PeerConnectionConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun addIceCandidate (Ljava/lang/String;Lcom/ditchoom/webrtc/ice/CandidateGeneration;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun addIceCandidate (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
@@ -125,6 +81,11 @@ public final class com/ditchoom/webrtc/NativePeerConnection : com/ditchoom/webrt
 	public fun restartIce (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun setLocalDescription (Lcom/ditchoom/webrtc/sdp/SdpType;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun setRemoteDescription (Lcom/ditchoom/webrtc/sdp/SdpType;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/webrtc/NativePeerConnectionFactoryKt {
+	public static final fun nativePeerConnection (Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/webrtc/ice/DatagramBinder;Ljava/util/List;Lcom/ditchoom/buffer/BufferFactory;ZLcom/ditchoom/webrtc/PeerConnectionConfig;Lkotlin/random/Random;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function1;)Lcom/ditchoom/webrtc/RtcPeerConnection;
+	public static synthetic fun nativePeerConnection$default (Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/webrtc/ice/DatagramBinder;Ljava/util/List;Lcom/ditchoom/buffer/BufferFactory;ZLcom/ditchoom/webrtc/PeerConnectionConfig;Lkotlin/random/Random;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function1;ILjava/lang/Object;)Lcom/ditchoom/webrtc/RtcPeerConnection;
 }
 
 public final class com/ditchoom/webrtc/PeerConnectionConfig {

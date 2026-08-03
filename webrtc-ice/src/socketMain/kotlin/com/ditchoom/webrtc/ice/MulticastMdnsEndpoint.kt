@@ -42,7 +42,7 @@ public fun MulticastMdnsEndpoint(
 ): MdnsEndpoint =
     MdnsEndpoint(
         scope = scope,
-        binder = SocketUdpMdnsBinder(bufferFactory),
+        binder = SocketUdpMdnsBinder(),
         families = families,
         bufferFactory = bufferFactory,
         random = random,
@@ -60,13 +60,15 @@ public fun MulticastMdnsEndpoint(
  * capability, or a host with no multicast route on that family, must cost the session its *privacy*, not its
  * connectivity — the caller then publishes the address in the clear.
  */
-public class SocketUdpMdnsBinder(
-    private val bufferFactory: BufferFactory = BufferFactory.Default,
-) : MdnsMulticastBinder {
+public class SocketUdpMdnsBinder : MdnsMulticastBinder {
     override suspend fun bind(family: AddressFamily): MdnsGroupBinding =
         try {
             val isV4 = family == AddressFamily.IPv4
-            val channel = UdpSocket.bindMulticast(MDNS_UDP_PORT, family, bufferFactory = bufferFactory)
+            // No `bufferFactory` argument on purpose — see [MulticastMdnsResolver.queryOnce]: the receive
+            // allocation belongs to socket-udp's per-platform factory, and overriding it with ours broke
+            // every *inbound* mDNS packet on Linux (io_uring `recvmsg` needs native memory). The
+            // constructor parameter still feeds what this endpoint encodes, which it does own.
+            val channel = UdpSocket.bindMulticast(MDNS_UDP_PORT, family)
             val group =
                 UdpSocket.resolve(
                     if (isV4) MulticastMdnsResolver.MDNS_GROUP_V4 else MulticastMdnsResolver.MDNS_GROUP_V6,

@@ -3,8 +3,8 @@
 package com.ditchoom.webrtc.dtls
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.managed
 import com.ditchoom.webrtc.dtls.crypto.SelfSignedCertificate
 import com.ditchoom.webrtc.dtls.handshake.Dtls12Handshake
 import com.ditchoom.webrtc.dtls.handshake.Dtls13Handshake
@@ -43,9 +43,25 @@ public enum class KeyExchangeGroup { X25519, Secp256r1 }
  * The one un-seamed source of entropy is BoringSSL's internal RNG shaping the ClientHello / keys —
  * the documented ±1-datagram Tier-B drift residue (RFC §5.1), not a Kotlin `Random.Default`.
  *
- * @param bufferFactory pooled buffers for the record I/O edge. Pass a **pooled native** factory in
- *   production: a native-backed buffer hands BoringSSL its own address (no staging copy), while a
- *   GC-heap buffer (the `managed()` default) is staged through an internal native scratch.
+ * @param bufferFactory buffers for the record I/O edge, and the one seam here with a **platform**
+ *   consequence rather than a performance one. Every record this engine seals is handed to the ICE
+ *   transport and sent **unmodified** — `IceAgentDriver.send(packet)` passes it straight to the bound
+ *   `DatagramChannel` — and socket-udp's Linux (`io_uring sendmsg`) and Apple (`NWConnection`) send
+ *   paths reject a buffer with no native address outright (`send requires a native-memory buffer`).
+ *   The default is therefore [BufferFactory.Default], which is native-backed on every platform whose
+ *   socket demands it *and* still reclaimed without an explicit free: `MutableDataBuffer` (ARC) on
+ *   Apple, an auto-arena `FfmAutoBuffer` on JVM 21+, a `Cleaner`-backed direct buffer on Android.
+ *
+ *   It used to default to `managed()`, which is a GC **heap** `ByteArrayBuffer` on *every* target and
+ *   so could not be sent on Apple at all (webrtc#125). The rationale recorded here for that choice —
+ *   that a native buffer "hands BoringSSL its own address" — described the W4 backend and has been
+ *   obsolete since the W4b flip made the engine pure Kotlin; BoringSSL survives only as a `linuxTest`
+ *   differential oracle. Verify before propagating.
+ *
+ *   **Kotlin/Native Linux is still not fixed by this** and is the one target where no correct value
+ *   exists yet: buffer's `Default` there is a GC-heap `ByteArrayBuffer` (unsendable), and its only
+ *   native option, `deterministic()`, is `malloc`-backed and must be freed by hand — which nothing in
+ *   this stack does, because every default has always been GC-managed. See webrtc#125.
  * @param enableDtls13 negotiate up to DTLS 1.3; min always stays 1.2 (§11.3). **On by default**: both
  *   major browser engines now ship DTLS 1.3 for WebRTC (Firefox in Release, Chrome/BoringSSL on by
  *   default since the libwebrtc flip in 2025), and BoringSSL itself defaults to it. Version negotiation
@@ -68,7 +84,7 @@ public enum class KeyExchangeGroup { X25519, Secp256r1 }
  *   Tier-B drift residue, not a `Random.Default`.)
  */
 public class DtlsConfig(
-    public val bufferFactory: BufferFactory = BufferFactory.managed(),
+    public val bufferFactory: BufferFactory = BufferFactory.Default,
     public val enableDtls13: Boolean = true,
     public val keyExchangeGroup: KeyExchangeGroup = KeyExchangeGroup.X25519,
     public val maxDatagramSize: Int = 1500,

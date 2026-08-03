@@ -6,6 +6,49 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Fixed — a default-configured session could not send DTLS records on Apple, or receive mDNS on Linux
+
+Two instances of one defect class, both found while investigating #125: a **GC-heap** buffer factory
+reaching a socket that requires a **native address**. socket-udp's Linux (`io_uring sendmsg`/`recvmsg`)
+and Apple (`NWConnection`) paths reject such a buffer outright — `send requires a native-memory buffer` —
+and the JVM, where every default happens to be correct, is where all our real-socket coverage lived.
+
+- **`DtlsConfig.bufferFactory` defaulted to `managed()`**, which is a GC-heap `ByteArrayBuffer` on *every*
+  target. Every record `DtlsEngine` seals is handed to the ICE transport and sent **unmodified**
+  (`IceAgentDriver.send(packet)` passes it straight to the bound channel), so on Apple a session built the
+  way the README documents could not put a single DTLS record on the wire. It now defaults to
+  `BufferFactory.Default`, which is native-backed *and* reclaimed without an explicit free on every
+  platform that needs it — `MutableDataBuffer` (ARC) on Apple, an auto-arena `FfmAutoBuffer` on JVM 21+, a
+  `Cleaner`-backed direct buffer on Android. **Fixes the five Apple targets** (macosX64, macosArm64,
+  iosArm64, iosSimulatorArm64, iosX64).
+
+  The rationale the KDoc recorded for `managed()` — that a native buffer "hands BoringSSL its own address"
+  — described the W4 backend and has been obsolete since the W4b flip made the engine pure Kotlin. That is
+  the fifth stale premise found in this repo family; verify before propagating.
+
+- **The mDNS sockets overrode socket-udp's per-platform receive factory**, exactly as the unicast binder
+  did before #123. `MulticastMdnsResolver` and `SocketUdpMdnsBinder` both passed
+  `bufferFactory = BufferFactory.Default` to `UdpSocket.bindMulticast`, replacing a validated per-platform
+  allocation strategy with one that is wrong on Linux — so every *inbound* mDNS packet was unreadable
+  there and queries simply went unanswered. They no longer pass one. The constructor parameter stays for
+  what these types **encode**, which they do own; `SocketUdpMdnsBinder`'s now-dead `bufferFactory`
+  parameter is removed (binary-breaking, hence `minor`).
+
+### Known gap — Kotlin/Native **Linux** still cannot send with the shipped defaults (#125)
+
+Stated plainly rather than left to be rediscovered. On linuxX64/linuxArm64 buffer's `Default` is a GC-heap
+`ByteArrayBuffer` (unsendable), and its only native-backed factory, `deterministic()`, is `malloc`-backed
+and must be freed by hand — which **nothing in this stack does**, because every default has always been
+GC-managed and the free-tracking invariant `CountingBufferFactory` promises was never wired up. Flipping
+Linux to it would trade "cannot send" for an unbounded native leak at the consent-check and per-record
+rate, and it cannot be fixed by freeing after send either: `StunTransaction` emits `request.slice()` on
+both the initial send *and* every retransmit, so the buffer is transaction-owned, not driver-owned.
+
+A Kotlin/Native consumer on Linux must inject a native factory today (`BufferFactory.deterministic()`),
+which is what `webrtc-harness-endpoint` has always done and why the interop matrix never saw this. The
+real fix wants a GC-managed native-memory buffer from buffer itself — what Apple gets from ARC and the JVM
+from `Arena.ofAuto`. Tracked on #125.
+
 ### Added — `udpDatagramBinder()`: the production UDP seam now ships
 
 Every consumer had to hand-write the one line that turns a virtual-time session into a real one.

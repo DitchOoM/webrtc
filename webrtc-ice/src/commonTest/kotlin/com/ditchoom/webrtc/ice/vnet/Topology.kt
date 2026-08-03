@@ -104,6 +104,12 @@ internal object Vnets {
         bufferFactory: BufferFactory = BufferFactory.Default,
         impairment: ImpairmentConfig? = null,
         impairmentSeed: Long = DEFAULT_IMPAIRMENT_SEED,
+        // Server-side expiry (issue #137). The defaults are coturn's, so every existing fixture keeps the
+        // behaviour it had; a fixture that wants to OUTLIVE an allocation compresses them instead of
+        // waiting 600 virtual seconds for the interesting part to start.
+        turnLifetimeSeconds: UInt = TurnServer.DEFAULT_LIFETIME_SECONDS,
+        turnPermissionLifetimeSeconds: UInt = TurnServer.DEFAULT_PERMISSION_LIFETIME_SECONDS,
+        turnNoncePolicy: NoncePolicy = NoncePolicy.Fixed,
     ): Meetup {
         val natA = nat(publicIp = "203.0.113.10", privatePrefix = "10.0.0.", profile = profileA)
         val natB = nat(publicIp = "203.0.113.20", privatePrefix = "10.0.1.", profile = profileB)
@@ -115,6 +121,9 @@ internal object Vnets {
                 vnet = vnet,
                 scope = scope,
                 keyProvider = turnKeyProvider(),
+                lifetimeSeconds = turnLifetimeSeconds,
+                permissionLifetimeSeconds = turnPermissionLifetimeSeconds,
+                noncePolicy = turnNoncePolicy,
             ).also { it.start() }
         return Meetup(
             vnet = vnet,

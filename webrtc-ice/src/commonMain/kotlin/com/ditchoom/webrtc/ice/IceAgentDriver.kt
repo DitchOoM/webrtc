@@ -56,11 +56,47 @@ public interface IceDataTransport {
     /** Send one packet to the peer over the selected pair. Ownership of [packet] is not transferred. */
     public suspend fun send(packet: ReadBuffer)
 
-    /** Receive the next non-STUN packet, or null once the transport has closed. */
-    public suspend fun receive(): ReadBuffer?
+    /** Receive the next non-STUN packet, or [IceDataReadResult.Closed] once the transport has closed. */
+    public suspend fun receive(): IceDataReadResult
 
-    /** Tear the app-data seam down; a pending/next [receive] returns null. Idempotent. */
+    /** Tear the app-data seam down; a pending/next [receive] answers [IceDataReadResult.Closed]. Idempotent. */
     public fun close()
+}
+
+/**
+ * The result of one [IceDataTransport.receive] — sealed rather than a nullable [ReadBuffer], mirroring
+ * `DatagramReadResult` one layer down. "Closed" is a *state* of the seam, not an absent packet, and the
+ * distinction is load-bearing: a caller that elvis-ed the null could not tell a closed transport from one
+ * that merely had nothing yet, and the DTLS forwarder's `break` on it is what ends a session.
+ */
+public sealed interface IceDataReadResult {
+    /** A packet arrived. Ownership of [packet] transfers to the caller. */
+    public data class Received(
+        public val packet: ReadBuffer,
+    ) : IceDataReadResult
+
+    /** The seam is closed and will deliver nothing further. Terminal. */
+    public data object Closed : IceDataReadResult
+}
+
+/**
+ * The result of [IceAgentDriver.gatherRelay] — sealed rather than a nullable [IceCandidate], so the
+ * reason a relay was not gathered survives the call instead of being flattened into "no candidate".
+ *
+ * [Unavailable] wraps [TurnAllocationResult.Unavailable] rather than restating its cases: the reasons a
+ * relay candidate is missing are exactly the reasons the allocation failed, and duplicating them here
+ * would create two hierarchies to keep in step.
+ */
+public sealed interface RelayGatheringResult {
+    /** The relay allocated and [candidate] is bound, forwarding, and already emitted on the gather flow. */
+    public data class Gathered(
+        public val candidate: IceCandidate,
+    ) : RelayGatheringResult
+
+    /** No relay candidate — [cause] is the allocation's own typed reason. */
+    public data class Unavailable(
+        public val cause: TurnAllocationResult.Unavailable,
+    ) : RelayGatheringResult
 }
 
 /**
@@ -292,8 +328,13 @@ public class IceAgentDriver(
 
     /**
      * Gather a relay candidate: bind a dedicated socket at [ip]:[port], allocate on [turnServer], and
-     * present the allocation as the candidate's channel. Returns the relay candidate, or null if the
-     * allocation fails. A [port] of 0 asks for an ephemeral one, as in [gatherHost].
+     * present the allocation as the candidate's channel. A [port] of 0 asks for an ephemeral one, as in
+     * [gatherHost].
+     *
+     * Answers a sealed [RelayGatheringResult] carrying [TurnAllocation.allocate]'s own cause, so
+     * "your TURN credentials were rejected" reaches the caller as that rather than as a null indistinct
+     * from a server that never answered. This is the failure mode the whole relay path is judged on: for
+     * a peer behind a symmetric NAT there is no other candidate to fall back to.
      */
     public suspend fun gatherRelay(
         turnServer: SocketAddress,
@@ -301,14 +342,18 @@ public class IceAgentDriver(
         password: String,
         ip: String,
         port: Int,
-    ): IceCandidate? {
+    ): RelayGatheringResult {
         val socketAddress = SocketAddress.ofLiteral(ip, port)
         val underlying = binder.bind(socketAddress)
         // The `raddr` of a relay candidate IS this local base, so it takes the bound port too — otherwise
         // an ephemeral allocation publishes `raddr <ip> rport 0`, which is not a place anything lives.
         val baseAddress = boundAddress(ip, underlying)
         val allocation = TurnAllocation(underlying, turnServer, username, password, gatheringRandom, scope, config.bufferFactory)
-        val relayedSocket = allocation.allocate() ?: return null
+        val relayedSocket =
+            when (val result = allocation.allocate()) {
+                is TurnAllocationResult.Allocated -> result.relayed
+                is TurnAllocationResult.Unavailable -> return RelayGatheringResult.Unavailable(result)
+            }
         val relayedAddress = relayedSocket.toTransportAddress()
         // The relay binds its own socket → its own interface index; preference derives from the relayed base.
         val relayPreference =
@@ -331,7 +376,7 @@ public class IceAgentDriver(
         bind(relay.base, allocation)
         forward(relay.base, allocation)
         gather(relay)
-        return relay
+        return RelayGatheringResult.Gathered(relay)
     }
 
     /**
@@ -437,7 +482,10 @@ public class IceAgentDriver(
                 channels[pair.local.base]?.send(packet, to = pair.remote.address.toSocketAddress())
             }
 
-            override suspend fun receive(): ReadBuffer? = appInbound.receiveCatching().getOrNull()
+            override suspend fun receive(): IceDataReadResult {
+                val packet = appInbound.receiveCatching().getOrNull()
+                return if (packet != null) IceDataReadResult.Received(packet) else IceDataReadResult.Closed
+            }
 
             override fun close() {
                 appInbound.close()

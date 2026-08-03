@@ -182,7 +182,11 @@ internal class IceDriver(
         val socketAddress = vnetAddress(ip, port)
         val underlying = vnet.bind(socketAddress)
         val allocation = TurnAllocation(underlying, turnServer, username, password, random, scope)
-        val relayedSocket = allocation.allocate() ?: return null
+        val relayedSocket =
+            when (val result = allocation.allocate()) {
+                is TurnAllocationResult.Allocated -> result.relayed
+                is TurnAllocationResult.Unavailable -> return null
+            }
         val relayedAddress = relayedSocket.toTransportAddress()
         val relayPreference =
             CandidatePreferencePolicy.Default.localPreference(relayedAddress.ip, nextInterfaceIndex(relayedAddress.ip))

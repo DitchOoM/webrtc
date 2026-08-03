@@ -6,6 +6,77 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Fixed — every TURN request was sent exactly once, over UDP
+
+`TurnAllocation.request()` transmitted each request a single time and waited out its budget. TURN is the
+only STUN client in this stack that had no retransmission: `gatherServerReflexive` has retransmitted its
+Binding every 500 ms since it was written, and connectivity checks run the full RFC 8489 §6.2.1 chain
+through `StunTransaction`. The relay was the exception, and each of its three requests failed differently:
+
+- a lost **Allocate** cost the relay candidate outright, which behind a symmetric NAT is the only path;
+- a lost **CreatePermission** lapsed the permission silently, in both directions (RFC 8656 §11.2);
+- a lost **Refresh** ended the keep-alive loop *permanently* — `refreshAllocation` answered `null` for
+  both "the server refused" and "nobody answered", and the loop treated `null` as terminal. So one
+  dropped datagram on a healthy path reintroduced the exact expiry the section below exists to prevent.
+
+Each request now retransmits every `retransmitInterval` (500 ms, the gathering RTO) until its response
+arrives or the caller's budget elapses, re-slicing the same encoded request so every copy is
+byte-identical. `TurnAllocationRefreshTest` drops transmission #1 of *every* TURN request and the session
+is indistinguishable from a lossless one; it separately blackholes an entire Refresh transaction and the
+keep-alive loop retries and recovers. Both have their anti-vacuity direction: with `retransmitInterval`
+raised past the request budget, the same single dropped datagram loses the allocation outright.
+
+### Changed — the TURN and ICE-driver seams answer with sealed types, not nulls (`minor`)
+
+The retransmission bug above was a *typing* bug first: `null` meant both "refused" and "unanswered", and
+no caller could tell them apart. The nullable returns on these seams are now sealed results, so the
+distinction is one the compiler enforces rather than one a comment asks for.
+
+- **`TurnAllocation.allocate()`** answers `TurnAllocationResult` — `Allocated(relayed)`, or
+  `Unavailable.Rejected(error)` / `.NoResponse` / `.MalformedResponse`. A server that turns our
+  credentials down is now distinguishable from one that never answered; both used to surface as "no relay
+  candidate", which the class KDoc had flagged as the least diagnosable of the available failures.
+- **`IceAgentDriver.gatherRelay()`** answers `RelayGatheringResult`, wrapping that cause rather than
+  discarding it, and **`systemIceGathering()` emits it** as the new `IceGatheringNotice.RelayUnavailable`.
+  A wrong TURN password reaches the application as a 401 instead of as silence.
+- **`IceDataTransport.receive()`** answers `IceDataReadResult.Received`/`Closed`, mirroring
+  `DatagramReadResult` one layer down — "closed" is a state of the seam, not an absent packet.
+
+Internally `TurnMaintenance.Renewing` gains `retryAt`: an unanswered round re-arms at a twentieth of the
+lifetime rather than a refusal's full cadence, spending the margin `refreshAt` always claimed to leave.
+
+**API:** source-breaking at these three call sites, binary-breaking — `minor`.
+
+### Fixed — a long relayed session lost its relay at the server's LIFETIME (#137)
+
+`TurnAllocation` allocated once and then let the server's clock run out from under it. A TURN allocation
+and its permissions expire independently — coturn defaults to 600 s and 300 s, both shorter than an
+ordinary call — and they fail differently: the permission goes first, so the path dies while ICE is still
+reporting the pair as live and only RFC 7675 consent notices, 30 s late and under the wrong name. For a
+peer behind a symmetric NAT the relay is the only path, so this was "any long relayed call drops".
+
+It now maintains itself, under a new `TurnMaintenance` policy on the constructor:
+
+- **Refresh (RFC 8656 §8)** at a fraction of the *granted* LIFETIME — read from the Allocate/Refresh
+  response rather than assumed, so a server that grants less than we asked for shortens our own cadence.
+- **CreatePermission (§9) re-installation** for **every** permitted address, batched into one request.
+  Every address, not just the one traffic is currently headed for: the address that lapses is precisely
+  the one nothing is asking about.
+- **438 Stale Nonce** handling on both — a long-lived allocation outlives the nonce it was created under,
+  so the challenge is re-read and the request retried once. The key derivation is untouched.
+- **Deallocation on `close()`** (Refresh with LIFETIME=0), so a closed session stops holding a relay port
+  for the rest of its lifetime. It rides an atomically-started coroutine, so the socket is released even
+  when the scope is being torn down in the same breath.
+
+Both timers ride the injected scope and are exact under `runTest` virtual time (directive #2). The vnet
+`TurnServer` learned configurable allocation/permission lifetimes and nonce rotation, and
+`TurnAllocationRefreshTest` holds a relayed round trip across five allocation lifetimes and fifteen
+permission lifetimes — with the anti-vacuity direction (`TurnMaintenance.None`) proving the same relay
+dies at the first probe past the permission lifetime.
+
+**API:** `TurnAllocation`'s constructor takes one more parameter (defaulted). Source-compatible,
+binary-breaking — `minor`.
+
 ### Fixed — a default-configured session could not send DTLS records on Apple, or receive mDNS on Linux
 
 Two instances of one defect class, both found while investigating #125: a **GC-heap** buffer factory

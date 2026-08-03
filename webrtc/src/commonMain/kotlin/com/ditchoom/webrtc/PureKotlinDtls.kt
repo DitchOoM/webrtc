@@ -11,6 +11,7 @@ import com.ditchoom.webrtc.dtls.DtlsException
 import com.ditchoom.webrtc.dtls.DtlsFailureReason
 import com.ditchoom.webrtc.dtls.DtlsState
 import com.ditchoom.webrtc.dtls.DtlsStep
+import com.ditchoom.webrtc.ice.IceDataReadResult
 import com.ditchoom.webrtc.ice.IceDataTransport
 import com.ditchoom.webrtc.sctp.datachannel.SctpDatagramTransport
 import com.ditchoom.webrtc.sdp.Fingerprint
@@ -149,7 +150,11 @@ public class PureKotlinDtls(
             forwarder =
                 scope.launch {
                     while (true) {
-                        val record = iceData.receive() ?: break
+                        val record =
+                            when (val read = iceData.receive()) {
+                                is IceDataReadResult.Received -> read.packet
+                                IceDataReadResult.Closed -> break
+                            }
                         inbound.send(record)
                     }
                     // The pair went away: unblock a handshake that would otherwise wait out its budget.

@@ -467,6 +467,27 @@ public final class com/ditchoom/webrtc/ice/IceCredentials$Companion {
 	public final fun random (Lkotlin/random/Random;)Lcom/ditchoom/webrtc/ice/IceCredentials;
 }
 
+public abstract interface class com/ditchoom/webrtc/ice/IceDataReadResult {
+}
+
+public final class com/ditchoom/webrtc/ice/IceDataReadResult$Closed : com/ditchoom/webrtc/ice/IceDataReadResult {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/IceDataReadResult$Closed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/IceDataReadResult$Received : com/ditchoom/webrtc/ice/IceDataReadResult {
+	public fun <init> (Lcom/ditchoom/buffer/ReadBuffer;)V
+	public final fun component1 ()Lcom/ditchoom/buffer/ReadBuffer;
+	public final fun copy (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/ice/IceDataReadResult$Received;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/IceDataReadResult$Received;Lcom/ditchoom/buffer/ReadBuffer;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceDataReadResult$Received;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getPacket ()Lcom/ditchoom/buffer/ReadBuffer;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public abstract interface class com/ditchoom/webrtc/ice/IceDataTransport {
 	public abstract fun close ()V
 	public abstract fun receive (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
@@ -599,6 +620,19 @@ public final class com/ditchoom/webrtc/ice/IceGatheringNotice$InterfacesUnavaila
 	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/IceGatheringNotice$InterfacesUnavailable;Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceGatheringNotice$InterfacesUnavailable;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getReason ()Lcom/ditchoom/webrtc/ice/InterfaceEnumerationFailure;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/IceGatheringNotice$RelayUnavailable : com/ditchoom/webrtc/ice/IceGatheringNotice {
+	public fun <init> (Ljava/lang/String;Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable;
+	public final fun copy (Ljava/lang/String;Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable;)Lcom/ditchoom/webrtc/ice/IceGatheringNotice$RelayUnavailable;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/IceGatheringNotice$RelayUnavailable;Ljava/lang/String;Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceGatheringNotice$RelayUnavailable;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable;
+	public final fun getUrl ()Ljava/lang/String;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -1402,6 +1436,31 @@ public final class com/ditchoom/webrtc/ice/ReactivityDegradation$NoPlatformSigna
 	public fun toString ()Ljava/lang/String;
 }
 
+public abstract interface class com/ditchoom/webrtc/ice/RelayGatheringResult {
+}
+
+public final class com/ditchoom/webrtc/ice/RelayGatheringResult$Gathered : com/ditchoom/webrtc/ice/RelayGatheringResult {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/IceCandidate;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/IceCandidate;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/IceCandidate;)Lcom/ditchoom/webrtc/ice/RelayGatheringResult$Gathered;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/RelayGatheringResult$Gathered;Lcom/ditchoom/webrtc/ice/IceCandidate;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/RelayGatheringResult$Gathered;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCandidate ()Lcom/ditchoom/webrtc/ice/IceCandidate;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/RelayGatheringResult$Unavailable : com/ditchoom/webrtc/ice/RelayGatheringResult {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable;)Lcom/ditchoom/webrtc/ice/RelayGatheringResult$Unavailable;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/RelayGatheringResult$Unavailable;Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/RelayGatheringResult$Unavailable;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public abstract interface class com/ditchoom/webrtc/ice/ServerReflexiveResult {
 }
 
@@ -1494,8 +1553,8 @@ public final class com/ditchoom/webrtc/ice/TieBreaker$Companion {
 
 public final class com/ditchoom/webrtc/ice/TurnAllocation : com/ditchoom/buffer/flow/AddressedDatagramChannel {
 	public static final field TURN_OVERHEAD_BYTES I
-	public fun <init> (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Ljava/lang/String;Ljava/lang/String;Lkotlin/random/Random;Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/buffer/BufferFactory;)V
-	public synthetic fun <init> (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Ljava/lang/String;Ljava/lang/String;Lkotlin/random/Random;Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/buffer/BufferFactory;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Ljava/lang/String;Ljava/lang/String;Lkotlin/random/Random;Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/buffer/BufferFactory;Lcom/ditchoom/webrtc/ice/TurnMaintenance;JILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Ljava/lang/String;Ljava/lang/String;Lkotlin/random/Random;Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/buffer/BufferFactory;Lcom/ditchoom/webrtc/ice/TurnMaintenance;JLkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun allocate-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static synthetic fun allocate-VtjQ1oo$default (Lcom/ditchoom/webrtc/ice/TurnAllocation;JLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public fun close ()V
@@ -1507,6 +1566,76 @@ public final class com/ditchoom/webrtc/ice/TurnAllocation : com/ditchoom/buffer/
 	public fun receiveBatch (ILkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun send (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/flow/SocketAddress;Lcom/ditchoom/buffer/flow/DatagramSendOptions;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun sendBatch (Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/TurnAllocationResult {
+}
+
+public final class com/ditchoom/webrtc/ice/TurnAllocationResult$Allocated : com/ditchoom/webrtc/ice/TurnAllocationResult {
+	public fun <init> (Lcom/ditchoom/buffer/flow/SocketAddress;)V
+	public final fun component1 ()Lcom/ditchoom/buffer/flow/SocketAddress;
+	public final fun copy (Lcom/ditchoom/buffer/flow/SocketAddress;)Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Allocated;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Allocated;Lcom/ditchoom/buffer/flow/SocketAddress;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Allocated;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getRelayed ()Lcom/ditchoom/buffer/flow/SocketAddress;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable : com/ditchoom/webrtc/ice/TurnAllocationResult {
+}
+
+public final class com/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable$MalformedResponse : com/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable$MalformedResponse;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable$NoResponse : com/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable$NoResponse;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable$Rejected : com/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable {
+	public fun <init> (Lcom/ditchoom/webrtc/stun/StunErrorCode;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/stun/StunErrorCode;
+	public final fun copy (Lcom/ditchoom/webrtc/stun/StunErrorCode;)Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable$Rejected;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable$Rejected;Lcom/ditchoom/webrtc/stun/StunErrorCode;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable$Rejected;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getError ()Lcom/ditchoom/webrtc/stun/StunErrorCode;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/TurnMaintenance {
+}
+
+public final class com/ditchoom/webrtc/ice/TurnMaintenance$None : com/ditchoom/webrtc/ice/TurnMaintenance {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/TurnMaintenance$None;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/TurnMaintenance$Renewing : com/ditchoom/webrtc/ice/TurnMaintenance {
+	public synthetic fun <init> (DJDDILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (DJDDLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()D
+	public final fun component2-UwyO8pc ()J
+	public final fun component3 ()D
+	public final fun component4 ()D
+	public final fun copy-dWUq8MI (DJDD)Lcom/ditchoom/webrtc/ice/TurnMaintenance$Renewing;
+	public static synthetic fun copy-dWUq8MI$default (Lcom/ditchoom/webrtc/ice/TurnMaintenance$Renewing;DJDDILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/TurnMaintenance$Renewing;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getPermissionLifetime-UwyO8pc ()J
+	public final fun getPermissionRefreshAt ()D
+	public final fun getRefreshAt ()D
+	public final fun getRetryAt ()D
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
 }
 
 public final class com/ditchoom/webrtc/ice/UdpDatagramBinderKt {

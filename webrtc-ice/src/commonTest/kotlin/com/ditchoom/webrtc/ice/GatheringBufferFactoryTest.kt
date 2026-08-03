@@ -173,15 +173,31 @@ private class TaggingBufferFactory(
     override fun allocate(
         size: Int,
         byteOrder: ByteOrder,
-    ): PlatformBuffer = delegate.allocate(size, byteOrder).also { mine += it }
+    ): PlatformBuffer = tag(delegate.allocate(size, byteOrder))
 
     override fun wrap(
         array: ByteArray,
         byteOrder: ByteOrder,
-    ): PlatformBuffer = delegate.wrap(array, byteOrder).also { mine += it }
+    ): PlatformBuffer = tag(delegate.wrap(array, byteOrder))
 
-    /** True iff [buffer] is one this factory allocated (reference identity — the exact datagram sent). */
+    private fun tag(buffer: PlatformBuffer): PlatformBuffer = Tagged(buffer).also { mine += it }
+
+    /** True iff [buffer] is one this factory allocated, or a [Tagged] slice of one. */
     fun owns(buffer: ReadBuffer): Boolean = mine.any { it === buffer }
+
+    /**
+     * Provenance has to survive `slice()`. A retransmitting sender hands the socket a **fresh read view**
+     * of the same encoded request on every attempt (see `TurnAllocation.request` and `StunTransaction`),
+     * and buffer's contract is that such a slice aliases the parent's storage — so a slice of a
+     * native-backed buffer is itself native-backed and a perfectly legal io_uring send. Tracking
+     * provenance by reference identity alone would call that slice a heap buffer and reject it, which is
+     * a fact about this stand-in rather than about the code under test.
+     */
+    private inner class Tagged(
+        private val inner: PlatformBuffer,
+    ) : PlatformBuffer by inner {
+        override fun slice(byteOrder: ByteOrder): PlatformBuffer = tag(inner.slice(byteOrder))
+    }
 }
 
 /**

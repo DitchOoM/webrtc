@@ -19,6 +19,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.random.Random
 import kotlin.test.Test
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
@@ -104,7 +105,10 @@ class IceForwarderThrowOnCloseTest {
                     Random(903),
                     backgroundScope,
                 )
-            assertNotNull(withTimeoutOrNull(timeout) { allocation.allocate() }, "the relay allocated over the vnet TURN server")
+            assertIs<TurnAllocationResult.Allocated>(
+                withTimeoutOrNull(timeout) { allocation.allocate() },
+                "the relay allocated over the vnet TURN server",
+            )
 
             allocation.close() // closes `underlying` under the live demux read — the retirement path
 

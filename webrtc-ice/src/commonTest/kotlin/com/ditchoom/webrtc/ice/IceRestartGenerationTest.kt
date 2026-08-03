@@ -62,8 +62,7 @@ class IceRestartGenerationTest {
                 withTimeoutOrNull(timeout) {
                     fixture.bob
                         .appDataTransport()
-                        .receive()
-                        ?.text()
+                        .receiveText()
                 },
                 "the peer receives application data sent during the restart window",
             )
@@ -139,8 +138,7 @@ class IceRestartGenerationTest {
                 withTimeoutOrNull(timeout) {
                     fixture.bob
                         .appDataTransport()
-                        .receive()
-                        ?.text()
+                        .receiveText()
                 },
             )
             advanceThroughConsent()
@@ -208,10 +206,20 @@ class IceRestartGenerationTest {
                 withTimeoutOrNull(timeout) {
                     fixture.bob
                         .appDataTransport()
-                        .receive()
-                        ?.text()
+                        .receiveText()
                 },
             )
+        }
+
+    /**
+     * The next app-data packet's text, or null once the seam closes. The nullable lives here, in the
+     * assertion helper, rather than in [IceDataTransport.receive] — a test asking "did the text arrive
+     * within the timeout" genuinely has one absent case, and it is not the transport's job to say so.
+     */
+    private suspend fun IceDataTransport.receiveText(): String? =
+        when (val read = receive()) {
+            is IceDataReadResult.Received -> read.packet.text()
+            IceDataReadResult.Closed -> null
         }
 
     // ---- fixture plumbing ---------------------------------------------------------------------------

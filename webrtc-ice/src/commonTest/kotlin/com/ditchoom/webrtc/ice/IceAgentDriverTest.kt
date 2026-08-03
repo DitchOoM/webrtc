@@ -49,7 +49,11 @@ class IceAgentDriverTest {
         object : SctpDatagramTransport {
             override suspend fun send(packet: ReadBuffer) = this@asSctpTransport.send(packet)
 
-            override suspend fun receive(): ReadBuffer? = this@asSctpTransport.receive()
+            override suspend fun receive(): ReadBuffer? =
+                when (val read = this@asSctpTransport.receive()) {
+                    is IceDataReadResult.Received -> read.packet
+                    IceDataReadResult.Closed -> null
+                }
 
             override fun close() = this@asSctpTransport.close()
         }

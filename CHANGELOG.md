@@ -24,6 +24,15 @@ implementation we shipped lived in the non-published interop peer.
   WebRTC session and a QUIC-P2P connection are meant to share one demuxed socket and a binder that owned
   its sockets could not be composed into that (RFC §11.6). An app in that position keeps
   supplying its own binder, unchanged.
+- **Two overloads, no defaulted buffer factory.** `udpDatagramBinder()` allocates received datagrams from
+  socket-udp's own per-platform factory and offers no way to say otherwise;
+  `udpDatagramBinder(bufferFactory)` overrides it with your pool (directive 6). There is no value the
+  no-argument form could have defaulted to: the right factory differs per platform — NIO on the
+  JVM/Android, native memory for io_uring on Linux and `NWConnection` on Apple — and only socket-udp knows
+  which. The first draft defaulted to `BufferFactory.Default`, which is correct on the JVM and breaks
+  **every received datagram** on Linux and Apple. Host candidates still gathered, because they are
+  synthesized from the bind address and never received, so the only symptom was server-reflexive and relay
+  gathering silently producing nothing.
 
 ### Fixed — ephemeral gathering advertised port 0
 
@@ -41,8 +50,15 @@ does not: a platform renders a bound v6 link-local with a `%scope` suffix our pa
 Fixtures ship with it (directive #5), which meant teaching the vnet what an OS already knew:
 `bind(host, 0)` now assigns from a deterministic counter over IANA's dynamic range instead of binding port
 zero literally — a seam that binds `:0` quietly is a seam where this bug passes every test.
-`IceEphemeralPortTest` asserts the nominated pair rides the *signalled* host candidate, and
-`UdpDatagramBinderTest` runs the same shape through the shipped binder on real loopback sockets.
+`IceEphemeralPortTest` asserts the nominated pair rides the *signalled* host candidate rather than a
+peer-reflexive rediscovery, which is the only way an `ip:0` advertisement could ever have converged.
+
+Real-socket coverage now runs on **more than one platform**, which is the lesson the buffer-factory defect
+taught: `UdpDatagramBinderTest` moves into a shared `socketTest` source set (jvmTest + linuxTest, plus
+macOS/iOS on a mac host) and proves the seam itself — a datagram out through a binder-bound socket, the
+same datagram back, at the port the kernel actually assigned. A JVM-only version of it was green
+throughout, because the JVM is precisely the platform where the wrong default is right. The fuller ICE
+establishment stays on the JVM as `UdpDatagramBinderIceTest`.
 
 ### Added — we advertise our own `<uuid>.local` candidates, and answer for them (RFC 8828 / RFC 6762) (#88)
 

@@ -1296,8 +1296,8 @@ public final class com/ditchoom/webrtc/ice/TurnAllocation : com/ditchoom/buffer/
 }
 
 public final class com/ditchoom/webrtc/ice/UdpDatagramBinderKt {
+	public static final fun udpDatagramBinder ()Lcom/ditchoom/webrtc/ice/DatagramBinder;
 	public static final fun udpDatagramBinder (Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/ice/DatagramBinder;
-	public static synthetic fun udpDatagramBinder$default (Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/DatagramBinder;
 }
 
 public final class com/ditchoom/webrtc/ice/Ufrag {

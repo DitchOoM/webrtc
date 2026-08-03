@@ -2,6 +2,8 @@
 
 package com.ditchoom.webrtc.ice
 
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -20,19 +22,21 @@ import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
 /**
- * [udpDatagramBinder] on a **real kernel**: two production [IceAgentDriver]s bind loopback sockets through
- * the shipped helper, gather **ephemeral** host candidates, and complete ICE against each other.
+ * The whole ICE agent over sockets [udpDatagramBinder] bound: two production [IceAgentDriver]s gather
+ * **ephemeral** host candidates on real loopback and complete connectivity checks against each other.
  *
- * This is what makes the helper a claim rather than a convenience wrapper. Every other ICE fixture runs
- * over the in-memory vnet, so it proves the driver; only this proves the one line the driver is handed in
- * production — and it proves it in the shape a real gathering policy uses, `bind(ip, 0)`, where the OS
- * (not the caller) chooses the port and the candidate has to say which one it got.
+ * Its cross-platform sibling is `UdpDatagramBinderTest` in `socketTest`, which proves the seam itself
+ * (a datagram out, the same datagram back) on the JVM *and* on Kotlin/Native. This one goes further —
+ * gathering, pairing, checks, nomination — and stays JVM-only for a reason that is worth writing down:
+ * under `runBlocking` on Kotlin/Native the same scenario does not converge, while the identical stack
+ * establishes fine on real sockets inside the L2 container harness. That is a property of driving this
+ * many cooperating loops from a single-threaded `runBlocking`, not of the binder, so pinning it here
+ * keeps a real proof green rather than parking an unexplained red one in the native lane.
  *
- * JVM-only and **not** virtual-time: real sockets need a real dispatcher and real time, so the watchdog is
- * a `withTimeout` rather than a wall-clock budget (directive 4). socket-udp ships no wasm/browser actual,
- * and [udpDatagramBinder] does not exist there to test.
+ * Real sockets mean real time and a real dispatcher, so the watchdog is a `withTimeout` on observable
+ * state, never a wall-clock budget (directive 4).
  */
-class UdpDatagramBinderTest {
+class UdpDatagramBinderIceTest {
     @Test
     fun ice_completes_over_real_loopback_sockets_bound_by_the_helper() =
         runBlocking {
@@ -40,8 +44,16 @@ class UdpDatagramBinderTest {
                 val scope = CoroutineScope(coroutineContext + Job())
                 val clock: () -> Instant = { Clock.System.now() }
                 val binder = udpDatagramBinder()
-                val alice = IceAgentDriver(IceRole.Controlling, Random(501), binder, scope, clock)
-                val bob = IceAgentDriver(IceRole.Controlled, Random(502), binder, scope, clock)
+
+                // The SEND side needs a native-memory factory on Kotlin/Native and `IceConfig`'s default
+                // is not one: io_uring `sendmsg` refuses a GC-heap buffer outright ("send requires a
+                // native-memory buffer"). Injected here exactly as the interop peer injects it, so this
+                // test measures the binder rather than that unrelated default. The default itself is a
+                // real trap for a native consumer, and a separate question from this fixture.
+                val net = BufferFactory.deterministic()
+                val config = IceConfig(bufferFactory = net)
+                val alice = IceAgentDriver(IceRole.Controlling, Random(501), binder, scope, clock, config)
+                val bob = IceAgentDriver(IceRole.Controlled, Random(502), binder, scope, clock, config)
                 try {
                     alice.start()
                     bob.start()

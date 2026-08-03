@@ -291,6 +291,13 @@ connectivity substrate — gather once, punch once, demux the established path. 
 cannot participate.
 
 **So there is no batteries-included factory that opens its own socket, and there must not be.** A
-convenience helper, if one ever exists, has to accept an externally owned channel so it can be handed the
-very socket QUIC is using. `udpDatagramBinder()` is deliberately the smaller thing: it binds when asked,
-owns no lifecycle and holds no state.
+convenience helper has to accept an externally owned channel so it can be handed the very socket QUIC is
+using. `udpDatagramBinder()` is deliberately the smaller thing: it binds when asked, owns no lifecycle
+and holds no state.
+
+That helper now exists, and it obeys the rule structurally rather than by promise: `nativePeerConnection`
+(and the `systemIceGathering()` policy beneath it, issue #136 / #135) takes the `DatagramBinder` as a
+**required parameter with no default**, so there is no code path in either that can bind something the
+caller did not hand over. Pass `udpDatagramBinder()` for a session that owns its sockets, or a demuxed
+view of an existing one to share it with QUIC-P2P. This is why the factory was deferred twice before it
+was written: the constraint had to be expressible in the signature, not in a comment above it.

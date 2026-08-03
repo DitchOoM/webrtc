@@ -9,9 +9,6 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.Connection
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
-import com.ditchoom.buffer.flow.SocketAddress
-import com.ditchoom.webrtc.ice.InterfaceSnapshot
-import com.ditchoom.webrtc.ice.systemInterfaceEnumerator
 import com.ditchoom.webrtc.ice.udpDatagramBinder
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sdp.SdpType
@@ -26,22 +23,20 @@ import java.io.File
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.time.Clock
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
-import kotlin.time.Instant
 
 /**
  * **The README's quickstart, compiled and run.**
  *
  * The wiring block in `README.md` — `peerConnection(...)` below — is this code verbatim, so a reader
  * copying it gets something that establishes rather than something that used to. A README snippet nobody
- * compiles is a snippet that rots at the first signature change, and this library's entry point is a
- * six-seam constructor: exactly the shape that drifts silently.
+ * compiles is a snippet that rots at the first signature change.
  *
- * The **only** difference between this and what a real app runs is that `stunServer` is left null — two
- * peers in one process on loopback need no reflexive candidate. Everything else is identical: the binder,
- * the interface enumeration, ephemeral binding, `PureKotlinDtls`, the offer/answer order, the trickle
+ * Two differences from what a real app runs, both because the two peers share one process: `iceServers`
+ * is empty (loopback needs no reflexive or relayed candidate) and `mdns` is off (a `<uuid>.local` name
+ * would have to resolve over real multicast). Everything else is what `nativePeerConnection` defaults —
+ * interface enumeration, ephemeral binding, `PureKotlinDtls`, the offer/answer order, the trickle
  * wiring. If the README block and this one ever diverge, fix the README — this is the one that runs.
  *
  * Real sockets mean a real dispatcher and real time, so the watchdog is a [withTimeout] on observable
@@ -51,27 +46,22 @@ class ReadmeQuickstartTest {
     // ── README: "Quickstart" ─────────────────────────────────────────────────────────────────────
     private fun peerConnection(
         scope: CoroutineScope,
-        clock: () -> Instant, // Clock.System::now in production
         seed: Long,
-        stunServer: SocketAddress? = null, // SocketAddress.resolve("stun.example.org", 3478)
-    ) = NativePeerConnection(
+        iceServers: List<IceServer> = emptyList(), // listOf(IceServer("stun:stun.example.org"))
+    ) = nativePeerConnection(
         scope = scope,
-        clock = clock,
-        random = Random(seed),
-        // The one seam between a virtual-time test and a real kernel.
+        // The one seam between a virtual-time test and a real kernel — and a *parameter*, never
+        // something the factory binds for itself, so one demuxed UDP socket can carry more than
+        // this session.
         binder = udpDatagramBinder(),
-        // Which sockets to bind. Port 0 asks the OS for an ephemeral one — a pinned port cannot
-        // survive an ICE restart, which re-gathers while the old sockets are still bound.
-        gathering =
-            IceGatheringPolicy { driver ->
-                val snapshot = systemInterfaceEnumerator().enumerate()
-                val interfaces = (snapshot as? InterfaceSnapshot.Enumerated)?.interfaces.orEmpty()
-                for (local in interfaces) {
-                    driver.gatherHost(local.address.host, port = 0, stunServer = stunServer)
-                }
-            },
-        // One factory is one endpoint identity: its certificate is the a=fingerprint we offer.
-        dtls = PureKotlinDtls(scope, clock),
+        // `stun:` / `turn:` URLs. Parsed, resolved, and gathered on per address family; whatever is
+        // unusable (a `turns:` URL, a TURN server with no credential) is reported, never dropped.
+        iceServers = iceServers,
+        // Off here ONLY because both peers share this process: mDNS publishes host candidates as a
+        // `<uuid>.local` name the peer must resolve over real multicast. Leave it on in an app —
+        // that is the default, and what a browser does unconditionally.
+        mdns = false,
+        random = Random(seed),
     )
 
     @Test
@@ -80,11 +70,8 @@ class ReadmeQuickstartTest {
             withTimeout(WATCHDOG) {
                 val scope = CoroutineScope(coroutineContext + Job())
 
-                @Suppress("UnseamedEntropy") // the production default for the injected seam; not a core
-                val clock: () -> Instant = { Clock.System.now() }
-
-                val offerer = peerConnection(scope, clock, seed = 1L)
-                val answerer = peerConnection(scope, clock, seed = 2L)
+                val offerer = peerConnection(scope, seed = 1L)
+                val answerer = peerConnection(scope, seed = 2L)
 
                 // ── README: "Signaling is yours" — here the two peers share a process, so the
                 // "signaling channel" is a pair of collectors. In an app these cross your transport.

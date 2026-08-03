@@ -81,21 +81,13 @@ import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
 /**
- * How the [NativePeerConnection] gathers local ICE candidates — the seam over "which sockets to bind"
- * (ARCHITECTURE §5.2: gathering rides an injected driver). A test supplies host addresses over the vnet
- * (`{ it.gatherHost("10.0.0.1", 5000) }`); a production policy enumerates interfaces via socket's
- * `NetworkMonitor` and adds srflx/relay from the configured ICE servers (the real-UDP default lands with
- * the platform edge: `udpDatagramBinder()`).
+ * Moved to `webrtc-ice` (issue #136), beside the [IceAgentDriver] it gathers on and the production
+ * `systemIceGathering()` that implements it — which has to live there, because `socket-udp` may appear
+ * only in `webrtc-ice`'s `socketMain` (ARCHITECTURE §11.6) and that is *below* this module.
  *
- * It runs **once per ICE generation** — when negotiation starts, and again on every ICE restart (RFC 8445
- * §9), which exists precisely because the interfaces may have changed underneath the session. A policy
- * that pins fixed ports must therefore hand out a fresh one each call: the outgoing generation's sockets
- * stay bound until the new generation nominates, and an OS will not re-bind an address still in use.
+ * The alias keeps every existing `IceGatheringPolicy { … }` call site compiling.
  */
-public fun interface IceGatheringPolicy {
-    /** Gather candidates on [driver] (host/srflx/relay) — each gathered candidate trickles out. */
-    public suspend fun gather(driver: IceAgentDriver)
-}
+public typealias IceGatheringPolicy = com.ditchoom.webrtc.ice.IceGatheringPolicy
 
 /**
  * When a [NativePeerConnection] restarts ICE by itself (RFC 8445 §9). A sealed choice rather than a

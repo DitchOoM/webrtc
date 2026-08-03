@@ -26,6 +26,29 @@ kotlin {
             // at zero wall-clock on every platform. kotlin("test") comes from the convention.
             implementation(libs.kotlinx.coroutines.test)
         }
+
+        // ── The native entry point: nativePeerConnection() (issue #136 / #135) ───────────────────
+        // It composes things that exist only where real UDP does — webrtc-ice's `systemIceGathering()`
+        // and `MulticastMdnsEndpoint`, both in THAT module's `socketMain` — so it compiles into exactly
+        // the same leaves, and the source set is named to match.
+        //
+        // It does NOT depend on socket-udp: ARCHITECTURE §11.6 keeps that dependency to webrtc-ice's
+        // socketMain alone, and this factory needs none of it directly. The binder is a REQUIRED
+        // parameter, so the entry point structurally cannot bind a socket of its own — which is the
+        // property that lets a WebRTC session and a QUIC-P2P connection share one demuxed socket, and
+        // the reason a native factory was deferred twice before this one.
+        //
+        // Same shared-source-set shape (and the same Dokka constraint — one file, one owning source set)
+        // as webrtc-ice's socketMain, and the same leaves for the same reason: js/wasm delegate to
+        // RTCPeerConnection, and watchOS/tvOS have no socket-udp actual to bind (issue #127).
+        val socketMain by creating { dependsOn(commonMain.get()) }
+        val socketLeaves = mutableListOf("jvmMain", "androidMain", "linuxMain")
+        if (org.jetbrains.kotlin.konan.target.HostManager.hostIsMac) {
+            socketLeaves += listOf("macosMain", "iosMain")
+        }
+        for (leaf in socketLeaves) {
+            named(leaf) { dependsOn(socketMain) }
+        }
     }
 }
 

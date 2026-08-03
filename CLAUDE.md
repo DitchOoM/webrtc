@@ -55,8 +55,32 @@ What works that is easy to under-estimate:
 - **`IceRestartPolicy` defaults to `Manual`** deliberately — an automatic restart is a renegotiation only
   the app's signaling channel can carry, so it is opt-in rather than a default flip.
 
-What is genuinely left: foreign-peer renegotiation is proven in one direction only (they re-answer a
-restart *we* initiate; the foreign-**initiated** direction is unexercised), and media.
+Renegotiation is proven in **both** directions: `carrier-switch` lanes prove a production stack correctly
+answers a restart we initiate, and the `foreign-restart` lanes (issue #87, shipped in `d727189`) prove we
+detect and answer one that Pion, Chrome, Firefox or WebKit originates — five lanes, plus the role flip that
+exercise exposed.
+
+What is genuinely left, and why the data-channel stack is not yet something a stranger can pick up:
+
+- **The native entry point now exists** (#136, and #135's secure-defaults half): `nativePeerConnection()`
+  in `webrtc`'s `socketMain` over `systemIceGathering()` in `webrtc-ice`'s. Both take the `DatagramBinder`
+  as a **required** parameter, so neither can own a socket (§11.6) — that is what the two earlier
+  deferrals were waiting for. `IceGatheringPolicy`, `IceServer` and `IceServerCredentials` moved down into
+  `webrtc-ice` for it; `com.ditchoom.webrtc` keeps typealiases, but Kotlin cannot reach a *nested*
+  classifier through one, so `IceServerCredentials.LongTerm` must be imported from the new package.
+  mDNS defaults **on** in the factory only; a hand-built `NativePeerConnection` is unchanged. What it
+  still cannot honour is refused by typed reason rather than dropped: `turns:`, `?transport=tcp`, a
+  credential-free `turn:`, an unresolvable name.
+- **No shippable native `bufferFactory` default** (#125), and no fail-fast when an injected one cannot back
+  real socket I/O (#131). The workaround is real — `BufferPool(factory = BufferFactory.deterministic())` is
+  native-backed *and* refcounted — but it only reclaims what the stack releases, and `webrtc-stun` releases
+  nothing (see the #125 discussion).
+- **TURN is short-lived and single-server-proven.** No allocation Refresh or permission re-installation, so
+  a relayed session dies at the server's LIFETIME (#137); and the long-term-credential key is the raw
+  password rather than `MD5(user:realm:pass)`, never exercised against a commercial provider (#138).
+- **Platforms:** tvOS/watchOS publish but cannot establish, blocked upstream on `socket-udp` packaging
+  (#127); Node needs blocking raw-ECDH plus a shipped binder (#133).
+- **Media** (RTP/SRTP), which remains out of scope.
 
 ## Traps and standing corrections
 
@@ -67,9 +91,12 @@ Things that have cost real time here. Read before acting on a premise that sound
   something already published. socket's `LinuxSockets` cinterop klib embeds only `liburing.a`, and socket
   and `buffer-crypto` resolve to the *same* `boringssl-canonical`, which Gradle dedupes. Verified by
   linking the native peer on linuxX64 **and** linuxArm64 with socket core present.
-- **Stale premises are this codebase's recurring failure mode** — four separate instances so far, each
+- **Stale premises are this codebase's recurring failure mode** — five separate instances so far, each
   costing between a wrong comment and ~1000 wrong lines. When a comment explains why something *cannot*
-  be done, check whether it still can't before building around it.
+  be done, check whether it still can't before building around it. The fifth instance was **this file**:
+  it claimed foreign-initiated renegotiation was unexercised for months after #87 shipped five lanes
+  proving otherwise. A document that is read first is the worst place for a stale premise — correct this
+  section as soon as the state it describes changes.
 - **`linkTopology()` erases the reachability verdict on purpose.** socket's `NetworkState` ladder carries
   `Routable(id, Pending|Confirmed)`, and on real hardware Android grants `INTERNET` ~1s before
   `VALIDATED` on *every* reassociation. Forwarding that transition as an interface change would

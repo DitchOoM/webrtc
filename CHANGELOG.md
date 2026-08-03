@@ -6,6 +6,44 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Added — `udpDatagramBinder()`: the production UDP seam now ships
+
+Every consumer had to hand-write the one line that turns a virtual-time session into a real one.
+`DatagramBinder` is the **only** substitution between a vnet run and a real-kernel run — the ICE agent,
+the gathering drivers, DTLS and SCTP above it are byte-for-byte identical on either — and the only
+implementation we shipped lived in the non-published interop peer.
+
+- **`udpDatagramBinder(bufferFactory)`** in `webrtc-ice`, on every target where `socket-udp` publishes an
+  actual (jvm, android, linux, macOS, iOS). Pass it straight to `NativePeerConnection`:
+  ```kotlin
+  NativePeerConnection(scope, clock, random, binder = udpDatagramBinder(), gathering, dtls)
+  ```
+  It is **absent**, not throwing, on the remaining targets — a browser has no raw UDP, so a call site
+  that reaches for a binder there does not compile.
+- It is a helper, **not** a factory: it binds when asked, owns no lifecycle and holds no state, because a
+  WebRTC session and a QUIC-P2P connection are meant to share one demuxed socket and a binder that owned
+  its sockets could not be composed into that (RFC §11.6). An app in that position keeps
+  supplying its own binder, unchanged.
+
+### Fixed — ephemeral gathering advertised port 0
+
+`IceAgentDriver.gatherHost`/`gatherRelay` built the candidate from the address they *asked* for, so
+`gatherHost(ip, 0)` — bind me an ephemeral port — published `ip:0`. The candidate is well-formed on the
+wire and names a place nothing lives: the peer has nowhere to send, and the only way through was
+peer-reflexive discovery from whichever side punched first.
+
+This was not a corner case. A **pinned port cannot survive an ICE restart** — the outgoing generation
+keeps its sockets until the new one nominates, and no OS re-binds an address still in use — so ephemeral
+binding is what a production gathering policy has to do. The port now comes from the bound channel's
+`localAddress`, and so does the relay's `raddr`, which *is* that local base. The host literal deliberately
+does not: a platform renders a bound v6 link-local with a `%scope` suffix our parser rejects.
+
+Fixtures ship with it (directive #5), which meant teaching the vnet what an OS already knew:
+`bind(host, 0)` now assigns from a deterministic counter over IANA's dynamic range instead of binding port
+zero literally — a seam that binds `:0` quietly is a seam where this bug passes every test.
+`IceEphemeralPortTest` asserts the nominated pair rides the *signalled* host candidate, and
+`UdpDatagramBinderTest` runs the same shape through the shipped binder on real loopback sockets.
+
 ### Added — we advertise our own `<uuid>.local` candidates, and answer for them (RFC 8828 / RFC 6762) (#88)
 
 We have **resolved** a peer's `.local` candidates since #48; we never published our own. That is a privacy

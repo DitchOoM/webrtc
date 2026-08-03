@@ -252,7 +252,7 @@ jobs:
         peer: [native, jvm]
         ipfamily: [v4, v6, dual]
     runs-on: ${{ matrix.arch.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
@@ -302,13 +302,20 @@ jobs:
       # cache scope is per {engine × arch} so the arm64 and x64 caches never clobber each other.
       #
       # This build is bounded + retried because the `type=gha` cache backend intermittently STALLS on
-      # export under concurrent matrix load — a stall consumed the whole 30-min job budget and the job was
+      # export under concurrent matrix load — a stall consumed the whole job budget and the job was
       # cancelled BEFORE the interop step ever ran (see #29: `cancelled`, not a real interop failure). A
-      # per-step timeout turns that stall into a fast, retryable failure instead of a silent 30-min cancel.
+      # per-step timeout turns that stall into a fast, retryable failure instead of a silent cancel.
+      #
+      # That is ONE of two stalls this step has seen, and the retry below only ever addressed this one.
+      # The other is the **Playwright CDN** wedging mid-transfer at ~50% of a 174 MiB browser download
+      # (webrtc#101) — re-running the same fetch from the same host does nothing for that, which is why it
+      # is now bounded and retried *inside* the Dockerfile, where a fresh connection can actually clear it.
+      # 16 minutes rather than 12 accommodates that in-build retry chain (3 x 4m + backoff); the two
+      # browser jobs moved 30 -> 45 to keep room for the interop step after two build attempts.
       - name: Build browser image (gha-cached)
         id: browser_build
         uses: docker/build-push-action@v7
-        timeout-minutes: 12
+        timeout-minutes: 16
         continue-on-error: true
         with:
           context: test-harness/browser
@@ -321,12 +328,14 @@ jobs:
           cache-to: type=gha,mode=max,scope=browser-${{ matrix.browser }}-${{ matrix.arch.name }}
 
       # Retry once if the first attempt stalled/failed. The retry drops cache-TO (the mode=max export is the
-      # heavy, stall-prone half) and keeps cache-FROM, so it fails fast or wins. No continue-on-error here:
-      # a second failure is a genuine build error and SHOULD fail the job (fast, not at the 30-min timeout).
+      # heavy, stall-prone half) and keeps cache-FROM, so it fails fast or wins. That makes it a real
+      # remedy for the CACHE-EXPORT stall and a no-op for a CDN stall, which the Dockerfile now owns.
+      # No continue-on-error here: a second failure is a genuine build error and SHOULD fail the job
+      # (fast, not at the job timeout).
       - name: Build browser image (retry — no cache export)
         if: steps.browser_build.outcome == 'failure'
         uses: docker/build-push-action@v7
-        timeout-minutes: 12
+        timeout-minutes: 16
         with:
           context: test-harness/browser
           build-args: |
@@ -389,7 +398,7 @@ jobs:
           - { runner: ubuntu-24.04-arm, name: Arm64, konan: linuxArm64 }
         browser: [chrome, firefox]
     runs-on: ${{ matrix.arch.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
@@ -414,7 +423,7 @@ jobs:
       - name: Build browser image (gha-cached)
         id: browser_build
         uses: docker/build-push-action@v7
-        timeout-minutes: 12
+        timeout-minutes: 16
         continue-on-error: true
         with:
           context: test-harness/browser
@@ -428,7 +437,7 @@ jobs:
       - name: Build browser image (retry — no cache export)
         if: steps.browser_build.outcome == 'failure'
         uses: docker/build-push-action@v7
-        timeout-minutes: 12
+        timeout-minutes: 16
         with:
           context: test-harness/browser
           build-args: |

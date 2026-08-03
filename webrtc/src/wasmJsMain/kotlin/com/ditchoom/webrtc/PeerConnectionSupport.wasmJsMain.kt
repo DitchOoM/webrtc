@@ -42,7 +42,15 @@ import kotlin.js.toJsString
  * for real (Karma-tested via the loopback in `wasmJsTest`), not `NotImplementedError`.
  */
 public actual fun peerConnectionSupport(): PeerConnectionSupport =
-    if (jsRtcPeerConnectionAvailable()) WasmJsBrowserSupport else PeerConnectionSupport.Native
+    if (jsRtcPeerConnectionAvailable()) {
+        WasmJsBrowserSupport
+    } else {
+        // Outside a browser this target can host nothing, and the KDoc above already said why — there is
+        // no wasm `socket-udp` actual, so a NativePeerConnection has no channel to bind. Returning
+        // `Native` here (as this did) contradicted that sentence three lines up: it named a path the
+        // platform cannot walk. webrtc#126.
+        PeerConnectionSupport.Unavailable(PeerConnectionUnavailableReason.NoDatagramTransport)
+    }
 
 private object WasmJsBrowserSupport : PeerConnectionSupport.BrowserDelegated {
     override fun create(

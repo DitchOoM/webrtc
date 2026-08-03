@@ -48,6 +48,34 @@ A Kotlin/Native consumer on Linux must inject a native factory today (`BufferFac
 which is what `webrtc-harness-endpoint` has always done and why the interop matrix never saw this. The
 real fix wants a GC-managed native-memory buffer from buffer itself — what Apple gets from ARC and the JVM
 from `Arena.ofAuto`. Tracked on #125.
+### Changed — `peerConnectionSupport()` stops claiming a capability it cannot honour (#126)
+
+`PeerConnectionSupport` gains a third case, `Unavailable(reason)`, and js/wasmJs outside a browser now
+return it instead of `Native`. **Breaking for an exhaustive `when`** over the sealed type, which is the
+point — the compiler now makes every call site acknowledge the branch.
+
+Before this, `js` under **Node** reported `Native`. The app built a `NativePeerConnection`, ICE gathered
+and ran connectivity checks perfectly well, and the session then died at the **DTLS handshake** with
+`DtlsFailureReason.BackendUnavailable`. A capability advertised at config time and dishonoured at connect
+time, discovered at the worst possible moment. It is now a config-time fact, the same courtesy
+`NetworkMonitorSupport.Unavailable(NoPlatformApi)` already extends for interface enumeration.
+
+The two reasons are genuinely different, so they are two types rather than one string:
+
+- **`NoBlockingKeyAgreement`** (js/Node) — UDP is *not* the obstacle: `socket-udp` publishes a full js
+  actual. The one missing primitive is a **blocking raw-ECDH** premaster, because buffer-crypto's shared
+  js/wasmJs `KeyAgreement` is WebCrypto and WebCrypto is async-only. Node's own `crypto.createECDH()` *is*
+  synchronous, so this is fixable — tracked separately.
+- **`NoDatagramTransport`** (wasmJs outside a browser) — strictly more missing: no wasm `socket-udp`
+  actual at all, so there is no channel to bind. This case already contradicted its own file's KDoc, which
+  said in as many words that a `NativePeerConnection` cannot run on wasm while the code returned `Native`.
+
+Both `jsNodeTest` and `wasmJsNodeTest` now **assert** the reported value instead of silently no-opping
+past it.
+
+Also corrected while here: `systemInterfaceEnumerator`'s KDoc justified js and wasmJs together with
+"there is no raw-UDP `AddressedDatagramChannel` actual on those targets". True of wasmJs, **false of js**.
+The conclusion held; the reason did not.
 
 ### Added — `udpDatagramBinder()`: the production UDP seam now ships
 

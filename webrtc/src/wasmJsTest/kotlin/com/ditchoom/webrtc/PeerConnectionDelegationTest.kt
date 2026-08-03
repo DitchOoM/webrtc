@@ -28,9 +28,12 @@ import kotlin.time.Duration.Companion.seconds
  * driven through our wasmJs [RtcPeerConnection] delegation (offer/answer, trickle, a data-channel
  * message) over a localhost loopback — proving `peerConnectionSupport()` as a `BrowserDelegated.create(...)` maps our
  * API onto the browser's own `RTCPeerConnection` through the `@JsFun`/`JsString` wasm-interop bridge
- * (ARCHITECTURE §1.1). This is the runtime validation of the W6 wasmJs follow-up. Under Node (`RTCPeerConnection`
- * absent) it returns [PeerConnectionSupport.Native] and the test no-ops, so the suite is green on
- * wasmJsNodeTest too.
+ * (ARCHITECTURE §1.1). This is the runtime validation of the W6 wasmJs follow-up.
+ *
+ * Outside a browser (`RTCPeerConnection` absent) the loopback body no-ops so the suite stays green on
+ * `wasmJsNodeTest` — but only after asserting what the platform reports. This used to return
+ * [PeerConnectionSupport.Native], which contradicted this very file's own KDoc: there is no wasm
+ * `socket-udp` actual, so a `NativePeerConnection` here has nothing to bind (webrtc#126).
  */
 @OptIn(DelicateCoroutinesApi::class)
 class PeerConnectionDelegationTest {
@@ -38,7 +41,15 @@ class PeerConnectionDelegationTest {
     fun delegates_to_rtc_peer_connection_over_a_loopback(): Promise<JsAny?> =
         GlobalScope.promise {
             val support = peerConnectionSupport()
-            if (support !is PeerConnectionSupport.BrowserDelegated) return@promise null // Node: nothing to delegate to
+            if (support !is PeerConnectionSupport.BrowserDelegated) {
+                // Node: nothing to delegate to, and no raw-UDP actual to fall back on either.
+                assertEquals(
+                    PeerConnectionSupport.Unavailable(PeerConnectionUnavailableReason.NoDatagramTransport),
+                    support,
+                    "wasmJs outside a browser must report the missing datagram transport at config time",
+                )
+                return@promise null
+            }
 
             val scope = CoroutineScope(Dispatchers.Default)
             val alice = support.create(scope)

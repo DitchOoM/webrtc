@@ -30,11 +30,23 @@ import kotlin.js.Promise
 /**
  * The browser [PeerConnectionSupport] (js): the one target where we **wrap, not reimplement** (ARCHITECTURE §1.1)
  * — [PeerConnectionSupport.BrowserDelegated.create] maps our [RtcPeerConnection] onto the browser's own
- * `RTCPeerConnection`. Under Node (no `RTCPeerConnection`) it returns [PeerConnectionSupport.Native], so a
- * caller isn't handed a delegator it cannot back.
+ * `RTCPeerConnection`.
+ *
+ * Under **Node** (no `RTCPeerConnection`) this reports
+ * [PeerConnectionUnavailableReason.NoBlockingKeyAgreement] rather than [PeerConnectionSupport.Native].
+ * It used to say `Native`, and that was a lie with a delayed fuse: the app built a
+ * [NativePeerConnection], ICE gathered and checked perfectly well — `socket-udp` does publish a js actual,
+ * so UDP is not the obstacle — and the session then died at the **DTLS handshake**, because the key
+ * schedule needs a *blocking* raw-ECDH premaster and buffer-crypto's shared js/wasmJs `KeyAgreement` is
+ * WebCrypto, which is async-only. Everything up to the handshake looked healthy, which is the worst place
+ * to find out (webrtc#126).
  */
 public actual fun peerConnectionSupport(): PeerConnectionSupport =
-    if (rtcPeerConnectionAvailable()) JsBrowserSupport else PeerConnectionSupport.Native
+    if (rtcPeerConnectionAvailable()) {
+        JsBrowserSupport
+    } else {
+        PeerConnectionSupport.Unavailable(PeerConnectionUnavailableReason.NoBlockingKeyAgreement)
+    }
 
 private fun rtcPeerConnectionAvailable(): Boolean = js("typeof RTCPeerConnection !== 'undefined'").unsafeCast<Boolean>()
 

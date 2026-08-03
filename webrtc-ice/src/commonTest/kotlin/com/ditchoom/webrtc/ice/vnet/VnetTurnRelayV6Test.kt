@@ -32,7 +32,7 @@ class VnetTurnRelayV6Test {
                 address = turnAddress,
                 vnet = vnet,
                 scope = backgroundScope,
-                keyProvider = { u -> if (u == Vnets.TURN_USERNAME) utf8Buffer(Vnets.TURN_PASSWORD) else null },
+                keyProvider = Vnets.turnKeyProvider(),
             ).start()
 
             val underlying = vnet.bind(vnetAddress("fd00:31::100", 40000))

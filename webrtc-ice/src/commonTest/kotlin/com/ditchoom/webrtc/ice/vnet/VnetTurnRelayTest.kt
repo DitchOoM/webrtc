@@ -20,6 +20,7 @@ import com.ditchoom.webrtc.stun.StunMessageBuilder
 import com.ditchoom.webrtc.stun.StunMethod
 import com.ditchoom.webrtc.stun.TransactionId
 import com.ditchoom.webrtc.stun.asXorMappedAddress
+import com.ditchoom.webrtc.stun.longTermCredentialKey
 import com.ditchoom.webrtc.stun.ofRequestedTransport
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeoutOrNull
@@ -36,12 +37,14 @@ import kotlin.time.Duration.Companion.seconds
  * rides it: two peers each behind a symmetric NAT cannot reach one another directly (their srflx
  * mappings are per-destination and mutually filtered), so they meet on the [TurnServer]. This drives a
  * faithful TURN client inline — authed Allocate, CreatePermission, and Send/Data relaying — so the
- * whole relay machine (and the short-term-credential MESSAGE-INTEGRITY) is exercised end to end under
+ * whole relay machine (and the long-term-credential MESSAGE-INTEGRITY) is exercised end to end under
  * `runTest` virtual time. The ICE agent's real TURN client (step 4) automates exactly this exchange.
  */
 @OptIn(ExperimentalDatagramApi::class)
 class VnetTurnRelayTest {
-    private fun key() = utf8Buffer(Vnets.TURN_PASSWORD)
+    // The long-term credential key (RFC 8489 §9.2.2) — the same derivation TurnAllocation and the vnet
+    // TurnServer both use, so this inline client authenticates the way a real one does.
+    private fun key() = longTermCredentialKey(Vnets.TURN_USERNAME, TurnServer.DEFAULT_REALM, Vnets.TURN_PASSWORD)
 
     @Test
     fun symmetric_peers_relay_a_round_trip_through_turn() =

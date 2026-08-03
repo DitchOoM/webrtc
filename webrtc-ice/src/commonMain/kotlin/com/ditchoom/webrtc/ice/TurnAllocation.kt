@@ -3,8 +3,6 @@
 package com.ditchoom.webrtc.ice
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.ByteOrder
-import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
@@ -28,6 +26,7 @@ import com.ditchoom.webrtc.stun.TURN_FAMILY_IPV6
 import com.ditchoom.webrtc.stun.TransactionId
 import com.ditchoom.webrtc.stun.asText
 import com.ditchoom.webrtc.stun.asXorMappedAddress
+import com.ditchoom.webrtc.stun.longTermCredentialKey
 import com.ditchoom.webrtc.stun.ofRequestedAddressFamily
 import com.ditchoom.webrtc.stun.ofRequestedTransport
 import kotlinx.coroutines.CompletableDeferred
@@ -49,8 +48,10 @@ import kotlin.time.ExperimentalTime
  *
  * It owns [underlying] (a dedicated socket carrying only TURN traffic), demultiplexing responses (to
  * pending requests) from Data indications (to the inbound queue) in one loop on [scope]. Auth is the
- * short-term-credential MESSAGE-INTEGRITY the vnet server understands (MD5-free); the long-term-key
- * (real-coturn) derivation is an interop concern. Call [allocate] once before use.
+ * **long-term** credential (RFC 8489 §9.2.2): the first Allocate goes out unauthenticated, and the
+ * server's 401 supplies the REALM that MESSAGE-INTEGRITY's key —
+ * `MD5(username:realm:password)`, via [longTermCredentialKey] — is derived from. Call [allocate] once
+ * before use.
  *
  * **Known limitations (tracked; not exercised by the vnet, which models no expiry):** no allocation
  * Refresh (RFC 8656 §8) or permission re-installation (§9), so a session outliving the server LIFETIME
@@ -71,8 +72,7 @@ public class TurnAllocation(
     private val pending = HashMap<TransactionId, CompletableDeferred<StunMessage>>()
     private val inbound = Channel<Datagram>(Channel.UNLIMITED)
     private val permitted = HashSet<String>()
-    private var realm: String? = null
-    private var nonce: String? = null
+    private var credential: Credential = Credential.Unchallenged
     private var relayed: SocketAddress? = null
     private var closed = false
     private var loopStarted = false
@@ -94,9 +94,14 @@ public class TurnAllocation(
         startLoop()
         var response = request(timeout) { allocateRequest(it) }
         if (response != null && response.messageType.stunClass == StunClass.ErrorResponse) {
-            realm = response.firstOrNull(StunAttributeType.Realm)?.asText()
-            nonce = response.firstOrNull(StunAttributeType.Nonce)?.asText()
-            response = request(timeout) { allocateRequest(it) }
+            // Only retry once the challenge is actually usable. A 401 missing REALM or NONCE yields no
+            // long-term key, so the retry could only repeat the same unauthenticated request — fall
+            // through to the failure below instead of burning a second timeout on it.
+            val challenge = response.asChallenge()
+            if (challenge != null) {
+                credential = challenge
+                response = request(timeout) { allocateRequest(it) }
+            }
         }
         if (response == null || response.messageType.stunClass != StunClass.SuccessResponse) return null
         val relayedAddress =
@@ -195,8 +200,15 @@ public class TurnAllocation(
         val transactionId = TransactionId.random(random)
         val deferred = CompletableDeferred<StunMessage>()
         pending[transactionId] = deferred
-        val datagram = build(transactionId).addMessageIntegrity(key()).encode(bufferFactory)
-        underlying.send(datagram, to = server)
+        val builder = build(transactionId)
+        // MESSAGE-INTEGRITY only once challenged: before the 401 there is no realm, so no long-term key
+        // exists to sign with, and RFC 8656 §7.1 expects that first Allocate to be unauthenticated.
+        val authenticated =
+            when (val c = credential) {
+                Credential.Unchallenged -> builder
+                is Credential.Challenged -> builder.addMessageIntegrity(c.key)
+            }
+        underlying.send(authenticated.encode(bufferFactory), to = server)
         return withTimeoutOrNull(timeout) { deferred.await() }.also { pending.remove(transactionId) }
     }
 
@@ -222,20 +234,43 @@ public class TurnAllocation(
     // Add USERNAME and, once challenged, REALM/NONCE (RFC 8656 long-term-credential form).
     private fun authed(builder: StunMessageBuilder): StunMessageBuilder {
         builder.add(RawAttribute.ofText(StunAttributeType.Username, username, bufferFactory))
-        realm?.let { builder.add(RawAttribute.ofText(StunAttributeType.Realm, it, bufferFactory)) }
-        nonce?.let { builder.add(RawAttribute.ofText(StunAttributeType.Nonce, it, bufferFactory)) }
+        when (val c = credential) {
+            Credential.Unchallenged -> Unit
+            is Credential.Challenged -> {
+                builder.add(RawAttribute.ofText(StunAttributeType.Realm, c.realm, bufferFactory))
+                builder.add(RawAttribute.ofText(StunAttributeType.Nonce, c.nonce, bufferFactory))
+            }
+        }
         return builder
     }
 
-    private fun key(): ReadBuffer {
-        val buffer = bufferFactory.allocate(maxOf(1, password.length * MAX_UTF8_PER_CHAR), ByteOrder.BIG_ENDIAN)
-        buffer.writeString(password, Charset.UTF8)
-        buffer.resetForRead()
-        return buffer
+    // A 401 carrying both REALM and NONCE is a usable challenge; anything else leaves us unchallenged.
+    private fun StunMessage.asChallenge(): Credential.Challenged? {
+        val realm = firstOrNull(StunAttributeType.Realm)?.asText() ?: return null
+        val nonce = firstOrNull(StunAttributeType.Nonce)?.asText() ?: return null
+        return Credential.Challenged(realm, nonce, longTermCredentialKey(username, realm, password))
+    }
+
+    /**
+     * Where this allocation stands with the server's long-term credential (RFC 8656 §7.1). The key is
+     * derivable **only** from a realm we have been challenged with, so realm, nonce and key travel as
+     * one value rather than as three separately-nullable fields that could disagree — "authenticated
+     * but with no realm" is not representable. The key is derived once per challenge and reused: it
+     * depends on nothing per-request, and HMAC reads it non-destructively.
+     */
+    private sealed interface Credential {
+        /** Before the server's 401. No realm ⇒ no key ⇒ requests go out unauthenticated. */
+        data object Unchallenged : Credential
+
+        /** Not a `data class`: [key] is a buffer, so generated structural equality would be meaningless. */
+        class Challenged(
+            val realm: String,
+            val nonce: String,
+            val key: ReadBuffer,
+        ) : Credential
     }
 
     private companion object {
         const val TURN_OVERHEAD_BYTES = 40 // Send-indication STUN header + XOR-PEER-ADDRESS + DATA TLV
-        const val MAX_UTF8_PER_CHAR = 3
     }
 }

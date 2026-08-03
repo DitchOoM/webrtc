@@ -43,17 +43,18 @@ import kotlin.random.Random
  * the client as a Data indication). Relaying **between two allocations on this same server** works —
  * which is precisely the relay↔relay ICE check the dual-NAT fixture exercises.
  *
- * Auth uses RFC 8489 §9.1.1 **short-term** MESSAGE-INTEGRITY (key = the UTF-8 password) rather than
- * §9.2's long-term `MD5(user:realm:pass)` — wire-identical (USERNAME + MESSAGE-INTEGRITY), MD5-free
- * (buffer-crypto ships no MD5), and deterministic. [keyProvider] is the injected seam; the real TURN
- * client's long-term key derivation is a W7-interop concern, out of the vnet's scope.
+ * Auth is RFC 8489 §9.2's **long-term** credential — the key is `MD5(username:realm:password)`, exactly
+ * what coturn computes from its user table. [keyProvider] is the injected seam and [Vnets.turnKeyProvider]
+ * supplies the real derivation, so a client that gets the key wrong fails here too rather than at the
+ * first real server it meets. (This deliberately no longer accepts the short-term key: the whole point
+ * of the vnet lane is to be the cheap, deterministic mirror of the coturn lane.)
  */
 internal class TurnServer(
     /** The public control transport address clients send Allocate/Refresh/Send to. */
     val address: SocketAddress,
     private val vnet: Vnet,
     private val scope: CoroutineScope,
-    /** MESSAGE-INTEGRITY key for a USERNAME, or null to reject it (RFC 8489 §9.1.1 short-term key). */
+    /** MESSAGE-INTEGRITY key for a USERNAME, or null to reject it (RFC 8489 §9.2.2 long-term key). */
     private val keyProvider: (username: String) -> ReadBuffer?,
     seed: Long = DEFAULT_SEED,
     private val realm: String = DEFAULT_REALM,

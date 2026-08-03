@@ -1493,7 +1493,6 @@ public final class com/ditchoom/webrtc/ice/TieBreaker$Companion {
 }
 
 public final class com/ditchoom/webrtc/ice/TurnAllocation : com/ditchoom/buffer/flow/AddressedDatagramChannel {
-	public static final field MAX_UTF8_PER_CHAR I
 	public static final field TURN_OVERHEAD_BYTES I
 	public fun <init> (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Ljava/lang/String;Ljava/lang/String;Lkotlin/random/Random;Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/buffer/BufferFactory;)V
 	public synthetic fun <init> (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Ljava/lang/String;Ljava/lang/String;Lkotlin/random/Random;Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/buffer/BufferFactory;ILkotlin/jvm/internal/DefaultConstructorMarker;)V

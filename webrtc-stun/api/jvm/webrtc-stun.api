@@ -41,6 +41,11 @@ public final class com/ditchoom/webrtc/stun/IpAddress$V6$Companion {
 	public final fun parse (Ljava/lang/String;)Lcom/ditchoom/webrtc/stun/IpAddress$V6;
 }
 
+public final class com/ditchoom/webrtc/stun/LongTermCredentialKeyKt {
+	public static final fun longTermCredentialKey (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/ReadBuffer;
+	public static synthetic fun longTermCredentialKey$default (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/buffer/ReadBuffer;
+}
+
 public final class com/ditchoom/webrtc/stun/RawAttribute {
 	public static final field Companion Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;
 	public fun equals (Ljava/lang/Object;)Z

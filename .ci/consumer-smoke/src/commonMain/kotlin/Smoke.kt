@@ -1,9 +1,9 @@
 package consumer.smoke
 
 import com.ditchoom.webrtc.IceServer
-import com.ditchoom.webrtc.IceServerCredentials
 import com.ditchoom.webrtc.PeerConnectionConfig
 import com.ditchoom.webrtc.PeerConnectionState
+import com.ditchoom.webrtc.ice.IceServerCredentials
 import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.testsuite.harness.NatType
@@ -45,7 +45,17 @@ object Smoke {
     // Everything below compiles against the artifact a downstream project declares to write application
     // code, not test code. It is what proves that coordinate is independently usable.
 
-    /** A TURN server with long-term credentials, exactly as a consumer configures one. */
+    /**
+     * A TURN server with long-term credentials, exactly as a consumer configures one.
+     *
+     * The two imports above are deliberately asymmetric, and that asymmetry is the assertion. `IceServer`
+     * and `IceServerCredentials` now live in `com.ditchoom.webrtc.ice`, where `webrtc-ice` can reach them
+     * to implement gathering; `com.ditchoom.webrtc` keeps `typealias`es so existing code that names the
+     * *type* still compiles — which the `IceServer` import here pins. A typealias cannot carry a nested
+     * classifier, though, so `IceServerCredentials.LongTerm` must be reached through the real package.
+     * That is the one source break in the move, and this file is where it is proven rather than assumed:
+     * flipping this import back to `com.ditchoom.webrtc` is expected to fail the build.
+     */
     fun iceServers(): List<IceServer> =
         listOf(
             IceServer("stun:stun.example.org:3478"),

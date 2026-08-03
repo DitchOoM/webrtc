@@ -175,7 +175,8 @@ docker run --rm --privileged --network host alpine:3.20 \
 # ── scenario matrix — name | nat_a | nat_b | ice_policy | netem(args or "-") | a_impl | b_impl | topo ──
 #   a_impl (offerer / "our side") ∈ native | jvm
 #   b_impl (answerer)             ∈ native | pion | node | chrome | firefox | webkit
-#   topo (NAT layering)           ∈ single | cgnat | hairpin | carrier-switch | foreign-restart  (def: single)
+#   topo (NAT layering)           ∈ single | cgnat | hairpin | carrier-switch | foreign-restart |
+#                                   interface-swap                                    (def: single)
 # Covers each of the four NAT profiles, the symmetric→relay fallback, an explicit relay-only lane, an
 # impaired data path (all native ⇄ native), the W7 Phase-2 interop lanes where the answerer is a real Pion
 # (Go) peer or a real werift (pure-TypeScript, JS-engine) peer [2(a)] or a real headless browser — Chrome /
@@ -244,6 +245,8 @@ restart-pion         | port-restricted    | port-restricted    | all   | -      
 restart-chrome       | port-restricted    | port-restricted    | all   | -                                                | native | chrome  | carrier-switch
 restart-firefox      | port-restricted    | port-restricted    | all   | -                                                | native | firefox | carrier-switch
 restart-webkit       | port-restricted    | port-restricted    | all   | -                                                | native | webkit  | carrier-switch
+auto-restart-native  | port-restricted    | port-restricted    | all   | -                                                | native | native  | interface-swap
+auto-restart-pion    | port-restricted    | port-restricted    | all   | -                                                | native | pion    | interface-swap
 foreign-restart-native  | port-restricted | port-restricted    | all   | -                                                | native | native  | foreign-restart
 foreign-restart-pion    | port-restricted | port-restricted    | all   | -                                                | native | pion    | foreign-restart
 foreign-restart-chrome  | port-restricted | port-restricted    | all   | -                                                | native | chrome  | foreign-restart
@@ -422,7 +425,7 @@ semantics_report() {
 # (carrier-switch is v4-only for the same reason as the carrier lanes: nat_a2 is a v4 NAT with a v4 public
 # identity, and "the peer's public address changed" is a v4 mapping statement. The v6 analog — a routed
 # prefix moving — needs a second v6 router and is a follow-up, not a skip of an existing property.)
-V4_ONLY_SCENARIOS=" symmetric-relay mixed-sym-port cgnat hairpin restart-native jvm-restart restart-pion restart-chrome restart-firefox restart-webkit foreign-restart-native foreign-restart-pion foreign-restart-chrome foreign-restart-firefox foreign-restart-webkit mdns-chrome mdns-firefox "
+V4_ONLY_SCENARIOS=" symmetric-relay mixed-sym-port cgnat hairpin restart-native jvm-restart restart-pion restart-chrome restart-firefox restart-webkit auto-restart-native auto-restart-pion foreign-restart-native foreign-restart-pion foreign-restart-chrome foreign-restart-firefox foreign-restart-webkit mdns-chrome mdns-firefox "
 V6_ONLY_SCENARIOS=" firewall-relay6 "
 family_skipped() {
     local name=" $1 "
@@ -506,6 +509,75 @@ carrier_switch() {
          u.urlopen(u.Request('http://127.0.0.1:${RENDEZVOUS_HTTP_PORT}/put', d, {'Content-Type':'application/json'}))" </dev/null \
         || echo "::warning::[$name] could not publish the carrier-switch record — s8 will time out waiting for it"
 }
+
+# ── mid-session LOCAL ADDRESS swap (topo=interface-swap) ────────────────────────────────────────────
+# The automatic-restart lane's one moving part (s11, issue #102), and the reason it is a separate topology
+# rather than a flag on carrier_switch: that one flips the DEFAULT ROUTE, which changes peer A's public
+# identity while every local address stays exactly where it was. IceRestartPolicy.OnNetworkChange asks a
+# different question — "is the selected pair's local base still on a live interface" — and after a route
+# flip the honest answer is yes, so the automatic policy correctly does nothing. To exercise it the LOCAL
+# address has to go away.
+#
+# So: DELETE the address the session is riding, add peer A's second one, and point the default route at
+# nat_a2 — one `sh -c`, in that order, which matters twice over.
+#
+# Delete FIRST, counter-intuitively. Adding the new address first and deleting the old one after is the
+# obvious order and it silently destroys the container's networking: Linux flushes every SECONDARY address
+# in a subnet when that subnet's PRIMARY is removed, unless `promote_secondaries` is set — and it is 0 by
+# default, and the sysctl is read-only inside the container. Measured, not reasoned about: with add-then-
+# delete the peer was left holding NO lan_a address at all, so it could not reach the rendezvous mailbox
+# and s11 failed as "the harness never reported a carrier switch" — a message pointing at the orchestrator
+# for a fault entirely in the peer's netns.
+#
+# Deleting the only address in a subnet also withdraws that subnet's connected route, and with it the
+# default route through it — so re-adding the address and REPLACING the default are both required, in that
+# order. The window with no address is sub-millisecond and inside one `sh -c`; the restart it triggers is
+# re-gathered tens of milliseconds later (the monitor coalesces first), by which time the new address and
+# route are long in place.
+#
+# The kernel emits real RTM_DELADDR/RTM_NEWADDR for this, which is the whole point — nothing here
+# simulates a signal.
+#
+# Everything else is deliberately identical to carrier_switch: the same observed cue, the same rendezvous
+# mailbox slot, the same "the phase grades it" failure discipline. The peer cannot tell the two apart, and
+# should not be able to — it is supposed to find out from the network.
+swap_interface() {
+    local name="$1" service="$2" i=0
+    while [ "$i" -lt "$CARRIER_SWITCH_POLLS" ]; do
+        case "$(docker compose logs --no-log-prefix "$service" 2>/dev/null)" in
+            *"$CARRIER_SWITCH_CUE"*) break ;;
+        esac
+        i=$((i + 1)); sleep 0.5
+    done
+    if [ "$i" -ge "$CARRIER_SWITCH_POLLS" ]; then
+        echo "::warning::[$name] the offerer never asked to be moved — s11 grades it"
+        return 0
+    fi
+
+    # The interface holding PEER_A_IP, resolved rather than assumed: compose promises no device name.
+    # Single-quoted body so $2/$1 belong to awk, not to this function.
+    local dev
+    dev=$(docker compose exec -T "$service" sh -c 'ip -o -4 addr show | awk -v ip="'"$PEER_A_IP"'" '"'"'$4 ~ "^"ip"/" {print $2; exit}'"'"'' </dev/null | tr -d '\r')
+    if [ -z "$dev" ]; then
+        echo "::warning::[$name] could not find the interface holding $PEER_A_IP — s11 grades it"
+        return 0
+    fi
+
+    if ! docker compose exec -T "$service" sh -c \
+        "ip addr del ${PEER_A_IP}/24 dev $dev && ip addr add ${PEER_A2_IP}/24 dev $dev && ip route replace default via ${NAT_A2_LAN_IP}" </dev/null; then
+        echo "::warning::[$name] could not swap $service onto $PEER_A2_IP via nat_a2 — s11 grades it"
+        return 0
+    fi
+    echo "[interface-swap] [$name] $service $dev: $PEER_A_IP -> $PEER_A2_IP, default route -> nat_a2 ($NAT_A2_LAN_IP, public $NAT_A2_WAN_IP)"
+
+    # Same mailbox slot the carrier lanes use — the peer is already polling it, and s11 waits on it for the
+    # same reason s8 does: restarting before the address actually moved would prove nothing.
+    docker compose exec -T rendezvous python3 -c \
+        "import json,urllib.request as u; d=json.dumps({'key':'${SESSION}/carrier','id':0,'payload':'switched'}).encode(); \
+         u.urlopen(u.Request('http://127.0.0.1:${RENDEZVOUS_HTTP_PORT}/put', d, {'Content-Type':'application/json'}))" </dev/null \
+        || echo "::warning::[$name] could not publish the interface-swap record — s11 will time out waiting for it"
+}
+
 
 # ── capture-on-failure diagnostics (design §B) ──────────────────────────────────────────────────────
 # The EXTRA NATs active in THIS scenario beyond the two CPEs — the carrier NATs (cgnat_*) of the NAT444 /
@@ -658,10 +730,18 @@ run_scenario() {
     # differ in exactly one thing: who asks for the new ICE generation. `carrier-switch` is s8 (we do);
     # `foreign-restart` is s10 (the answerer does, on the RESTART lifecycle word our offerer writes into the
     # mailbox — issue #87), which is the direction that tests OUR detection of somebody else's restart.
+    # `interface-swap` is the THIRD initiator: neither peer asks. The harness deletes peer A's local
+    # address, and IceRestartPolicy.OnNetworkChange — watching the PRODUCTION systemNetworkMonitor(),
+    # netlink on Linux — is what has to notice and restart (s11, issue #102). PEER_A_IP_ALT is what makes
+    # that survivable: the peer needs somewhere to re-gather once its configured address is gone.
     case "$topo" in
-        carrier-switch|foreign-restart)
+        carrier-switch|foreign-restart|interface-swap)
             export PEER_ICE_RESTART=1 PEER_RESTART_CARRIER="$NAT_A2_WAN_IP"
-            if [ "$topo" = "foreign-restart" ]; then export PEER_RESTART_INITIATOR=peer; else export PEER_RESTART_INITIATOR=us; fi
+            case "$topo" in
+                foreign-restart)  export PEER_RESTART_INITIATOR=peer ;;
+                interface-swap)   export PEER_RESTART_INITIATOR=network; export PEER_A_IP_ALT="$PEER_A2_IP" ;;
+                *)                export PEER_RESTART_INITIATOR=us ;;
+            esac
             # s8/s10 each add an offer/answer round and an ICE reconvergence, separately watchdogged inside
             # the peer. The sequence budget has to leave room for the FAILURE path too, or a graded phase
             # verdict degrades into an ungraded "semantics: TIMEOUT" that says nothing about which half broke.
@@ -670,7 +750,9 @@ run_scenario() {
         *)
             export PEER_ICE_RESTART=0 PEER_RESTART_INITIATOR=us
             export PEER_SEMANTICS_TIMEOUT_MS="${HARNESS_SEMANTICS_TIMEOUT_MS:-$((120000 + PEER_IDLE_MS))}"
-            unset PEER_RESTART_CARRIER
+            # Unset, not left over: these are exported per scenario inside one loop, so a stale value would
+            # arm an automatic restart on a lane whose phase list has no s11 to observe it.
+            unset PEER_RESTART_CARRIER PEER_A_IP_ALT
             ;;
     esac
 
@@ -687,7 +769,7 @@ run_scenario() {
         hairpin) # ONE shared carrier NAT → both peers share a single external identity → relay
             export NAT_A_CARRIER_GW="$CGNAT_SHARED_CAR_IP" NAT_B_CARRIER_GW="$CGNAT_SHARED_CAR_IP"
             profiles="$profiles hairpin"; infra="$infra cgnat" ;;
-        carrier-switch|foreign-restart) # a SECOND gateway on peer A's own LAN, switched to mid-session
+        carrier-switch|foreign-restart|interface-swap) # a SECOND gateway on peer A's own LAN, switched to mid-session
             # (not a layer above). Identical topology for both restart directions — see the PEER_ICE_RESTART
             # block above for what differs (who initiates), which is nothing the compose model knows about.
             unset NAT_A_CARRIER_GW NAT_B_CARRIER_GW
@@ -753,6 +835,9 @@ run_scenario() {
         carrier-switch|foreign-restart)
             carrier_switch "$name" "$a_service" &
             switch_pid=$! ;;
+        interface-swap)
+            swap_interface "$name" "$a_service" &
+            switch_pid=$! ;;
     esac
 
     # Block until each peer has exited and read its exit code (see peer_exit_rc — order-independent, unlike
@@ -812,9 +897,18 @@ run_scenario() {
         # Same discipline as s7's `dc close:` grep, and every answerer family prints the identical token.
         # Herestring, not `printf | grep -q` — see the relay assertion above for why a pipe SIGPIPEs here.
         # Skipped when the semantics sequence is off or subset, since then s8 never ran to be reported on.
-        if [ "$topo" = "carrier-switch" ] && [ "${PEER_SEMANTICS:-1}" != "0" ] && [ -z "${PEER_SCENARIOS:-}" ] \
+        if { [ "$topo" = "carrier-switch" ] || [ "$topo" = "interface-swap" ]; } && [ "${PEER_SEMANTICS:-1}" != "0" ] && [ -z "${PEER_SCENARIOS:-}" ] \
                 && ! grep -q 're-answered round 1' <<< "$b_log"; then
-            fail_scenario "$name" "both peers exited 0 but the answerer never reported re-answering our ICE-restart offer (s8's far half: no 're-answered round 1' in its log)"; return
+            fail_scenario "$name" "both peers exited 0 but the answerer never reported re-answering our ICE-restart offer (s8/s11's far half: no 're-answered round 1' in its log)"; return
+        fi
+        # s11's NEAR half, and the lane's anti-vacuity guard (issue #102). Everything above this line is
+        # equally true of a session that was restarted by an explicit restartIce() — so without this, a
+        # regression that quietly re-armed the manual path, or a phase list that skipped s11 altogether,
+        # would leave the lane green while proving nothing about the automatic one. The offerer prints this
+        # token only from the s11 verdict, which is reachable only through IceRestartPhase.Automatic.
+        if [ "$topo" = "interface-swap" ] && [ "${PEER_SEMANTICS:-1}" != "0" ] && [ -z "${PEER_SCENARIOS:-}" ] \
+                && ! grep -q 'NOTHING called restartIce()' <<< "$a_log"; then
+            fail_scenario "$name" "both peers exited 0 but the offerer never reported an AUTOMATIC restart (s11's near half: no 'NOTHING called restartIce()' in its log) — the lane cannot distinguish this from a manual restart"; return
         fi
         # s10's far half, the mirror of the above: on a foreign-initiated lane the ANSWERER is the one that
         # restarts, so its own log is the only place its stack says it acted on the RESTART lifecycle word.

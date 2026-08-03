@@ -71,6 +71,25 @@ internal sealed interface IceRestartPhase {
     data class ForeignInitiated(
         val carrierIp: String,
     ) : IceRestartPhase
+
+    /**
+     * **Nobody calls `restartIce()`** (s11, issue #102). The harness takes this peer's LOCAL ADDRESS away
+     * — `ip addr del`, a real netlink event — and the production `IceRestartPolicy.OnNetworkChange`
+     * watching the production `systemNetworkMonitor()` is what notices and restarts, reconverging on
+     * [carrierIp].
+     *
+     * The distinction from [ExpectCarrier] is the whole point of the phase, and it is not cosmetic: that
+     * one moves the DEFAULT ROUTE, which changes the peer's public identity while every local address
+     * stays exactly where it was — so `pathRidesOneOf` still finds the selected pair's base and the
+     * automatic policy correctly does nothing. Proving the automatic path therefore needs the local
+     * address itself to go away, which is a different network event and a different topology
+     * (`interface-swap`).
+     *
+     * Requires a second local address to survive on: see [HarnessConfig.altLocalIp].
+     */
+    data class Automatic(
+        val carrierIp: String,
+    ) : IceRestartPhase
 }
 
 /**
@@ -108,6 +127,17 @@ internal data class HarnessConfig(
     val rendezvousHost: String,
     val rendezvousPort: Int,
     val icePolicy: IcePolicy,
+    /**
+     * A SECOND local v4 address this peer may find itself on — the one the `interface-swap` topology moves
+     * it to when it takes the first away (s11, issue #102). Null on every other lane, and then nothing
+     * about gathering changes.
+     *
+     * Set, it makes gathering consult the LIVE interface table instead of trusting the configured address:
+     * the peer gathers on whichever of the two it currently holds. That is what a real stack does anyway
+     * (browsers and pion enumerate interfaces), and it is required here — after the swap the configured
+     * primary no longer exists, so a re-gather that still bound it would fail rather than restart.
+     */
+    val altLocalIp: String?,
     val timeout: Duration,
     val seed: Long,
     /**
@@ -213,6 +243,27 @@ internal data class HarnessConfig(
      */
     val consentIdle: ConsentIdlePhase,
 ) {
+    /**
+     * The bindings to gather on, given the addresses this host actually holds right now — [live], or null
+     * off the lane that reads the table at all (then nothing is filtered and the configured set is used
+     * verbatim, exactly as every lane has always done).
+     *
+     * The filter matters only after the `interface-swap` topology has deleted an address mid-session
+     * (s11, issue #102): re-gathering onto an address the kernel no longer has would fail the bind, and a
+     * failed bind is not a restart. Falls back to the configured bindings if the filter would leave
+     * NOTHING to gather on — a peer with no address at all has a bigger problem than candidate selection,
+     * and an empty gather would present as a silent timeout rather than a bind error naming the address.
+     */
+    fun bindingsPresentIn(live: Set<String>?): List<FamilyBinding> {
+        if (live == null) return bindings
+        val usable = (bindings + altBindings()).filter { it.localIp in live }
+        return usable.ifEmpty { bindings }
+    }
+
+    /** The alternate-address binding [altLocalIp] adds, mirroring the primary's coturn for its family. */
+    private fun altBindings(): List<FamilyBinding> =
+        altLocalIp?.let { alt -> listOf(bindings.first().copy(family = IpFamily.of(alt), localIp = alt)) } ?: emptyList()
+
     /** Whether phase [id] (`s1`, `s2`, …) is in this run's subset — everything runs when none was named. */
     fun runsScenario(id: String): Boolean = scenarios.isEmpty() || id in scenarios
 
@@ -226,7 +277,9 @@ internal data class HarnessConfig(
         get() =
             when (iceRestart) {
                 IceRestartPhase.Off, is IceRestartPhase.ForeignInitiated -> 1
-                IceRestartPhase.AnyNewPath, is IceRestartPhase.ExpectCarrier -> 2
+                // s11 re-offers exactly as s8 does — the difference is who DECIDED to, not who signals it.
+                // A restart is a renegotiation only the app's signaling channel can carry, automatic or not.
+                IceRestartPhase.AnyNewPath, is IceRestartPhase.ExpectCarrier, is IceRestartPhase.Automatic -> 2
             }
 
     /**
@@ -237,7 +290,9 @@ internal data class HarnessConfig(
     val peerNegotiationRounds: Int
         get() =
             when (iceRestart) {
-                IceRestartPhase.Off, IceRestartPhase.AnyNewPath, is IceRestartPhase.ExpectCarrier -> 0
+                IceRestartPhase.Off, IceRestartPhase.AnyNewPath, is IceRestartPhase.ExpectCarrier,
+                is IceRestartPhase.Automatic,
+                -> 0
                 is IceRestartPhase.ForeignInitiated -> 1
             }
 
@@ -271,6 +326,7 @@ internal data class HarnessConfig(
                 rendezvousHost = env("WEBRTC_RENDEZVOUS_HOST") ?: "rendezvous",
                 rendezvousPort = env("WEBRTC_RENDEZVOUS_PORT")?.toIntOrNull() ?: 9999,
                 icePolicy = if (env("WEBRTC_ICE_POLICY").equals("relay", ignoreCase = true)) IcePolicy.RelayOnly else IcePolicy.All,
+                altLocalIp = env("WEBRTC_LOCAL_IP_ALT"),
                 timeout = (env("WEBRTC_TIMEOUT_MS")?.toLongOrNull() ?: 45_000L).milliseconds,
                 // Distinct default seeds per role so the two peers never collide ufrag/tie-breaker; override
                 // with WEBRTC_SEED. This is entropy for a driver, not a core, so a fixed seed is fine.
@@ -302,6 +358,11 @@ internal data class HarnessConfig(
                         // The peer direction needs the carrier named: without it the phase could not say
                         // where the restart landed, and there is no reason to run it blind when the lane it
                         // runs on always has one.
+                        // `network` is s11 (issue #102): the initiator is the NETWORK, not either peer.
+                        env("WEBRTC_RESTART_INITIATOR").equals("network", ignoreCase = true) ->
+                            env("WEBRTC_RESTART_CARRIER")
+                                ?.let { IceRestartPhase.Automatic(it) }
+                                ?: error("WEBRTC_RESTART_INITIATOR=network requires WEBRTC_RESTART_CARRIER")
                         env("WEBRTC_RESTART_INITIATOR").equals("peer", ignoreCase = true) ->
                             env("WEBRTC_RESTART_CARRIER")
                                 ?.let { IceRestartPhase.ForeignInitiated(it) }

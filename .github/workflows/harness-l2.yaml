@@ -131,11 +131,14 @@ jobs:
           - { runner: ubuntu-24.04-arm, name: Arm64, konan: linuxArm64 }
         ipfamily: [v4, v6, dual]
     runs-on: ${{ matrix.arch.runner }}
-    # 19 scenarios now (7 NAT profiles + pion + node + jvm-native + jvm-pion + jvm-node + firewall-relay6 +
-    # the carrier-switch ICE-restart lanes: restart-native/jvm-restart/restart-pion, and the foreign-initiated
-    # direction foreign-restart-{native,pion,node} — all v4 only, family-skipped elsewhere), each a fresh
+    # 21 scenarios now (7 NAT profiles + pion + node + jvm-native + jvm-pion + jvm-node + firewall-relay6 +
+    # the carrier-switch ICE-restart lanes: restart-native/jvm-restart/restart-pion, the foreign-initiated
+    # direction foreign-restart-{native,pion,node}, and the AUTOMATIC direction auto-restart-{native,pion}
+    # on the interface-swap topology (issue #102) — all v4 only, family-skipped elsewhere), each a fresh
     # stack. node-interop/jvm-node are fast (Node + one npm dep, no browser engine download); the restart
-    # lanes cost one extra offer/answer round each.
+    # lanes cost one extra offer/answer round each. The auto-restart lanes are the only ones that run with
+    # IceRestartPolicy.OnNetworkChange armed on the PRODUCTION monitor; everywhere else the library default
+    # (Manual) stands, so no other lane's behaviour changed.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6

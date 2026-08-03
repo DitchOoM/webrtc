@@ -22,16 +22,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Download linux maven-local
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: maven-local-linux
           path: /tmp/maven-local-merged
 
       - name: Download apple maven-local
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: maven-local-apple
           path: /tmp/maven-local-merged
@@ -62,7 +62,7 @@ jobs:
           echo "=== all modules present + well-formed ==="
 
       - name: Upload merged maven-local
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: maven-local-merged
           path: /tmp/maven-local-merged

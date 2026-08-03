@@ -64,7 +64,13 @@ public class MulticastMdnsResolver(
         val qType = if (isV4) MdnsMessage.TYPE_A else MdnsMessage.TYPE_AAAA
         // Bind the well-known mDNS port so both a unicast (QU) reply to our source and a multicast reply to
         // the group land on this socket; SO_REUSEADDR/REUSEPORT (set by bindMulticast) makes that safe.
-        val channel = UdpSocket.bindMulticast(MDNS_PORT, family, bufferFactory = bufferFactory)
+        // No `bufferFactory` argument on purpose: **received** datagrams must be allocated by socket-udp's
+        // own per-platform factory, which is not one factory (NIO on JVM/Android, io_uring `recvmsg` on
+        // Linux, `NWConnection` on Apple — the last two write into raw native memory). Passing ours
+        // overrode a validated per-platform choice with one that is wrong on Linux, and the symptom was
+        // silence: mDNS queries went out and no reply was ever decoded. Same defect as the unicast binder
+        // shipped with (#123); [bufferFactory] stays for what we *encode*, which we do own.
+        val channel = UdpSocket.bindMulticast(MDNS_PORT, family)
         try {
             val group = UdpSocket.resolve(if (isV4) MDNS_GROUP_V4 else MDNS_GROUP_V6, MDNS_PORT)
             channel.joinGroup(MulticastMembership(group, MulticastInterface.Default))

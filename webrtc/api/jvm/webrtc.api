@@ -282,8 +282,36 @@ public final class com/ditchoom/webrtc/PeerConnectionSupport$Native : com/ditcho
 	public static final field INSTANCE Lcom/ditchoom/webrtc/PeerConnectionSupport$Native;
 }
 
+public final class com/ditchoom/webrtc/PeerConnectionSupport$Unavailable : com/ditchoom/webrtc/PeerConnectionSupport {
+	public fun <init> (Lcom/ditchoom/webrtc/PeerConnectionUnavailableReason;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/PeerConnectionUnavailableReason;
+	public final fun copy (Lcom/ditchoom/webrtc/PeerConnectionUnavailableReason;)Lcom/ditchoom/webrtc/PeerConnectionSupport$Unavailable;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/PeerConnectionSupport$Unavailable;Lcom/ditchoom/webrtc/PeerConnectionUnavailableReason;ILjava/lang/Object;)Lcom/ditchoom/webrtc/PeerConnectionSupport$Unavailable;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReason ()Lcom/ditchoom/webrtc/PeerConnectionUnavailableReason;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/PeerConnectionSupport_jvmMainKt {
 	public static final fun peerConnectionSupport ()Lcom/ditchoom/webrtc/PeerConnectionSupport;
+}
+
+public abstract interface class com/ditchoom/webrtc/PeerConnectionUnavailableReason {
+}
+
+public final class com/ditchoom/webrtc/PeerConnectionUnavailableReason$NoBlockingKeyAgreement : com/ditchoom/webrtc/PeerConnectionUnavailableReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/PeerConnectionUnavailableReason$NoBlockingKeyAgreement;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/PeerConnectionUnavailableReason$NoDatagramTransport : com/ditchoom/webrtc/PeerConnectionUnavailableReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/PeerConnectionUnavailableReason$NoDatagramTransport;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
 }
 
 public final class com/ditchoom/webrtc/PlaintextDtls : com/ditchoom/webrtc/DtlsTransportFactory {

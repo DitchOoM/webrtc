@@ -23,8 +23,13 @@ import kotlin.time.Duration.Companion.seconds
  * The W6 browser-delegation Karma test: drives two real in-browser `RTCPeerConnection`s through our
  * [RtcPeerConnection] delegation (offer/answer, trickle, a data-channel message) over a localhost
  * loopback — proving `peerConnectionSupport()` as a `BrowserDelegated.create(...)` maps our API onto the browser's own
- * `RTCPeerConnection` (ARCHITECTURE §1.1: the one target we wrap). Under Node (`RTCPeerConnection` absent) it
- * returns [PeerConnectionSupport.Native] and the test no-ops, so the same suite is green on jsNodeTest.
+ * `RTCPeerConnection` (ARCHITECTURE §1.1: the one target we wrap).
+ *
+ * Under Node (`RTCPeerConnection` absent) there is nothing to delegate to, so the loopback body no-ops
+ * and the suite stays green on `jsNodeTest` — but it no-ops *after* asserting what the platform reports,
+ * which is the regression guard for webrtc#126. This used to return [PeerConnectionSupport.Native], and a
+ * caller that believed it got a session that gathered and checked normally and then died at the DTLS
+ * handshake. The Node branch is now a stated, tested fact rather than an untested fallthrough.
  */
 @OptIn(DelicateCoroutinesApi::class)
 class PeerConnectionDelegationTest {
@@ -32,7 +37,15 @@ class PeerConnectionDelegationTest {
     fun delegates_to_rtc_peer_connection_over_a_loopback(): Promise<Unit> =
         GlobalScope.promise {
             val support = peerConnectionSupport()
-            if (support !is PeerConnectionSupport.BrowserDelegated) return@promise // Node: nothing to delegate to
+            if (support !is PeerConnectionSupport.BrowserDelegated) {
+                // Node: nothing to delegate to — and the platform must SAY so rather than claim Native.
+                assertEquals(
+                    PeerConnectionSupport.Unavailable(PeerConnectionUnavailableReason.NoBlockingKeyAgreement),
+                    support,
+                    "js outside a browser must report the missing blocking raw-ECDH premaster at config time",
+                )
+                return@promise
+            }
 
             val scope = CoroutineScope(Dispatchers.Default)
             val alice = support.create(scope)

@@ -86,9 +86,15 @@ public fun interface InterfaceEnumerator {
  *  - **linux / macOS / iOS / watchOS / tvOS (K/N)** — POSIX `getifaddrs(3)`, up-and-running interfaces only.
  *  - **js / wasmJs** — [InterfaceEnumerationFailure.NoPlatformApi], always. A browser cannot enumerate
  *    NICs, and it does not need to: on a browser `peerConnectionSupport()` delegates to the platform
- *    `RTCPeerConnection`, which restarts ICE on a network change itself. Under Node the answer is the
- *    same and for a stronger reason — there is no raw-UDP `AddressedDatagramChannel` actual on those targets, so
- *    there is no ICE agent of ours to restart.
+ *    `RTCPeerConnection`, which restarts ICE on a network change itself. Outside a browser the answer is
+ *    the same, because neither target can host an ICE agent of ours to restart —
+ *    `peerConnectionSupport()` returns `Unavailable` on both, for two *different* reasons: wasmJs has no
+ *    raw-UDP actual at all, while js under Node has one and lacks only a blocking raw-ECDH premaster
+ *    (webrtc#126).
+ *
+ *    (This bullet used to justify both with "there is no raw-UDP `AddressedDatagramChannel` actual on
+ *    those targets". That is true of wasmJs and **false of js** — `socket-udp` publishes a full jsMain
+ *    actual with `bind`/`connect`/`bindMulticast`. The conclusion held; the reason did not.)
  */
 public expect fun systemInterfaceEnumerator(): InterfaceEnumerator
 

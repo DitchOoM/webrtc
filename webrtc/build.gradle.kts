@@ -28,3 +28,14 @@ kotlin {
         }
     }
 }
+
+// ReadmeQuickstartTest reads README.md and fails if the documented wiring has drifted from the code it
+// runs. Declaring the file as a task input is what makes that guard honest: without it, editing only the
+// README leaves `jvmTest` UP-TO-DATE and the check silently does not run — which is precisely the failure
+// mode (an unnoticed edit to a snippet nothing compiles) the test exists to close.
+tasks.named<Test>("jvmTest") {
+    inputs
+        .file(rootProject.file("README.md"))
+        .withPropertyName("readme")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+}

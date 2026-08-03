@@ -241,6 +241,11 @@ public class IceAgentDriver(
      * Gather a host candidate at [ip]:[port], and — if [stunServer] is given — a server-reflexive
      * candidate on the same socket (gathered *before* the forwarder starts, so it does not race the
      * checklist for `receive()`). Returns the host candidate; both are emitted on [localCandidateGathered].
+     *
+     * A [port] of **0 asks for an ephemeral port**, which is what a production gathering policy should do:
+     * a pinned port cannot survive an ICE restart, because the outgoing generation's sockets stay bound
+     * until the new one nominates and no OS will re-bind an address still in use. The candidate then names
+     * the port the socket actually received — see [boundAddress].
      */
     public suspend fun gatherHost(
         ip: String,
@@ -249,7 +254,7 @@ public class IceAgentDriver(
     ): IceCandidate {
         val socketAddress = SocketAddress.ofLiteral(ip, port)
         val channel = binder.bind(socketAddress)
-        val hostAddress = socketAddress.toTransportAddress()
+        val hostAddress = boundAddress(ip, channel).toTransportAddress()
         // Host + its server-reflexive share one interface index (same socket): family-preferred, tie-unique.
         val ifaceIndex = nextInterfaceIndex(hostAddress.ip)
         val hostPreference = CandidatePreferencePolicy.Default.localPreference(hostAddress.ip, ifaceIndex)
@@ -288,7 +293,7 @@ public class IceAgentDriver(
     /**
      * Gather a relay candidate: bind a dedicated socket at [ip]:[port], allocate on [turnServer], and
      * present the allocation as the candidate's channel. Returns the relay candidate, or null if the
-     * allocation fails.
+     * allocation fails. A [port] of 0 asks for an ephemeral one, as in [gatherHost].
      */
     public suspend fun gatherRelay(
         turnServer: SocketAddress,
@@ -299,6 +304,9 @@ public class IceAgentDriver(
     ): IceCandidate? {
         val socketAddress = SocketAddress.ofLiteral(ip, port)
         val underlying = binder.bind(socketAddress)
+        // The `raddr` of a relay candidate IS this local base, so it takes the bound port too — otherwise
+        // an ephemeral allocation publishes `raddr <ip> rport 0`, which is not a place anything lives.
+        val baseAddress = boundAddress(ip, underlying)
         val allocation = TurnAllocation(underlying, turnServer, username, password, gatheringRandom, scope, config.bufferFactory)
         val relayedSocket = allocation.allocate() ?: return null
         val relayedAddress = relayedSocket.toTransportAddress()
@@ -318,13 +326,34 @@ public class IceAgentDriver(
                         IceTransport.Udp,
                     ),
                 priority = IceCandidate.computePriority(CandidateType.Relayed, ComponentId.Rtp, relayPreference),
-                relatedAddress = socketAddress.toTransportAddress(),
+                relatedAddress = baseAddress.toTransportAddress(),
             )
         bind(relay.base, allocation)
         forward(relay.base, allocation)
         gather(relay)
         return relay
     }
+
+    /**
+     * The address a freshly bound [channel] actually holds, as a candidate should advertise it: the caller's
+     * own [ip] literal, at the port the socket **received**.
+     *
+     * The port has to come from the channel, because `bind(ip, 0)` means "give me an ephemeral port" — the
+     * requested address then says `0`, and a candidate built from it invites the peer to send to port 0.
+     * That is not a corner case: an ICE restart re-gathers while the outgoing generation's sockets are
+     * still bound (that is the continuity guarantee), so a production policy has no fixed port to pin and
+     * ephemeral is the normal case. Where the caller did pin a port, this is the value it pinned.
+     *
+     * The **host** deliberately does not come from the channel, even though it is right there. A platform
+     * renders a bound address in its own dialect — `getifaddrs`/`InetAddress.getHostAddress` append a
+     * `%scope` to a link-local v6 literal, which [toTransportAddress] would reject as malformed — whereas
+     * [ip] is the literal the gathering policy chose and every candidate has always carried. One field
+     * needed correcting; taking the other along for the ride would trade a real bug for a subtler one.
+     */
+    private fun boundAddress(
+        ip: String,
+        channel: AddressedDatagramChannel,
+    ): SocketAddress = SocketAddress.ofLiteral(ip, channel.localAddress.port)
 
     /** Feed the peer's ICE credentials in (from the SDP offer/answer) — pairing can begin. */
     public fun setRemoteCredentials(credentials: IceCredentials) {

@@ -34,9 +34,42 @@ kotlin {
             implementation(libs.socket.udp)
         }
 
-        // ── mDNS multicast resolver actual (MulticastMdnsResolver, RFC 6762 `.local` resolution) ──
-        // It binds a socket-udp MulticastDatagramChannel, so it compiles ONLY into the non-browser targets
+        // ── Real-socket tests that must run on MORE THAN ONE platform (`socketTest`) ──────────────
+        // `UdpDatagramBinderTest` establishes ICE between two agents over sockets the shipped
+        // `udpDatagramBinder()` bound. It has to compile into both the JVM and a Kotlin/Native leaf, and
+        // that is not a nicety: the two receive paths are *different implementations* — NIO on the JVM,
+        // io_uring on Linux, `NWConnection` on Apple — with different allocation requirements, and a
+        // JVM-only version of this test passes while the native one is broken. It did exactly that, once.
+        //
+        // Same shared-source-set shape as `monitorReplayTest` below, and for the same Dokka-adjacent
+        // reason: one physical file, one owning source set, compiled per leaf.
+        //
+        // linuxTest, not nativeTest: `nativeTest` also covers watchOS/tvOS, for which socket-udp publishes
+        // no artifact at all (which is the same reason `socketMain` names its leaves explicitly).
+        val socketTest by creating {
+            dependsOn(commonTest.get())
+            dependencies { implementation(libs.socket.udp) }
+        }
+        val socketTestLeaves = mutableListOf("jvmTest", "linuxTest")
+        if (org.jetbrains.kotlin.konan.target.HostManager.hostIsMac) {
+            socketTestLeaves += listOf("macosTest", "iosTest")
+        }
+        for (leaf in socketTestLeaves) {
+            named(leaf) { dependsOn(socketTest) }
+        }
+
+        // ── The real-socket edge: udpDatagramBinder() + the mDNS multicast resolver ──────────────
+        // Two things that bind a socket-udp channel, so they compile ONLY into the non-browser targets
         // that ship a socket-udp actual: jvm, android, linux, and — on a macOS host — macOS + iOS.
+        //
+        //  · `udpDatagramBinder()` — the production DatagramBinder every real session passes to
+        //    NativePeerConnection. It is the ONE substitution between a vnet run and a real-kernel run,
+        //    which is exactly why it belongs beside the seam it implements rather than in each consumer.
+        //  · `MulticastMdnsResolver` — RFC 6762 `.local` resolution over a MulticastDatagramChannel.
+        //
+        // Their absence on the remaining targets is the design, not a gap to paper over: a browser has no
+        // raw UDP and delegates to its own RTCPeerConnection, so a call site that reaches for a binder
+        // there should not compile.
         //
         // Modeled as a REAL shared `socketMain` source set (its files live once in src/socketMain/kotlin,
         // the default root for a source set of that name) that those leaves `dependsOn` — NOT a srcDir
@@ -45,20 +78,20 @@ kotlin {
         // ("every Kotlin source file belongs to only one source set") fails with `Source sets 'android' and
         // 'jvm' … have the common source roots: …/MulticastMdnsResolver.kt`, breaking
         // :webrtc-ice:dokkaGeneratePublicationHtml (build-linux). A shared source set is one module → one
-        // owner. EXCLUDED on purpose: js/wasm (both `browser()`, no raw UDP — a browser resolves `.local`
-        // inside its own RTCPeerConnection) and watchOS/tvOS (socket-udp publishes no artifact for them, so
-        // `appleMain`/`nativeMain` are too broad to hang the dependency on).
+        // owner. EXCLUDED on purpose: js/wasm (both `browser()`, no raw UDP) and watchOS/tvOS (socket-udp
+        // publishes no artifact for them, so `appleMain`/`nativeMain` are too broad to hang the dependency
+        // on — which is also why those five targets publish yet cannot establish a session).
         val socketMain by creating {
             dependsOn(commonMain.get())
             dependencies {
                 implementation(libs.socket.udp)
             }
         }
-        val mdnsSocketLeaves = mutableListOf("jvmMain", "androidMain", "linuxMain")
+        val socketLeaves = mutableListOf("jvmMain", "androidMain", "linuxMain")
         if (org.jetbrains.kotlin.konan.target.HostManager.hostIsMac) {
-            mdnsSocketLeaves += listOf("macosMain", "iosMain")
+            socketLeaves += listOf("macosMain", "iosMain")
         }
-        for (leaf in mdnsSocketLeaves) {
+        for (leaf in socketLeaves) {
             named(leaf) { dependsOn(socketMain) }
         }
 

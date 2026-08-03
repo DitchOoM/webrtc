@@ -2,27 +2,22 @@
 
 package com.ditchoom.webrtc.harness
 
-import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.socket.udp.UdpSocket
 import com.ditchoom.webrtc.ice.DatagramBinder
+import com.ditchoom.webrtc.ice.udpDatagramBinder
 
 /**
- * The production real-UDP [DatagramBinder]: binds an unconnected socket-udp [UdpSocket] at the requested
- * local address and hands back its buffer-flow [AddressedDatagramChannel] — the exact seam the in-memory vnet
- * implements in tests. Per `webrtc-ice`'s [DatagramBinder] contract, this one lambda is the ONLY
- * substitution between a vnet run and a real-kernel run; the ICE agent, gathering drivers, DTLS and SCTP
- * above are byte-for-byte identical on either.
+ * The production real-UDP [DatagramBinder] — now `webrtc-ice`'s own [udpDatagramBinder], not a copy of it.
  *
- * socket-udp is the crypto-free socket module (no BoringSSL), so it links cleanly alongside webrtc-dtls's
- * BoringSSL — unlike socket core / socket-quic, which would duplicate-symbol the native link
- * (see `~/git/cinterop-issues`). That is exactly why the peer binds UDP here and never TCP.
+ * This function used to hold the three-line `UdpSocket.bind` itself, which meant the single most important
+ * line in the harness (the ONLY substitution between a vnet run and a real-kernel run) was one the library
+ * did not ship. Consumers had to rediscover it; this peer was the de-facto reference and nobody could
+ * depend on it. The alias stays so the peer's call sites still read `realUdpBinder()`, but the binder the
+ * interop lanes exercise on real NAT kernels is now literally the one published to consumers.
  */
-internal fun realUdpBinder(): DatagramBinder =
-    DatagramBinder { address ->
-        UdpSocket.bind(localHost = address.host, localPort = address.port)
-    }
+internal fun realUdpBinder(): DatagramBinder = udpDatagramBinder()
 
 /** Resolve a `host:port` (a compose service name or an IP literal) to a [SocketAddress]. */
 internal suspend fun resolveAddress(

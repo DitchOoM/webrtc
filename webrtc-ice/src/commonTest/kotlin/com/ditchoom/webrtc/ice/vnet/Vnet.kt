@@ -50,12 +50,34 @@ internal class Vnet(
     /** The addresses currently bound in the vnet — the fabric consults this to decide reachability. */
     val boundAddresses: Set<SocketAddress> get() = endpoints.keys.toSet()
 
-    /** Bind an **unconnected** endpoint at [local]; datagrams delivered toward [local] arrive here. */
+    // The next ephemeral port to hand out (see [bind]). A plain counter, not a Random: the vnet's whole
+    // purpose is that two runs of the same fixture produce the same wire, so "the kernel picked one"
+    // must still be reproducible. IANA's dynamic range starts at 49152.
+    private var nextEphemeralPort = EPHEMERAL_PORT_BASE
+
+    /**
+     * Bind an **unconnected** endpoint at [local]; datagrams delivered toward [local] arrive here.
+     *
+     * A port of **0 means ephemeral**, exactly as it does to an OS: the vnet assigns a free port and the
+     * returned channel reports it on `localAddress`. Modelled because production gathering binds that way
+     * — an ICE restart re-gathers while the previous generation still holds its sockets, so there is no
+     * port to pin — and a seam that quietly bound *port zero* would let a candidate advertising `:0`
+     * pass every test and fail on the first real kernel.
+     */
     fun bind(local: SocketAddress): AddressedDatagramChannel {
-        require(local !in endpoints) { "address already bound: $local" }
+        val bound = if (local.port == 0) SocketAddress.ofLiteral(local.host, allocateEphemeralPort(local.host)) else local
+        require(bound !in endpoints) { "address already bound: $bound" }
         val inbound = Channel<Datagram>(Channel.UNLIMITED)
-        endpoints[local] = inbound
-        return VnetChannel(local, inbound, this, capabilities)
+        endpoints[bound] = inbound
+        return VnetChannel(bound, inbound, this, capabilities)
+    }
+
+    private fun allocateEphemeralPort(host: String): Int {
+        while (SocketAddress.ofLiteral(host, nextEphemeralPort) in endpoints) nextEphemeralPort++
+        // Exhaustion is a fixture that leaked sockets, not a network condition worth modelling — say so
+        // rather than wrapping past 65535 and handing back a port number that cannot exist.
+        require(nextEphemeralPort <= MAX_PORT) { "vnet ephemeral port range exhausted (bound: ${endpoints.size})" }
+        return nextEphemeralPort++
     }
 
     /**
@@ -193,6 +215,10 @@ private class VnetChannel(
 
 /** Payload ceiling of the virtual link. */
 private const val MAX_UDP_PAYLOAD = 65507
+
+// IANA's dynamic/ephemeral range (RFC 6335 §6) — where a real OS starts handing out `bind(…, 0)` ports.
+private const val EPHEMERAL_PORT_BASE = 49152
+private const val MAX_PORT = 65535
 
 /** A full-capability virtual endpoint — every control-plane field round-trips through memory. */
 internal val FullVnetCapabilities =

@@ -147,11 +147,11 @@ jobs:
     if: always() && needs.check-release.outputs.flow != 'skip' && needs.check-release.outputs.flow != 'dry-run'
     runs-on: ubuntu-latest
     steps:
-      # RELEASE_PAT (workflow scope) so a tag push whose tree touches .github/workflows/* succeeds;
-      # falls back to GITHUB_TOKEN when unset.
+      # Nothing below reads the work tree any more — the tag is created through the REST API and the
+      # release through `gh` — so this needs no elevated token. It used to take RELEASE_PAT (workflow
+      # scope) specifically to get a tag *push* past the guard described in the tag step below; that
+      # push is gone, and with it the reason to hold a broader credential in a release job.
       - uses: actions/checkout@v7
-        with:
-          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Create draft GitHub release
         if: needs.check-release.outputs.flow == 'draft' && needs.publish.result == 'success'
@@ -181,12 +181,37 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_TITLE: ${{ github.event.pull_request.title || 'Manual release' }}
           PR_URL: ${{ github.event.pull_request.html_url || format('{0}/{1}', github.server_url, github.repository) }}
+          # The commit this release was actually cut from: the merge this PR produced, or — on a manual
+          # dispatch, where there is no PR — the dispatched ref's tip.
+          TARGET_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
         run: |
+          set -euo pipefail
           version="${{ needs.build-linux.outputs.version }}"
           tag="v${version}"
-          if git rev-parse "$tag" >/dev/null 2>&1; then echo "Tag $tag exists, skipping"; exit 0; fi
-          git tag "$tag"
-          git push origin "$tag"
+
+          # Ask the API whether the tag exists, not the work tree. `actions/checkout` fetches no tags at
+          # its default depth, so the `git rev-parse` this replaces could never have seen one — the
+          # idempotency guard was decorative.
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
+            echo "Tag ${tag} already exists — leaving it alone."
+          else
+            # Create the ref through REST rather than `git push` (#121). GitHub refuses a ref push from a
+            # GitHub App token when the pushed tree contains workflow files, and a **tag** ref counts, so
+            # every release whose range happened to touch .github/workflows/** died right here — after a
+            # successful publish, leaving Central and git out of step. The REST path carries no such
+            # guard and needs nothing beyond the `contents: write` this workflow already declares.
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+                -f "ref=refs/tags/${tag}" -f "sha=${TARGET_SHA}"
+            echo "Tagged ${TARGET_SHA} as ${tag}."
+          fi
+
+          # Separate check, because the two halves fail independently: v0.14.0 got its tag by hand and
+          # still had no release. Creating each only when missing makes a re-run finish the job rather
+          # than error on the half that already succeeded.
+          if gh release view "$tag" --repo="$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists — leaving it alone."
+            exit 0
+          fi
           maven_url="https://central.sonatype.com/artifact/com.ditchoom/webrtc/${version}"
           gh release create "$tag" --repo="$GITHUB_REPOSITORY" --title="${tag}" \
               --notes="$(cat <<EOF

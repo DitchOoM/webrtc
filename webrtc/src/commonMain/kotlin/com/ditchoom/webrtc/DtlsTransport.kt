@@ -1,6 +1,7 @@
 package com.ditchoom.webrtc
 
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.webrtc.ice.IceDataReadResult
 import com.ditchoom.webrtc.ice.IceDataTransport
 import com.ditchoom.webrtc.sctp.datachannel.SctpDatagramTransport
 import com.ditchoom.webrtc.sdp.Fingerprint
@@ -73,7 +74,13 @@ public object PlaintextDtls : DtlsTransportFactory {
         object : SctpDatagramTransport {
             override suspend fun send(packet: ReadBuffer) = iceData.send(packet)
 
-            override suspend fun receive(): ReadBuffer? = iceData.receive()
+            // SctpDatagramTransport (webrtc-sctp) still models "closed" as a null; this is the adapter
+            // boundary where the ICE seam's sealed result meets it.
+            override suspend fun receive(): ReadBuffer? =
+                when (val read = iceData.receive()) {
+                    is IceDataReadResult.Received -> read.packet
+                    IceDataReadResult.Closed -> null
+                }
 
             override fun close() = iceData.close()
         }

@@ -50,6 +50,21 @@ public sealed interface IceGatheringNotice {
     public data class InterfaceUnusable(
         public val address: String,
     ) : IceGatheringNotice
+
+    /**
+     * The allocation was attempted and yielded no relay candidate — [cause] says which way it failed.
+     *
+     * This is the notice [ServerCredentialMissing] above wishes existed for the credentials it cannot
+     * pre-empt. It can refuse a `turn:` URL carrying no credentials at all, but a URL carrying the
+     * *wrong* ones is indistinguishable until the server answers, and that answer used to be discarded:
+     * `gatherRelay` returned null and the loop ignored it, so a realm/password mismatch and a TURN
+     * server that was simply unreachable produced identical silence. A rejection now arrives as
+     * [TurnAllocationResult.Unavailable.Rejected] carrying the 401.
+     */
+    public data class RelayUnavailable(
+        public val url: String,
+        public val cause: TurnAllocationResult.Unavailable,
+    ) : IceGatheringNotice
 }
 
 /**
@@ -124,7 +139,10 @@ public fun systemIceGathering(
             for (turn in servers.turn) {
                 if (turn.address.family != local.family) continue
                 try {
-                    driver.gatherRelay(turn.address, turn.username, turn.password, local.host, EPHEMERAL_PORT)
+                    when (val relay = driver.gatherRelay(turn.address, turn.username, turn.password, local.host, EPHEMERAL_PORT)) {
+                        is RelayGatheringResult.Gathered -> Unit // already emitted on the gather flow
+                        is RelayGatheringResult.Unavailable -> onNotice(IceGatheringNotice.RelayUnavailable(turn.url, relay.cause))
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (

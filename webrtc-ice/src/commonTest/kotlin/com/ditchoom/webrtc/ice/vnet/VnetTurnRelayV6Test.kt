@@ -5,11 +5,12 @@ package com.ditchoom.webrtc.ice.vnet
 import com.ditchoom.buffer.flow.AddressFamily
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.webrtc.ice.TurnAllocation
+import com.ditchoom.webrtc.ice.TurnAllocationResult
 import kotlinx.coroutines.test.runTest
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
+import kotlin.test.assertIs
 
 /**
  * Regression for the routed-IPv6 TURN-relay bug the harness surfaced (v6 lanes hung at ICE
@@ -39,11 +40,12 @@ class VnetTurnRelayV6Test {
             val allocation =
                 TurnAllocation(underlying, turnAddress, Vnets.TURN_USERNAME, Vnets.TURN_PASSWORD, Random(1), backgroundScope)
 
-            val relayed = allocation.allocate()
-            assertNotNull(
-                relayed,
-                "the TURN client must obtain a relay over a v6 server (Allocate must carry REQUESTED-ADDRESS-FAMILY=IPv6)",
-            )
+            val result = allocation.allocate()
+            val relayed =
+                assertIs<TurnAllocationResult.Allocated>(
+                    result,
+                    "the TURN client must obtain a relay over a v6 server (Allocate must carry REQUESTED-ADDRESS-FAMILY=IPv6)",
+                ).relayed
             assertEquals(AddressFamily.IPv6, relayed.family, "the relayed address must be IPv6, not a defaulted v4/loopback relay")
         }
 }

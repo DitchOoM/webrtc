@@ -24,7 +24,7 @@ Benchmarks are on-demand — they are not part of `build` / `check`.
 | STUN attribute decode + MESSAGE-INTEGRITY verify over a datagram slice | `webrtc-stun` | measured |
 | SDP parse / encode | `webrtc-sdp` | measured |
 | SCTP chunk decode / reassembly | `webrtc-sctp` | measured |
-| RTP header parse, SRTP seal/open ops/sec | `webrtc-rtp` / `webrtc-srtp` | with media |
+| SCTP association round trip (send → SACK → drain) | `webrtc-sctp` | measured |
 
 ## Results
 

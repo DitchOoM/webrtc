@@ -1,5 +1,8 @@
 # webrtc
 
+[![Maven Central](https://img.shields.io/maven-central/v/com.ditchoom/webrtc?label=Maven%20Central)](https://central.sonatype.com/artifact/com.ditchoom/webrtc)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](./LICENSE.md)
+
 **WebRTC data channels for Kotlin Multiplatform — zero-copy, sans-io, and deterministic under test.**
 
 `com.ditchoom:webrtc` is a WebRTC stack written in common Kotlin on top of the DitchOoM
@@ -14,7 +17,7 @@ and dual-stack.
 
 ```kotlin
 dependencies {
-    implementation("com.ditchoom:webrtc:0.14.0")
+    implementation("com.ditchoom:webrtc:0.20.0")
 }
 ```
 
@@ -177,7 +180,7 @@ time, on every platform, with no Docker and no OS sockets.
 
 ```kotlin
 dependencies {
-    testImplementation("com.ditchoom:webrtc-testsuite:0.14.0")
+    testImplementation("com.ditchoom:webrtc-testsuite:0.20.0")
 }
 ```
 

@@ -141,6 +141,30 @@ jobs:
       MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
       MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
 
+  # The POST-publish half of the consumer gate: resolve the version we just pushed from Maven Central and
+  # NOTHING else, cold, as an outside project would. `consumer-smoke` above proved the same consumer
+  # against the pre-publish merged repo; this proves the *publish itself* — that every module and every
+  # target variant genuinely landed on Central and is usable from there.
+  #
+  # It used to hang off the tag push in `released.yaml`. Since #128 the tag is created through the REST
+  # API with `secrets.GITHUB_TOKEN`, and GitHub does not dispatch workflow events for refs created with
+  # that token — so `released.yaml` silently stopped firing after v0.14.0 and six releases shipped with
+  # nothing verifying what reached Central. Hanging it here removes the dependency on an event that no
+  # longer arrives.
+  #
+  # Only the `release` flow reaches Central automatically; a `draft` publish is USER_MANAGED and has
+  # nothing to resolve yet. `consumer-smoke.yaml` polls Central's eventual consistency itself (30 × 30s),
+  # so this does not race the publish, and it runs alongside `finalize` rather than gating it — the
+  # artifacts are on Central by then, so a red lane here is a report, not a reason to withhold the tag.
+  consumer-smoke-central:
+    needs: [check-release, build-linux, publish]
+    if: needs.check-release.outputs.flow == 'release'
+    uses: ./.github/workflows/consumer-smoke.yaml
+    with:
+      version: ${{ needs.build-linux.outputs.version }}
+      source: central
+      include-macos: true
+
   finalize:
     name: Finalize Release
     needs: [check-release, build-linux, publish]

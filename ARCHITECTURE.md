@@ -250,11 +250,20 @@ about the private network. We resolve a peer's names **and** publish our own, be
 the clear would make a page using this library strictly less private than the same page using
 `RTCPeerConnection`.
 
-It is **opt-in** (`MdnsAdvertisePolicy`), and the reason is structural: `PeerConnectionConfig` is
-`commonMain`, which cannot construct a multicast responder, so a default of "advertise" would have to
-mean "advertise with nobody answering" — which costs the peer the candidate outright and is worse than
-publishing the address. Everything but the socket is `commonMain`: the codec, the RFC 6762 §6 policy and
-the dispatch loop run over the vnet, with only the 5353 bind-and-join at the edge.
+The default therefore depends on **who can see a socket**, and the two answers differ on purpose:
+
+- **`nativePeerConnection(…)` advertises by default** (`mdns = true`, issues #100 / #135). It is in
+  `socketMain`, so it can construct the `MulticastMdnsEndpoint` that makes the promise good, and a
+  browser does this unconditionally — a page using this library should not be strictly less private
+  than the same page using `RTCPeerConnection`.
+- **A hand-built `PeerConnectionConfig` is opt-in** (`MdnsAdvertisePolicy`, wired through
+  `withMulticastMdns(…)`), and that is structural rather than conservative: `PeerConnectionConfig` is
+  `commonMain` and cannot construct a multicast responder, so a default of "advertise" *there* would
+  mean "advertise with nobody answering" — which costs the peer the candidate outright and is worse
+  than publishing the address.
+
+Everything but the socket is `commonMain`: the codec, the RFC 6762 §6 policy and the dispatch loop run
+over the vnet, with only the 5353 bind-and-join at the edge.
 
 ### 11.5 DTLS is ours, in `commonMain`
 

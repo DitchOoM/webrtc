@@ -6,6 +6,54 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Fixed — nothing had verified a publish since v0.14.0, and the docs said otherwise
+
+`released.yaml` carries the post-release consumer lane: resolve the just-published version from Maven
+Central and nothing else, cold, then compile, K/N-link and run the harness against it. It triggers on
+`push: tags: v*`. Since #128 the release tag is created through the REST API with
+`secrets.GITHUB_TOKEN`, and **GitHub does not dispatch workflow events for refs created with that
+token** — so the lane stopped firing, silently, and `v0.15.0` … `v0.20.0` all shipped without it. The
+tell was available the whole time: six tags, six releases, and `gh run list --workflow released.yaml`
+still reporting v0.14.0 as its most recent run.
+
+The pre-publish half was never affected — `merged.yaml`'s `consumer-smoke` job runs against the merged
+maven-local repo and `publish` needs it, so a consumer-breaking artifact still could not reach Central.
+What was missing was the check on the publish *itself*.
+
+`merged.yaml` now runs `consumer-smoke-central` off `publish` rather than off the tag, so it no longer
+depends on an event that does not arrive. It is gated to the `release` flow (a `draft` publish is
+USER_MANAGED and has nothing on Central to resolve yet) and runs alongside `finalize` rather than
+gating it. `released.yaml` stays as the fallback for a hand-pushed tag.
+
+This is the second instance of the `CLAUDE.md` "a config the process never applied" trap, after
+coturn's `-n`, and it failed the same way: a lane that should log on every release logging nothing.
+
+### Fixed — documentation that no longer described the code
+
+No API change; corrections only.
+
+- **`README.md` pinned `0.14.0`** in both dependency snippets while Central was at `0.20.0` — six
+  releases, several of them binary-breaking `minor` bumps. Now `0.20.0`, with a Maven Central badge so
+  the next drift is visible without reading the file.
+- **`ARCHITECTURE.md` §11.4 still described mDNS advertising as opt-in**, and argued structurally that a
+  default of "advertise" was impossible. `nativePeerConnection` has defaulted `mdns = true` since #135,
+  and the README has said so since #129. The section now states both defaults and why they differ: the
+  factory is in `socketMain` and can construct the responder that makes the promise good, while a
+  `commonMain` `PeerConnectionConfig` cannot, so opt-in remains correct *there*.
+- **`TESTING.md` §4's no-leak invariant was stated as though enforced everywhere.** `assertNoLeaks()` is
+  real (#142) but lives only in `webrtc-ice`'s vnet; the other `CountingBufferFactory` copies count
+  allocations only, and the published `webrtc-testsuite` harness exposes just `allocationCount`, so a
+  consumer cannot assert it at all. Restated as the standard with its actual reach, including the two
+  things that bound it (the unowned receive side, and socket#277's invisibility to any factory-level
+  tracker).
+- **`TESTING.md`'s L4 example did not compile** — `natType(Symmetric)` unqualified and
+  `impaired(loss = 5.percent)`, where the real signature is `impaired(loss: Double = 0.0, …)` and
+  `percent` exists nowhere in the repo. Replaced with the form the README uses, which does compile.
+- **`TESTING.md` §2's coturn table row had no second cell**, rendering as an empty column.
+- **`PERFORMANCE.md`'s coverage table listed `webrtc-rtp` / `webrtc-srtp`** — modules that do not exist,
+  against a stated non-goal. Replaced with the SCTP association round trip, which is measured and
+  documented directly below it.
+
 ### Fixed — every TURN request was sent exactly once, over UDP
 
 `TurnAllocation.request()` transmitted each request a single time and waited out its budget. TURN is the

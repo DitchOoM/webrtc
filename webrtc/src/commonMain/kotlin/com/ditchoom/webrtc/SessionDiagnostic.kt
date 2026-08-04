@@ -83,4 +83,35 @@ public sealed interface SessionDiagnostic {
         /** Why the enumeration failed — `NoPlatformApi` is permanent, `EnumerationFailed` may not be. */
         public val reason: InterfaceEnumerationFailure,
     ) : SessionDiagnostic
+
+    /**
+     * The **local socket** refused an outgoing ICE datagram — a connectivity check, a nomination, a
+     * keep-alive, or relayed data.
+     *
+     * Non-fatal, and deliberately so: ICE is built to survive lost datagrams, so a refused transmit is
+     * dropped and retransmitted exactly as a dropped one would be, and if the path is genuinely dead the
+     * establishment and RFC 7675 consent backstops still reach a typed terminal on their own schedule.
+     * The session is not in a distinct state and is not being lied to.
+     *
+     * **What this exists to make visible is the silent case.** Without it, a socket refusing every send
+     * presents identically to a peer that stopped answering — the session ends at
+     * `IceFailureReason.NoCandidatePairs` or `.ConsentExpired`, both of which name the symptom and point
+     * outward, while the cause was local and already known inside the driver. A run of these against a
+     * checklist that otherwise looks healthy is the tell, and it is not recoverable from any other
+     * surface.
+     *
+     * A single occurrence is usually transient. A sustained stream means the local send path is broken —
+     * a closed or unbound socket, a payload past the interface MTU, a route that went away.
+     */
+    public data class TransmitFailed(
+        /**
+         * What the socket raised. Diagnostic payload — never a discriminant; see the type KDoc.
+         *
+         * It stays a `Throwable` for the same reason [NetworkWatcherStopped.cause] does: it crosses an
+         * API boundary from socket, so its type is socket's to define. Once DitchOoM/socket#278 releases
+         * a sealed `DatagramSendError`, this is the field that gains a typed sibling — `TooLarge` is
+         * permanent for that payload, where a transport failure is worth another attempt.
+         */
+        public val cause: Throwable,
+    ) : SessionDiagnostic
 }

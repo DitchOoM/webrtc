@@ -232,6 +232,7 @@ public final class com/ditchoom/webrtc/ice/IceAgentDriver {
 	public final fun getPath ()Lkotlinx/coroutines/flow/StateFlow;
 	public final fun getRemoteCandidateDiscarded ()Lkotlinx/coroutines/flow/Flow;
 	public final fun getState ()Lkotlinx/coroutines/flow/StateFlow;
+	public final fun getTransmitFailed ()Lkotlinx/coroutines/flow/Flow;
 	public final fun pathRidesOneOf (Ljava/util/List;)Z
 	public final fun post (Lcom/ditchoom/webrtc/ice/IceEvent;)V
 	public final fun restart ()V
@@ -932,6 +933,19 @@ public final class com/ditchoom/webrtc/ice/IceServerUrlRejection$UnknownScheme :
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/ice/IceTransmitFailure {
+	public fun <init> (Lcom/ditchoom/webrtc/stun/TransportAddress;Ljava/lang/Throwable;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public final fun component2 ()Ljava/lang/Throwable;
+	public final fun copy (Lcom/ditchoom/webrtc/stun/TransportAddress;Ljava/lang/Throwable;)Lcom/ditchoom/webrtc/ice/IceTransmitFailure;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/IceTransmitFailure;Lcom/ditchoom/webrtc/stun/TransportAddress;Ljava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceTransmitFailure;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Ljava/lang/Throwable;
+	public final fun getTo ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/ice/IceTransport : java/lang/Enum {
 	public static final field Udp Lcom/ditchoom/webrtc/ice/IceTransport;
 	public static fun getEntries ()Lkotlin/enums/EnumEntries;
@@ -1503,6 +1517,17 @@ public final class com/ditchoom/webrtc/ice/ServerReflexiveResult$Unavailable$Rej
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/ice/ServerReflexiveResult$Unavailable$SendFailed : com/ditchoom/webrtc/ice/ServerReflexiveResult$Unavailable {
+	public fun <init> (Ljava/lang/Throwable;)V
+	public final fun component1 ()Ljava/lang/Throwable;
+	public final fun copy (Ljava/lang/Throwable;)Lcom/ditchoom/webrtc/ice/ServerReflexiveResult$Unavailable$SendFailed;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/ServerReflexiveResult$Unavailable$SendFailed;Ljava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/ServerReflexiveResult$Unavailable$SendFailed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Ljava/lang/Throwable;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/ice/SocketUdpMdnsBinder : com/ditchoom/webrtc/ice/MdnsMulticastBinder {
 	public fun <init> ()V
 	public fun bind (Lcom/ditchoom/buffer/flow/AddressFamily;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
@@ -1610,6 +1635,17 @@ public final class com/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable$Reje
 	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable$Rejected;Lcom/ditchoom/webrtc/stun/StunErrorCode;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable$Rejected;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getError ()Lcom/ditchoom/webrtc/stun/StunErrorCode;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable$SendFailed : com/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable {
+	public fun <init> (Ljava/lang/Throwable;)V
+	public final fun component1 ()Ljava/lang/Throwable;
+	public final fun copy (Ljava/lang/Throwable;)Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable$SendFailed;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable$SendFailed;Ljava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/TurnAllocationResult$Unavailable$SendFailed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCause ()Ljava/lang/Throwable;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }

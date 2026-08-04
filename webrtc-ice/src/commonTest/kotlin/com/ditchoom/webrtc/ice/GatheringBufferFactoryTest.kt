@@ -30,7 +30,6 @@ import kotlinx.coroutines.test.runTest
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
@@ -71,20 +70,58 @@ class GatheringBufferFactoryTest {
             assertEquals(srflx, result.address)
         }
 
-    /** The bug, pinned: omitting the factory (as the pre-fix code did via `.encode()`) builds the Binding
-     *  from `BufferFactory.Default`, which the native-only socket rejects exactly as real io_uring does. */
+    /**
+     * The bug, pinned: omitting the factory (as the pre-fix code did via `.encode()`) builds the Binding
+     * from `BufferFactory.Default`, which the native-only socket rejects exactly as real io_uring does.
+     *
+     * **This used to assert the raise itself** (`assertFailsWith<IllegalStateException>`). It cannot any
+     * more, and the reason is the point of webrtc#143: an escaped throw from `send` was destroying far
+     * more than the datagram, so the gathering loop now tolerates a refused transmission and retransmits,
+     * exactly as it already tolerates a dropped one.
+     *
+     * Tolerating is not the same as hiding. A gather where **nothing ever left the socket** answers
+     * [ServerReflexiveResult.Unavailable.SendFailed] rather than `NoResponse`, so a local misconfiguration
+     * still names itself instead of presenting as an unreachable STUN server — and it now does so as a
+     * typed result the caller can branch on rather than an `IllegalStateException` propagating out of a
+     * gather. The original cause is carried through intact and asserted below, so nothing this fixture
+     * used to prove has been given up.
+     */
     @Test
-    fun srflx_gathering_with_the_default_heap_factory_is_rejected_by_a_native_socket() =
+    fun srflx_gathering_with_the_default_heap_factory_reports_that_it_never_sent() =
         runTest {
             val factory = TaggingBufferFactory()
             val srflx = SocketAddress.ofLiteral("203.0.113.7", 55555).toTransportAddress()
             val channel = NativeOnlyChannel(local, factory, srflx)
 
-            val error =
-                assertFailsWith<IllegalStateException> {
-                    gatherServerReflexive(channel, stunServer, Random(1)) // default (heap) factory
-                }
-            assertEquals("send requires a native-memory buffer", error.message)
+            val result = gatherServerReflexive(channel, stunServer, Random(1)) // default (heap) factory
+
+            val failed =
+                assertIs<ServerReflexiveResult.Unavailable.SendFailed>(
+                    result,
+                    "a heap factory on a native-only socket must report that nothing was transmitted, " +
+                        "never NoResponse — the STUN server was never asked",
+                )
+            assertEquals("send requires a native-memory buffer", failed.cause.message)
+        }
+
+    /**
+     * The anti-vacuity direction for the test above: a socket that accepts the datagram but whose server
+     * never answers must still report [ServerReflexiveResult.Unavailable.NoResponse]. Without this,
+     * `SendFailed` could be returned for every unsuccessful gather and the distinction it exists to draw
+     * would be worthless.
+     */
+    @Test
+    fun a_silent_server_is_still_no_response_not_a_send_failure() =
+        runTest {
+            val factory = TaggingBufferFactory()
+            val channel = SilentChannel(local)
+
+            val result = gatherServerReflexive(channel, stunServer, Random(1), bufferFactory = factory)
+
+            assertIs<ServerReflexiveResult.Unavailable.NoResponse>(
+                result,
+                "the datagram went out and the server said nothing — that is the server's silence, not ours",
+            )
         }
 
     /**
@@ -129,6 +166,38 @@ class GatheringBufferFactoryTest {
                 "relay gathered — driver threaded the factory into TurnAllocation (F2)",
             )
         }
+}
+
+/**
+ * A channel that accepts every datagram and never answers — the STUN server that is simply not there.
+ * The counterweight to [NativeOnlyChannel]: it proves `NoResponse` and `SendFailed` are actually told
+ * apart, rather than the latter being returned for every unsuccessful gather.
+ */
+private class SilentChannel(
+    override val localAddress: SocketAddress,
+) : AddressedDatagramChannel {
+    private val inbound = Channel<Datagram>(Channel.UNLIMITED)
+    private var closed = false
+
+    override val isOpen: Boolean get() = !closed
+    override val maxWritableSize: Int = 65507
+    override val capabilities: DatagramCapabilities = DatagramCapabilities()
+
+    override suspend fun receive(): DatagramReadResult {
+        val datagram = inbound.receiveCatching().getOrNull()
+        return if (datagram != null) DatagramReadResult.Received(datagram) else DatagramReadResult.Closed()
+    }
+
+    override suspend fun send(
+        payload: ReadBuffer,
+        to: SocketAddress,
+        options: DatagramSendOptions,
+    ) = Unit // accepted, and deliberately unanswered
+
+    override fun close() {
+        closed = true
+        inbound.close()
+    }
 }
 
 /**

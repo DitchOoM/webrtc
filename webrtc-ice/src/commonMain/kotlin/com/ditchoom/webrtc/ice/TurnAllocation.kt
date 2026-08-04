@@ -148,6 +148,7 @@ public class TurnAllocation(
                 is TurnExchange.Refused -> return TurnAllocationResult.Unavailable.Rejected(exchange.error)
                 is TurnExchange.Malformed -> return TurnAllocationResult.Unavailable.MalformedResponse
                 TurnExchange.Unanswered -> return TurnAllocationResult.Unavailable.NoResponse
+                is TurnExchange.NeverSent -> return TurnAllocationResult.Unavailable.SendFailed(exchange.cause)
             }
         val relayedAddress =
             response.firstOrNull(StunAttributeType.XorRelayedAddress)?.asXorMappedAddress(response.transactionId)?.toSocketAddress()
@@ -174,6 +175,10 @@ public class TurnAllocation(
                 .add(RawAttribute.ofRaw(StunAttributeType.Data, payload))
                 .encode(bufferFactory)
         try {
+            // Unguarded on purpose, matching `IceDataTransport.send`: this is the relayed *application*
+            // data path, so a failure is the caller's to see rather than ours to absorb. The buffer is
+            // still released on every exit by the `finally` below, which is the half that must not
+            // depend on the send succeeding.
             underlying.send(indication, to = server)
         } finally {
             // The Send indication is a fresh buffer wrapping a COPY of [payload] (`ofRaw` copies into the
@@ -315,7 +320,10 @@ public class TurnAllocation(
         val peers = permitted.values.toList()
         if (peers.isEmpty()) return PermissionOutcome.Current
         return when (createPermission(peers)) {
-            TurnExchange.Unanswered -> PermissionOutcome.Unanswered
+            // Treated as silence on purpose: the maintenance loop's only question is *how soon to come
+            // back*, and both answers are "sooner". The distinction is preserved where it changes a
+            // caller's conclusion — `allocate()` above — not where it would only add an unused arm.
+            TurnExchange.Unanswered, is TurnExchange.NeverSent -> PermissionOutcome.Unanswered
             // A refusal is not worth hurrying back for: the server is answering, and the next round at
             // the normal cadence is as likely to succeed as one three seconds from now.
             is TurnExchange.Succeeded, is TurnExchange.Refused, is TurnExchange.Malformed -> PermissionOutcome.Current
@@ -330,7 +338,7 @@ public class TurnAllocation(
             // Either way the server spoke, and what it said was no. An answer we cannot parse is still
             // an answer: retrying it forever would be the same request meeting the same refusal.
             is TurnExchange.Refused, is TurnExchange.Malformed -> RefreshOutcome.Gone
-            TurnExchange.Unanswered -> RefreshOutcome.Unanswered
+            TurnExchange.Unanswered, is TurnExchange.NeverSent -> RefreshOutcome.Unanswered
         }
 
     private fun refreshRequest(
@@ -423,11 +431,24 @@ public class TurnAllocation(
                 is Credential.Challenged -> builder.addMessageIntegrity(c.key)
             }
         val encoded = authenticated.encode(bufferFactory)
+        // Remembers a refused transmission so an exchange in which *nothing* was ever sent can say so,
+        // rather than reporting the TURN server as silent. See [TurnExchange.NeverSent].
+        var lastSendFailure: Throwable? = null
+        var everSent = false
         try {
             val response =
                 withTimeoutOrNull(budget) {
                     while (true) {
-                        underlying.send(encoded, to = server)
+                        // Same reasoning as `gatherServerReflexive`: a refused send is this attempt, not
+                        // the request. Retransmission is what makes a lost Allocate/CreatePermission/
+                        // Refresh survivable at all (#137), and a raised `sendto` would have skipped
+                        // straight past it — losing the relay candidate outright behind a symmetric NAT,
+                        // where it is the only path. Sustained failure still ends at [budget] as
+                        // `TurnExchange.Unanswered`, which callers already handle.
+                        when (val sent = underlying.sendOrFailure(encoded, to = server)) {
+                            IceTransmitResult.Sent -> everSent = true
+                            is IceTransmitResult.Failed -> lastSendFailure = sent.cause
+                        }
                         val answer = withTimeoutOrNull(retransmitInterval) { deferred.await() }
                         // Null here means only "not within this interval" — retransmit and keep waiting. The
                         // budget above is what turns sustained silence into TurnExchange.Unanswered.
@@ -436,7 +457,9 @@ public class TurnAllocation(
                     @Suppress("UNREACHABLE_CODE")
                     null
                 }
-            return response?.classify() ?: TurnExchange.Unanswered
+            response?.let { return it.classify() }
+            val neverSent = lastSendFailure
+            return if (!everSent && neverSent != null) TurnExchange.NeverSent(neverSent) else TurnExchange.Unanswered
         } finally {
             // Both of these are owed on every exit, cancellation included: an un-removed entry keeps a
             // dead transaction's deferred in the map for the life of the allocation, and the loop above
@@ -538,6 +561,19 @@ public class TurnAllocation(
 
         /** Every transmission went unanswered within the budget. Says nothing about the allocation. */
         data object Unanswered : TurnExchange
+
+        /**
+         * **Nothing was ever transmitted** — every attempt was refused locally, so the server was never
+         * asked and [Unanswered] would blame it for our own fault.
+         *
+         * The same distinction `ServerReflexiveResult.Unavailable.SendFailed` draws, and it matters more
+         * here: behind a symmetric NAT the relay is the only path, so "the TURN server is unreachable" is
+         * the conclusion an operator acts on, and it is the wrong one when the real cause is a local
+         * socket or a `bufferFactory` this platform cannot send from (webrtc#125).
+         */
+        class NeverSent(
+            val cause: Throwable,
+        ) : TurnExchange
     }
 
     /** What one Refresh round establishes about the allocation's fate — see [startMaintenance]. */
@@ -598,6 +634,23 @@ public sealed interface TurnAllocationResult {
 
         /** A response we could not act on: an error without an ERROR-CODE, or a success without a relay. */
         public data object MalformedResponse : Unavailable
+
+        /**
+         * **Not one request left the socket** — every transmission was refused locally, so the server was
+         * never asked and its silence says nothing about it.
+         *
+         * Distinct from [NoResponse] because they send an operator in opposite directions, and here the
+         * stakes are highest: behind a symmetric NAT the relay is the only path, so a session that reports
+         * an unreachable TURN server when the real cause is a local socket — or a `bufferFactory` this
+         * platform cannot send from (webrtc#125) — sends the investigation to the wrong machine entirely.
+         *
+         * Surfaces to an application as `IceGatheringNotice.RelayUnavailable`, like every other
+         * [Unavailable].
+         */
+        public data class SendFailed(
+            /** What the socket raised on the last refused attempt. Diagnostic payload, never a discriminant. */
+            public val cause: Throwable,
+        ) : Unavailable
     }
 }
 

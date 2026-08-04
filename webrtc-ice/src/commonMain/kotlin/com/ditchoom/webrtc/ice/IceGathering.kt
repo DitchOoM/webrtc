@@ -165,11 +165,30 @@ public suspend fun gatherServerReflexive(
     // `finally`, not a release after the loop: the answered path returns from inside it, the silent path
     // is unwound by the enclosing timeout, and a cancelled gather (the socket closed under us, an ICE
     // restart superseding this one) never reaches either. All three owe the same one release.
+    // Remembers the last refusal so a gather in which *nothing* was ever transmitted can say so, instead
+    // of reporting the STUN server as silent. Only meaningful while [everSent] stays false — see
+    // [ServerReflexiveResult.Unavailable.SendFailed].
+    var lastSendFailure: Throwable? = null
+    var everSent = false
     try {
         val result =
             withTimeoutOrNull(timeout) {
                 while (true) {
-                    socket.send(request, to = stunServer)
+                    // A refused send is *this attempt* failing, not the gather failing. The loop exists
+                    // precisely so a single lost request does not cost the whole srflx candidate, and a
+                    // raised `sendto` bypassed that tolerance entirely — one transient refusal and the
+                    // exception left the loop, the `withTimeoutOrNull`, and the gather. Falling through
+                    // to the interval wait retransmits exactly as a dropped datagram already does.
+                    //
+                    // Tolerance is not the same as silence, though: a *permanent* refusal — a heap
+                    // bufferFactory on a native socket (#125), a closed channel — would otherwise burn
+                    // the whole budget and report `NoResponse`, blaming a server we never contacted. So
+                    // the outcome is remembered, and a gather that never got a single datagram out ends
+                    // as `SendFailed` instead.
+                    when (val sent = socket.sendOrFailure(request, to = stunServer)) {
+                        IceTransmitResult.Sent -> everSent = true
+                        is IceTransmitResult.Failed -> lastSendFailure = sent.cause
+                    }
                     val response = withTimeoutOrNull(retransmitInterval) { receiveMatchingResponse(socket, transactionId) }
                     when {
                         response == null -> Unit // no answer within the interval — retransmit
@@ -184,7 +203,14 @@ public suspend fun gatherServerReflexive(
                 @Suppress("UNREACHABLE_CODE")
                 ServerReflexiveResult.Unavailable.NoResponse
             }
-        return result ?: ServerReflexiveResult.Unavailable.NoResponse // overall timeout — the server never answered
+        // Overall timeout. Which silence it was depends on whether anything ever left the socket.
+        result?.let { return it }
+        val neverSent = lastSendFailure
+        return if (!everSent && neverSent != null) {
+            ServerReflexiveResult.Unavailable.SendFailed(neverSent)
+        } else {
+            ServerReflexiveResult.Unavailable.NoResponse // the server genuinely never answered
+        }
     } finally {
         request.freeNativeMemory()
     }
@@ -214,6 +240,27 @@ public sealed interface ServerReflexiveResult {
 
         /** The server answered success, but with no readable XOR-MAPPED-ADDRESS (a malformed reflection). */
         public data object MalformedResponse : Unavailable
+
+        /**
+         * **Not one Binding left the socket** — every transmission was refused locally, so the server was
+         * never asked and its silence means nothing.
+         *
+         * Distinct from [NoResponse] on purpose, and the distinction is the whole reason this variant
+         * exists. Both end with no srflx candidate, but they point in opposite directions: [NoResponse]
+         * says look at the network or the server, while this says look at *this process* — a closed
+         * socket, a payload past the interface MTU, or the case that motivated it, a `bufferFactory`
+         * whose buffers the platform's socket cannot send from (webrtc#125). Collapsing them would make a
+         * local misconfiguration present as an unreachable STUN server, which is the exact
+         * "an absent candidate is indistinguishable from a server that failed to answer" failure the
+         * typed gathering notices exist to prevent.
+         *
+         * Only reported when **no** attempt succeeded. A gather that got one Binding out and then failed
+         * is a lossy path, which retransmission already covers and [NoResponse] already describes.
+         */
+        public data class SendFailed(
+            /** What the socket raised on the last refused attempt. Diagnostic payload, never a discriminant. */
+            public val cause: Throwable,
+        ) : Unavailable
     }
 }
 

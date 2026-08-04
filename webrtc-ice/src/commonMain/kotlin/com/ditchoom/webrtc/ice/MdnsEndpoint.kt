@@ -146,7 +146,15 @@ public class MdnsEndpoint(
                 // Sent OUTSIDE the lock: it is I/O, and holding the registration lock across a socket send
                 // would let a slow group stall an unrelated advertise().
                 val bound = lock.withLock { if (closed) null else socketFor(family) }
-                bound?.socket?.let { runCatching { it.channel.send(goodbye.payload, to = it.group) } }
+                try {
+                    bound?.socket?.let { runCatching { it.channel.send(goodbye.payload, to = it.group) } }
+                } finally {
+                    // The responder built this for us and handed it over (see [MdnsResponder.withdraw]);
+                    // this is the end of the line for it either way. "Either way" is the point: the
+                    // best-effort path above declines to send on a group it cannot reach, and a buffer
+                    // built for a send that did not happen is still a buffer we asked for.
+                    goodbye.payload.releaseAfterSend()
+                }
             }
         }
     }
@@ -187,8 +195,18 @@ public class MdnsEndpoint(
         // Registered BEFORE the query goes out: on a shared socket the answer can be dispatched the moment
         // the loop reads it, which under virtual time is before this coroutine resumes from `send`.
         lock.withLock { pending.getOrPut(key) { mutableListOf() } += waiter }
+        val query = MdnsMessage.encodeQuery(hostname, qType, bufferFactory)
         try {
-            bound.socket.channel.send(MdnsMessage.encodeQuery(hostname, qType, bufferFactory), to = bound.socket.group)
+            try {
+                bound.socket.channel.send(query, to = bound.socket.group)
+            } finally {
+                // The moment the send is done with it, rather than at the end of the resolution: the answer
+                // arrives on the shared dispatch loop, so nothing here reads the question again, and the
+                // wait below can be seconds long. In a `finally` because the `catch` outside swallows a
+                // send that threw — and both families are tried in turn, so on a v4+v6 endpoint whose v6
+                // group is unreachable, "release only when the send worked" leaks one query per attempt.
+                query.releaseAfterSend()
+            }
             return withTimeoutOrNull(queryTimeout) { waiter.await() }
         } catch (e: CancellationException) {
             throw e
@@ -229,6 +247,10 @@ public class MdnsEndpoint(
             val start = datagram.payload.position()
             val response = responder.serveOne(socket.channel, datagram, socket.group)
             onResponse(response)
+            // After the observer, not before: [MdnsResponder.serveOne] hands the answer's payload back so a
+            // caller can look at what it just sent, and this loop is that caller. Nothing refers to it once
+            // [onResponse] returns — an observer that wants to keep the bytes has to copy them.
+            if (response is MdnsResponse.Answer) response.payload.releaseAfterSend()
             if (response is MdnsResponse.Silent && response.reason == MdnsSilenceReason.NotAQuery) {
                 datagram.payload.position(start)
                 deliver(MdnsMessage.decodeAnswers(datagram.payload))

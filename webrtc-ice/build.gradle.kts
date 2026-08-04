@@ -111,18 +111,26 @@ kotlin {
         //   · jvm + android → com.ditchoom:network-monitor — cinterop-free, and its only commonMain
         //     dependency is kotlinx-coroutines-core. Hung on the two leaves rather than commonMain: the
         //     sans-io core stays dependency-free and all-platform (browsers included).
-        //   · nativeMain    → com.ditchoom:socket core, the ONLY place we depend on it. socket's netlink
-        //     and NWPathMonitor monitors reuse its LinuxSockets / NWHelpers cinterop, which
-        //     :network-monitor deliberately stays free of, so on native that artifact ships the contract
-        //     with no implementation behind it. Known interim — DitchOoM/socket#269.
+        //   · nativeMain    → com.ditchoom:network-monitor, the same artifact as the two leaves above.
         //
-        //     The old "socket core vendors a SECOND BoringSSL → duplicate-symbol link break" objection is
-        //     OBSOLETE, verified not assumed: socket 3.15.1's LinuxSockets klib embeds only liburing.a
-        //     (the libssl.a/libcrypto.a in 3.9.5 are gone), and socket:4.0.0 + buffer-crypto:6.23.0 both
-        //     resolve to the SAME com.ditchoom.boringssl:boringssl-canonical:0.0.6, which Gradle dedupes.
-        //     Proven by linking the production webrtc-harness-endpoint executable on linuxX64 AND
-        //     linuxArm64 with this dependency present, and by running socket's netlink monitor under
-        //     linuxX64Test. js/wasmJs need neither dependency — they report NoPlatformApi and are moot.
+        //     This used to be `com.ditchoom:socket` core, "the ONLY place we depend on it", because
+        //     socket's netlink and NWPathMonitor monitors reused its LinuxSockets / NWHelpers cinterop
+        //     while :network-monitor deliberately stayed free of cinterops — so on native that artifact
+        //     shipped the contract with no implementation behind it. It was written down as a known
+        //     interim against DitchOoM/socket#269, and socket#275 CLOSED it: :network-monitor now owns
+        //     every monitor, `default()` and `enumerateNetworkInterfaces()`, with its own netlink and
+        //     Apple cinterops.
+        //
+        //     Verified as a differential rather than assumed. Against socket 4.0.0 this same swap does
+        //     not compile — `InterfaceChangeTrigger.nativeMain.kt` fails with `Unresolved reference
+        //     'default'` / `'state'` / `'close'`, which is precisely "the contract with no implementation
+        //     behind it". Against 4.0.1 it compiles and all 9 SystemNetworkMonitorTest cases pass on
+        //     linuxX64. js/wasmJs need neither dependency — they report NoPlatformApi and are moot.
+        //
+        //     With this, `com.ditchoom:socket` core is no longer a dependency of this repo at all; the
+        //     only socket artifact left is socket-udp, in `socketMain` (ARCHITECTURE §11.6). The old
+        //     "socket core vendors a SECOND BoringSSL → duplicate-symbol link break" objection is
+        //     therefore doubly moot, and was already obsolete before that.
         // network-monitor is declared on the SHARED set rather than per-leaf, so `linkTopology()` — the
         // projection that decides what counts as "the network moved" — can be written once for jvm and
         // android instead of once each. It has to be repeated in nativeMain regardless (different
@@ -135,7 +143,7 @@ kotlin {
             named(leaf) { dependsOn(javaMain) }
         }
         named("nativeMain") {
-            dependencies { implementation(libs.socket.core) }
+            dependencies { implementation(libs.network.monitor) }
         }
 
         // ── The real-device flap replay (#113) ───────────────────────────────────────────────────

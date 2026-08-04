@@ -28,6 +28,10 @@ public object IceAttributes {
     private const val U32_BYTES = 4
     private const val U64_BYTES = 8
 
+    // Each builder below allocates the wire value, hands it to `ofRaw` — which COPIES into a padded
+    // attribute buffer — and then holds no reference to it, so it is released on the spot. Without that,
+    // every check on the wire cost two live buffers per attribute instead of one.
+
     /** PRIORITY carrying a candidate [priority] (its low 32 bits; the value is a 32-bit field). */
     public fun priority(
         priority: Long,
@@ -36,7 +40,7 @@ public object IceAttributes {
         val value = factory.allocate(U32_BYTES, ByteOrder.BIG_ENDIAN)
         value.writeUInt(priority.toUInt())
         value.resetForRead()
-        return RawAttribute.ofRaw(PRIORITY, value)
+        return RawAttribute.ofRaw(PRIORITY, value).also { value.freeNativeMemory() }
     }
 
     /** USE-CANDIDATE (empty value). */
@@ -44,7 +48,7 @@ public object IceAttributes {
         val value = factory.allocate(1, ByteOrder.BIG_ENDIAN)
         value.resetForRead()
         value.setLimit(0)
-        return RawAttribute.ofRaw(USE_CANDIDATE, value)
+        return RawAttribute.ofRaw(USE_CANDIDATE, value).also { value.freeNativeMemory() }
     }
 
     /** ICE-CONTROLLING with the sender's [tieBreaker]. */
@@ -67,7 +71,7 @@ public object IceAttributes {
         val value = factory.allocate(U64_BYTES, ByteOrder.BIG_ENDIAN)
         value.writeULong(tieBreaker.value.toULong())
         value.resetForRead()
-        return RawAttribute.ofRaw(type, value)
+        return RawAttribute.ofRaw(type, value).also { value.freeNativeMemory() }
     }
 
     /** The PRIORITY value (RFC 8445 §16.1), or null if the attribute is not a u32. */

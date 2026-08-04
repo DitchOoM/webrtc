@@ -48,6 +48,7 @@ public final class com/ditchoom/webrtc/stun/LongTermCredentialKeyKt {
 
 public final class com/ditchoom/webrtc/stun/RawAttribute {
 	public static final field Companion Lcom/ditchoom/webrtc/stun/RawAttribute$Companion;
+	public synthetic fun <init> (SILcom/ditchoom/buffer/ReadBuffer;ZILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getLength ()I
 	public final fun getType-HYjsODs ()S

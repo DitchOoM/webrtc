@@ -3,6 +3,7 @@ package com.ditchoom.webrtc.stun
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.Default
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.crc32
 import com.ditchoom.buffer.crypto.HMAC_SHA1_BYTES
@@ -38,7 +39,13 @@ public class StunMessageBuilder(
     public fun addMessageIntegrity(key: ReadBuffer): StunMessageBuilder {
         requireNoFingerprintYet("MESSAGE-INTEGRITY")
         val prefix = serializePrefix(lengthAddend = MESSAGE_INTEGRITY_TLV_BYTES)
-        attributes += RawAttribute.ofValue(StunAttributeType.MessageIntegrity, hmacSha1(key, prefix, factory), factory)
+        val tag = hmacSha1(key, prefix, factory)
+        // The prefix exists only to be hashed. Nothing downstream holds it — the tag is a fresh buffer,
+        // not a view — so it is released here rather than left for a GC that a native factory does not
+        // have. One of these per check, forever, is a measurable share of a session's allocations.
+        prefix.freeNativeMemory()
+        attributes += RawAttribute.ofValue(StunAttributeType.MessageIntegrity, tag, factory)
+        tag.releaseIfOwnable() // ofValue COPIED it; nothing refers to the raw tag any more
         return this
     }
 
@@ -58,8 +65,15 @@ public class StunMessageBuilder(
         requireNoFingerprintYet("MESSAGE-INTEGRITY-SHA256")
         val prefix = serializePrefix(lengthAddend = StunMessage.TLV_HEADER_BYTES + tagLengthBytes)
         val full = hmacSha256(key, prefix, factory)
+        // As in [addMessageIntegrity]: the hashed prefix is scratch and is released here. `full` is NOT
+        // — a truncated tag is a *slice* of it, so freeing it would hand the attribute a view of memory
+        // the allocator has taken back.
+        prefix.freeNativeMemory()
         val tag = if (tagLengthBytes == HMAC_SHA256_BYTES) full else full.sliceOf(0, tagLengthBytes)
         attributes += RawAttribute.ofValue(StunAttributeType.MessageIntegritySha256, tag, factory)
+        // Free `full`, not `tag`: a truncated tag is a slice OF full, so full is the allocation and it
+        // is unreferenced only now, after ofValue copied the bytes out of it.
+        full.releaseIfOwnable()
         return this
     }
 
@@ -75,10 +89,12 @@ public class StunMessageBuilder(
     public fun addFingerprint(): StunMessageBuilder {
         val prefix = serializePrefix(lengthAddend = FINGERPRINT_TLV_BYTES)
         val crc = prefix.crc32() xor StunMessage.FINGERPRINT_XOR
+        prefix.freeNativeMemory() // scratch, hashed and done with — see [addMessageIntegrity]
         val value = factory.allocate(UINT_BYTES, ByteOrder.BIG_ENDIAN)
         value.writeUInt(crc)
         value.resetForRead()
         attributes += RawAttribute.ofValue(StunAttributeType.Fingerprint, value, factory)
+        value.freeNativeMemory() // as above: copied, not retained
         return this
     }
 
@@ -89,13 +105,27 @@ public class StunMessageBuilder(
         return StunMessage(header, attributes.toList(), source = null, sourceStart = 0, null, null, null)
     }
 
-    /** Convenience: build then [StunMessage.encode]. */
-    public fun encode(factory: BufferFactory = this.factory): com.ditchoom.buffer.PlatformBuffer = build().encode(factory)
+    /**
+     * Convenience: [build] then [StunMessage.encode] — and **the terminal operation on this builder**,
+     * which is what makes it the right place to release the attribute values it allocated.
+     *
+     * Every attribute the companion builders produced holds a buffer whose only purpose was to be
+     * serialized into the message this returns. Once those bytes are written, nothing refers to it: the
+     * returned buffer is a fresh allocation, not a view. Decoded attributes are untouched — they are
+     * slices over someone else's datagram, and [RawAttribute.owned] is how the two are told apart.
+     *
+     * Do not reuse a builder after this. `build()` alone still hands ownership to the caller.
+     */
+    public fun encode(factory: BufferFactory = this.factory): PlatformBuffer {
+        val encoded = build().encode(factory)
+        for (attribute in attributes) attribute.releaseIfOwned()
+        return encoded
+    }
 
     // Serializes header + current attributes into a read-ready buffer, with the header length field
     // set to (current attribute bytes + the about-to-be-added attribute's wire size) — the length the
     // integrity computation must see (RFC 8489 §14.5/§14.7).
-    private fun serializePrefix(lengthAddend: Int): ReadBuffer {
+    private fun serializePrefix(lengthAddend: Int): PlatformBuffer {
         val attrBytes = attributes.sumOf { StunMessage.TLV_HEADER_BYTES + StunMessage.paddedLength(it.length) }
         val header = StunHeader(messageType, (attrBytes + lengthAddend).toUShort(), Stun.MAGIC_COOKIE, transactionId)
         val scratch = factory.allocate(StunHeader.SIZE_BYTES + attrBytes, ByteOrder.BIG_ENDIAN)

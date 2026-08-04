@@ -152,6 +152,11 @@ internal class Vnet(
         copy.write(slice)
         copy.resetForRead()
         copy.setLimit(len)
+        // Slicing a pooled buffer takes a REFERENCE on it, and the pool returns the chunk only when the
+        // last one goes. Dropping this slice on the floor therefore pinned every datagram the sender
+        // handed us for the life of the run — the sender's own release could never get the count to
+        // zero — so the harness looked exactly like a production leak while measuring one.
+        if (slice is PlatformBuffer) slice.freeNativeMemory()
         return copy
     }
 }

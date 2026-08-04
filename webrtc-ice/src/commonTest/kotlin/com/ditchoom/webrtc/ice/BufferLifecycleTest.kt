@@ -3,15 +3,18 @@
 package com.ditchoom.webrtc.ice
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.webrtc.ice.vnet.CountingBufferFactory
+import com.ditchoom.webrtc.ice.vnet.LeakTrackingFactory
 import com.ditchoom.webrtc.ice.vnet.Vnets
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -62,6 +65,46 @@ class BufferLifecycleTest {
                     .let { it is IceConnectionState.Connected || it is IceConnectionState.Completed },
                 "still connected",
             )
+        }
+
+    /**
+     * The half the two tests above cannot see: whether anything the agent allocated ever **came back**.
+     * Allocation-rate bounds say the agent allocates per message rather than per tick; they say nothing
+     * about lifetime, and a session that allocates per message and frees none still grows without bound
+     * for as long as it is up.
+     */
+    @Test
+    fun buffers_come_back_when_the_session_that_allocated_them_is_done() =
+        runTest {
+            // The tracker goes to the AGENTS (IceConfig), not to the vnet: the vnet's copy-on-receive
+            // allocates from the same seam, and pointing one at both would attribute the test harness's
+            // buffers to production code and "fix" the wrong thing.
+            val tracker = LeakTrackingFactory()
+            val config = IceConfig(consentInterval = 1.seconds, consentTimeout = 1000.seconds, bufferFactory = tracker)
+            val pair = establish(this, BufferFactory.Default, config)
+            // Long enough for the steady-state allocator — consent checks, one per interval, forever —
+            // to have run several times over.
+            delay((CYCLES + 1).seconds)
+            assertTrue(
+                pair.first.state.value
+                    .let { it is IceConnectionState.Connected || it is IceConnectionState.Completed },
+                "still connected — the count below must be a live session's, not a dead one's",
+            )
+            tracker.assertNoLeaks("an ICE session over $CYCLES consent cycles")
+        }
+
+    @Test
+    fun anti_vacuity_the_tracker_catches_a_buffer_that_is_never_released() =
+        runTest {
+            // Without this, a green assertNoLeaks above could mean "nothing leaks" or "the probe cannot
+            // see a leak at all" — and the arithmetic metric this replaced was wrong in BOTH directions.
+            val tracker = LeakTrackingFactory()
+            val config = IceConfig(consentInterval = 1.seconds, consentTimeout = 1000.seconds, bufferFactory = tracker)
+            establish(this, BufferFactory.Default, config)
+            tracker.allocate(64, ByteOrder.BIG_ENDIAN) // deliberately never released
+            assertFailsWith<AssertionError>("a buffer that never came back must be reported") {
+                tracker.assertNoLeaks("a session with one deliberately leaked buffer")
+            }
         }
 
     // Bring up a host-to-host connection over the flat vnet, both agents + the vnet sharing [factory].

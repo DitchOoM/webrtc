@@ -6,6 +6,47 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Changed — the ICE send path reads socket's typed failure, closing #143
+
+Completes what #146 started, and **pins socket 4.0.2** to do it — 4.0.1 (what main pinned) does not carry
+the type at all, so the same source fails to compile there with `Unresolved reference 'DatagramSendError'`.
+Verified as a differential against both, not assumed from the release notes.
+
+socket-udp now reports a refused send as a sealed `DatagramSendError`
+(DitchOoM/socket#278) — `TooLarge`, `Unreachable`, `NotPermitted`, `WouldBlock`, `OsError`,
+`PlatformError`, `Transport` — and its own KDoc names this consumer: *"consumers that want to branch
+(ICE marking a candidate pair unusable)"*.
+
+**It could not simply be caught.** That type lives in `com.ditchoom.socket.udp`, and the sans-io half of
+`webrtc-ice` must not depend on socket at all (ARCHITECTURE §11.6) — but `sendOrFailure` and both
+retransmit loops are `commonMain`. So the classification crosses the boundary as **ours**:
+
+- `IceTransmitFailureReason` (`commonMain`, no socket dependency) — `PayloadTooLarge`,
+  `DestinationUnreachable`, `Transient`, `Unknown`. Cut by *what ICE can do differently* rather than by
+  what the OS distinguishes: `EHOSTUNREACH`, `ENETUNREACH`, `EAFNOSUPPORT` and `EACCES` are four kernel
+  decisions and one ICE response, so they are one case.
+- `TypedSendChannel` (`socketMain`, where socket-udp is already a dependency) translates and rethrows as
+  `IceTransmitException`. `udpDatagramBinder()` wraps every channel it hands out.
+
+A caller supplying their own binder — the demuxed socket shared with QUIC-P2P that §11.6 exists to
+protect, or the vnet — gets no translation and therefore `Unknown`, which behaves exactly as this module
+did before any of it existed.
+
+**One reason changes control flow, deliberately.** `PayloadTooLarge` means the socket has already
+measured these bytes against its limit, so re-sending them unchanged every retransmit interval until the
+budget expires cannot succeed. Both loops now give up on the first such refusal. Everything else stays
+retryable, including `Unknown` — the case a *new* socket error lands in, where defaulting to permanent
+would let one unrecognized errno cost a candidate.
+
+`DestinationUnreachable` is reported but **not acted on**: failing the pair in the checklist is a sans-io
+core change and wants its own fixture, so it is left as a follow-up rather than smuggled in here.
+
+`IceTransmitReasonTest` pins all three directions in `commonTest` — the short-circuit fires on exactly
+one attempt, every other reason retransmits across the budget, and an untyped failure stays retryable.
+
+**API:** adds `IceTransmitFailureReason`, `IceTransmitException`, and a `reason` field on
+`IceTransmitFailure`. `minor`.
+
 ### Changed — socket core is no longer a dependency of this repo (`minor`)
 
 Pins socket **4.0.1** and moves `webrtc-ice`'s native leaf from `com.ditchoom:socket` core to

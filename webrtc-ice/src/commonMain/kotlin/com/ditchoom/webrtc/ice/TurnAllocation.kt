@@ -503,7 +503,14 @@ public class TurnAllocation(
                         // `TurnExchange.Unanswered`, which callers already handle.
                         when (val sent = underlying.sendOrFailure(encoded, to = server)) {
                             IceTransmitResult.Sent -> everSent = true
-                            is IceTransmitResult.Failed -> lastSendFailure = sent.cause
+                            is IceTransmitResult.Failed -> {
+                                lastSendFailure = sent.cause
+                                // As in `gatherServerReflexive`: an oversized request cannot become
+                                // sendable by being sent again, so the budget is not spent on it.
+                                if (sent.reason is IceTransmitFailureReason.PayloadTooLarge) {
+                                    return@withTimeoutOrNull null
+                                }
+                            }
                         }
                         val answer = withTimeoutOrNull(retransmitInterval) { deferred.await() }
                         // Null here means only "not within this interval" — retransmit and keep waiting. The

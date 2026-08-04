@@ -187,7 +187,16 @@ public suspend fun gatherServerReflexive(
                     // as `SendFailed` instead.
                     when (val sent = socket.sendOrFailure(request, to = stunServer)) {
                         IceTransmitResult.Sent -> everSent = true
-                        is IceTransmitResult.Failed -> lastSendFailure = sent.cause
+                        is IceTransmitResult.Failed -> {
+                            lastSendFailure = sent.cause
+                            // The one reason worth short-circuiting: the socket has already measured
+                            // this payload against its limit, so re-sending the same bytes every
+                            // [retransmitInterval] until [timeout] cannot do anything but waste the
+                            // budget. Every other reason stays retryable (see IceTransmitFailureReason).
+                            if (sent.reason is IceTransmitFailureReason.PayloadTooLarge) {
+                                return@withTimeoutOrNull ServerReflexiveResult.Unavailable.SendFailed(sent.cause)
+                            }
+                        }
                     }
                     val response = withTimeoutOrNull(retransmitInterval) { receiveMatchingResponse(socket, transactionId) }
                     when {

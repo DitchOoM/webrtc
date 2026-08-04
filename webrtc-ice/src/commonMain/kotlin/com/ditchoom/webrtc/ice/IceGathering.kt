@@ -130,6 +130,14 @@ public suspend fun MdnsResolver.resolveHostCandidate(mdns: CandidateParse.MdnsHo
  *
  * Must run **before** the socket is handed to the agent's receive loop, so this transient owns
  * `socket.receive()` without racing the checklist.
+ *
+ * **One buffer, every transmission, released once.** The Binding is built once and re-sent as-is:
+ * socket's datagram channels are contractually *send-does-not-consume* — every backend transmits the
+ * window `[position, limit)` without advancing it (io_uring reads `nativeAddress + position()`; the
+ * NIO, Node and Apple paths each take their own internal view). So there is no need to hand `send` a
+ * fresh slice per attempt, and doing so would take a reference on a pooled chunk that this function
+ * would then have to give back one-for-one. What it does owe is the request itself: nothing upstream
+ * can release it, because this runs before the agent that would do the releasing exists.
  */
 @OptIn(ExperimentalTime::class)
 public suspend fun gatherServerReflexive(
@@ -155,25 +163,32 @@ public suspend fun gatherServerReflexive(
             .encode(bufferFactory)
     // Retransmit the Binding every [retransmitInterval] until a matching response arrives or [timeout]
     // elapses (RFC 8489 §6.2.1 spirit) — a single lost request or response must not cost the whole srflx.
-    val result =
-        withTimeoutOrNull(timeout) {
-            while (true) {
-                socket.send(request, to = stunServer)
-                val response = withTimeoutOrNull(retransmitInterval) { receiveMatchingResponse(socket, transactionId) }
-                when {
-                    response == null -> Unit // no answer within the interval — retransmit
-                    response.messageType.stunClass == StunClass.SuccessResponse -> {
-                        val mapped = response.firstOrNull(StunAttributeType.XorMappedAddress)?.asXorMappedAddress(transactionId)
-                        return@withTimeoutOrNull mapped?.let { ServerReflexiveResult.Discovered(it) }
-                            ?: ServerReflexiveResult.Unavailable.MalformedResponse
+    // `finally`, not a release after the loop: the answered path returns from inside it, the silent path
+    // is unwound by the enclosing timeout, and a cancelled gather (the socket closed under us, an ICE
+    // restart superseding this one) never reaches either. All three owe the same one release.
+    try {
+        val result =
+            withTimeoutOrNull(timeout) {
+                while (true) {
+                    socket.send(request, to = stunServer)
+                    val response = withTimeoutOrNull(retransmitInterval) { receiveMatchingResponse(socket, transactionId) }
+                    when {
+                        response == null -> Unit // no answer within the interval — retransmit
+                        response.messageType.stunClass == StunClass.SuccessResponse -> {
+                            val mapped = response.firstOrNull(StunAttributeType.XorMappedAddress)?.asXorMappedAddress(transactionId)
+                            return@withTimeoutOrNull mapped?.let { ServerReflexiveResult.Discovered(it) }
+                                ?: ServerReflexiveResult.Unavailable.MalformedResponse
+                        }
+                        else -> return@withTimeoutOrNull ServerReflexiveResult.Unavailable.Rejected
                     }
-                    else -> return@withTimeoutOrNull ServerReflexiveResult.Unavailable.Rejected
                 }
+                @Suppress("UNREACHABLE_CODE")
+                ServerReflexiveResult.Unavailable.NoResponse
             }
-            @Suppress("UNREACHABLE_CODE")
-            ServerReflexiveResult.Unavailable.NoResponse
-        }
-    return result ?: ServerReflexiveResult.Unavailable.NoResponse // overall timeout — the server never answered
+        return result ?: ServerReflexiveResult.Unavailable.NoResponse // overall timeout — the server never answered
+    } finally {
+        request.freeNativeMemory()
+    }
 }
 
 /**

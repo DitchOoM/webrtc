@@ -6,6 +6,36 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Changed — socket core is no longer a dependency of this repo (`minor`)
+
+Pins socket **4.0.1** and moves `webrtc-ice`'s native leaf from `com.ditchoom:socket` core to
+`com.ditchoom:network-monitor`, the same artifact its jvm and android leaves already use.
+
+The old arrangement was written down as an interim and is now retired. socket's netlink and NWPathMonitor
+monitors reused socket core's cinterop, while `:network-monitor` deliberately stayed cinterop-free — so
+on native that artifact shipped the contract with no implementation behind it, and we took socket core
+"the ONLY place we depend on it" to get the monitor. DitchOoM/socket#275 closed DitchOoM/socket#269 by
+giving `:network-monitor` its own netlink and Apple cinterops, so the interim is over.
+
+**Verified as a differential rather than assumed.** Against socket 4.0.0 the identical swap does not
+compile — `InterfaceChangeTrigger.nativeMain.kt` fails with `Unresolved reference 'default'` / `'state'` /
+`'close'`, which is exactly "the contract with no implementation behind it". Against 4.0.1 it compiles
+and all 9 `SystemNetworkMonitorTest` cases pass on linuxX64.
+
+With this, **`socket-udp` in `socketMain` is the only socket artifact this repo depends on** — which is
+what ARCHITECTURE §11.6 has always described. Two build comments that asserted the old arrangement are
+corrected in place rather than left to rot; one of them had already been corrected once, for a different
+reason, and would have been wrong a second time.
+
+Also inherited from 4.0.1, and untested here because it only manifests on Apple: an
+`nw_path_status_satisfiable` path now maps to `Routable` rather than `LinkLocal`. `linkTopology()`
+forwards rung changes as "the network moved", so an on-demand VPN transition previously presented as
+`Routable → LinkLocal → Routable` — two spurious ICE restarts under `IceRestartPolicy.OnNetworkChange`, on
+a machine that was online throughout. `LinkTopologyTest` pins the current behaviour, so any change
+surfaces on `build-apple` rather than silently.
+
+**API:** no source change. Dependency-only, but a native consumer's transitive classpath loses socket
+core — `minor`.
 ### Fixed — a raised `send` cost an ICE agent its buffer and the rest of its output batch (#143) (`minor`)
 
 `IceAgentDriver.apply()` pumps a `List<IceOutput>` from the sans-io core, and its transmit arm was

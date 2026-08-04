@@ -29,7 +29,14 @@ import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 // the SAME com.ditchoom.boringssl:boringssl-canonical:0.0.6, which Gradle dedupes. There is one BoringSSL
 // on the link line, not two. Proven, not assumed: this very executable was linked on linuxX64 AND
 // linuxArm64 with socket core present, and socket's netlink monitor was constructed and read at runtime
-// under linuxX64Test. :webrtc-ice now depends on socket core at its native leaf for exactly that monitor.
+// under linuxX64Test.
+//
+// SECOND CORRECTION: the sentence that used to end this paragraph — ":webrtc-ice now depends on socket
+// core at its native leaf for exactly that monitor" — is itself obsolete as of socket#275, which closed
+// socket#269 by giving :network-monitor its own netlink and Apple cinterops. `:webrtc-ice` takes
+// :network-monitor on every leaf now, and **socket core is no longer a dependency of this repo at all**.
+// The paragraph above is kept because the BoringSSL premise it corrects is still worth not re-deriving,
+// not because anything here still links socket core.
 //
 // Signaling still rides UDP, and that is left alone deliberately. It no longer *has* to — but it works,
 // it keeps this peer's dependency surface to socket-udp, and re-plumbing it on the strength of a

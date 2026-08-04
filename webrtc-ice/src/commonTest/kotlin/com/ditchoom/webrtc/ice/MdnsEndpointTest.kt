@@ -10,6 +10,7 @@ import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.webrtc.ice.vnet.CountingBufferFactory
+import com.ditchoom.webrtc.ice.vnet.LeakTrackingFactory
 import com.ditchoom.webrtc.ice.vnet.Vnet
 import com.ditchoom.webrtc.ice.vnet.Vnets
 import com.ditchoom.webrtc.ice.vnet.vnetAddress
@@ -202,6 +203,36 @@ class MdnsEndpointTest {
             assertEquals(0, link.datagrams, "mDNS is the `.local` namespace and nothing else — no query was sent")
         }
 
+    /**
+     * Every buffer mDNS builds comes back (directive #6) — across the three things this feature actually
+     * allocates for, which are the three it sends: the querier's question, the responder's answer, and the
+     * goodbye that retracts a name.
+     *
+     * Two trackers rather than one, because each endpoint has to be answerable on its own: the resolver
+     * never builds an answer and the advertiser never builds a query, so a single shared tracker would let
+     * one side's diligence cover for the other's. Neither goes to the vnet, whose copy-on-receive allocates
+     * from the same seam and would attribute the harness's buffers to production code.
+     */
+    @Test
+    fun every_buffer_mdns_sends_comes_back() =
+        runTest {
+            val link = MdnsLink(this)
+            val advertiserBuffers = LeakTrackingFactory()
+            val resolverBuffers = LeakTrackingFactory()
+            val advertiser = link.endpoint(ALICE_IP, seed = 1, bufferFactory = advertiserBuffers)
+            val resolver = link.endpoint(BOB_IP, seed = 2, bufferFactory = resolverBuffers)
+
+            val name = assertIs<MdnsAdvertisement.Advertised>(advertiser.advertise(ALICE_ADDRESS)).name
+            assertIs<MdnsResolution.Resolved>(resolver.resolve(name.value), "the round trip happened at all")
+            advertiser.withdraw(name)
+            // The answer is released by the advertiser's dispatch loop, which is a background coroutine:
+            // let it run before asking whether it did.
+            testScheduler.advanceUntilIdle()
+
+            advertiserBuffers.assertNoLeaks("an mDNS advertiser that answered a query and then withdrew")
+            resolverBuffers.assertNoLeaks("an mDNS resolver that queried for a name")
+        }
+
     // ---- fixture plumbing ---------------------------------------------------------------------------
 
     /**
@@ -224,11 +255,13 @@ class MdnsEndpointTest {
             ip: String,
             seed: Long,
             families: List<AddressFamily> = listOf(AddressFamily.IPv4),
+            bufferFactory: BufferFactory = BufferFactory.Default,
         ): MdnsEndpoint =
             MdnsEndpoint(
                 scope = scope.backgroundScope,
                 binder = VnetBinder(vnet, ip),
                 families = families,
+                bufferFactory = bufferFactory,
                 random = Random(seed),
             )
 

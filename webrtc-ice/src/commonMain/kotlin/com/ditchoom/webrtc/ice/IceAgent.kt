@@ -572,7 +572,7 @@ public class IceAgent(
         // authenticate or arrives from somewhere other than the pair's remote address (RFC 8445 §7.2.5.2.1).
         if (message.messageType.stunClass != StunClass.SuccessResponse) return true
         val remote = current.signaledCredentials ?: return true
-        if (!message.verifyMessageIntegrity(keyOf(remote.password))) return true
+        if (!withKey(remote.password) { message.verifyMessageIntegrity(it) }) return true
         if (source != nominated.entry.pair.remote.address) return true
         // This response proves the path, so every check it overtook is moot — including ones still
         // outstanding, whose answers would tell us nothing this one has not already.
@@ -618,7 +618,7 @@ public class IceAgent(
         // Then read attributes ONLY from the MI-covered prefix (RFC 8489 §14.5): a MITM who does not know
         // the password can splice attributes (e.g. USE-CANDIDATE) after a valid MI and fix the unkeyed
         // FINGERPRINT — both checks still pass — so trusting the tail would let it hijack nomination/role.
-        if (!request.verifyMessageIntegrity(keyOf(generation.localCredentials.password))) {
+        if (!withKey(generation.localCredentials.password) { request.verifyMessageIntegrity(it) }) {
             answerRetainedGenerationCheck(request, localBase, source, out)
             return
         }
@@ -694,7 +694,7 @@ public class IceAgent(
     ) {
         val previous = (retained as? RetainedGeneration.Retained)?.generation ?: return
         val password = previous.localCredentials.password
-        if (!request.verifyMessageIntegrity(keyOf(password))) return
+        if (!withKey(password) { request.verifyMessageIntegrity(it) }) return
         val covered = request.attributesCoveredByMessageIntegrity() ?: return
         val username = covered.firstOrNull { it.type == StunAttributeType.Username }?.asText() ?: return
         if (username.substringBefore(':') != previous.localCredentials.ufrag.value) return
@@ -740,7 +740,7 @@ public class IceAgent(
         }
         // Success. Authenticate with the remote's password and require a symmetric transport address.
         val remote = generation.signaledCredentials ?: return
-        if (!message.verifyMessageIntegrity(keyOf(remote.password))) {
+        if (!withKey(remote.password) { message.verifyMessageIntegrity(it) }) {
             failCheck(entry, out)
             return
         }
@@ -819,7 +819,7 @@ public class IceAgent(
                     },
                 )
         if (nominate) builder.add(IceAttributes.useCandidate(config.bufferFactory))
-        return builder.addMessageIntegrity(keyOf(remote.password)).addFingerprint().encode(config.bufferFactory)
+        return withKey(remote.password) { builder.addMessageIntegrity(it).addFingerprint().encode(config.bufferFactory) }
     }
 
     private fun driveTransaction(
@@ -1045,20 +1045,24 @@ public class IceAgent(
         mapped: TransportAddress,
         password: IcePassword,
     ): ReadBuffer =
-        StunMessageBuilder
-            .of(StunClass.SuccessResponse, StunMethod.Binding, transactionId, config.bufferFactory)
-            .add(RawAttribute.ofXorMappedAddress(mapped, transactionId, config.bufferFactory))
-            .addMessageIntegrity(keyOf(password))
-            .addFingerprint()
-            .encode(config.bufferFactory)
+        withKey(password) { key ->
+            StunMessageBuilder
+                .of(StunClass.SuccessResponse, StunMethod.Binding, transactionId, config.bufferFactory)
+                .add(RawAttribute.ofXorMappedAddress(mapped, transactionId, config.bufferFactory))
+                .addMessageIntegrity(key)
+                .addFingerprint()
+                .encode(config.bufferFactory)
+        }
 
     private fun roleConflictResponse(transactionId: TransactionId): ReadBuffer =
-        StunMessageBuilder
-            .of(StunClass.ErrorResponse, StunMethod.Binding, transactionId, config.bufferFactory)
-            .add(RawAttribute.ofErrorCode(StunErrorCode(ROLE_CONFLICT, "Role Conflict"), config.bufferFactory))
-            .addMessageIntegrity(keyOf(current.localCredentials.password))
-            .addFingerprint()
-            .encode(config.bufferFactory)
+        withKey(current.localCredentials.password) { key ->
+            StunMessageBuilder
+                .of(StunClass.ErrorResponse, StunMethod.Binding, transactionId, config.bufferFactory)
+                .add(RawAttribute.ofErrorCode(StunErrorCode(ROLE_CONFLICT, "Role Conflict"), config.bufferFactory))
+                .addMessageIntegrity(key)
+                .addFingerprint()
+                .encode(config.bufferFactory)
+        }
 
     private fun transmit(
         fromBase: TransportAddress,
@@ -1066,12 +1070,32 @@ public class IceAgent(
         data: ReadBuffer,
     ): IceOutput.Transmit = IceOutput.Transmit(fromBase, to, data)
 
-    private fun keyOf(password: IcePassword): ReadBuffer {
+    /**
+     * Derive the short-term MESSAGE-INTEGRITY key for [password], run [block] over it, and release it.
+     *
+     * Every keyed operation here — verifying an inbound check, signing an outbound one — only *reads* the
+     * key, so its lifetime is exactly this call. It used to be allocated per packet and dropped, which on
+     * a native factory is not a GC's problem to solve: an established session verifies a check every
+     * consent interval, forever.
+     *
+     * Deriving it once per credentials set would be better still, but a cached key is a buffer held for
+     * the life of the generation, and that is indistinguishable from a leak to the pool accounting
+     * `BufferLifecycleTest` asserts on. Scoping it keeps the invariant exact and still costs only a pool
+     * hit; the cache wants a generation-scoped release path first.
+     */
+    private inline fun <T> withKey(
+        password: IcePassword,
+        block: (ReadBuffer) -> T,
+    ): T {
         val text = password.value
         val buffer = config.bufferFactory.allocate(maxOf(1, text.length * MAX_UTF8_PER_CHAR), ByteOrder.BIG_ENDIAN)
         buffer.writeString(text, Charset.UTF8)
         buffer.resetForRead()
-        return buffer
+        try {
+            return block(buffer)
+        } finally {
+            buffer.freeNativeMemory()
+        }
     }
 
     private fun sameFamily(

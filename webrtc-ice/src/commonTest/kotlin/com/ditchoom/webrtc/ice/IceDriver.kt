@@ -313,7 +313,10 @@ internal class IceDriver(
     private suspend fun apply(outputs: List<IceOutput>) {
         for (output in outputs) {
             when (output) {
-                is IceOutput.Transmit -> channels[output.fromBase]?.send(output.data, to = output.to.toSocketAddress())
+                is IceOutput.Transmit -> {
+                    channels[output.fromBase]?.send(output.data, to = output.to.toSocketAddress())
+                    output.data.releaseAfterSend()
+                }
                 is IceOutput.ConnectionStateChanged -> _state.value = output.state
                 is IceOutput.PathChanged -> _path.value = output.path
                 // Recorded rather than ignored: a fixture that asserts a candidate was refused on purpose

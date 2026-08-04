@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 
 /**
@@ -21,9 +22,25 @@ public class RawAttribute internal constructor(
     public val type: StunAttributeType,
     public val length: Int,
     internal val paddedValue: ReadBuffer,
+    /**
+     * Whether [paddedValue] is **ours to free**, which is the whole built-vs-parsed distinction the
+     * class KDoc describes, made explicit so a release path cannot get it wrong.
+     *
+     * A built attribute owns a buffer the companion allocated for it, and nothing else refers to that
+     * buffer once the message is serialized. A **decoded** one is a slice over the received datagram,
+     * shared with every other attribute in the message and with the datagram itself — freeing that
+     * would hand the rest of the parse a view of reclaimed memory. Hence `false` by default: the
+     * dangerous direction is the one you get by forgetting.
+     */
+    internal val owned: Boolean = false,
 ) {
     /** The declared-length value view (padding excluded) — what the typed interpreters read. */
     public val value: ReadBuffer = paddedValue.sliceOf(0, length)
+
+    /** Release [paddedValue] if this attribute owns it. Called once, from [StunMessageBuilder.encode]. */
+    internal fun releaseIfOwned() {
+        if (owned) paddedValue.releaseIfOwnable()
+    }
 
     override fun equals(other: Any?): Boolean =
         this === other ||
@@ -65,7 +82,7 @@ public class RawAttribute internal constructor(
             address: TransportAddress,
             transactionId: TransactionId,
             factory: BufferFactory = BufferFactory.Default,
-        ): RawAttribute = ofValue(type, encodeAddress(address, xorWith = transactionId, factory = factory), factory)
+        ): RawAttribute = ofScratch(type, encodeAddress(address, xorWith = transactionId, factory = factory), factory)
 
         /** Wraps a caller-built, exactly-[length]-byte value, padding it to a 4-byte boundary with zeros. */
         internal fun ofValue(
@@ -80,8 +97,25 @@ public class RawAttribute internal constructor(
             declared.position(dp)
             repeat(StunMessage.paddedLength(len) - len) { padded.writeByte(0) }
             padded.resetForRead()
-            return RawAttribute(type, len, padded)
+            // `declared` is COPIED here, never retained — which is what lets each internal caller below
+            // free the scratch it built to feed this, and what stops `ofRaw` from consuming a buffer its
+            // public caller still owns.
+            return RawAttribute(type, len, padded, owned = true)
         }
+
+        /**
+         * [ofValue], plus the release of the scratch buffer that was built only to feed it.
+         *
+         * Every typed builder below has the same shape: allocate a buffer, lay the wire form into it,
+         * hand it to [ofValue] — which **copies** — and then hold no further reference to it. Doing that
+         * release at each site is what made an attribute cost two live allocations instead of one, so it
+         * is done here once. Not used by [ofRaw]: that value belongs to a public caller.
+         */
+        internal fun ofScratch(
+            type: StunAttributeType,
+            scratch: ReadBuffer,
+            factory: BufferFactory,
+        ): RawAttribute = ofValue(type, scratch, factory).also { scratch.releaseIfOwnable() }
 
         /** Wraps a decoded on-wire span: [paddedView] is the padding-inclusive slice, [length] the declared value length. */
         internal fun ofWire(
@@ -99,14 +133,14 @@ public class RawAttribute internal constructor(
             val bytes = factory.allocate(utf8Size(text), ByteOrder.BIG_ENDIAN)
             bytes.writeString(text, Charset.UTF8)
             bytes.resetForRead()
-            return ofValue(type, bytes, factory)
+            return ofScratch(type, bytes, factory)
         }
 
         /** MAPPED-ADDRESS (RFC 8489 §14.1) — plaintext family/port/address. */
         public fun ofMappedAddress(
             address: TransportAddress,
             factory: BufferFactory = BufferFactory.Default,
-        ): RawAttribute = ofValue(StunAttributeType.MappedAddress, encodeAddress(address, xorWith = null, factory = factory), factory)
+        ): RawAttribute = ofScratch(StunAttributeType.MappedAddress, encodeAddress(address, xorWith = null, factory = factory), factory)
 
         /**
          * XOR-MAPPED-ADDRESS (RFC 8489 §14.2) — port XOR'd with the cookie's high half, address
@@ -117,7 +151,7 @@ public class RawAttribute internal constructor(
             transactionId: TransactionId,
             factory: BufferFactory = BufferFactory.Default,
         ): RawAttribute =
-            ofValue(
+            ofScratch(
                 StunAttributeType.XorMappedAddress,
                 encodeAddress(address, xorWith = transactionId, factory = factory),
                 factory,
@@ -135,7 +169,7 @@ public class RawAttribute internal constructor(
             body.writeByte((error.code % ERROR_CLASS_DIVISOR).toByte()) // number (0..99)
             body.writeString(reason, Charset.UTF8)
             body.resetForRead()
-            return ofValue(StunAttributeType.ErrorCode, body, factory)
+            return ofScratch(StunAttributeType.ErrorCode, body, factory)
         }
 
         internal fun ipv6XorKey(transactionId: TransactionId?): Pair<ULong, ULong> {
@@ -199,3 +233,15 @@ public data class StunErrorCode(
     public val code: Int,
     public val reason: String,
 )
+
+/**
+ * Return this buffer's memory to whatever allocated it, if it is memory we can return at all.
+ *
+ * buffer's crypto and slice APIs answer the read-only [ReadBuffer]; only a [PlatformBuffer] carries
+ * `freeNativeMemory()`. Every buffer this module allocates *is* a `PlatformBuffer`, so the check costs
+ * nothing on the paths that matter and makes the call a no-op on a view that was never ours — which is
+ * the safe direction to fail in.
+ */
+internal fun ReadBuffer.releaseIfOwnable() {
+    if (this is PlatformBuffer) freeNativeMemory()
+}

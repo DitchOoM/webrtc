@@ -2,6 +2,7 @@
 
 package com.ditchoom.webrtc.ice
 
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.webrtc.stun.TransportAddress
 import kotlin.time.ExperimentalTime
@@ -104,7 +105,14 @@ public sealed interface IceOutput {
     /**
      * Send [data] from the socket bound to [fromBase] to [to] — a connectivity check, its response, or a
      * consent refresh. The driver maps [fromBase] to the [AddressedDatagramChannel][com.ditchoom.buffer.flow.AddressedDatagramChannel]
-     * it gathered that candidate on. [data] is a fresh caller-owned buffer.
+     * it gathered that candidate on.
+     *
+     * **[data] is the driver's to release once it has been sent**, and the send is the last read of it.
+     * It is not always a fresh allocation: a *retransmitted* check hands out another view of the request
+     * its `StunTransaction` still holds, so releasing it returns the view rather than the request, and
+     * the request itself goes back when that transaction reaches a terminal. Either way the rule at this
+     * seam is the same one — send it, then release it — which is what keeps a session that checks every
+     * consent interval from growing for as long as it stays up.
      */
     public data class Transmit(
         public val fromBase: TransportAddress,
@@ -177,4 +185,16 @@ public sealed interface IceConnectionState {
     public data class Failed(
         public val reason: IceFailureReason,
     ) : IceConnectionState
+}
+
+/**
+ * Release a buffer whose last read was the send that just completed — see [IceOutput.Transmit].
+ *
+ * Mirrors `webrtc-stun`'s own release helper: buffer's read-side APIs answer [ReadBuffer], and only a
+ * [PlatformBuffer] has memory to give back, so a view that was never ours is a no-op rather than an
+ * error. `send` is a suspending call that has finished writing by the time it returns, which is what
+ * makes releasing here safe on a real socket and not only on the in-memory vnet.
+ */
+internal fun ReadBuffer.releaseAfterSend() {
+    if (this is PlatformBuffer) freeNativeMemory()
 }

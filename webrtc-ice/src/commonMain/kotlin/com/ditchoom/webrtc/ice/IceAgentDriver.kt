@@ -626,7 +626,10 @@ public class IceAgentDriver(
     private suspend fun apply(outputs: List<IceOutput>) {
         for (output in outputs) {
             when (output) {
-                is IceOutput.Transmit -> channels[output.fromBase]?.send(output.data, to = output.to.toSocketAddress())
+                is IceOutput.Transmit -> {
+                    channels[output.fromBase]?.send(output.data, to = output.to.toSocketAddress())
+                    output.data.releaseAfterSend()
+                }
                 is IceOutput.ConnectionStateChanged -> _state.value = output.state
                 is IceOutput.PathChanged -> {
                     // A nomination ends the restart window, and only then is it safe to close the outgoing

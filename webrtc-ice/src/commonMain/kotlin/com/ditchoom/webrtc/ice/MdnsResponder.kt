@@ -249,6 +249,12 @@ public sealed interface MdnsSilenceReason {
  *
  * Returns what was decided, including the silences, so the caller can observe a refusal rather than infer
  * one from the absence of a packet.
+ *
+ * **The returned [MdnsResponse.Answer] still owns its payload.** This sends it and stops there, because a
+ * send does not consume the buffer and the caller asked to see what was decided — releasing it here would
+ * hand back a view of memory the allocator has taken. So the caller releases it once it has finished
+ * observing; [MdnsEndpoint] does exactly that, immediately after its `onResponse`. A [MdnsResponse.Silent]
+ * owns nothing: the responder allocates only when it has something to say.
  */
 public suspend fun MdnsResponder.serveOne(
     channel: AddressedDatagramSink,

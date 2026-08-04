@@ -72,14 +72,28 @@ What is genuinely left, and why the data-channel stack is not yet something a st
   still cannot honour is refused by typed reason rather than dropped: `turns:`, `?transport=tcp`, a
   credential-free `turn:`, an unresolvable name.
 - **No shippable native `bufferFactory` default** (#125), and no fail-fast when an injected one cannot back
-  real socket I/O (#131). The workaround is real — `BufferPool(factory = BufferFactory.deterministic())` is
-  native-backed *and* refcounted — but it only reclaims what the stack releases, and `webrtc-stun` releases
-  nothing (see the #125 discussion).
-- **TURN is short-lived.** No allocation Refresh or permission re-installation, so a relayed session dies
-  at the server's LIFETIME (#137). The long-term-credential key is now the RFC 8489 §9.2.2
-  `MD5(user:realm:pass)` (#138) — pure-Kotlin MD5 in `webrtc-stun`, pinned by the RFC 5769 §2.4 vector —
-  and the relay lanes now authenticate for real (see the coturn `-n` entry below). Still unexercised
-  against a **commercial** provider, whose realm/nonce rotation and quota behaviour we have never seen.
+  real socket I/O (#131). This is the sharpest remaining gap: on the 7 native targets the README calls
+  "Full", a session built with the documented defaults dies on its **first connectivity check**, because
+  `BufferFactory.Default` is a GC-heap buffer on K/N and io_uring rejects it. Nothing caught it because
+  everything that touches a real native socket injects its own factory.
+  The workaround — `BufferPool(factory = BufferFactory.deterministic())`, native-backed *and* refcounted —
+  is now genuinely usable: the "it only reclaims what the stack releases, and `webrtc-stun` releases
+  nothing" caveat that used to sit here is **obsolete**, because releasing is exactly what the ownership
+  work did. Two things still bound it, and neither is ours alone:
+  * **The receive side is unowned.** Nothing releases a received datagram — not the driver's loop, not
+    TURN's demux, not the gather. It is not a bug site so much as a missing half: the buffer is shared by
+    *reference* (decoded attributes are slices of it), so "release when done" needs a last-reader rule
+    first, or it turns a leak into a use-after-free. `LeakTrackingFactory` cannot see it either — the
+    receive buffer comes from the *channel's* factory, not `IceConfig`'s.
+  * **DitchOoM/socket#277:** socket's own JVM/NIO and Node send paths slice the payload and drop the
+    `TrackedSlice` without releasing it, so on those backends one send costs one pool chunk, permanently,
+    however exact this repo is. Linux and Apple are clean. Proven with pool stats, not inferred.
+- **TURN is no longer short-lived**, as of #137/#138: the allocation refreshes at a fraction of the
+  *granted* LIFETIME, permissions are re-installed (§9), every request retransmits, and the
+  long-term-credential key is the RFC 8489 §9.2.2 `MD5(user:realm:pass)` — pure-Kotlin MD5 in
+  `webrtc-stun`, pinned by the RFC 5769 §2.4 vector, with the relay lanes now authenticating for real
+  (see the coturn `-n` entry below). What remains is exposure, not capability: still unexercised against a
+  **commercial** provider, whose realm/nonce rotation and quota behaviour we have never seen.
 - **Platforms:** tvOS/watchOS publish but cannot establish, blocked upstream on `socket-udp` packaging
   (#127); Node needs blocking raw-ECDH plus a shipped binder (#133).
 - **Media** (RTP/SRTP), which remains out of scope.
@@ -128,6 +142,22 @@ Things that have cost real time here. Read before acting on a premise that sound
 - **`webrtc-ice`'s `socketMain` is the only place `socket-udp` may appear in production code**, and the
   cores must never depend on socket in `commonMain` (ARCHITECTURE §11.6). A binder that owns its socket
   forecloses sharing one demuxed UDP socket with QUIC-P2P.
+- **`send` does not consume.** socket's datagram channels transmit the window `[position, limit)` without
+  advancing it, on **all four** backends — io_uring reads `nativeAddress + position()` and names the
+  contract in a comment, the NIO and Node paths take their own internal `slice()`, Apple reads
+  `position()`/`remaining()` directly. So re-sending one encoded request across retransmissions is
+  correct, and "slice it per attempt or the second send goes out empty" is a hazard socket does not have.
+  Defending against it is not free: `PooledBuffer.slice()` takes a **reference**, so a slice per
+  retransmission that nobody releases pins the chunk for good. Slice when something else needs a second
+  live view (`StunTransaction` emits `SendRequest` outputs a driver may hold) — not to survive a send.
+
+  The converse is the open half, filed as **DitchOoM/socket#277**: socket's own JVM/NIO `stage()` and Node
+  `sendPayload()` slice the payload internally and drop the `TrackedSlice` without releasing it, so on
+  **those** backends a pooled buffer never returns to the pool no matter how diligent this repo's release
+  paths are. The vnet cannot see it, and neither can `LeakTrackingFactory` — `freeNativeMemory()` marks a
+  buffer freed whichever way the refcount went, so only `pool.stats().currentPoolSize` discriminates,
+  which is how it was proven rather than argued. Anything claiming pool-exactness on a real
+  JVM/Android/Node socket is claiming it about socket too.
 
 ## Standing directives
 

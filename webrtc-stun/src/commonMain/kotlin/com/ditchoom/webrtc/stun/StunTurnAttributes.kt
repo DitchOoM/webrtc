@@ -39,7 +39,7 @@ public fun RawAttribute.Companion.ofRequestedAddressFamily(
     v.writeByte(0)
     v.writeShort(0)
     v.resetForRead()
-    return ofValue(StunAttributeType.RequestedAddressFamily, v)
+    return ofScratch(StunAttributeType.RequestedAddressFamily, v, factory)
 }
 
 /** REQUESTED-ADDRESS-FAMILY family octet, or null if the value is malformed. */
@@ -53,7 +53,7 @@ public fun RawAttribute.Companion.ofLifetime(
     val v = factory.allocate(U32_BYTES, ByteOrder.BIG_ENDIAN)
     v.writeUInt(seconds)
     v.resetForRead()
-    return ofValue(StunAttributeType.Lifetime, v)
+    return ofScratch(StunAttributeType.Lifetime, v, factory)
 }
 
 /** LIFETIME seconds, or null if the value is not a u32. */
@@ -69,7 +69,7 @@ public fun RawAttribute.Companion.ofRequestedTransport(
     v.writeByte(0)
     v.writeShort(0)
     v.resetForRead()
-    return ofValue(StunAttributeType.RequestedTransport, v)
+    return ofScratch(StunAttributeType.RequestedTransport, v, factory)
 }
 
 /** REQUESTED-TRANSPORT protocol number, or null if the value is malformed. */
@@ -84,7 +84,7 @@ public fun RawAttribute.Companion.ofChannelNumber(
     v.writeUShort(channel)
     v.writeShort(0)
     v.resetForRead()
-    return ofValue(StunAttributeType.ChannelNumber, v)
+    return ofScratch(StunAttributeType.ChannelNumber, v, factory)
 }
 
 /** CHANNEL-NUMBER value, or null if the value is malformed. */
@@ -102,7 +102,7 @@ public fun RawAttribute.Companion.ofUnknownAttributes(
     for (t in types) v.writeUShort(t.value)
     v.resetForRead()
     v.setLimit(types.size * U16_BYTES)
-    return ofValue(StunAttributeType.UnknownAttributes, v)
+    return ofScratch(StunAttributeType.UnknownAttributes, v, factory)
 }
 
 /** The u16 attribute types carried by UNKNOWN-ATTRIBUTES, or null if the length isn't a u16 multiple. */

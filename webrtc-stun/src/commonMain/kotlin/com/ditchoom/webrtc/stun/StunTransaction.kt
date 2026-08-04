@@ -90,6 +90,11 @@ public sealed interface StunTransactionFailure {
  * before [StunTransactionFailure.TimedOut]. The transaction id in [request] must be [transactionId]
  * (seeded entropy is injected upstream — see [TransactionId.random]); responses whose id differs are
  * ignored, so a driver may fan one datagram out to several live transactions.
+ *
+ * **Ownership:** the transaction takes [request]. It has to outlive every retransmission — each
+ * [StunTransactionOutput.SendRequest] is a fresh *view* of it, not a copy — so it is released when the
+ * transaction goes terminal, whether that is a response or a timeout. A caller that reuses the buffer
+ * afterwards is reading memory the allocator has taken back.
  */
 public class StunTransaction(
     public val transactionId: TransactionId,
@@ -130,8 +135,7 @@ public class StunTransaction(
 
     private fun onTimer(now: Instant): List<StunTransactionOutput> {
         if (awaitingFinalWait) {
-            terminal = true
-            armedDeadline = null
+            goTerminal()
             return listOf(StunTransactionOutput.Failed(StunTransactionFailure.TimedOut))
         }
         transmissions++
@@ -154,8 +158,15 @@ public class StunTransaction(
 
     private fun onResponse(message: StunMessage): List<StunTransactionOutput> {
         if (message.transactionId != transactionId) return emptyList()
+        goTerminal()
+        return listOf(StunTransactionOutput.Completed(message))
+    }
+
+    // No more retransmissions will be emitted, so nothing refers to `request` any more — see the class
+    // KDoc's ownership note. `handle` short-circuits on `terminal`, so this runs exactly once.
+    private fun goTerminal() {
         terminal = true
         armedDeadline = null
-        return listOf(StunTransactionOutput.Completed(message))
+        request.releaseIfOwnable()
     }
 }

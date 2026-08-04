@@ -5,6 +5,7 @@ package com.ditchoom.webrtc
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.webrtc.dtls.DtlsConfig
 import com.ditchoom.webrtc.dtls.DtlsFailureReason
+import com.ditchoom.webrtc.ice.IceDataReadResult
 import com.ditchoom.webrtc.ice.IceDataTransport
 import com.ditchoom.webrtc.sdp.Fingerprint
 import kotlinx.coroutines.CompletableDeferred
@@ -36,12 +37,14 @@ class DtlsHandshakeTimeoutTest {
 
             // A transport that swallows every outbound record and never delivers an inbound one — a peer
             // that went silent after ICE nominated the pair. receive() suspends forever (an uncompleted
-            // deferred), exactly what would hang the handshake if the budget were missing.
+            // deferred), exactly what would hang the handshake if the budget were missing. Note that it
+            // never answers [IceDataReadResult.Closed] either: a closed transport is a *different*
+            // failure, and one the engine could distinguish. Silence is the case with no signal at all.
             val silentPeer =
                 object : IceDataTransport {
                     override suspend fun send(packet: ReadBuffer) = Unit
 
-                    override suspend fun receive(): ReadBuffer? = CompletableDeferred<ReadBuffer?>().await()
+                    override suspend fun receive(): IceDataReadResult = CompletableDeferred<IceDataReadResult>().await()
 
                     override fun close() = Unit
                 }

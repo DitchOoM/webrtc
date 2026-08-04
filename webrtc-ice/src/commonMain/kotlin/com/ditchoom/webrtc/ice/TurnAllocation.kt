@@ -174,7 +174,15 @@ public class TurnAllocation(
                 .add(RawAttribute.ofXorAddress(StunAttributeType.XorPeerAddress, peer.toTransportAddress(), transactionId, bufferFactory))
                 .add(RawAttribute.ofRaw(StunAttributeType.Data, payload))
                 .encode(bufferFactory)
-        underlying.send(indication, to = server)
+        try {
+            underlying.send(indication, to = server)
+        } finally {
+            // The Send indication is a fresh buffer wrapping a COPY of [payload] (`ofRaw` copies into the
+            // padded value), so it is ours alone and its last read is the send. One of these per relayed
+            // datagram is the hottest allocation in the stack — leaking it grows a relayed session
+            // without bound, which is a different and worse thing than leaking one per gather.
+            indication.freeNativeMemory()
+        }
     }
 
     override suspend fun receive(): DatagramReadResult {
@@ -390,9 +398,15 @@ public class TurnAllocation(
      * [retransmitInterval] until one arrives or [budget] elapses (RFC 8489 §6.2.1 spirit — the same shape
      * [gatherServerReflexive] uses on the Binding it sends from the same kind of socket).
      *
-     * The request is encoded **once** and re-sliced per transmission: a retransmission has to be the same
-     * transaction, byte for byte, and a socket write that advances the buffer position would otherwise
-     * exhaust the shared request on the second send.
+     * The request is encoded **once** and that same buffer rides every transmission: a retransmission has
+     * to be the same transaction, byte for byte. It does not need a fresh slice per attempt — socket's
+     * datagram channels are contractually *send-does-not-consume*, and every backend honours it (io_uring
+     * reads `nativeAddress + position()`; the NIO, Node and Apple paths take their own internal view).
+     * Slicing per attempt would be actively wrong on a pooled factory, where a slice takes a reference on
+     * the chunk: one per retransmission, none of them released, pins the buffer for good.
+     *
+     * The `finally` covers all three exits — answered (returns from inside the loop), silent (unwound by
+     * [budget]) and cancelled — because each of them owes the same single release.
      */
     private suspend fun request(
         budget: Duration,
@@ -410,20 +424,28 @@ public class TurnAllocation(
                 is Credential.Challenged -> builder.addMessageIntegrity(c.key)
             }
         val encoded = authenticated.encode(bufferFactory)
-        val response =
-            withTimeoutOrNull(budget) {
-                while (true) {
-                    underlying.send(encoded.slice(), to = server)
-                    val answer = withTimeoutOrNull(retransmitInterval) { deferred.await() }
-                    // Null here means only "not within this interval" — retransmit and keep waiting. The
-                    // budget above is what turns sustained silence into TurnExchange.Unanswered.
-                    if (answer != null) return@withTimeoutOrNull answer
+        try {
+            val response =
+                withTimeoutOrNull(budget) {
+                    while (true) {
+                        underlying.send(encoded, to = server)
+                        val answer = withTimeoutOrNull(retransmitInterval) { deferred.await() }
+                        // Null here means only "not within this interval" — retransmit and keep waiting. The
+                        // budget above is what turns sustained silence into TurnExchange.Unanswered.
+                        if (answer != null) return@withTimeoutOrNull answer
+                    }
+                    @Suppress("UNREACHABLE_CODE")
+                    null
                 }
-                @Suppress("UNREACHABLE_CODE")
-                null
-            }
-        pending.remove(transactionId)
-        return response?.classify() ?: TurnExchange.Unanswered
+            return response?.classify() ?: TurnExchange.Unanswered
+        } finally {
+            // Both of these are owed on every exit, cancellation included: an un-removed entry keeps a
+            // dead transaction's deferred in the map for the life of the allocation, and the loop above
+            // outlives its caller often enough (close() cancels the maintenance job mid-Refresh) for
+            // "only on the paths that return" to be a real difference.
+            pending.remove(transactionId)
+            encoded.freeNativeMemory()
+        }
     }
 
     private fun StunMessage.classify(): TurnExchange =

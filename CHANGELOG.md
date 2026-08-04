@@ -6,6 +6,68 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Fixed — a raised `send` cost an ICE agent its buffer and the rest of its output batch (#143) (`minor`)
+
+`IceAgentDriver.apply()` pumps a `List<IceOutput>` from the sans-io core, and its transmit arm was
+written as though `send` could not raise:
+
+```kotlin
+channels[output.fromBase]?.send(output.data, to = output.to.toSocketAddress())
+output.data.releaseAfterSend()
+```
+
+It can, and it is about to do so far more often: DitchOoM/socket#278 makes every socket-udp backend
+report a refused send instead of returning normally having sent nothing. Two harms followed, and the
+second is the one worth the fix.
+
+- **The buffer leaked.** A raise between the two lines skipped the release outright — against the
+  ownership invariant #142 established and proved.
+- **The rest of the batch was abandoned.** The raise escaped the `for` loop, dropping every remaining
+  output including `ConnectionStateChanged` and `PathChanged`. The driver's observable state then
+  silently stopped matching the core state machine — strictly worse than the lost datagram that caused
+  it, and invisible from the outside.
+
+New internal `sendOrFailure()` — the exact mirror of the existing `receiveOrClosed()`, rethrowing
+`CancellationException` and answering a sealed `IceTransmitResult` for anything else. The release now
+rides a `finally`, and a refused transmit is reported on the new `IceAgentDriver.transmitFailed` flow
+(bounded, `DROP_OLDEST`) rather than raised, surfacing to an application as
+`SessionDiagnostic.TransmitFailed`.
+
+The two **retransmit loops** — server-reflexive gathering and every TURN request — get the same
+treatment, and there the argument is even simpler: their entire purpose is surviving transient loss ("a
+single lost request must not cost the whole srflx"), and a raise bypassed that tolerance completely.
+
+**Tolerating a failure is not the same as hiding it**, which is what the rest of this change is about. A
+swallowed permanent failure — a closed socket, a `bufferFactory` this platform cannot send from (#125) —
+would burn the whole budget and then report `NoResponse`, blaming a STUN or TURN server that was never
+contacted. So both loops now track whether *anything* ever left the socket and answer accordingly:
+
+- `ServerReflexiveResult.Unavailable.SendFailed(cause)`
+- `TurnAllocationResult.Unavailable.SendFailed(cause)` — which reaches an application through the
+  existing `IceGatheringNotice.RelayUnavailable`. This one matters most: behind a symmetric NAT the relay
+  is the only path, so "the TURN server is unreachable" is the conclusion an operator acts on, and it is
+  the wrong machine to go and look at.
+
+`GatheringBufferFactoryTest` changes shape as a result — it used to assert the raise itself
+(`assertFailsWith<IllegalStateException>`), which is precisely the behaviour being removed. It now
+asserts the typed `SendFailed` and its carried cause, and gains the anti-vacuity direction: a socket that
+*accepts* the datagram against a silent server must still report `NoResponse`, or the distinction would
+be worthless. New `IceSendThrowTest` pins the driver half; both of its cases were confirmed to **fail**
+against the pre-fix code, with the batch-abandonment one failing on exactly the assertion it exists for.
+
+Two call sites are deliberately left raising, and say so in place: `IceDataTransport.send` and TURN's
+Send indication are the **application** data path, where the buffer is the caller's (nothing of ours to
+leak) and there is no batch of ours to abandon. Telling DTLS its record went out when it did not would be
+worse than the throw.
+
+**Still open on #143:** the typed `catch` on `DatagramSendException` cannot be written until socket#278
+releases. This is the half that does not need it — and it is a real defect today, since a closed channel
+already raises on the JVM.
+
+**API:** adds `IceAgentDriver.transmitFailed`, `IceTransmitFailure`, `SessionDiagnostic.TransmitFailed`,
+and a `SendFailed` case to two sealed `Unavailable` hierarchies. Additive, but new cases in sealed types
+are source-breaking for an exhaustive `when` — `minor`.
+
 ### Fixed — a default-configured session could not send on Kotlin/Native Linux (#125) (`minor`)
 
 `BufferFactory.Default` is a GC-heap `ByteArrayBuffer` on Kotlin/Native Linux, and socket-udp's io_uring

@@ -1025,6 +1025,14 @@ public class NativePeerConnection(
                 )
             }
         }
+        scope.launch {
+            // A datagram the local socket refused. Reported rather than raised because ICE survives lost
+            // datagrams by design — see `IceAgentDriver.transmitFailed`. The reason it is worth a
+            // diagnostic at all is that without one a socket refusing every send is indistinguishable
+            // from a peer that stopped answering: the session fails with `NoCandidatePairs` or
+            // `ConsentExpired`, naming the symptom, while the cause was local and already known here.
+            d.transmitFailed.collect { report(SessionDiagnostic.TransmitFailed(cause = it.cause)) }
+        }
         establishJob = scope.launch { runEstablishment(d, sctpRandom) }
         when (val policy = config.iceRestartPolicy) {
             IceRestartPolicy.Manual -> Unit

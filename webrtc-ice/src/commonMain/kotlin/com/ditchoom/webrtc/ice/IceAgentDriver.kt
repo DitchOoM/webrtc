@@ -241,6 +241,9 @@ public class IceAgentDriver(
     private val discarded =
         Channel<IceOutput.RemoteCandidateDiscarded>(DISCARD_DIAGNOSTIC_BUFFER, BufferOverflow.DROP_OLDEST)
 
+    private val transmitFailures =
+        Channel<IceTransmitFailure>(TRANSMIT_FAILURE_DIAGNOSTIC_BUFFER, BufferOverflow.DROP_OLDEST)
+
     /**
      * Every local candidate as it is gathered (host/srflx/relay) — the trickle (RFC 8838) source — paired
      * with the ufrag of the ICE generation it actually landed in, so the session layer can stamp RFC 8838
@@ -267,6 +270,27 @@ public class IceAgentDriver(
      * oldest is the only option that is neither.
      */
     public val remoteCandidateDiscarded: Flow<IceOutput.RemoteCandidateDiscarded> get() = discarded.receiveAsFlow()
+
+    /**
+     * A datagram the socket refused — connectivity checks, nomination, keep-alives, relayed data.
+     *
+     * **Non-fatal by construction, and that is the decision rather than a side effect.** ICE is built to
+     * survive lost datagrams: a check that never leaves retransmits, and if the path really is dead the
+     * establishment and RFC 7675 consent backstops reach a typed terminal on their own schedule. Treating
+     * one refused `sendto` as fatal would throw away that tolerance and, worse, would abandon the rest of
+     * the output batch it was in. So the transmit is dropped and reported, never raised.
+     *
+     * What this exists to make visible is the *silent* case. Without it, a socket refusing every send
+     * looks exactly like a peer that stopped answering — the session fails with
+     * [IceFailureReason.NoCandidatePairs] or `.ConsentExpired`, naming the symptom, while the cause was
+     * local and known. A steady stream here alongside a healthy-looking checklist is the tell.
+     *
+     * **Bounded and lossy**, on the same reasoning as [remoteCandidateDiscarded]: a failing socket fails
+     * at the connectivity-check rate, so an unbounded channel would grow the heap for a collector nobody
+     * is obliged to attach, and a rendezvous channel would let the failure stall the drive loop that
+     * reports it.
+     */
+    public val transmitFailed: Flow<IceTransmitFailure> get() = transmitFailures.receiveAsFlow()
 
     /** Launch the serialized drive loop. Gather candidates and feed remote state after this. */
     public fun start() {
@@ -479,6 +503,14 @@ public class IceAgentDriver(
                         is IcePath.Nominated -> current.pair
                         is IcePath.Restarting -> current.previous
                     }
+                // Deliberately *not* guarded like the check path above, and the asymmetry is the point.
+                // [packet] is the caller's buffer (DTLS's record), so there is nothing of ours to leak
+                // and no batch of ours to abandon — the two harms that made a raised send unacceptable in
+                // `apply()`. What is left is a failed application write, which is exactly the caller's to
+                // know: swallowing it here would tell DTLS its record went out when it did not, and a
+                // retransmission policy built on that lie is worse than the throw. Socket-udp absorbs and
+                // retries backpressure internally (DitchOoM/socket#278), so what reaches here is a real
+                // failure, not routine flow control.
                 channels[pair.local.base]?.send(packet, to = pair.remote.address.toSocketAddress())
             }
 
@@ -627,8 +659,32 @@ public class IceAgentDriver(
         for (output in outputs) {
             when (output) {
                 is IceOutput.Transmit -> {
-                    channels[output.fromBase]?.send(output.data, to = output.to.toSocketAddress())
-                    output.data.releaseAfterSend()
+                    // Two things this must not do, and both used to happen on a raised send.
+                    //
+                    // The release is owed on **every** exit, not only the one that sent — a throw between
+                    // `send` and the release leaked the buffer outright, against the ownership invariant
+                    // #142 established and proved. `finally` states that the way the rest of this module
+                    // already does (`IceGathering`, `TurnAllocation`).
+                    //
+                    // And a failure must not escape this loop. `outputs` is a *batch*: abandoning it
+                    // mid-way drops every remaining output, `ConnectionStateChanged` and `PathChanged`
+                    // included, so the driver's observable state silently stops matching the core's. A
+                    // lost datagram is a thing ICE is built to survive; a state machine whose observers
+                    // never heard it moved is not. The transmit is reported and the batch continues.
+                    val result =
+                        try {
+                            channels[output.fromBase]?.sendOrFailure(output.data, to = output.to.toSocketAddress())
+                        } finally {
+                            output.data.releaseAfterSend()
+                        }
+                    if (result is IceTransmitResult.Failed) {
+                        // trySend on a DROP_OLDEST channel, never send: the drive loop is serialized, so
+                        // suspending it on a diagnostic nobody is obliged to collect would let a failing
+                        // socket stall ICE itself — the same rule `discarded` follows below.
+                        transmitFailures
+                            .trySend(IceTransmitFailure(to = output.to, cause = result.cause))
+                            .let { }
+                    }
                 }
                 is IceOutput.ConnectionStateChanged -> _state.value = output.state
                 is IceOutput.PathChanged -> {
@@ -698,3 +754,12 @@ public class IceAgentDriver(
  * that describe what it is doing now.
  */
 private const val DISCARD_DIAGNOSTIC_BUFFER = 32
+
+/**
+ * How many refused transmits [IceAgentDriver.transmitFailed] holds for a collector that has not caught
+ * up. Smaller than [DISCARD_DIAGNOSTIC_BUFFER] on purpose: these are not evidence to be counted but a
+ * condition to be noticed, and a socket that refuses one send overwhelmingly refuses the next, so the
+ * eighth identical failure tells a collector nothing the first did not. Dropping the oldest keeps the
+ * window on what the socket is doing *now*.
+ */
+private const val TRANSMIT_FAILURE_DIAGNOSTIC_BUFFER = 8

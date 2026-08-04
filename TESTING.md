@@ -58,7 +58,7 @@ docker-compose stack (existing services: `echo`, `http`, `toxiproxy`, `controlle
 
 | New service | Purpose |
 |---|---|
-| **coturn** |
+| **coturn** | a real STUN/TURN server, with `lt-cred-mech` enforced — the relay lanes authenticate for real, so a wrong long-term-key derivation fails them (§3) |
 | **NAT-profile containers** | iptables/netfilter cones: full-cone / address-restricted / port-restricted / symmetric; hairpinning on/off |
 | **netem profiles** | loss / delay / jitter / reorder on the data path (reuse the existing netem control shim) |
 | **toxiproxy on signaling** | deterministic signaling-channel faults (drop/delay offer/answer/candidate) |
@@ -134,10 +134,13 @@ See `test-harness/README.md` and `docs/DC_SEMANTICS_INTEROP_DESIGN.md`.
 The published `webrtc-testsuite`:
 
 ```kotlin
-withWebRtcHarness {
-    natType(Symmetric)
-    relayOnly()
-    impaired(loss = 5.percent) { /* plain commonTest, no docker CLI */ }
+runTest {
+    withWebRtcHarness(scope = backgroundScope, clock = virtualClock) {
+        natType(NatType.Symmetric)     // both peers behind a symmetric NAT (RFC 4787)
+        relayOnly()                    // force the TURN-relay path
+        impaired(loss = 0.05)          // 5% packet loss — plain commonTest, no docker CLI
+        assertEquals("ping", roundTrip("ping"))
+    }
 }
 ```
 
@@ -171,7 +174,16 @@ fuzz at the same rigor as the binary codecs).
 
 Every timeline replay and fuzz campaign asserts, not just crash-freedom:
 
-1. **No buffer leaks** — `TrackingBufferFactory.assertNoLeaks()` in every harness.
+1. **No buffer leaks** — `LeakTrackingFactory.assertNoLeaks()`, which tracks frees as well as
+   allocations. Stated here as the standard, **not** as something asserted everywhere yet: it lives in
+   `webrtc-ice`'s vnet (`vnet/PoolLeakTracking.kt`, used by `BufferLifecycleTest` and
+   `MdnsEndpointTest`), while the `CountingBufferFactory` copies in `webrtc-sctp`, `webrtc-stun` and
+   `webrtc-dtls` count allocations only, and the published `webrtc-testsuite` harness exposes just
+   `WebRtcHarnessScope.allocationCount` — so a *consumer* cannot yet assert this invariant at all.
+   Two things bound how far it can go, and both are named in `CLAUDE.md`: the receive side has no
+   last-reader rule, so nothing releases an inbound datagram; and `LeakTrackingFactory` is blind to
+   DitchOoM/socket#277, where socket's own JVM/NIO and Node send paths drop a `TrackedSlice` unreleased
+   — only `pool.stats().currentPoolSize` discriminates that one.
 2. **No illegal state transition** — ICE pair/checklist and `PeerConnectionState` never take an illegal edge.
 3. **Every native handle freed** — every DTLS wrapper freed, every TURN allocation released.
 4. **Errors are typed** — surface as sealed reasons, never strings.

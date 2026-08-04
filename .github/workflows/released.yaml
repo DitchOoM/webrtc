@@ -37,11 +37,17 @@ jobs:
                 --generate-notes
           fi
 
-  # The POST-release half of the consumer gate: resolve the just-released version from Maven Central and
-  # NOTHING else, cold, as an outside project would. `merged.yaml` already proved the same consumer
-  # against the pre-publish merged repo; this proves the publish itself — that every module and every
-  # target variant genuinely landed on Central and is usable from there. It polls for Central's eventual
-  # consistency rather than racing it.
+  # The POST-release consumer gate for a **hand-pushed** tag.
+  #
+  # This workflow only runs on a real `push` event, which the ordinary release flow no longer produces:
+  # since #128 `merged.yaml` creates the tag through the REST API with `secrets.GITHUB_TOKEN`, and GitHub
+  # does not dispatch workflow events for refs created with that token. The normal path is therefore
+  # `merged.yaml`'s own `consumer-smoke-central` job, which hangs off `publish` instead of off the tag.
+  # What remains here is the fallback for a tag pushed by a human (as v0.14.0's was), so that path still
+  # gets a release and still gets verified against Central.
+  #
+  # Resolve from Maven Central and NOTHING else, cold, as an outside project would — this proves the
+  # publish itself. It polls for Central's eventual consistency rather than racing it.
   consumer-smoke-central:
     name: Consumer smoke from Maven Central
     needs: release

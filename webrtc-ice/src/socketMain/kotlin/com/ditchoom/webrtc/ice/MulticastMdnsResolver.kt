@@ -42,7 +42,7 @@ import kotlin.time.Duration.Companion.seconds
  */
 public class MulticastMdnsResolver(
     private val families: List<AddressFamily> = listOf(AddressFamily.IPv4, AddressFamily.IPv6),
-    private val bufferFactory: BufferFactory = BufferFactory.Default,
+    private val bufferFactory: BufferFactory = networkBuffer(),
     private val queryTimeout: Duration = DEFAULT_QUERY_TIMEOUT,
 ) : MdnsResolver {
     override suspend fun resolve(hostname: String): MdnsResolution {

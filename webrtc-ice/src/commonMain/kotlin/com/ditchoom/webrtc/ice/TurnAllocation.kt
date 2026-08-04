@@ -3,7 +3,6 @@
 package com.ditchoom.webrtc.ice
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.AddressFamily
@@ -100,7 +99,7 @@ public class TurnAllocation(
     private val password: String,
     private val random: Random,
     private val scope: CoroutineScope,
-    private val bufferFactory: BufferFactory = BufferFactory.Default,
+    private val bufferFactory: BufferFactory = networkBuffer(),
     private val maintenance: TurnMaintenance = TurnMaintenance.Renewing(),
     private val retransmitInterval: Duration = DEFAULT_GATHER_RTO,
 ) : AddressedDatagramChannel {

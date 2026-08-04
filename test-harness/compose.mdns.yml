@@ -25,6 +25,8 @@ services:
   # Give the two infra services a foot on lan0 too (merged with their base `pub` attachment) so the mdns
   # peer/browser reach STUN + the rendezvous mailbox without any router.
   coturn:
+    environment:
+      COTURN_LAN0_ENABLED: "1"   # entrypoint appends the lan0 listening/relay/external address
     networks:
       lan0: { ipv4_address: "${COTURN_LAN0_IP}" }
   rendezvous:

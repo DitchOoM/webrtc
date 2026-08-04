@@ -153,11 +153,11 @@ strong reusable pieces:
 
 | Resource | Gives us | Plugs into |
 |---|---|---|
-| **RFC 5769** sample STUN vectors | canonical MESSAGE-INTEGRITY / FINGERPRINT test messages — an interop-grade codec corpus on day one | `webrtc-stun` T0 |
+| **RFC 5769** sample STUN vectors | canonical MESSAGE-INTEGRITY / FINGERPRINT test messages — an interop-grade codec corpus on day one. §2.4 (long-term auth) additionally pins `MD5(user:realm:pass)` key derivation against a published vector | `webrtc-stun` T0 |
 | **RFC 8445 / 8489 / 8656 / 8831 / 8832** scenarios | ICE / STUN / TURN / SCTP / DCEP behaviors, encoded as committed timeline fixtures | L1 vnet, TA/TB |
 | **Pion** (Go WebRTC) | independent interop oracle; echo-peer container | L3 |
 | **Chrome, Firefox, WebKit** (Playwright) | real `RTCPeerConnection` peers across all three engines; also validates our browser delegation | L3 |
-| **coturn** | real STUN/TURN server | L2 |
+| **coturn** | real STUN/TURN server, with `lt-cred-mech` enforced — the relay lanes authenticate with the RFC 8489 §9.2.2 long-term key, so a wrong derivation fails them | L2 |
 | **web-platform-tests `webrtc/`** | W3C conformance for the JS API surface | browser-delegated target only |
 | **BoringSSL** | the differential oracle our pure-Kotlin DTLS handshakes against, both directions, under `linuxTest` | `webrtc-dtls` |
 

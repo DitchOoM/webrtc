@@ -35,15 +35,16 @@ import kotlin.random.Random
  * Refresh, and Send/Data indication relaying — including relaying **between two allocations on this same
  * server**, precisely the relay↔relay ICE check the dual-NAT fixture exercises.
  *
- * Auth uses RFC 8489 §9.1.1 **short-term** MESSAGE-INTEGRITY (key = the UTF-8 password): wire-identical
- * (USERNAME + MESSAGE-INTEGRITY), MD5-free (buffer-crypto ships no MD5), and deterministic.
+ * Auth is RFC 8489 §9.2's **long-term** credential: the key is `MD5(username:realm:password)`, exactly
+ * what coturn computes from its user table. [keyProvider] is the injected seam and
+ * [Vnets.turnKeyProvider] supplies the real derivation.
  */
 internal class TurnServer(
     /** The public control transport address clients send Allocate/Refresh/Send to. */
     val address: SocketAddress,
     private val vnet: Vnet,
     private val scope: CoroutineScope,
-    /** MESSAGE-INTEGRITY key for a USERNAME, or null to reject it (RFC 8489 §9.1.1 short-term key). */
+    /** MESSAGE-INTEGRITY key for a USERNAME, or null to reject it (RFC 8489 §9.2.2 long-term key). */
     private val keyProvider: (username: String) -> ReadBuffer?,
     seed: Long = DEFAULT_SEED,
     private val realm: String = DEFAULT_REALM,

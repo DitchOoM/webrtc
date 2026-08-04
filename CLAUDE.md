@@ -75,9 +75,11 @@ What is genuinely left, and why the data-channel stack is not yet something a st
   real socket I/O (#131). The workaround is real — `BufferPool(factory = BufferFactory.deterministic())` is
   native-backed *and* refcounted — but it only reclaims what the stack releases, and `webrtc-stun` releases
   nothing (see the #125 discussion).
-- **TURN is short-lived and single-server-proven.** No allocation Refresh or permission re-installation, so
-  a relayed session dies at the server's LIFETIME (#137); and the long-term-credential key is the raw
-  password rather than `MD5(user:realm:pass)`, never exercised against a commercial provider (#138).
+- **TURN is short-lived.** No allocation Refresh or permission re-installation, so a relayed session dies
+  at the server's LIFETIME (#137). The long-term-credential key is now the RFC 8489 §9.2.2
+  `MD5(user:realm:pass)` (#138) — pure-Kotlin MD5 in `webrtc-stun`, pinned by the RFC 5769 §2.4 vector —
+  and the relay lanes now authenticate for real (see the coturn `-n` entry below). Still unexercised
+  against a **commercial** provider, whose realm/nonce rotation and quota behaviour we have never seen.
 - **Platforms:** tvOS/watchOS publish but cannot establish, blocked upstream on `socket-udp` packaging
   (#127); Node needs blocking raw-ECDH plus a shipped binder (#133).
 - **Media** (RTP/SRTP), which remains out of scope.
@@ -91,12 +93,26 @@ Things that have cost real time here. Read before acting on a premise that sound
   something already published. socket's `LinuxSockets` cinterop klib embeds only `liburing.a`, and socket
   and `buffer-crypto` resolve to the *same* `boringssl-canonical`, which Gradle dedupes. Verified by
   linking the native peer on linuxX64 **and** linuxArm64 with socket core present.
-- **Stale premises are this codebase's recurring failure mode** — five separate instances so far, each
+- **Stale premises are this codebase's recurring failure mode** — seven separate instances so far, each
   costing between a wrong comment and ~1000 wrong lines. When a comment explains why something *cannot*
   be done, check whether it still can't before building around it. The fifth instance was **this file**:
   it claimed foreign-initiated renegotiation was unexercised for months after #87 shipped five lanes
   proving otherwise. A document that is read first is the worst place for a stale premise — correct this
   section as soon as the state it describes changes.
+- **A config file the server never read: coturn's `-n` meant every relay lane tested an OPEN RELAY.**
+  `entrypoint.sh` ended `exec turnserver -c "$CONF" -n`, and in coturn **`-n` means "do not use a
+  configuration file"** — so `lt-cred-mech`, `user`, `realm` and `min-port`/`max-port` were all inert and
+  the server accepted unauthenticated allocations. Fixed alongside #138. Two lessons worth keeping:
+  * **The reason it survived review:** stock `coturn/coturn:4.6`'s own `docker-entrypoint.sh` re-expands
+    args with `eval "echo $i"`, and `echo -n` prints nothing, so `-n` is *silently deleted* there. Every
+    `docker run coturn/coturn:4.6 -c cfg -n` example online therefore *does* read the config while our
+    direct `exec` did not — same flags, opposite server.
+  * **The tell was in the data all along:** `harness.env` pins `TURN_MIN_PORT=49160`/`MAX=49200` and CI's
+    green runs handed out ports in 49546…64453 — coturn's *default* 49152–65535 range. A configured
+    value that never shows up in the output is evidence the config is not being read. Post-fix runs
+    allocate inside the pinned range, which is now the cheapest regression check.
+  * Generalization of the above bullet: a *premise* can be stale, and so can a *dependency's
+    configuration*. "The setting is in the file" is not evidence the process applied it.
 - **`linkTopology()` erases the reachability verdict on purpose.** socket's `NetworkState` ladder carries
   `Routable(id, Pending|Confirmed)`, and on real hardware Android grants `INTERNET` ~1s before
   `VALIDATED` on *every* reassociation. Forwarding that transition as an interface change would

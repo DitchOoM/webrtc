@@ -4,8 +4,10 @@ package com.ditchoom.webrtc.ice.vnet
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
+import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.webrtc.stun.longTermCredentialKey
 import kotlinx.coroutines.CoroutineScope
 
 /**
@@ -30,6 +32,18 @@ internal object Vnets {
 
     const val TURN_USERNAME = "ice"
     const val TURN_PASSWORD = "s3cret"
+
+    /**
+     * The MESSAGE-INTEGRITY key both sides of the vnet relay derive, and the single place the vnet's
+     * notion of a TURN credential is defined. It is the **long-term** form — `MD5(user:realm:pass)`,
+     * RFC 8489 §9.2.2 — the same derivation [TurnAllocation] uses against real coturn, so the vnet
+     * lanes fail exactly when the derivation is wrong instead of agreeing with the client on a
+     * simplification no real server would accept.
+     */
+    fun turnKeyProvider(realm: String = TurnServer.DEFAULT_REALM): (String) -> ReadBuffer? =
+        { username ->
+            if (username == TURN_USERNAME) longTermCredentialKey(username, realm, TURN_PASSWORD) else null
+        }
 
     /** A flat, lossless network (no NAT) — the seam-gate default and the base for unit topologies. */
     fun flat(bufferFactory: BufferFactory = BufferFactory.Default): Vnet = Vnet(bufferFactory = bufferFactory)
@@ -100,7 +114,7 @@ internal object Vnets {
                 address = TURN_SERVER_ADDRESS,
                 vnet = vnet,
                 scope = scope,
-                keyProvider = { username -> if (username == TURN_USERNAME) utf8Buffer(TURN_PASSWORD) else null },
+                keyProvider = turnKeyProvider(),
             ).also { it.start() }
         return Meetup(
             vnet = vnet,
@@ -159,7 +173,7 @@ internal object Vnets {
                 address = TURN_SERVER_ADDRESS_V6,
                 vnet = vnet,
                 scope = scope,
-                keyProvider = { username -> if (username == TURN_USERNAME) utf8Buffer(TURN_PASSWORD) else null },
+                keyProvider = turnKeyProvider(),
             ).also { it.start() }
         return Meetup(
             vnet = vnet,

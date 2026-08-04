@@ -14,9 +14,12 @@ import kotlin.test.assertTrue
 /**
  * RFC 5769 sample vectors — the interop-grade T0 corpus (TESTING.md §3). Each is decoded, its
  * MESSAGE-INTEGRITY (HMAC-SHA1) and FINGERPRINT (CRC-32) recomputed in place and checked against the
- * wire, its XOR-MAPPED-ADDRESS un-XOR'd, and the message re-encoded byte-for-byte. The long-term
- * §2.4 vector is out of scope in W1 (its key is MD5(username:realm:password); buffer-crypto has no
- * MD5 yet — tracked for a follow-up).
+ * wire, its XOR-MAPPED-ADDRESS un-XOR'd, and the message re-encoded byte-for-byte.
+ *
+ * §2.4 (long-term authentication) was deferred for as long as we had no MD5 to derive its key with.
+ * [longTermCredentialKey] supplies it now, so the vector is here — and it is the load-bearing one for
+ * TURN: it is the only published end-to-end proof that our `MD5(username:realm:password)` is the key a
+ * real server computes, over a username that is genuinely multi-byte UTF-8.
  */
 class Rfc5769VectorsTest {
     private val password = "VOkJxbRl1RmTxUk/WvJxBt"
@@ -37,6 +40,20 @@ class Rfc5769VectorsTest {
         "010100482112a442b7e7a701bc34d686fa87dfae8022000b7465737420766563746f7220002000140002a1" +
             "470113a9faa5d3f179bc25f4b5bed2b9d900080014a382954e4be67bf11784c97c8292c275bfe3ed4180" +
             "280004c8fb0b4c"
+
+    // §2.4's own credential set — a separate transaction id, and a username of six katakana
+    // ("マトリックス") that occupy three UTF-8 bytes each, so a key derived per UTF-16 char would differ.
+    private val longTermUsername = "マトリックス"
+    private val longTermPassword = "TheMatrIX" // the RFC's post-SASLprep form
+    private val longTermRealm = "example.org"
+
+    private val longTermRequest =
+        "00010060" + "2112a442" + "78ad3433" + "c6ad72c0" + "29da412e" +
+            "00060012" + "e3839ee3" + "8388e383" + "aae38383" + "e382afe3" +
+            "82b90000" + "0015001c" + "662f2f34" + "39396b39" + "35346436" +
+            "4f4c3334" + "6f4c3946" + "53547679" + "36347341" + "0014000b" +
+            "6578616d" + "706c652e" + "6f726700" + "00080014" + "f6702465" +
+            "6dd64a3e" + "02b8e071" + "2e85c9a2" + "8ca89666"
 
     @Test
     fun sampleRequest() {
@@ -82,6 +99,38 @@ class Rfc5769VectorsTest {
         assertEquals(0x0011223344556677uL, v6.lo)
         assertEquals(32853u.toUShort(), mapped.port)
         assertRoundTrips(ipv6Response, msg)
+    }
+
+    /**
+     * RFC 5769 §2.4 — a Binding request authenticated with the **long-term** credential. Its
+     * MESSAGE-INTEGRITY is keyed by `MD5(username:realm:password)`, so this verifying is a
+     * known-answer test for [longTermCredentialKey] against a published vector rather than against
+     * our own arithmetic. The password is the RFC's post-SASLprep form ("TheMatrIX"); the username is
+     * SASLprep-invariant. No FINGERPRINT in this vector.
+     */
+    @Test
+    fun sampleRequestWithLongTermAuthentication() {
+        val msg = decoded(longTermRequest)
+        assertEquals(StunClass.Request, msg.messageType.stunClass)
+        assertEquals(StunMethod.Binding, msg.messageType.method)
+        assertEquals(TransactionId(0x78AD3433u, 0xC6AD72C0u, 0x29DA412Eu), msg.transactionId)
+        assertEquals(longTermUsername, msg.firstOrNull(StunAttributeType.Username)?.asText())
+        assertEquals(longTermRealm, msg.firstOrNull(StunAttributeType.Realm)?.asText())
+        assertEquals("f//499k954d6OL34oL9FSTvy64sA", msg.firstOrNull(StunAttributeType.Nonce)?.asText())
+
+        val key = longTermCredentialKey(longTermUsername, longTermRealm, longTermPassword)
+        assertTrue(msg.verifyMessageIntegrity(key), "MESSAGE-INTEGRITY must verify under the long-term key")
+        assertRoundTrips(longTermRequest, msg)
+    }
+
+    /** The short-term key (the raw password) must NOT verify a long-term-keyed message. */
+    @Test
+    fun rawPasswordDoesNotVerifyLongTermMessage() {
+        val msg = decoded(longTermRequest)
+        assertTrue(
+            !msg.verifyMessageIntegrity(ascii(longTermPassword)),
+            "an underived password must fail closed — this is the bug MD5 derivation fixes",
+        )
     }
 
     @Test

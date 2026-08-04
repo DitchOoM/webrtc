@@ -3,12 +3,12 @@
 package com.ditchoom.webrtc
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.deterministic
 import com.ditchoom.webrtc.dtls.DtlsConfig
 import com.ditchoom.webrtc.ice.DatagramBinder
 import com.ditchoom.webrtc.ice.IceGatheringNotice
 import com.ditchoom.webrtc.ice.IceServer
 import com.ditchoom.webrtc.ice.MulticastMdnsEndpoint
+import com.ditchoom.webrtc.ice.networkBuffer
 import com.ditchoom.webrtc.ice.systemIceGathering
 import kotlinx.coroutines.CoroutineScope
 import kotlin.random.Random
@@ -53,14 +53,17 @@ import kotlin.time.Instant
  *
  * ## What it does not decide for you
  *
- * [bufferFactory] defaults to [BufferFactory.deterministic], **not** [BufferFactory.Default], because
- * `Default` is a GC-heap buffer on Kotlin/Native with no native address and io_uring `sendmsg` /
- * `NWConnection` reject it outright — a session built the documented way dies on its first connectivity
- * check (issue #125). `deterministic()` is native-backed everywhere it needs to be and is ARC-managed on
- * Apple; on Linux, the JVM and Android it is malloc/Arena/Unsafe memory that the stack must release, and
- * our release discipline is not yet complete (issue #125 again — `webrtc-stun` releases nothing). For a
- * long-lived server process, pass a pooled factory: `BufferPool(factory = BufferFactory.deterministic())`
- * returns each buffer to the pool on free instead of growing.
+ * [bufferFactory] defaults to [networkBuffer], which resolves to the factory this platform's socket can
+ * actually send from: [BufferFactory.Default] wherever it is already native-backed *and* automatically
+ * reclaimed — Apple's ARC `MutableDataBuffer`, JVM 21's auto-arena, Android's `Cleaner`-backed direct
+ * buffer — and [BufferFactory.deterministic] only on Kotlin/Native Linux, whose `Default` is a GC-heap
+ * buffer with no native address that io_uring `sendmsg` rejects outright (issue #125).
+ *
+ * This used to default to `deterministic()` unconditionally, which fixed Linux by making every *other*
+ * target manually freed. Only Linux pays that now, and only until `buffer` gives it a GC-managed native
+ * buffer — [networkBuffer] probes rather than consulting a platform table, so it will pick `Default` back
+ * up there on its own. For a long-lived server process, pass a pooled factory:
+ * `BufferPool(factory = networkBuffer())` returns each buffer to the pool on free instead of growing.
  *
  * The [iceConfig][PeerConnectionConfig.iceConfig] and [sctpConfig][PeerConnectionConfig.sctpConfig]
  * inside [config] have their buffer factories replaced by [bufferFactory], since having those disagree is
@@ -74,7 +77,7 @@ public fun nativePeerConnection(
     scope: CoroutineScope,
     binder: DatagramBinder,
     iceServers: List<IceServer> = emptyList(),
-    bufferFactory: BufferFactory = BufferFactory.deterministic(),
+    bufferFactory: BufferFactory = networkBuffer(),
     mdns: Boolean = true,
     config: PeerConnectionConfig = PeerConnectionConfig(),
     @Suppress("UnseamedEntropy") random: Random = Random.Default,

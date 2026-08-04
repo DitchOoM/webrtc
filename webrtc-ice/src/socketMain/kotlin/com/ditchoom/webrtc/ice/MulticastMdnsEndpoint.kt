@@ -35,7 +35,7 @@ import kotlin.time.Duration
 public fun MulticastMdnsEndpoint(
     scope: CoroutineScope,
     families: List<AddressFamily> = listOf(AddressFamily.IPv4, AddressFamily.IPv6),
-    bufferFactory: BufferFactory = BufferFactory.Default,
+    bufferFactory: BufferFactory = networkBuffer(),
     @Suppress("UnseamedEntropy") random: Random = Random.Default,
     queryTimeout: Duration = DEFAULT_MDNS_QUERY_TIMEOUT,
     onResponse: (MdnsResponse) -> Unit = {},

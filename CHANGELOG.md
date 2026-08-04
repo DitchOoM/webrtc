@@ -6,6 +6,60 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Fixed — a default-configured session could not send on Kotlin/Native Linux (#125) (`minor`)
+
+`BufferFactory.Default` is a GC-heap `ByteArrayBuffer` on Kotlin/Native Linux, and socket-udp's io_uring
+`sendmsg` path rejects a buffer with no native address outright. A session built from a hand-configured
+`IceConfig()` / `DtlsConfig()` on linuxX64 or linuxArm64 therefore died on its **first connectivity
+check** — after gathering had succeeded and the application believed it had a working session.
+
+New `networkBuffer()` (public in `webrtc-ice`, with an internal twin in `webrtc-dtls`) is now the default
+for every factory whose buffers reach a socket: `IceConfig`, `IceAgent`, `TurnAllocation`, `MdnsEndpoint`,
+`MdnsResponder`, `MulticastMdnsEndpoint`, `MulticastMdnsResolver` and `DtlsConfig`.
+
+**It resolves by asking, not by a platform table.** One throwaway 1-byte probe, cached for the process:
+keep `BufferFactory.Default` where it is native-backed, fall back to `deterministic()` only where it is
+not. Two things follow, and both were the point:
+
+- **No target gets a worse factory than it has today.** On 15 of 16 targets `Default` is *already*
+  native-backed **and** automatically reclaimed — `MutableDataBuffer` (ARC) on Apple, an auto-arena
+  `FfmAutoBuffer` on JVM 21+, a `Cleaner`-backed direct buffer on Android/JVM 8-20, linear memory on
+  wasm — so it is returned unchanged. A flat alias to `deterministic()` (which is what `socket-quic`'s
+  `BufferFactory.network()` is) would have traded JVM 21's `Arena.ofAuto` for a manually-freed shared
+  arena: a regression on a target that works.
+- **It self-corrects.** When `buffer` gives Kotlin/Native Linux a GC-managed native buffer — the
+  equivalent of Apple's ARC and the JVM's auto-arena — `networkBuffer()` picks `Default` back up there
+  with no change at any call site.
+
+`nativePeerConnection`'s own `bufferFactory` default moves from `deterministic()` to `networkBuffer()`,
+so the documented path stops paying manual-free semantics on the platforms that never needed them.
+
+**Two corrections to #125's diagnosis**, both found by checking rather than by trusting the issue:
+
+- **`SctpConfig` is not affected**, and is deliberately left on `BufferFactory.Default`. An SCTP chunk is
+  *input* to `sealApplicationData`, which copies it into a record freshly allocated from the **DTLS**
+  factory (`Dtls12Handshake.encode`); an SCTP buffer never reaches a socket. This is the second wrong
+  entry in that issue's table, after the Apple/`DtlsConfig` one corrected in #130.
+- **It is 2 targets, not 7.** The issue counted every target whose socket demands native memory; what
+  matters is where `Default` fails to supply it, and that is linuxX64 and linuxArm64 alone.
+
+**The Linux trade is real and is not hidden.** The fallback is `malloc`-backed and freed by hand, and
+this stack's receive side still has no last-reader rule, so inbound datagrams can accumulate there. It
+replaces a hard crash, which is why it ships — but the end of #125 is the upstream buffer change, not
+this.
+
+`DtlsConfigBufferFactoryTest` changes shape accordingly: it used to pin the default's *identity*
+(`assertSame(BufferFactory.Default, …)`) and recorded Linux as the target it "cannot fix and does not
+pretend to". It now pins the stronger invariant that identity was standing in for — whatever the default
+resolves to, this platform's socket can send from it — plus the anti-vacuity direction (a heap factory
+must fail that check) and the no-downgrade direction (`Default` survives wherever it is already native).
+`NetworkBufferTest` covers the same three properties in `webrtc-ice`. Both run in `commonTest` on every
+platform; the anti-vacuity case skips only on js, where `managed()` **is** `Default` and no factory can
+be distinguished from any other — a browser delegates to `RTCPeerConnection` and never hands one of these
+buffers to a socket.
+
+**API:** adds `networkBuffer()`. Purely additive — no signature changed, only default *values* — so it is
+binary-compatible, but new public API, hence `minor`.
 ### Fixed — nothing had verified a publish since v0.14.0, and the docs said otherwise
 
 `released.yaml` carries the post-release consumer lane: resolve the just-published version from Maven

@@ -5,7 +5,6 @@ package com.ditchoom.webrtc.ice
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.Charset
-import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.webrtc.ice.IceAttributes.asPriority
 import com.ditchoom.webrtc.ice.IceAttributes.asTieBreaker
@@ -66,7 +65,7 @@ public data class IceConfig(
      * nominates, or offers no compatible candidate.
      */
     public val establishmentTimeout: Duration = 30.seconds,
-    public val bufferFactory: BufferFactory = BufferFactory.Default,
+    public val bufferFactory: BufferFactory = networkBuffer(),
 )
 
 /**

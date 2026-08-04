@@ -81,7 +81,7 @@ public class MdnsEndpoint(
     private val scope: CoroutineScope,
     private val binder: MdnsMulticastBinder,
     private val families: List<AddressFamily> = listOf(AddressFamily.IPv4, AddressFamily.IPv6),
-    private val bufferFactory: BufferFactory = BufferFactory.Default,
+    private val bufferFactory: BufferFactory = networkBuffer(),
     // The name minter. A driver, so an ambient Random is a legitimate production default — but it is a
     // seam, so a deterministic fixture can name what this mints. The name carries no machine-derived
     // material either way (see MdnsHostName.random), so unpredictability is not what the privacy rests on.

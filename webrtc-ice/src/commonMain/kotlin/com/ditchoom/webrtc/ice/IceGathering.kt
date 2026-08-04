@@ -3,7 +3,6 @@
 package com.ditchoom.webrtc.ice
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
@@ -149,7 +148,7 @@ public suspend fun gatherServerReflexive(
     // The datagram allocator — MUST be the injected one on a real socket: a native-UDP send (socket-udp's
     // io_uring) rejects a GC-heap buffer, so the default is only safe on the in-memory vnet. The driver
     // threads `IceConfig.bufferFactory` here (a real-network fix; the vnet never exercised this).
-    bufferFactory: BufferFactory = BufferFactory.Default,
+    bufferFactory: BufferFactory = networkBuffer(),
 ): ServerReflexiveResult {
     val transactionId = TransactionId.random(random)
     val request =

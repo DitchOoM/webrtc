@@ -3,7 +3,6 @@
 package com.ditchoom.webrtc.ice
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.AddressedDatagramSink
@@ -61,7 +60,7 @@ private const val TYPE_ANY: Int = 255
  * would buy tidiness rather than safety.
  */
 public class MdnsResponder(
-    private val bufferFactory: BufferFactory = BufferFactory.Default,
+    private val bufferFactory: BufferFactory = networkBuffer(),
 ) {
     // Keyed by the lowercased name: RFC 6762 §16 says a query matches a record case-insensitively, and a
     // peer that echoes our published spelling with different case must still be answered.

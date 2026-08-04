@@ -48,9 +48,10 @@ public enum class KeyExchangeGroup { X25519, Secp256r1 }
  *   transport and sent **unmodified** — `IceAgentDriver.send(packet)` passes it straight to the bound
  *   `DatagramChannel` — and socket-udp's Linux (`io_uring sendmsg`) and Apple (`NWConnection`) send
  *   paths reject a buffer with no native address outright (`send requires a native-memory buffer`).
- *   The default is therefore [BufferFactory.Default], which is native-backed on every platform whose
- *   socket demands it *and* still reclaimed without an explicit free: `MutableDataBuffer` (ARC) on
- *   Apple, an auto-arena `FfmAutoBuffer` on JVM 21+, a `Cleaner`-backed direct buffer on Android.
+ *   The default is therefore [networkBuffer], which resolves to [BufferFactory.Default] on every
+ *   platform where that is native-backed *and* still reclaimed without an explicit free —
+ *   `MutableDataBuffer` (ARC) on Apple, an auto-arena `FfmAutoBuffer` on JVM 21+, a `Cleaner`-backed
+ *   direct buffer on Android — and to `deterministic()` only where it is not.
  *
  *   It used to default to `managed()`, which is a GC **heap** `ByteArrayBuffer` on *every* target and
  *   so could not be sent on Apple at all (webrtc#125). The rationale recorded here for that choice —
@@ -58,10 +59,11 @@ public enum class KeyExchangeGroup { X25519, Secp256r1 }
  *   obsolete since the W4b flip made the engine pure Kotlin; BoringSSL survives only as a `linuxTest`
  *   differential oracle. Verify before propagating.
  *
- *   **Kotlin/Native Linux is still not fixed by this** and is the one target where no correct value
- *   exists yet: buffer's `Default` there is a GC-heap `ByteArrayBuffer` (unsendable), and its only
- *   native option, `deterministic()`, is `malloc`-backed and must be freed by hand — which nothing in
- *   this stack does, because every default has always been GC-managed. See webrtc#125.
+ *   **Kotlin/Native Linux is the one target that reaches the fallback**, and it is a trade rather than
+ *   a fix: `deterministic()` is `malloc`-backed and freed by hand, and this stack's receive side has no
+ *   owner yet, so inbound datagrams can accumulate there. It replaces a hard crash on the first
+ *   connectivity check, which is why it ships — but the end of webrtc#125 is `buffer` giving that
+ *   target a GC-managed native buffer, after which [networkBuffer] picks `Default` back up on its own.
  * @param enableDtls13 negotiate up to DTLS 1.3; min always stays 1.2 (§11.3). **On by default**: both
  *   major browser engines now ship DTLS 1.3 for WebRTC (Firefox in Release, Chrome/BoringSSL on by
  *   default since the libwebrtc flip in 2025), and BoringSSL itself defaults to it. Version negotiation
@@ -84,7 +86,7 @@ public enum class KeyExchangeGroup { X25519, Secp256r1 }
  *   Tier-B drift residue, not a `Random.Default`.)
  */
 public class DtlsConfig(
-    public val bufferFactory: BufferFactory = BufferFactory.Default,
+    public val bufferFactory: BufferFactory = networkBuffer(),
     public val enableDtls13: Boolean = true,
     public val keyExchangeGroup: KeyExchangeGroup = KeyExchangeGroup.X25519,
     public val maxDatagramSize: Int = 1500,

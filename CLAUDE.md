@@ -127,6 +127,20 @@ Things that have cost real time here. Read before acting on a premise that sound
     allocate inside the pinned range, which is now the cheapest regression check.
   * Generalization of the above bullet: a *premise* can be stale, and so can a *dependency's
     configuration*. "The setting is in the file" is not evidence the process applied it.
+- **The same trap, third instance: a bare `external-ip` is accepted ONCE and then applied to every
+  family.** The entrypoint appended one per family; coturn kept the FIRST (v4), logged `ERROR: You cannot
+  define external IP more than once in the configuration`, and then reported every **IPv6** allocation at
+  the **v4** address with the v6 relay port. The dual `relay-only` lane therefore advertised a relay
+  candidate whose family did not match its own base, and every permission on it drew `443: Peer Address
+  Family Mismatch`. Fixed by deleting `external-ip` outright — coturn is not behind NAT in the harness, so
+  the only mapping it could express was the identity. Two things worth keeping:
+  * **The error was in the startup log all along, 40 lines above the failure.** What made it unreadable
+    was that the log never left the container (fixed in the same PR, #149) — the diagnostics landed and
+    the very first thing they explained was this.
+  * **Our stack was not wrong anywhere.** `TurnAllocation` already sends REQUESTED-ADDRESS-FAMILY=IPv6 on
+    a v6 server (RFC 8656 §7.2), coturn allocated a v6 relay, and the candidate carried exactly what the
+    response said. Confirmed by running coturn's OWN client (`turnutils_uclient -x`) against the same
+    image, which fails identically — reach for the dependency's own client before suspecting ours.
 - **`linkTopology()` erases the reachability verdict on purpose.** socket's `NetworkState` ladder carries
   `Routable(id, Pending|Confirmed)`, and on real hardware Android grants `INTERNET` ~1s before
   `VALIDATED` on *every* reassociation. Forwarding that transition as an interface change would

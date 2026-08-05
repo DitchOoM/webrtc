@@ -292,6 +292,26 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
             pc.connectionState.collect { state -> trace += StateTransition(clock() - t0, state) }
         }
 
+        // Every non-fatal thing the session decided, printed as it happens.
+        //
+        // These were being computed, typed, and dropped on the floor here — the peer collected
+        // `connectionState` and nothing else — which is exactly the complaint `SessionDiagnostic` exists to
+        // answer, one layer up. It cost a real diagnosis: a `relay-only` lane failed with
+        // `AllPairsFailed(pairsTried=2)` and a peer log that said nothing more, and the only way to see what
+        // had happened was to read the coturn pcap out of the diag bundle packet by packet. The pcap showed
+        // the answerer receiving six relayed connectivity checks and answering none of them — but *why* it
+        // stopped answering is precisely a [SessionDiagnostic], and there was no collector.
+        //
+        // `TransmitFailed` is the one that would have settled it (webrtc#143): a refused send used to escape
+        // the driver's output pump silently, abandoning the rest of the batch. Now it reports, and this is
+        // the surface that makes it visible in an L2 lane rather than only in a unit test.
+        //
+        // Timestamped from the same `t0` as the state trace so the two can be read against each other, and
+        // against pcap timestamps, without arithmetic.
+        bg.launch {
+            pc.diagnostics.collect { d -> println("[harness] diag +${clock() - t0}  $d") }
+        }
+
         // The replay inputs the seed alone can't reconstruct: the exact SDP this side offered/answered and
         // the candidate set it gathered + received. Captured here, dumped on exit (below), so a diag bundle
         // carries the peer's own view of the exchange to seed a virtual-time vnet fixture from.

@@ -617,6 +617,20 @@ collect_diagnostics() {
         docker compose logs --no-log-prefix "$svc" > "$dir/$svc.log" 2>/dev/null || true
     done
 
+    # A capture that came back (nearly) empty is itself a finding, and a silent one is worse than useless:
+    # a `relay-only` bundle once carried a coturn.log holding exactly ONE line — the entrypoint's own echo —
+    # while the same container run by hand emits ~65 lines of startup alone. Reading that as "coturn had
+    # nothing to say" is the wrong conclusion and it cost real time. The *_route6 sidecars are legitimately
+    # absent on v4, so they are exempt rather than noisy.
+    for svc in coturn rendezvous ${a_service:-peer_a} ${b_service:-peer_b}; do
+        [ -f "$dir/$svc.log" ] || continue
+        lines=$(wc -l < "$dir/$svc.log" 2>/dev/null || echo 0)
+        if [ "$lines" -le 2 ]; then
+            echo "[diag] WARNING: $svc.log captured only $lines line(s) — the log CAPTURE is suspect, not" \
+                 "necessarily the service. Check the container is still up and that the service logs to stdout."
+        fi
+    done
+
     # Firewall + conntrack, BOTH families, per NAT — the exact filter/mapping state at the moment of failure.
     for nat in nat_a nat_b $carriers; do
         {

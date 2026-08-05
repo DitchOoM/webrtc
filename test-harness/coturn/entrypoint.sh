@@ -13,16 +13,30 @@ sed \
   -e "s/__TURN_MAX_PORT__/${TURN_MAX_PORT}/g" \
   /etc/coturn/turnserver.conf > "$CONF"
 
-# Append the listening/relay/external addresses per family (see turnserver.conf). coturn aborts if asked to
+# Append the listening/relay addresses per family (see turnserver.conf). coturn aborts if asked to
 # listen on an address that isn't assigned, so each family's lines are added ONLY when that family is live:
 # v4 unless COTURN_IP4_DISABLED=1 (v6-only lane), v6 when COTURN_IP6_ENABLED=1 (dual/v6 lane).
+#
+# NO `external-ip`. It is for a server behind NAT, which coturn here is not — it sits ON the public net at
+# the address it relays from, so any mapping it could express is the identity. It was actively harmful:
+# coturn accepts a BARE `external-ip` exactly ONCE ("ERROR: You cannot define external IP more than once in
+# the configuration" — it keeps the FIRST and drops the rest), and the one it keeps is applied GLOBALLY,
+# family and all. So on the dual lane the v4 address won and every IPv6 allocation was REPORTED as
+# `172.30.0.10:<v6-relay-port>` — the right port on the wrong family. A peer then created a permission for
+# a v4 peer on a v6 allocation and coturn refused it `443: Peer Address Family Mismatch`, which is how a
+# `relay-only` dual lane failed with `AllPairsFailed` and no candidate that was ever reachable.
+# Not our client's misreading — coturn's OWN client fails identically against it:
+#   docker exec <coturn> turnutils_uclient -v -x -y -c -u … <v6-addr>
+#     with    external-ip → "IPv4. Received relay addr: 172.40.0.10:49186" + "relay addr cannot be received"
+#     without external-ip → "IPv6. Received relay addr: 2001:db8:40::10:49160" + success
+# Third instance in this file's history of "the config is not what the server applied" (see `-n` below).
 listen=""
 if [ "${COTURN_IP4_DISABLED:-0}" != "1" ]; then
-    { echo "listening-ip=${COTURN_IP}"; echo "relay-ip=${COTURN_IP}"; echo "external-ip=${COTURN_IP}"; } >> "$CONF"
+    { echo "listening-ip=${COTURN_IP}"; echo "relay-ip=${COTURN_IP}"; } >> "$CONF"
     listen="${COTURN_IP}:${STUN_PORT}"
 fi
 if [ "${COTURN_IP6_ENABLED:-0}" = "1" ]; then
-    { echo "listening-ip=${COTURN_IP6}"; echo "relay-ip=${COTURN_IP6}"; echo "external-ip=${COTURN_IP6}"; } >> "$CONF"
+    { echo "listening-ip=${COTURN_IP6}"; echo "relay-ip=${COTURN_IP6}"; } >> "$CONF"
     listen="${listen:+$listen + }[${COTURN_IP6}]:${STUN_PORT}"
 fi
 # The mdns overlay (compose.mdns.yml) also parks coturn on lan0, where the mdns peer and browser reach it
@@ -30,7 +44,7 @@ fi
 # exhaustive, so that address has to be named here or the lane gets no STUN at all. Gated like the others:
 # coturn aborts if told to listen on an address it was not assigned.
 if [ "${COTURN_LAN0_ENABLED:-0}" = "1" ]; then
-    { echo "listening-ip=${COTURN_LAN0_IP}"; echo "relay-ip=${COTURN_LAN0_IP}"; echo "external-ip=${COTURN_LAN0_IP}"; } >> "$CONF"
+    { echo "listening-ip=${COTURN_LAN0_IP}"; echo "relay-ip=${COTURN_LAN0_IP}"; } >> "$CONF"
     listen="${listen:+$listen + }${COTURN_LAN0_IP}:${STUN_PORT}"
 fi
 

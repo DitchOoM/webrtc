@@ -155,6 +155,13 @@ internal class SctpSim(
                 is SctpOutput.IncomingStreamsReset -> (if (fromA) incomingResetsA else incomingResetsB) += output.scope
                 is SctpOutput.OutgoingStreamsReset -> (if (fromA) outgoingResetsA else outgoingResetsB) += output
                 is SctpOutput.StateChanged -> Unit
+                // Deliberately NOT released here, and the reason is worth stating rather than eliding: a
+                // real driver frees these behind the sends it has queued, but this sim's in-flight queue
+                // holds views for a modelled *delay*, so a reclaim applied inline could outrun a datagram
+                // still on the wire. It runs on a GC-managed factory, so nothing is lost by declining. The
+                // send seam's ownership is measured where the real driver runs it —
+                // `SessionSeamOwnershipTest` and `SctpSendSeamOwnershipTest`.
+                is SctpOutput.ReclaimRetained -> Unit
             }
         }
     }

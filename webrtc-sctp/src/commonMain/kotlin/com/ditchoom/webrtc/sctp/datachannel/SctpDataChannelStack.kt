@@ -8,6 +8,7 @@ import com.ditchoom.buffer.flow.Connection
 import com.ditchoom.buffer.flow.Receiver
 import com.ditchoom.buffer.flow.Sender
 import com.ditchoom.buffer.flow.StreamMux
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.PayloadProtocolId
 import com.ditchoom.webrtc.sctp.StreamId
@@ -25,6 +26,7 @@ import com.ditchoom.webrtc.sctp.dcep.ChannelType
 import com.ditchoom.webrtc.sctp.dcep.DataChannelDecodeResult
 import com.ditchoom.webrtc.sctp.dcep.DataChannelMessage
 import com.ditchoom.webrtc.sctp.dcep.Reliability
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -72,7 +74,14 @@ public class SctpDataChannelStack(
     private val bufferFactory = config.bufferFactory
 
     private val inbox = Channel<DriveItem>(Channel.UNLIMITED)
-    private val outbound = Channel<ReadBuffer>(Channel.UNLIMITED)
+
+    /**
+     * Outgoing work in strict emission order. Carries **releases as well as sends** (see [OutboundItem]):
+     * a packet the association has finished with must not be freed while a send of it is still queued
+     * ahead, and this queue — which already exists to keep the wire deterministic — is exactly the
+     * ordering that makes that impossible.
+     */
+    private val outbound = Channel<OutboundItem>(Channel.UNLIMITED)
     private val accepted = Channel<DataChannelConnection>(Channel.UNLIMITED)
     private val channels = HashMap<StreamId, DataChannelConnection>()
     private val pendingOpens = ArrayDeque<OpenCommand>()
@@ -219,9 +228,33 @@ public class SctpDataChannelStack(
     }
 
     // Drain outgoing packets in strict emission order (SCTP tolerates reordering, but a single writer
-    // keeps the wire deterministic and avoids a coroutine per datagram).
+    // keeps the wire deterministic and avoids a coroutine per datagram). Being the single writer is also
+    // what makes it the right place to release: whatever this loop is handed, it is the last reader of,
+    // and a Release it reaches is behind every Send of the same bytes by construction.
     private suspend fun writerLoop() {
-        for (packet in outbound) transport.send(packet)
+        // Iterating a CLOSED channel still yields what is buffered in it and only then ends, which is what
+        // makes this the single point of release even at teardown: tearDown queues the association's final
+        // reclaims and closes, and they arrive here behind the sends they must not overtake. Draining from
+        // tearDown instead would race — the writer can be inside `transport.send` holding a view of bytes
+        // whose Release is still in the queue.
+        for (item in outbound) {
+            try {
+                // Nothing is worth sending once the stack has torn down; the drain is only about giving
+                // the memory back.
+                if (item is OutboundItem.Send && !closed) transport.send(item.packet)
+            } catch (cancelled: CancellationException) {
+                item.packet.freeIfNeeded()
+                throw cancelled
+            } catch (_: Throwable) {
+                // A failed send is not this loop's to escalate. The transport reports its own closure
+                // through `receive()` returning null, which reaches the drive loop as TransportClosed; an
+                // uncaught throw in a launched coroutine takes the whole PROCESS down on Kotlin/Native
+                // (the trap readerLoop documents), and it would strand every packet still queued behind
+                // this one — turning one lost datagram into a leak of the entire outbound queue.
+            } finally {
+                item.packet.freeIfNeeded()
+            }
+        }
     }
 
     private suspend fun driveLoop() {
@@ -327,7 +360,8 @@ public class SctpDataChannelStack(
     // channel that reuses the id.
     private fun forgetStream(streamId: StreamId) {
         unconfirmedOutbound -= streamId
-        pendingInbound.remove(streamId)
+        // Held data for a stream that is going away reaches no channel now, so this is its last reader.
+        pendingInbound.remove(streamId)?.forEach { it.payload.freeIfNeeded() }
     }
 
     private fun resetOutgoing(streams: Set<StreamId>) {
@@ -366,10 +400,21 @@ public class SctpDataChannelStack(
     private fun apply(outputs: List<SctpOutput>) {
         for (output in outputs) {
             when (output) {
+                // Both kinds of Transmit are queued the same way and released the same way — the driver's
+                // job is identical for a control packet and for a view of a retransmission-queue entry.
+                // What differs is what the release *does*, and that is settled by the buffer the
+                // association chose to hand over, which is the whole point of the split: the driver never
+                // has to decide, and cannot decide wrongly.
+                //
+                // No extra `slice()` here. Each Transmit already carries its own independent view, and a
+                // slice taken to survive the async hand-off is a reference nobody balances — the pooled-
+                // chunk pin CLAUDE.md records under "send does not consume".
                 is SctpOutput.Transmit -> {
                     output.packet.position(0)
-                    outbound.trySend(output.packet.slice())
+                    enqueue(OutboundItem.Send(output.packet))
                 }
+                // Ordered behind every Send already queued, which is what makes freeing these safe at all.
+                is SctpOutput.ReclaimRetained -> enqueue(OutboundItem.Release(output.packet))
                 is SctpOutput.StateChanged -> onStateChanged(output.state)
                 is SctpOutput.MessageReceived -> onMessage(output)
                 is SctpOutput.Aborted -> tearDown(output.reason)
@@ -382,6 +427,13 @@ public class SctpDataChannelStack(
             }
         }
         flushReciprocalResets()
+    }
+
+    // `outbound` is UNLIMITED so this only fails once it is CLOSED — i.e. the stack has torn down and the
+    // writer will never run again, which makes this call the item's last reader. Dropping the failure (the
+    // shape the send path had before) would leak the packet on every teardown race.
+    private fun enqueue(item: OutboundItem) {
+        if (outbound.trySend(item).isFailure) item.packet.freeIfNeeded()
     }
 
     // The peer closed one or more data channels (RFC 8831 §6.7). Close our side, and reset our own
@@ -458,19 +510,36 @@ public class SctpDataChannelStack(
         // ordered delivery forever, which is a safe degradation rather than a stall.
         unconfirmedOutbound -= message.streamId
         if (message.payloadProtocolId == PayloadProtocolId.WebRtcDcep) {
-            onDcep(message)
+            // A DCEP message is decoded and acted on inside this call and nothing keeps a view of it, so
+            // this is its last reader. The reassembly copy it rides in came from SctpConfig.bufferFactory
+            // like any other (MessageReceived.payload is a transfer), and DCEP is the one class of message
+            // no application ever sees — which is exactly why nothing else could free it.
+            try {
+                onDcep(message)
+            } finally {
+                message.payload.freeIfNeeded()
+            }
             return
         }
-        val payload = if (isEmptyPpid(message.payloadProtocolId)) ReadBuffer.EMPTY_BUFFER else message.payload
+        // RFC 8831 §6.6's empty-message marker: the wire carries one 0x00 that is stripped back to nothing
+        // here. That byte is still a reassembly buffer, and substituting EMPTY_BUFFER for it drops the only
+        // reference to it — so it is released rather than merely replaced.
+        val empty = isEmptyPpid(message.payloadProtocolId)
+        if (empty) message.payload.freeIfNeeded()
+        val payload = if (empty) ReadBuffer.EMPTY_BUFFER else message.payload
         val connection = channels[message.streamId]
         if (connection != null) {
             connection.deliver(payload)
         } else {
             // User data (an unordered first message) beat its ordered DCEP OPEN — hold it, bounded, until
             // the OPEN registers the channel; drop beyond the cap (a peer sending data on a stream it
-            // never OPENs).
+            // never OPENs). Dropping means releasing: past the cap this is the message's last reader.
             val queue = pendingInbound.getOrPut(message.streamId) { ArrayDeque() }
-            if (queue.size < MAX_PENDING_INBOUND) queue.addLast(PendingInbound(message.payloadProtocolId, payload))
+            if (queue.size < MAX_PENDING_INBOUND) {
+                queue.addLast(PendingInbound(message.payloadProtocolId, payload))
+            } else {
+                payload.freeIfNeeded()
+            }
         }
     }
 
@@ -533,8 +602,15 @@ public class SctpDataChannelStack(
         val payload = if (empty) singleZeroByte() else message
         val deferred = CompletableDeferred<Unit>()
         val options = SctpSendOptions(streamId, ppid, delivery = config.delivery, reliability = config.reliability)
-        post(SendCommand(options, payload, deferred))
-        deferred.await()
+        try {
+            post(SendCommand(options, payload, deferred))
+            deferred.await()
+        } finally {
+            // The marker byte is ours; [message] is the application's and is never freed here. By the time
+            // the deferred settles — completed or failed — the association has either encoded the payload
+            // into its wire packets or never accepted it, and holds no view of it either way.
+            if (empty) payload.freeIfNeeded()
+        }
     }
 
     // Post a channel-close so the drive loop drops it from the routing map (called by Connection.close);
@@ -548,6 +624,9 @@ public class SctpDataChannelStack(
         }
     }
 
+    // The DCEP OPEN/ACK path. [payload] is the stack's own encoding, not an application buffer, and the
+    // association only BORROWS it for the duration of `handle` — every fragment is encoded into its wire
+    // packet before that call returns (see SctpAssociation.fragment). So this is its last reader.
     private fun sendOnStream(
         streamId: StreamId,
         ppid: PayloadProtocolId,
@@ -556,7 +635,11 @@ public class SctpDataChannelStack(
         payload: ReadBuffer,
     ) {
         val options = SctpSendOptions(streamId, ppid, delivery = delivery, reliability = reliability)
-        apply(association.handle(SctpEvent.SendMessage(options, payload), now()))
+        try {
+            apply(association.handle(SctpEvent.SendMessage(options, payload), now()))
+        } finally {
+            payload.freeIfNeeded()
+        }
     }
 
     // Tear the stack down exactly once (transport close or a received/failed association ABORT). Beyond
@@ -569,6 +652,13 @@ public class SctpDataChannelStack(
         val cause = SctpClosedException(reason)
         for (connection in channels.values) connection.closeLocal()
         channels.clear()
+        // Data that never reached a channel — its stream was never OPENed, so no application has a
+        // reference to it and this is its last reader. Anything already `deliver`ed is deliberately NOT
+        // touched: closing a channel's flow still emits what is buffered in it, so those messages are the
+        // application's (see DataChannelConnection.receive), and draining them here would steal them.
+        for (queue in pendingInbound.values) {
+            for (held in queue) held.payload.freeIfNeeded()
+        }
         pendingInbound.clear()
         unconfirmedOutbound.clear()
         resetHalves.clear()
@@ -577,6 +667,13 @@ public class SctpDataChannelStack(
         for (command in pendingOpens) command.deferred.completeExceptionally(cause)
         pendingOpens.clear()
         accepted.close()
+        // Everything the association still owns — the retransmission queue, unsent messages, the retained
+        // COOKIE ECHO, the reassembly state. Queued rather than freed on the spot, and queued BEFORE the
+        // close: the writer is still the only thing allowed to release, so these land behind any send of
+        // the same bytes exactly as they do mid-session. Closing then ends the writer once it has drained.
+        for (output in association.close()) {
+            if (output is SctpOutput.ReclaimRetained) enqueue(OutboundItem.Release(output.packet))
+        }
         outbound.close()
         transport.close()
         inbox.close()
@@ -674,6 +771,27 @@ public class SctpDataChannelStack(
         data object TransportClosed : DriveItem
     }
 
+    /**
+     * One unit of ordered outgoing work. A release is an item rather than something the drive loop does
+     * inline because the two must not be reordered against each other: the association hands back a
+     * retransmission-queue packet the moment it is acked, and a [Send] of that same packet may still be
+     * sitting in this queue. Both here, FIFO, one consumer — and the hazard is structural rather than
+     * something each call site has to remember.
+     */
+    private sealed interface OutboundItem {
+        val packet: ReadBuffer
+
+        /** Put [packet] on the wire, then release it — the driver is its last reader either way. */
+        class Send(
+            override val packet: ReadBuffer,
+        ) : OutboundItem
+
+        /** Release [packet]: bytes the association has finished retransmitting from. */
+        class Release(
+            override val packet: ReadBuffer,
+        ) : OutboundItem
+    }
+
     private companion object {
         // Cap on user messages buffered per stream before its DCEP OPEN arrives — bounds a peer that
         // sends data on a stream it never OPENs (see pendingInbound / onMessage).
@@ -768,6 +886,16 @@ public class DataChannelConnection internal constructor(
         stack.sendMessage(streamId, config, message)
     }
 
+    /**
+     * The inbound message flow. **Each buffer is transferred to the collector**, which owes it a
+     * `freeIfNeeded()` once it has finished reading — it is a reassembly copy allocated from
+     * `SctpConfig.bufferFactory`, and on a pooled or native-memory factory a collector that only reads it
+     * keeps that memory out of circulation for the life of the process.
+     *
+     * Deliberately not drained on close: a closed channel's flow still emits what is already buffered in
+     * it, so releasing those here would be taking messages the application can still legitimately read.
+     * The corollary is that abandoning a channel with unread messages abandons their buffers too.
+     */
     override fun receive(): Flow<ReadBuffer> = inbound.receiveAsFlow()
 
     /**

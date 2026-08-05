@@ -261,6 +261,27 @@ public class SctpAssociation(
         return out
     }
 
+    /**
+     * Give back everything the association still owns, for a driver that is shutting down (RFC 4960 §8.1
+     * abort, a transport that closed under it, or an ordinary `close()`). Puts nothing on the wire and
+     * changes no state a peer can observe — an association reaching [SctpAssociationState.Closed] through
+     * the protocol has already returned its buffers, and this is what covers the paths that never get
+     * there.
+     *
+     * Returns the same [SctpOutput.ReclaimRetained] entries every other removal site does, and for the
+     * same reason: the driver, not this object, knows when the sends it queued have gone out. A driver
+     * that has already drained those sends may release them immediately. Idempotent — a second call
+     * returns nothing.
+     */
+    public fun close(): List<SctpOutput> {
+        val out = ArrayList<SctpOutput>()
+        cancelAllTimers()
+        cancelHandshake()
+        clearControlBlocks(out)
+        _state = SctpAssociationState.Closed
+        return out
+    }
+
     // ────────────────────────────────── handshake ──────────────────────────────────
 
     private fun onAssociate(
@@ -321,6 +342,11 @@ public class SctpAssociation(
                     peerTieTag = advertised.peerTieTag,
                 ),
             )
+        // `ofValue` copies the cookie into the parameter's own padded buffer, so the encode buffer is dead
+        // the moment the parameter exists — released here rather than left for the association to hold,
+        // which is why an INIT flood costs nothing lasting even though a stateless responder retains no TCB.
+        val cookieParameter = SctpParameter.ofValue(com.ditchoom.webrtc.sctp.ParameterType.StateCookie, cookie)
+        cookie.freeIfNeeded()
         val initAck =
             SctpChunk.InitAck(
                 initiateTag = advertised.ourTag,
@@ -330,7 +356,7 @@ public class SctpAssociation(
                 initialTsn = advertised.ourInitialTsn,
                 parameters =
                     listOf(
-                        SctpParameter.ofValue(com.ditchoom.webrtc.sctp.ParameterType.StateCookie, cookie),
+                        cookieParameter,
                         SctpParameter.forwardTsnSupported(),
                         supportedExtensions(),
                     ),
@@ -442,7 +468,7 @@ public class SctpAssociation(
                 if (_state == SctpAssociationState.CookieEchoed) {
                     transition(SctpAssociationState.Established, out)
                     cancelHandshake()
-                    cookieEcho = null
+                    clearCookieEcho()
                     trySend(now, out)
                     maybeSendReset(now, out)
                 }
@@ -528,7 +554,7 @@ public class SctpAssociation(
             )
             return
         }
-        clearControlBlocks() // drop the old association's queues, stream state and unsent messages
+        clearControlBlocks(out) // drop the old association's queues, stream state and unsent messages
         cancelAllTimers()
         consecutiveRtxErrors = 0
         packetsSinceSack = 0
@@ -554,7 +580,7 @@ public class SctpAssociation(
         emitPacket(listOf(SctpChunk.CookieAck), peerVerificationTag, out)
         transition(SctpAssociationState.Established, out)
         cancelHandshake()
-        cookieEcho = null
+        clearCookieEcho()
         trySend(now, out)
         maybeSendReset(now, out)
     }
@@ -566,7 +592,7 @@ public class SctpAssociation(
         if (_state != SctpAssociationState.CookieEchoed) return
         transition(SctpAssociationState.Established, out)
         cancelHandshake()
-        cookieEcho = null
+        clearCookieEcho()
         trySend(now, out)
         maybeSendReset(now, out)
     }
@@ -685,6 +711,7 @@ public class SctpAssociation(
                 Tsn(sack.cumulativeTsnAck.value + block.start.toUInt()) to Tsn(sack.cumulativeTsnAck.value + block.end.toUInt())
             }
         val outcome = rq.onSack(sack.cumulativeTsnAck, sack.advertisedReceiverWindow, gapsAbsolute, now)
+        reclaim(outcome.reclaimed, out)
         if (outcome.rttSample != null) rtt.observe(outcome.rttSample)
         cc.onDataAcked(outcome.bytesNewlyAcked, wasCwndLimited)
         if (outcome.fastRetransmitTriggered) cc.onFastRetransmit()
@@ -764,6 +791,11 @@ public class SctpAssociation(
             pendingSendBytes += data.bytes
             nextTsn = nextTsn.next()
         }
+        // The views are spent the moment their bytes are inside the encoded packets above. They must be
+        // *released*, not merely dropped: each is a `slice()` of the caller's payload, and on a pooled
+        // buffer that is a reference — so a message sent from a pooled factory would pin one chunk per
+        // fragment however carefully the caller freed the payload itself.
+        for (fragmentPayload in fragments) fragmentPayload.freeIfNeeded()
         trySend(now, out)
     }
 
@@ -783,7 +815,7 @@ public class SctpAssociation(
         for (data in rq.retransmittable()) {
             if (rq.outstandingBytes > 0 && rq.outstandingBytes + data.bytes > cc.cwnd) break
             rq.markRetransmitted(data, now)
-            out += SctpOutput.Transmit(data.wirePacket())
+            out += SctpOutput.Transmit.Retained(data.wirePacket())
         }
 
         while (pendingSend.isNotEmpty()) {
@@ -797,7 +829,7 @@ public class SctpAssociation(
             pendingSendBytes -= next.bytes
             next.lastSentAt = now
             rq.onSent(next)
-            out += SctpOutput.Transmit(next.wirePacket())
+            out += SctpOutput.Transmit.Retained(next.wirePacket())
         }
 
         if (rq.outstandingBytes > 0 && t3Deadline == null) t3Deadline = now + rtt.rto
@@ -1158,7 +1190,7 @@ public class SctpAssociation(
     ) {
         val rq = retransmissionQueue ?: return
         // The SHUTDOWN carries a cumulative TSN ack for our outbound data — process it like a SACK.
-        rq.onSack(shutdown.cumulativeTsnAck, rq.peerReceiveWindow, emptyList(), now)
+        reclaim(rq.onSack(shutdown.cumulativeTsnAck, rq.peerReceiveWindow, emptyList(), now).reclaimed, out)
         if (_state == SctpAssociationState.Established || _state == SctpAssociationState.ShutdownPending) {
             transition(SctpAssociationState.ShutdownReceived, out)
         }
@@ -1180,13 +1212,13 @@ public class SctpAssociation(
         if (retransmissionQueue == null && _state == SctpAssociationState.Closed) return
         emitPacket(listOf(SctpChunk.Abort(verificationTagReflected = false, causes = emptyList())), peerVerificationTag, out)
         transition(SctpAssociationState.Closed, out)
-        clearControlBlocks()
+        clearControlBlocks(out)
     }
 
     private fun closeGracefully(out: MutableList<SctpOutput>) {
         transition(SctpAssociationState.Closed, out)
         cancelAllTimers()
-        clearControlBlocks()
+        clearControlBlocks(out)
     }
 
     // ────────────────────────────────── timers ──────────────────────────────────
@@ -1282,8 +1314,21 @@ public class SctpAssociation(
         if (skips.isNotEmpty() || rq.cumulativeAckPoint.sackPrecedes(advanced)) {
             val streams = skips.map { (id, ssn) -> ForwardTsnStream(id, ssn) }
             emitPacket(listOf(SctpChunk.ForwardTsn(advanced, streams)), peerVerificationTag, out)
-            rq.purgeAbandonedThrough(advanced)
+            reclaim(rq.purgeAbandonedThrough(advanced), out)
         }
+    }
+
+    /**
+     * Hand encoded DATA packets the retransmission queue has finished with back to the driver
+     * ([SctpOutput.ReclaimRetained]). Appended to `out` **after** whatever [SctpOutput.Transmit] entries
+     * are already in it, which is what makes the ordering guarantee that type documents hold: a driver
+     * that carries outputs through one queue cannot free bytes it is still sending.
+     */
+    private fun reclaim(
+        packets: List<PlatformBuffer>,
+        out: MutableList<SctpOutput>,
+    ) {
+        for (packet in packets) out += SctpOutput.ReclaimRetained(packet)
     }
 
     private fun armHandshake(now: Instant) {
@@ -1293,6 +1338,17 @@ public class SctpAssociation(
     private fun cancelHandshake() {
         handshakeDeadline = null
         localInit = null
+    }
+
+    /**
+     * Drop the retained COOKIE ECHO and release the cookie **copy** inside it. The copy is taken from the
+     * INIT ACK's borrowed datagram precisely so the chunk survives that `handle` call for the handshake
+     * retransmits (see [onInitAck]) — which makes this the one place it stops being needed. Never a view
+     * of anything the driver holds, so it frees directly rather than going out as a reclaim.
+     */
+    private fun clearCookieEcho() {
+        cookieEcho?.cookie?.freeIfNeeded()
+        cookieEcho = null
     }
 
     private fun armShutdown(now: Instant) {
@@ -1316,7 +1372,7 @@ public class SctpAssociation(
         out += SctpOutput.Aborted(reason)
         transition(SctpAssociationState.Closed, out)
         cancelAllTimers()
-        clearControlBlocks()
+        clearControlBlocks(out)
     }
 
     private fun abortWith(
@@ -1328,13 +1384,24 @@ public class SctpAssociation(
         fail(reason, out)
     }
 
-    private fun clearControlBlocks() {
+    /**
+     * Drop the TCB, returning everything it owned. The send-side packets go back through `out` as
+     * [SctpOutput.ReclaimRetained] rather than being freed here — a retransmission-queue entry has been
+     * lent to the driver as a view, and `pendingSend` entries travel the same route so that one rule
+     * covers the whole queue rather than two that differ by whether a chunk happened to reach the wire.
+     * The receive side has no such hazard and releases itself (see [ReassemblyQueue.drain]).
+     */
+    private fun clearControlBlocks(out: MutableList<SctpOutput>) {
+        retransmissionQueue?.let { reclaim(it.drain(), out) }
+        reassemblyQueue?.drain()
         retransmissionQueue = null
         reassemblyQueue = null
         congestion = null
+        reclaim(pendingSend.map { it.packet }, out)
         pendingSend.clear()
         pendingSendBytes = 0
         orderedSendSsn.clear()
+        clearCookieEcho()
         // Both reconfiguration halves belong to the association that is going away: a pending or in-flight
         // request names TSNs and sequence numbers of a TCB that no longer exists, and a peer restart
         // (§5.2.4 action A) re-seeds both sequence spaces in establishControlBlocks.
@@ -1374,12 +1441,15 @@ public class SctpAssociation(
         return packet.verificationTag == localVerificationTag
     }
 
+    // Every packet that leaves through here is encoded for this one transmission and retained by nobody,
+    // so it is the driver's outright ([SctpOutput.Transmit.Owned]). The DATA path is the sole exception and
+    // does not come through here — see [trySend].
     private fun emitPacket(
         chunks: List<SctpChunk>,
         headerTag: VerificationTag,
         out: MutableList<SctpOutput>,
     ) {
-        out += SctpOutput.Transmit(encodePacket(chunks, headerTag))
+        out += SctpOutput.Transmit.Owned(encodePacket(chunks, headerTag))
     }
 
     private fun encodePacket(
@@ -1412,6 +1482,10 @@ public class SctpAssociation(
             out += fragment
             offset += len
         }
+        // `slice` was only the measuring view; every returned fragment re-slices from it and a pooled
+        // `slice()` re-parents to the ROOT chunk, so the intermediate is not an ancestor anybody needs —
+        // just an extra reference. Released here, since the caller only ever sees the fragments.
+        slice.freeIfNeeded()
         return out
     }
 

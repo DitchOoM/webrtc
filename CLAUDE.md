@@ -27,176 +27,155 @@ against Chrome, Firefox, WebKit, Pion and werift over real NAT kernels in CI acr
 `{x64, arm64} × {v4, v6, dual}`, and every lane also gates on the data-channel *semantics* sequence
 (fragmentation, unordered, PR-SCTP, multiplexing, reverse-direction, per-channel close, graceful
 shutdown). Pinned at socket 4.1.0 + buffer 6.25.0 — the pair that carries
-`DatagramCapabilities.requiresNativeMemoryBuffers` (buffer #328/#330, socket #281), which is what #131
-consumes. They move together: socket-udp 4.1.0's POM pins buffer 6.25.0.
+`DatagramCapabilities.requiresNativeMemoryBuffers`, which is what the send-side buffer check consumes.
+They move together: socket-udp 4.1.0's POM pins buffer 6.25.0.
 
-What works that is easy to under-estimate:
+### Capabilities that are easy to under-estimate
 
 - **ICE restart survives the session.** `restartIce()` records intent; the next `createOffer()` carries a
   fresh generation; a peer's own restart is detected from an offer whose ufrag *and* pwd both changed;
   `setLocalDescription(Rollback)` restores the retained generation. DTLS and SCTP never renegotiate
   (RFC 8842 §5.5), open channels keep their stream ids, and data keeps riding the old pair until the new
-  one nominates.
+  one nominates. Proven in **both** directions: the `carrier-switch` lanes prove a production stack
+  answers a restart we initiate, and the `foreign-restart` lanes prove we detect and answer one that
+  Pion, Chrome, Firefox or WebKit originates.
 - **Trickled candidates carry their generation** (RFC 8838 §3.1), stamped inside the driver's serialized
   loop so a candidate cannot be tagged with a generation it is not in. An incoming candidate is *routed*
   by that tag: one for a superseded generation is discarded with a typed reason, one for a generation
   whose offer has not arrived is held (bounded, oldest evicted) and released by the credentials event —
-  never by a timer, so the core stays sans-io. Untagged candidates apply to the current generation
-  exactly as before. Opt out with `TrickleGenerationPolicy.Untagged`.
+  never by a timer, so the core stays sans-io. Untagged candidates apply to the current generation. Opt
+  out with `TrickleGenerationPolicy.Untagged`.
 - **mDNS goes both ways** (RFC 8828) — opt-in, and it also redacts the `raddr` and the foundation, both
   of which would otherwise spell the host address out on the same line.
 - **`systemNetworkMonitor()` is push-first**, composing socket's *reactivity* with our own *address
-  enumeration* (see ARCHITECTURE §4 — they answer different questions). A platform with no interface
-  table says so in the type (`NetworkMonitorSupport.Unavailable`); one that can enumerate but has nothing
+  enumeration* (ARCHITECTURE §4 — they answer different questions). A platform with no interface table
+  says so in the type (`NetworkMonitorSupport.Unavailable`); one that can enumerate but has nothing
   pushing returns `Degraded(monitor, reason)`, so "it will be slower, and here is why" is answerable at
   config time rather than by inspecting a live session.
 - **`PeerConnection.diagnostics`** is a sealed, non-fatal observation stream: watcher stopped, remote
-  candidate discarded, interface probe failed, **transmit failed** (#143) and **relay permission refused**
-  (#150). Channel-backed rather than a `SharedFlow` on purpose: a Channel buffers from construction, and
-  the most important diagnostic is emitted during start-up, which no caller can reliably subscribe ahead of.
-  The last two exist because the alternative is a *silent* failure that looks like the network: a socket
-  refusing every send and a TURN server answering `443 Peer Address Family Mismatch` both used to present
-  identically to a peer that stopped answering — the session ending at `NoCandidatePairs`, naming the
-  symptom while the cause was already known and typed one layer down. `RelayPermissionRefused.error` is a
-  protocol code and therefore a real discriminant, unlike the `Throwable` payloads beside it.
+  candidate discarded, interface probe failed, transmit failed, relay permission refused. Channel-backed
+  rather than a `SharedFlow` on purpose — a Channel buffers from construction, and the most important
+  diagnostic is emitted during start-up, which no caller can reliably subscribe ahead of. The last two
+  exist because the alternative is a *silent* failure that looks like the network: a socket refusing
+  every send and a TURN server answering `443 Peer Address Family Mismatch` both otherwise present
+  identically to a peer that stopped answering. `RelayPermissionRefused.error` is a protocol code and
+  therefore a real discriminant, unlike the `Throwable` payloads beside it.
 - **`IceRestartPolicy` defaults to `Manual`** deliberately — an automatic restart is a renegotiation only
   the app's signaling channel can carry, so it is opt-in rather than a default flip.
+- **TURN is long-lived.** The allocation refreshes at a fraction of the *granted* LIFETIME, permissions
+  are re-installed (§9), every request retransmits, and the long-term-credential key is the RFC 8489
+  §9.2.2 `MD5(user:realm:pass)` — pure-Kotlin MD5 in `webrtc-stun`, pinned by the RFC 5769 §2.4 vector.
+- **The native entry point exists**: `nativePeerConnection()` in `webrtc`'s `socketMain` over
+  `systemIceGathering()` in `webrtc-ice`'s. Both take the `DatagramBinder` as a **required** parameter,
+  so neither can own a socket (ARCHITECTURE §11.6). `IceGatheringPolicy`, `IceServer` and
+  `IceServerCredentials` live in `webrtc-ice`; `com.ditchoom.webrtc` keeps typealiases, but Kotlin cannot
+  reach a *nested* classifier through one, so `IceServerCredentials.LongTerm` must be imported from the
+  new package. mDNS defaults **on** in the factory only; a hand-built `NativePeerConnection` is
+  unchanged. What it cannot honour is refused by typed reason rather than dropped: `turns:`,
+  `?transport=tcp`, a credential-free `turn:`, an unresolvable name.
 
-Renegotiation is proven in **both** directions: `carrier-switch` lanes prove a production stack correctly
-answers a restart we initiate, and the `foreign-restart` lanes (issue #87, shipped in `d727189`) prove we
-detect and answer one that Pion, Chrome, Firefox or WebKit originates — five lanes, plus the role flip that
-exercise exposed.
+### Buffer ownership: every seam is owned, and gated at zero
 
-What is genuinely left, and why the data-channel stack is not yet something a stranger can pick up:
+The rule is written once on `IceProtocol.releaseReceived` and restated at each module's seam. A buffer
+has exactly one owner; a loop that receives one either **consumes** it (release before the next
+iteration) or **transfers** it (the receiver then owes it). A decoded attribute or wire field is
+neither — it is a **borrow**, a slice that must not outlive its owner. On a pooled buffer a borrow is
+also an `addRef`, so it has to be handed back too, which is why `assertNoLeaks` is not sufficient
+anywhere: it proves `freeNativeMemory()` was *called*, and is structurally blind to a refcount that
+never reached zero. **`assertPoolDrained` is the gate.**
 
-- **The native entry point now exists** (#136, and #135's secure-defaults half): `nativePeerConnection()`
-  in `webrtc`'s `socketMain` over `systemIceGathering()` in `webrtc-ice`'s. Both take the `DatagramBinder`
-  as a **required** parameter, so neither can own a socket (§11.6) — that is what the two earlier
-  deferrals were waiting for. `IceGatheringPolicy`, `IceServer` and `IceServerCredentials` moved down into
-  `webrtc-ice` for it; `com.ditchoom.webrtc` keeps typealiases, but Kotlin cannot reach a *nested*
-  classifier through one, so `IceServerCredentials.LongTerm` must be imported from the new package.
-  mDNS defaults **on** in the factory only; a hand-built `NativePeerConnection` is unchanged. What it
-  still cannot honour is refused by typed reason rather than dropped: `turns:`, `?transport=tcp`, a
-  credential-free `turn:`, an unresolvable name.
-- **The native `bufferFactory` default is fixed** — #125 closed with #145. The bullet that stood here called
-  it "the sharpest remaining gap" on "the 7 native targets"; **both halves were wrong**, and the issue
-  itself carries two corrections of its own table (`SctpConfig` was never affected — an SCTP chunk is input
-  to `sealApplicationData`, which copies it into a record allocated from the *DTLS* factory, so it never
-  reaches a socket). Scope was **K/N Linux only**, where `BufferFactory.Default` is a GC-heap buffer that
-  io_uring rejects. Check the issue before restating any of it: that table has been wrong twice.
-  **#131 is closed too.** An injected factory that the send path cannot transmit from is now refused at the
-  bind that precedes the first send, as a typed `UnsendableBufferFactoryException` naming the `WireBufferSeam`
-  to change, instead of surfacing as `IllegalStateException: send requires a native-memory buffer` on the
-  first connectivity check — after gathering had succeeded and the app believed it had a session. The
-  question is put to the **channel** (`DatagramCapabilities.requiresNativeMemoryBuffers`, buffer #330 +
-  socket #281), never to a platform table and never as "is this buffer native": the JVM/NIO and Node send
-  paths take a heap buffer happily, so the buffer-side phrasing would break three working configurations to
-  fix one. The 1-byte probe only runs once a channel has said it needs a raw address, so a vnet run costs
-  nothing. Checked at both `IceAgentDriver` binds and at `MdnsEndpoint.socketFor` — the last deliberately
-  *outside* `SocketUdpMdnsBinder`, whose catch-all maps every exception to "mDNS is unavailable here",
-  which would have swallowed the diagnosis into exactly the silence #131 existed to end.
-  The workaround — `BufferPool(factory = BufferFactory.deterministic())`, native-backed *and* refcounted —
-  is genuinely usable: the "it only reclaims what the stack releases, and `webrtc-stun` releases
-  nothing" caveat that used to sit here is **obsolete**, because releasing is exactly what the ownership
-  work did. One thing still bounds it:
-  * **The receive side is owned now, top to bottom** (PRs #155 + #156) — this bullet used to say "the
-    receive side is unowned" and that is **obsolete**. The rule is written once on
-    `IceProtocol.releaseReceived` and restated at each module's seam: a received payload has exactly one
-    owner, and the loop that received it either *consumes* it (release before the next iteration) or
-    *transfers* it (the receiver then owes it). A decoded attribute is neither — `RawAttribute` carries
-    `owned = false` because it is a slice of the datagram, so borrows are never released, they merely must
-    not outlive the owner. That distinction is what kept it from turning a leak into a use-after-free.
-    Covered: the ICE driver's loops, TURN's four-boundary control plane, both mDNS loops, the DTLS pump,
-    and SCTP's drive loop. Proven red-then-green at both seams (26→0 and 17→0 datagrams per session).
-    `LeakTrackingFactory` still cannot see any of it from `IceConfig.bufferFactory` — the receive buffer
-    comes from the **channel's** factory, which is why the fixtures point a tracker at the vnet/`TestNet`
-    instead, and why they must never point one at a link that also carries harness servers.
-  * **The SCTP send seam is owned too**, as of #158, and the number CLAUDE.md and
-    `SessionSeamOwnershipTest` both used to record — *15 of 15 chunks still referenced* — is **obsolete**.
-    What blocked it was a **type**, not missing frees: `SctpOutput.Transmit` conflated two owners, since a
-    control packet is the driver's outright while a DATA packet is a *view* over bytes the retransmission
-    queue keeps for a retransmit, and no release at the emit site can be right for both. It is now sealed
-    into `Transmit.Owned` / `Transmit.Retained`, plus `SctpOutput.ReclaimRetained` for handing the retained
-    bytes back — which the driver must carry through the **same FIFO as its sends**, because freeing a
-    packet whose send is still queued behind it is a use-after-free on any non-refcounting buffer, not a
-    leak. `SctpAssociation.close()` covers the paths that never reach a protocol close. Red-then-green:
-    15→0 clean, 37→0 lossy, 6→0 torn down mid-flight, per peer.
-  * **What is still unowned is the DTLS *record* seam — the send side, not this one.** Every record
-    `Dtls12Handshake.encode`s comes from `DtlsConfig.bufferFactory` and goes to `IceDataTransport.send`,
-    which explicitly does not take ownership, so nothing frees it; `HandshakeReassembler`'s per-message
-    assembly buffers sit behind it. Measured, not guessed: **262 of 262 live** at the end of a small
-    session (`DtlsSessionBufferOwnershipTest` documents the number and deliberately does not assert on it).
-    Same K/N-Linux-only blast radius as everything else here.
-  * **DitchOoM/socket#277 shipped in socket 4.0.1 — this bullet used to say "released nowhere", and that
-    was wrong.** socket's JVM/NIO and Node send paths sliced the payload and dropped the `TrackedSlice`
-    without releasing it, so on those backends one send cost one pool chunk, permanently, however exact
-    this repo is (Linux and Apple were always clean; proven with pool stats, not inferred). It is fixed,
-    and has been since **4.0.1** — before the 4.0.2 we were already pinned to.
-    **Why the claim survived, because the same trap is one command away from anyone re-checking it:** the
-    commit whose subject is `fix(socket-udp): send must not pin a pooled chunk forever (#277)` sits on an
-    unmerged branch, so `git tag --contains <that sha>` prints nothing, and `git log origin/main` does not
-    list it. Its *content* reached main under a different sha (`a8301009`, the #269+#275 merge). A subject
-    line is not a unit of release — **check the tree, not the commit**: `git show v4.0.2:<file>` shows
-    `NioDatagramChannel.stage()` carrying the fix and naming #277 in its comment.
-- **TURN is no longer short-lived**, as of #137/#138: the allocation refreshes at a fraction of the
-  *granted* LIFETIME, permissions are re-installed (§9), every request retransmits, and the
-  long-term-credential key is the RFC 8489 §9.2.2 `MD5(user:realm:pass)` — pure-Kotlin MD5 in
-  `webrtc-stun`, pinned by the RFC 5769 §2.4 vector, with the relay lanes now authenticating for real
-  (see the coturn `-n` entry below). What remains is exposure, not capability: still unexercised against a
-  **commercial** provider, whose realm/nonce rotation and quota behaviour we have never seen.
+| seam | fixture |
+|---|---|
+| received datagrams | `PooledReceiveChunkTest`, `ReceivedDatagramOwnershipTest` |
+| ICE send | `SessionSeamOwnershipTest` |
+| SCTP send | `SctpSendSeamOwnershipTest` |
+| DTLS record (both 1.2 and 1.3) | `DtlsRecordSeamOwnershipTest`, `DtlsSessionBufferOwnershipTest` |
+| mDNS responder, TURN relay | `MdnsTurnSeamOwnershipTest` |
+
+**The one outstanding gap is upstream, not ours.** buffer-crypto's Apple AEAD `open` takes two
+`absoluteView` slices of the ciphertext it is handed (`Aead.apple.kt` / `AeadBridge.apple.kt`) and
+releases neither, so on Apple every opened DTLS record pins the *receive* chunk twice. Nothing here can
+reach those slices; `DtlsRecordSeamOwnershipTest` therefore gates its two record seams at zero on every
+target and asserts only `assertNoLeaks` on its wire stand-in, with the raise-it-back condition written at
+the assertion. The receive seam itself is still gated at zero on the target the blast radius covers.
+
+Blast radius is **Kotlin/Native Linux only**: it is the sole target where `BufferFactory.Default` is a
+GC-heap buffer, so `networkBuffer()` falls back to `deterministic()` there and a buffer nobody releases
+stays allocated. Everywhere else `Default` is native *and* auto-reclaimed. `BufferPool(factory =
+BufferFactory.deterministic())` — native-backed *and* refcounted — is the recommended consumer shape.
+
+Two things about measuring it, both learned expensively:
+
+- **Measure at the pool's backing factory** (`created - currentPoolSize`). Every formula derived from
+  `PoolStats` has been wrong, in both directions. A *decorating* tracker perturbs its own measurement,
+  because the liveness probe takes a slice.
+- **One tracker per seam per peer**, and never a seam shared with harness scenery. A single tracker
+  pointed at two seams produces a number that cannot be attributed to either.
+
+Two facts about buffer-crypto that a caller has to know, because the types do not say them:
+`AesGcmKey.of`, `VerifyKey.ecdsaP256` and `HmacSha256Mac` **copy** their input, so the source buffer is
+spent at the call; `KeyAgreementPublicKey.of` **slices** it and the type it returns is not
+`AutoCloseable`, so the caller has to hand `peer.encoded` back itself. Release also implies **wipe** for
+anything derived: both key schedules allocate through `BufferFactory.secure()`, because an unwiped
+traffic secret handed to a shared pool is a chunk the next `allocate()` gets — a leak traded for key
+disclosure, which is worse.
+
+An injected factory the send path cannot transmit from is refused at the bind that precedes the first
+send, as a typed `UnsendableBufferFactoryException` naming the `WireBufferSeam` to change. The question
+is put to the **channel** (`DatagramCapabilities.requiresNativeMemoryBuffers`), never to a platform table
+and never as "is this buffer native": the JVM/NIO and Node send paths take a heap buffer happily, so the
+buffer-side phrasing would break three working configurations to fix one. The 1-byte probe only runs once
+a channel has said it needs a raw address, so a vnet run costs nothing. Checked at both `IceAgentDriver`
+binds and at `MdnsEndpoint.socketFor` — the last deliberately *outside* `SocketUdpMdnsBinder`, whose
+catch-all maps every exception to "mDNS is unavailable here" and would swallow the diagnosis.
+
+### What is left
+
+- **TURN against a commercial provider** — unexercised. Realm/nonce rotation and quota behaviour under a
+  real provider is the exposure we have never seen.
 - **Platforms:** tvOS/watchOS publish but cannot establish, blocked upstream on `socket-udp` packaging
   (#127); Node needs blocking raw-ECDH plus a shipped binder (#133).
 - **Media** (RTP/SRTP), which remains out of scope.
 
-## Traps and standing corrections
+## Traps
 
 Things that have cost real time here. Read before acting on a premise that sounds settled.
 
-- **"socket core vendors a second BoringSSL" is FALSE, and has been for a long time.** It was true once,
-  outlived its truth in four separate comments, and acting on it produced a hand-rolled implementation of
-  something already published. socket's `LinuxSockets` cinterop klib embeds only `liburing.a`, and socket
-  and `buffer-crypto` resolve to the *same* `boringssl-canonical`, which Gradle dedupes. Verified by
-  linking the native peer on linuxX64 **and** linuxArm64 with socket core present.
-- **Stale premises are this codebase's recurring failure mode** — eight separate instances so far, each
-  costing between a wrong comment and ~1000 wrong lines. When a comment explains why something *cannot*
-  be done, check whether it still can't before building around it. The fifth instance was **this file**:
-  it claimed foreign-initiated renegotiation was unexercised for months after #87 shipped five lanes
-  proving otherwise. A document that is read first is the worst place for a stale premise — correct this
-  section as soon as the state it describes changes.
-  The eighth was **socket#277 "released nowhere"** (below), and it is the one worth generalizing, because
-  the evidence for it was a command that answered a subtly different question. A fix reaches a release as
-  *content*, not as a commit: rebases, squashes and merge-commits all detach the subject line from the sha
-  that shipped it, so `git tag --contains <sha>` answers "was this object released", which is not what you
-  wanted to know. **Check the tree at the tag** (`git show v<x>:<file>`) before writing down that something
-  is unreleased — and before building a workaround around the belief.
-- **A config file the server never read: coturn's `-n` meant every relay lane tested an OPEN RELAY.**
-  `entrypoint.sh` ended `exec turnserver -c "$CONF" -n`, and in coturn **`-n` means "do not use a
-  configuration file"** — so `lt-cred-mech`, `user`, `realm` and `min-port`/`max-port` were all inert and
-  the server accepted unauthenticated allocations. Fixed alongside #138. Two lessons worth keeping:
-  * **The reason it survived review:** stock `coturn/coturn:4.6`'s own `docker-entrypoint.sh` re-expands
-    args with `eval "echo $i"`, and `echo -n` prints nothing, so `-n` is *silently deleted* there. Every
-    `docker run coturn/coturn:4.6 -c cfg -n` example online therefore *does* read the config while our
-    direct `exec` did not — same flags, opposite server.
-  * **The tell was in the data all along:** `harness.env` pins `TURN_MIN_PORT=49160`/`MAX=49200` and CI's
-    green runs handed out ports in 49546…64453 — coturn's *default* 49152–65535 range. A configured
-    value that never shows up in the output is evidence the config is not being read. Post-fix runs
-    allocate inside the pinned range, which is now the cheapest regression check.
-  * Generalization of the above bullet: a *premise* can be stale, and so can a *dependency's
-    configuration*. "The setting is in the file" is not evidence the process applied it.
-- **The same trap, third instance: a bare `external-ip` is accepted ONCE and then applied to every
-  family.** The entrypoint appended one per family; coturn kept the FIRST (v4), logged `ERROR: You cannot
-  define external IP more than once in the configuration`, and then reported every **IPv6** allocation at
-  the **v4** address with the v6 relay port. The dual `relay-only` lane therefore advertised a relay
-  candidate whose family did not match its own base, and every permission on it drew `443: Peer Address
-  Family Mismatch`. Fixed by deleting `external-ip` outright — coturn is not behind NAT in the harness, so
-  the only mapping it could express was the identity. Two things worth keeping:
-  * **The error was in the startup log all along, 40 lines above the failure.** What made it unreadable
-    was that the log never left the container (fixed in the same PR, #149) — the diagnostics landed and
-    the very first thing they explained was this.
-  * **Our stack was not wrong anywhere.** `TurnAllocation` already sends REQUESTED-ADDRESS-FAMILY=IPv6 on
-    a v6 server (RFC 8656 §7.2), coturn allocated a v6 relay, and the candidate carried exactly what the
-    response said. Confirmed by running coturn's OWN client (`turnutils_uclient -x`) against the same
-    image, which fails identically — reach for the dependency's own client before suspecting ours.
+- **Stale premises are this codebase's recurring failure mode** — eight instances so far, each costing
+  between a wrong comment and ~1000 wrong lines. When a comment explains why something *cannot* be done,
+  check whether it still can't before building around it. One instance was **this file**, which is the
+  worst place for one; correct this document as soon as the state it describes changes, and keep the
+  correction itself in git history rather than here.
+- **A fix reaches a release as *content*, not as a commit.** Rebases, squashes and merge commits all
+  detach a subject line from the sha that shipped it, so `git tag --contains <sha>` answers "was this
+  object released", which is a different question. **Check the tree at the tag** (`git show v<x>:<file>`)
+  before writing down that something is unreleased — and before building a workaround around the belief.
+- **"The setting is in the file" is not evidence the process applied it.** coturn's `-n` means "do not
+  use a configuration file", so `exec turnserver -c "$CONF" -n` ran an **open relay** for months while
+  `lt-cred-mech`, `user`, `realm` and the port range sat inert. It survived review because stock
+  `coturn/coturn:4.6`'s own entrypoint re-expands args with `eval "echo $i"`, where `echo -n` prints
+  nothing — so every `docker run … -c cfg -n` example online *does* read the config while our direct
+  `exec` did not. The tell was in the data: `harness.env` pins `TURN_MIN_PORT=49160`/`MAX=49200` and
+  green runs handed out ports in coturn's *default* 49152–65535 range. **A configured value that never
+  shows up in the output is evidence the config is not being read**, and checking the allocated port
+  range is now the cheapest regression check there is.
+- **Read the dependency's own startup log, and reach for its own client before suspecting ours.** A bare
+  `external-ip` is accepted ONCE and then applied to every family: coturn kept the first (v4), logged
+  `ERROR: You cannot define external IP more than once`, and reported every **IPv6** allocation at the
+  **v4** address, so every permission drew `443: Peer Address Family Mismatch`. The error sat in the
+  startup log 40 lines above the failure — unreadable only because the log never left the container.
+  Our stack was not wrong anywhere, which `turnutils_uclient -x` confirmed by failing identically.
+- **`send` does not consume.** socket's datagram channels transmit the window `[position, limit)` without
+  advancing it, on **all four** backends — io_uring reads `nativeAddress + position()`, the NIO and Node
+  paths take their own internal `slice()`, Apple reads `position()`/`remaining()` directly. So re-sending
+  one encoded request across retransmissions is correct. Defending against a hazard socket does not have
+  is not free: `PooledBuffer.slice()` takes a **reference**, so a slice per retransmission that nobody
+  releases pins the chunk for good. Slice when something else needs a second live view — not to survive a
+  send.
+- **A slice is safe to release on a pool and unsafe to hold on a bare `deterministic()`, and the reverse
+  for its parent.** `NativeBufferSlice.freeNativeMemory()` is a no-op and every read `checkOpen()`s the
+  parent, so freeing a parent while a slice is live is a use-after-free there while a pool's refcount
+  hides it. **Both regimes have to be right**, and a fixture that only runs on one will not tell you.
 - **`linkTopology()` erases the reachability verdict on purpose.** socket's `NetworkState` ladder carries
   `Routable(id, Pending|Confirmed)`, and on real hardware Android grants `INTERNET` ~1s before
   `VALIDATED` on *every* reassociation. Forwarding that transition as an interface change would
@@ -208,27 +187,16 @@ Things that have cost real time here. Read before acting on a premise that sound
   `Enumerated`.
 - **A deterministic "flake" is usually a harness observation bug, not a stack bug.** A red lane whose peer
   logs show success has, more than once, been the harness reading `docker compose logs` twice or matching
-  only RUNNING containers.
+  only RUNNING containers. The same applies to leak fixtures: a harness that slices without releasing, or
+  measures before a cancelled coroutine's `finally` has had a dispatch, has invented a production leak
+  three times.
 - **`webrtc-ice`'s `socketMain` is the only place `socket-udp` may appear in production code**, and the
   cores must never depend on socket in `commonMain` (ARCHITECTURE §11.6). A binder that owns its socket
   forecloses sharing one demuxed UDP socket with QUIC-P2P.
-- **`send` does not consume.** socket's datagram channels transmit the window `[position, limit)` without
-  advancing it, on **all four** backends — io_uring reads `nativeAddress + position()` and names the
-  contract in a comment, the NIO and Node paths take their own internal `slice()`, Apple reads
-  `position()`/`remaining()` directly. So re-sending one encoded request across retransmissions is
-  correct, and "slice it per attempt or the second send goes out empty" is a hazard socket does not have.
-  Defending against it is not free: `PooledBuffer.slice()` takes a **reference**, so a slice per
-  retransmission that nobody releases pins the chunk for good. Slice when something else needs a second
-  live view (`StunTransaction` emits `SendRequest` outputs a driver may hold) — not to survive a send.
-
-  The converse was the other half, **DitchOoM/socket#277**: socket's own JVM/NIO `stage()` and Node
-  `sendPayload()` sliced the payload internally and dropped the `TrackedSlice` without releasing it, so on
-  **those** backends a pooled buffer never returned to the pool no matter how diligent this repo's release
-  paths are. The vnet cannot see it, and neither can `LeakTrackingFactory` — `freeNativeMemory()` marks a
-  buffer freed whichever way the refcount went, so only `pool.stats().currentPoolSize` discriminates,
-  which is how it was proven rather than argued. **Fixed and released in socket 4.0.1**, so at the pin
-  above the send side is pool-exact on every backend. What is left to caveat is the *receive* side, which
-  is ours (see the bullet above) — not socket's.
+- **socket core does not vendor a second BoringSSL.** It was true once, outlived its truth in four
+  separate comments, and acting on it produced a hand-rolled implementation of something already
+  published. `LinuxSockets`'s cinterop klib embeds only `liburing.a`, and socket and `buffer-crypto`
+  resolve to the *same* `boringssl-canonical`, which Gradle dedupes.
 
 ## Standing directives
 
@@ -250,7 +218,8 @@ checked in the adversarial review gate.
 4. **Assert observable state + a watchdog, never wall-clock budgets.**
 5. **Every bug fix ships with its deterministic fixture in the same PR.** The corpus only grows.
 6. **Buffers are factory-injected, pooled in hot paths, `use {}`/scoped lifecycle**, with a tracking
-   factory in every test harness (invariant: no leaks).
+   factory in every test harness. The invariant is `assertPoolDrained` — every chunk back in the pool —
+   not `assertNoLeaks`, which cannot see an unreleased borrow.
 7. **The PR description states which platform lanes were runtime-validated vs compile-faithful** (the
    `V6_MAC_VALIDATION` convention: Apple/Android runtime-validated on runners).
 
@@ -324,12 +293,9 @@ above) and a `gradle.properties`, and `include(":…")` it in `settings.gradle.k
   `publish-to-central` → finalize (tag + GitHub release). `release.yaml` completes/cancels a draft.
 - **What proves the publish is `consumer-smoke-central`, a job inside `merged.yaml`** — it resolves the
   just-pushed version from Maven Central and nothing else (no `mavenLocal()` fallback), both hosts, cold.
-  **Not `released.yaml`.** That workflow triggers on a tag *push*, and since #128 the tag is created
-  through the REST API with `secrets.GITHUB_TOKEN`, for which GitHub dispatches no workflow events — so it
-  silently stopped firing after v0.14.0 and the check was moved rather than left hanging off an event that
-  never arrives. `released.yaml` having no recent runs is therefore **expected and not a broken gate**;
-  reading it as one costs an investigation (it did, once). Check `consumer-smoke-central` on the
-  `merged.yaml` run instead — green for v0.22.0 and v0.23.0 on linuxX64 + macosArm64.
+  **Not `released.yaml`**, which hangs off a tag *push* and therefore never fires: the tag is created
+  through the REST API with `secrets.GITHUB_TOKEN`, for which GitHub dispatches no workflow events. An
+  empty run list there is **expected and not a broken gate**; reading it as one costs an investigation.
 - Version is auto-derived from Maven Central metadata + the label bump.
 - Every published artifact (including `webrtc-testsuite`) goes through `validate-artifacts` from its
   first release.

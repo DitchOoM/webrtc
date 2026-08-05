@@ -293,7 +293,15 @@ public suspend fun MdnsResponder.serve(
                 is DatagramReadResult.Received -> result.datagram
                 is DatagramReadResult.Closed -> return
             }
-        onResponse(serveOne(channel, datagram, group))
+        try {
+            onResponse(serveOne(channel, datagram, group))
+        } finally {
+            // This loop consumes the received datagram rather than transferring it — `respond` reads it
+            // and builds any answer from its own factory — so it owes the release (see `releaseReceived`).
+            // The ANSWER's payload is a different buffer with a different owner: `serveOne` documents that
+            // the caller releases it after observing, which [MdnsEndpoint.dispatch] does.
+            datagram.payload.releaseReceived()
+        }
     }
 }
 

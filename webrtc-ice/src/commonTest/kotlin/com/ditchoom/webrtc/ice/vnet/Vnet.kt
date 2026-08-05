@@ -45,6 +45,7 @@ internal class Vnet(
     private val capabilities: DatagramCapabilities = FullVnetCapabilities,
 ) {
     private val endpoints = HashMap<SocketAddress, Channel<Datagram>>()
+    private val endpointFactories = HashMap<SocketAddress, BufferFactory>()
     private val groups = HashMap<SocketAddress, MutableSet<SocketAddress>>()
 
     /** The addresses currently bound in the vnet — the fabric consults this to decide reachability. */
@@ -64,11 +65,25 @@ internal class Vnet(
      * port to pin — and a seam that quietly bound *port zero* would let a candidate advertising `:0`
      * pass every test and fail on the first real kernel.
      */
-    fun bind(local: SocketAddress): AddressedDatagramChannel {
+    fun bind(
+        local: SocketAddress,
+        /**
+         * Where **this endpoint's** received copies come from, defaulting to the vnet-wide factory.
+         *
+         * Per-endpoint rather than per-vnet because a receive-side leak fixture cannot otherwise tell its
+         * subject from its scenery: a `Vnets.meetup` binds a STUN server and a TURN server on the same
+         * vnet, and with one shared factory their inbound copies land in the same tracker as the driver's.
+         * A relay gather then reports "2 of 4 leaked" where both of the two are the harness's own servers
+         * never releasing — a real count of nothing that ships. Pass a tracker to the sockets under test
+         * and leave the servers on the default.
+         */
+        bufferFactory: BufferFactory = this.bufferFactory,
+    ): AddressedDatagramChannel {
         val bound = if (local.port == 0) SocketAddress.ofLiteral(local.host, allocateEphemeralPort(local.host)) else local
         require(bound !in endpoints) { "address already bound: $bound" }
         val inbound = Channel<Datagram>(Channel.UNLIMITED)
         endpoints[bound] = inbound
+        endpointFactories[bound] = bufferFactory
         return VnetChannel(bound, inbound, this, capabilities)
     }
 
@@ -139,16 +154,19 @@ internal class Vnet(
         }
         val inbound = endpoints[dest] ?: return false
         if (inbound.isClosedForSend) return false
-        val copy = copyOf(payload)
+        val copy = copyOf(payload, endpointFactories[dest] ?: bufferFactory)
         return inbound.trySend(Datagram(payload = copy, peer = observedSource, ecn = Ecn.Unknown)).isSuccess
     }
 
     // Copy [payload] into a receiver-owned buffer (a real socket copies into the kernel), reading from a
     // slice so the caller's position is untouched (the AddressedDatagramSink "ownership is not transferred" rule).
-    private fun copyOf(payload: ReadBuffer): PlatformBuffer {
+    private fun copyOf(
+        payload: ReadBuffer,
+        factory: BufferFactory,
+    ): PlatformBuffer {
         val slice = payload.slice()
         val len = slice.remaining()
-        val copy = bufferFactory.allocate(maxOf(1, len))
+        val copy = factory.allocate(maxOf(1, len))
         copy.write(slice)
         copy.resetForRead()
         copy.setLimit(len)

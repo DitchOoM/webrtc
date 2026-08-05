@@ -198,3 +198,39 @@ public sealed interface IceConnectionState {
 internal fun ReadBuffer.releaseAfterSend() {
     if (this is PlatformBuffer) freeNativeMemory()
 }
+
+/**
+ * Release a **received** datagram whose last reader has finished with it.
+ *
+ * ## The ownership rule this enforces
+ *
+ * A received payload has exactly one owner at a time, and the loop that received it starts as that
+ * owner. From there a loop does one of two things, never both:
+ *
+ * - **Consumes it** — decodes, reads what it needs, and calls this before its next iteration.
+ * - **Transfers it** — hands it across a queue, a channel or a `CompletableDeferred`, after which the
+ *   *receiver* owns it and calls this. Every transfer point in this module names the rule.
+ *
+ * A decoded attribute is **not** a third case: `RawAttribute` over a parsed message is a slice of the
+ * datagram with `owned = false`, precisely because "freeing that would hand the rest of the parse a view
+ * of reclaimed memory". Borrows are never released; they simply must not outlive the owner.
+ *
+ * ## Why this is not the same function as [releaseAfterSend]
+ *
+ * They compile to the same call today and are deliberately kept apart, because they are answerable to
+ * different arguments and will not stay identical. [releaseAfterSend]'s safety rests on `send` having
+ * finished reading by the time it returns; this one's rests on the last-reader rule above. Sharing one
+ * helper would mean one KDoc defending two unrelated claims, and a future refcounted receive path
+ * (`retain()` on transfer instead of a move) changes only this one.
+ *
+ * ## Why it matters on exactly one target
+ *
+ * On the JVM, Android and Node an inbound payload comes from `BufferFactory.Default` and the collector
+ * takes it. On **Kotlin/Native Linux** `socket-udp`'s receive factory is `BufferFactory.deterministic()`,
+ * whose buffers are a raw `malloc` that must be explicitly closed — so there, every unreleased datagram
+ * of a long-lived session is permanently lost. Apple is *not* affected despite the same factory name:
+ * `deterministicBufferFactory` aliases the ARC-backed default there.
+ */
+internal fun ReadBuffer.releaseReceived() {
+    if (this is PlatformBuffer) freeNativeMemory()
+}

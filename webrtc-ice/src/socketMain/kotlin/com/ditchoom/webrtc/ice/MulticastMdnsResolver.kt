@@ -87,7 +87,11 @@ public class MulticastMdnsResolver(
                             is DatagramReadResult.Received -> result.datagram
                             is DatagramReadResult.Closed -> return@withTimeoutOrNull null
                         }
+                    // Consumed, not transferred: `decodeAddress` yields a numeric `IpAddress`, and the
+                    // SocketAddress below is built from its rendering — so this loop is the datagram's
+                    // last reader on both the match and the keep-looking path (see [releaseReceived]).
                     val address = MdnsMessage.decodeAddress(datagram.payload, qType)
+                    datagram.payload.releaseReceived()
                     // mDNS resolves a NAME → IP; the port belongs to the candidate line, so return the IP
                     // with a placeholder port — the caller (resolveHostCandidate) supplies the real port.
                     if (address != null) return@withTimeoutOrNull SocketAddress.ofLiteral(address.toString(), 0)

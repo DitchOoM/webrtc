@@ -36,6 +36,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
@@ -106,7 +107,7 @@ public class TurnAllocation(
     private val maintenance: TurnMaintenance = TurnMaintenance.Renewing(),
     private val retransmitInterval: Duration = DEFAULT_GATHER_RTO,
 ) : AddressedDatagramChannel {
-    private val pending = HashMap<TransactionId, CompletableDeferred<StunMessage>>()
+    private val pending = HashMap<TransactionId, CompletableDeferred<ReceivedStunMessage>>()
     private val inbound = Channel<Datagram>(Channel.UNLIMITED)
 
     // Permitted peers by host, keeping the address itself: a permission has to be RE-installed before it
@@ -157,26 +158,33 @@ public class TurnAllocation(
             // Only retry once the challenge is actually usable. A 401 missing REALM or NONCE yields no
             // long-term key, so the retry could only repeat the same unauthenticated request — fall
             // through to the failure below instead of burning a second budget on it.
+            // `asChallenge` derives realm/nonce Strings and a fresh key, so nothing it returns outlives
+            // the payload this discards — which it must, since the retry replaces the exchange entirely.
             val challenge = exchange.response.asChallenge()
             if (challenge != null) {
+                exchange.release()
                 credential = challenge
                 exchange = request(timeout) { allocateRequest(it) }
             }
         }
-        val response =
-            when (exchange) {
-                is TurnExchange.Succeeded -> exchange.response
-                is TurnExchange.Refused -> return TurnAllocationResult.Unavailable.Rejected(exchange.error)
-                is TurnExchange.Malformed -> return TurnAllocationResult.Unavailable.MalformedResponse
-                TurnExchange.Unanswered -> return TurnAllocationResult.Unavailable.NoResponse
-                is TurnExchange.NeverSent -> return TurnAllocationResult.Unavailable.SendFailed(exchange.cause)
-            }
-        val relayedAddress =
-            response.firstOrNull(StunAttributeType.XorRelayedAddress)?.asXorMappedAddress(response.transactionId)?.toSocketAddress()
-                ?: return TurnAllocationResult.Unavailable.MalformedResponse
-        relayed = relayedAddress
-        startMaintenance(response.grantedLifetime() ?: DEFAULT_ALLOCATION_LIFETIME)
-        return TurnAllocationResult.Allocated(relayedAddress)
+        return exchange.consuming { settled ->
+            val response =
+                when (settled) {
+                    is TurnExchange.Succeeded -> settled.response
+                    is TurnExchange.Refused -> return@consuming TurnAllocationResult.Unavailable.Rejected(settled.error)
+                    is TurnExchange.Malformed -> return@consuming TurnAllocationResult.Unavailable.MalformedResponse
+                    TurnExchange.Unanswered -> return@consuming TurnAllocationResult.Unavailable.NoResponse
+                    is TurnExchange.NeverSent -> return@consuming TurnAllocationResult.Unavailable.SendFailed(settled.cause)
+                }
+            // Both reads below produce values — a SocketAddress and a Duration — so the payload is
+            // finished with by the time `consuming` releases it.
+            val relayedAddress =
+                response.firstOrNull(StunAttributeType.XorRelayedAddress)?.asXorMappedAddress(response.transactionId)?.toSocketAddress()
+                    ?: return@consuming TurnAllocationResult.Unavailable.MalformedResponse
+            relayed = relayedAddress
+            startMaintenance(response.grantedLifetime() ?: DEFAULT_ALLOCATION_LIFETIME)
+            TurnAllocationResult.Allocated(relayedAddress)
+        }
     }
 
     override suspend fun send(
@@ -251,17 +259,19 @@ public class TurnAllocation(
     // Ensure a permission exists for [peer]'s IP so its inbound data reaches us (RFC 8656 §9).
     private suspend fun ensurePermission(peer: SocketAddress) {
         if (peer.host in permitted) return
-        when (val exchange = createPermission(listOf(peer))) {
-            is TurnExchange.Succeeded -> permitted[peer.host] = peer
-            // The server spoke and said no. Left un-permitted on purpose — the next send retries, which is
-            // right for a refusal that a re-derived nonce or a peer's own re-gather could clear — but
-            // reported, because a refusal that only manifests as an unreachable relay is indistinguishable
-            // from a peer that never answered. See [TurnPermissionRefusal].
-            is TurnExchange.Refused -> reportRefusal(peer, exchange.error)
-            // Silence, a malformed answer, or nothing ever sent: all three are "no permission yet, try
-            // again", and none of them is the server refusing. Conflating them here would report a lossy
-            // path as a policy decision.
-            TurnExchange.Unanswered, is TurnExchange.Malformed, is TurnExchange.NeverSent -> Unit
+        createPermission(listOf(peer)).consuming { exchange ->
+            when (exchange) {
+                is TurnExchange.Succeeded -> permitted[peer.host] = peer
+                // The server spoke and said no. Left un-permitted on purpose — the next send retries,
+                // which is right for a refusal that a re-derived nonce or a peer's own re-gather could
+                // clear — but reported, because a refusal that only manifests as an unreachable relay is
+                // indistinguishable from a peer that never answered. See [TurnPermissionRefusal].
+                is TurnExchange.Refused -> reportRefusal(peer, exchange.error)
+                // Silence, a malformed answer, or nothing ever sent: all three are "no permission yet,
+                // try again", and none of them is the server refusing. Conflating them here would report
+                // a lossy path as a policy decision.
+                TurnExchange.Unanswered, is TurnExchange.Malformed, is TurnExchange.NeverSent -> Unit
+            }
         }
     }
 
@@ -367,34 +377,39 @@ public class TurnAllocation(
     private suspend fun reinstallPermissions(): PermissionOutcome {
         val peers = permitted.values.toList()
         if (peers.isEmpty()) return PermissionOutcome.Current
-        return when (val exchange = createPermission(peers)) {
-            // Treated as silence on purpose: the maintenance loop's only question is *how soon to come
-            // back*, and both answers are "sooner". The distinction is preserved where it changes a
-            // caller's conclusion — `allocate()` above — not where it would only add an unused arm.
-            TurnExchange.Unanswered, is TurnExchange.NeverSent -> PermissionOutcome.Unanswered
-            // A refusal is not worth hurrying back for: the server is answering, and the next round at
-            // the normal cadence is as likely to succeed as one three seconds from now. It IS worth
-            // reporting: one refusal here lapses a permission that was working, so the path stops
-            // carrying inbound traffic with nothing else to show for it. §9 refuses the whole request, so
-            // every peer in it lost its permission — one observation each, naming the peers by address
-            // rather than making a collector infer the set.
-            is TurnExchange.Refused -> {
-                for (peer in peers) reportRefusal(peer, exchange.error)
-                PermissionOutcome.Current
+        return createPermission(peers).consuming { exchange ->
+            when (exchange) {
+                // Treated as silence on purpose: the maintenance loop's only question is *how soon to come
+                // back*, and both answers are "sooner". The distinction is preserved where it changes a
+                // caller's conclusion — `allocate()` above — not where it would only add an unused arm.
+                TurnExchange.Unanswered, is TurnExchange.NeverSent -> PermissionOutcome.Unanswered
+                // A refusal is not worth hurrying back for: the server is answering, and the next round at
+                // the normal cadence is as likely to succeed as one three seconds from now. It IS worth
+                // reporting: one refusal here lapses a permission that was working, so the path stops
+                // carrying inbound traffic with nothing else to show for it. §9 refuses the whole request, so
+                // every peer in it lost its permission — one observation each, naming the peers by address
+                // rather than making a collector infer the set.
+                is TurnExchange.Refused -> {
+                    for (peer in peers) reportRefusal(peer, exchange.error)
+                    PermissionOutcome.Current
+                }
+                is TurnExchange.Succeeded, is TurnExchange.Malformed -> PermissionOutcome.Current
             }
-            is TurnExchange.Succeeded, is TurnExchange.Malformed -> PermissionOutcome.Current
         }
     }
 
     // Refresh the allocation (RFC 8656 §8). Distinguishes "the server refused" from "nobody answered" —
     // see [RefreshOutcome]; conflating them is what used to make one lost datagram terminal.
     private suspend fun refreshAllocation(current: Duration): RefreshOutcome =
-        when (val exchange = requestWithChallengeRetry { refreshRequest(it, current) }) {
-            is TurnExchange.Succeeded -> RefreshOutcome.Renewed(exchange.response.grantedLifetime() ?: current)
-            // Either way the server spoke, and what it said was no. An answer we cannot parse is still
-            // an answer: retrying it forever would be the same request meeting the same refusal.
-            is TurnExchange.Refused, is TurnExchange.Malformed -> RefreshOutcome.Gone
-            TurnExchange.Unanswered, is TurnExchange.NeverSent -> RefreshOutcome.Unanswered
+        requestWithChallengeRetry { refreshRequest(it, current) }.consuming { exchange ->
+            when (exchange) {
+                // `grantedLifetime()` is a Duration read out of the slice, not the slice itself.
+                is TurnExchange.Succeeded -> RefreshOutcome.Renewed(exchange.response.grantedLifetime() ?: current)
+                // Either way the server spoke, and what it said was no. An answer we cannot parse is
+                // still an answer: retrying it forever would be the same request meeting the same refusal.
+                is TurnExchange.Refused, is TurnExchange.Malformed -> RefreshOutcome.Gone
+                TurnExchange.Unanswered, is TurnExchange.NeverSent -> RefreshOutcome.Unanswered
+            }
         }
 
     private fun refreshRequest(
@@ -413,7 +428,10 @@ public class TurnAllocation(
     private suspend fun requestWithChallengeRetry(build: (TransactionId) -> StunMessageBuilder): TurnExchange {
         val first = request(DEFAULT_GATHER_TIMEOUT, build)
         if (first !is TurnExchange.Refused || !first.error.isStaleChallenge()) return first
+        // Returned rather than consumed on both of these paths: the caller still has to read it, so it
+        // stays the owner. Only the branch that DISCARDS `first` for a retry releases it here.
         val challenge = first.response.asChallenge() ?: return first
+        first.release()
         credential = challenge
         return request(DEFAULT_GATHER_TIMEOUT, build)
     }
@@ -433,11 +451,30 @@ public class TurnAllocation(
                         is DatagramReadResult.Received -> result.datagram
                         is DatagramReadResult.Closed -> return@launch
                     }
-                val message = (StunMessage.decode(datagram.payload) as? StunDecodeResult.Success)?.message ?: continue
+                val message = (StunMessage.decode(datagram.payload) as? StunDecodeResult.Success)?.message
+                if (message == null) {
+                    // Undecodable: this loop is its only reader (see [releaseReceived]).
+                    datagram.payload.releaseReceived()
+                    continue
+                }
                 when (message.messageType.stunClass) {
-                    StunClass.SuccessResponse, StunClass.ErrorResponse -> pending.remove(message.transactionId)?.complete(message)
-                    StunClass.Indication -> if (message.messageType.method == StunMethod.Data) enqueueData(message)
-                    StunClass.Request -> Unit
+                    StunClass.SuccessResponse, StunClass.ErrorResponse -> {
+                        // TRANSFER to the awaiting [request] call, which owns it from here. Its attributes
+                        // are slices of this payload and are read on that coroutine, so releasing here
+                        // would hand the awaiter reclaimed memory. A response nobody is waiting for — a
+                        // duplicate, or one that arrived after its budget unwound — has no new owner, so
+                        // this loop is still the last reader of it.
+                        val waiter = pending.remove(message.transactionId)
+                        val transferred = ReceivedStunMessage(message, datagram.payload)
+                        if (waiter == null || !waiter.complete(transferred)) datagram.payload.releaseReceived()
+                    }
+                    // [enqueueData] copies the DATA attribute into a buffer of its own, so the datagram
+                    // it was sliced from is finished with either way — including when the copy is refused.
+                    StunClass.Indication -> {
+                        if (message.messageType.method == StunMethod.Data) enqueueData(message)
+                        datagram.payload.releaseReceived()
+                    }
+                    StunClass.Request -> datagram.payload.releaseReceived()
                 }
             }
         }
@@ -476,7 +513,7 @@ public class TurnAllocation(
         build: (TransactionId) -> StunMessageBuilder,
     ): TurnExchange {
         val transactionId = TransactionId.random(random)
-        val deferred = CompletableDeferred<StunMessage>()
+        val deferred = CompletableDeferred<ReceivedStunMessage>()
         pending[transactionId] = deferred
         val builder = build(transactionId)
         // MESSAGE-INTEGRITY only once challenged: before the 401 there is no realm, so no long-term key
@@ -528,17 +565,49 @@ public class TurnAllocation(
             // dead transaction's deferred in the map for the life of the allocation, and the loop above
             // outlives its caller often enough (close() cancels the maintenance job mid-Refresh) for
             // "only on the paths that return" to be a real difference.
-            pending.remove(transactionId)
+            // A response can land between the budget unwinding and this removal, which completes a
+            // deferred nobody will ever await. That transfer has no other reader, so it is released here.
+            // `getCompleted` is the only synchronous read of a settled Deferred; guarded by `isCompleted`
+            // on the line above, and this is a non-suspending `finally`, so awaiting is not an option.
+            pending.remove(transactionId)?.let { orphan ->
+                @OptIn(ExperimentalCoroutinesApi::class)
+                if (orphan.isCompleted) orphan.getCompleted().payload.releaseReceived()
+            }
             encoded.freeNativeMemory()
         }
     }
 
-    private fun StunMessage.classify(): TurnExchange =
-        when (messageType.stunClass) {
-            StunClass.SuccessResponse -> TurnExchange.Succeeded(this)
+    /**
+     * A decoded STUN response **and the datagram it was decoded from**, moved together because they
+     * cannot be separated: the message's attributes are slices of the payload. The same shape, and the
+     * same reason, as `IceGathering`'s `MatchedResponse`.
+     */
+    private class ReceivedStunMessage(
+        val message: StunMessage,
+        val payload: ReadBuffer,
+    )
+
+    private fun ReceivedStunMessage.classify(): TurnExchange =
+        when (message.messageType.stunClass) {
+            StunClass.SuccessResponse -> TurnExchange.Succeeded(message, payload)
             else ->
-                firstOrNull(StunAttributeType.ErrorCode)?.asErrorCode()?.let { TurnExchange.Refused(this, it) }
-                    ?: TurnExchange.Malformed(this)
+                message.firstOrNull(StunAttributeType.ErrorCode)?.asErrorCode()?.let { TurnExchange.Refused(message, it, payload) }
+                    ?: TurnExchange.Malformed(message, payload)
+        }
+
+    /**
+     * Read [this] exchange and give its datagram back afterwards, on every exit including a throw.
+     *
+     * Every consumer of a [TurnExchange] goes through here, which is what makes "released exactly once"
+     * a property of the shape rather than of remembering. The block may only extract **values** — a
+     * `SocketAddress`, a `Duration`, a realm/nonce `String`, a `StunErrorCode` — because anything it
+     * kept a reference to would be a slice of the payload this releases.
+     */
+    private inline fun <R> TurnExchange.consuming(block: (TurnExchange) -> R): R =
+        try {
+            block(this)
+        } finally {
+            release()
         }
 
     private fun allocateRequest(transactionId: TransactionId): StunMessageBuilder {
@@ -606,20 +675,41 @@ public class TurnAllocation(
      * every caller in this class treats them differently.
      */
     private sealed interface TurnExchange {
+        /**
+         * The datagram [response] was parsed out of, owned by whoever holds this exchange.
+         *
+         * It has to travel with the message rather than be released where the message was decoded: every
+         * attribute a consumer reads — REALM, NONCE, XOR-RELAYED-ADDRESS, LIFETIME — is a *slice* of this
+         * payload, so the last reader is the consumer, not the demux loop. Null on the two variants that
+         * carry no response at all, which is why [release] is on the interface rather than the classes.
+         */
+        val payload: ReadBuffer? get() = null
+
+        /**
+         * Give the datagram back. Idempotent only in the sense that each exchange is consumed once —
+         * every consumer below runs it through [consuming], which is what makes "once" structural.
+         */
+        fun release() {
+            payload?.releaseReceived()
+        }
+
         /** The server answered with a success response. */
         class Succeeded(
             val response: StunMessage,
+            override val payload: ReadBuffer,
         ) : TurnExchange
 
         /** The server answered with an error response carrying a decodable ERROR-CODE. */
         class Refused(
             val response: StunMessage,
             val error: StunErrorCode,
+            override val payload: ReadBuffer,
         ) : TurnExchange
 
         /** The server answered with an error response we could not read an ERROR-CODE out of. */
         class Malformed(
             val response: StunMessage,
+            override val payload: ReadBuffer,
         ) : TurnExchange
 
         /** Every transmission went unanswered within the budget. Says nothing about the allocation. */

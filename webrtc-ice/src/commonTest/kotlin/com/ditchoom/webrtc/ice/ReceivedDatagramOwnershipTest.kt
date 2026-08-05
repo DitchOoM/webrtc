@@ -5,6 +5,7 @@ package com.ditchoom.webrtc.ice
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.webrtc.ice.vnet.LeakTrackingFactory
+import com.ditchoom.webrtc.ice.vnet.NatProfile
 import com.ditchoom.webrtc.ice.vnet.Vnets
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
@@ -14,6 +15,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.random.Random
 import kotlin.test.Test
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
@@ -90,6 +92,46 @@ class ReceivedDatagramOwnershipTest {
         }
 
     /**
+     * The **relay** path, whose ownership chain is the longest in the module: TURN's demux loop transfers
+     * a control response across a `CompletableDeferred` to the awaiting `request`, which classifies it
+     * into a `TurnExchange` that then travels up through `requestWithChallengeRetry` to `allocate` —
+     * four hand-offs before anything reads an attribute, and every one of those attributes is a slice of
+     * the original datagram.
+     *
+     * A whole gather runs here (Allocate, the 401 challenge, the authenticated retry, CreatePermission),
+     * so the fixture covers the challenge-and-discard branch as well as the success one — the branch that
+     * drops an exchange on the floor to retry is the easiest release to forget.
+     */
+    @Test
+    fun a_relay_gather_gives_back_every_datagram_the_turn_server_sent() =
+        runTest {
+            val received = LeakTrackingFactory()
+            val meetup =
+                Vnets.meetup(backgroundScope, profileA = NatProfile.Symmetric, profileB = NatProfile.Symmetric)
+            val clock: () -> Instant = { EPOCH + testScheduler.currentTime.milliseconds }
+            val driver =
+                IceAgentDriver(
+                    role = IceRole.Controlling,
+                    random = Random(7),
+                    // Only the driver's own sockets are tracked. The vnet's STUN and TURN servers keep
+                    // the default factory, so their inbound copies — the harness's, released by nobody —
+                    // stay out of the count. Without this the assertion below reads 2 of 4 leaked, and
+                    // both of the two are scenery.
+                    binder = DatagramBinder { meetup.vnet.bind(it, bufferFactory = received) },
+                    scope = backgroundScope,
+                    clock = clock,
+                    config = IceConfig(bufferFactory = LeakTrackingFactory()),
+                )
+            driver.start()
+
+            val result =
+                driver.gatherRelay(meetup.turnAddress, Vnets.TURN_USERNAME, Vnets.TURN_PASSWORD, "10.0.0.2", 6000)
+
+            assertIs<RelayGatheringResult.Gathered>(result, "the vnet TURN server allocated a relay")
+            received.assertNoLeaks("the datagrams a relay gather received")
+        }
+
+    /**
      * One connected host-to-host session between two **production** [IceAgentDriver]s, with the two
      * allocation seams held apart: [receiveFactory] is the vnet's copy-on-receive (the channel's factory
      * — socket-udp's, on a real kernel), [sendFactory] is `IceConfig`'s.
@@ -107,10 +149,10 @@ class ReceivedDatagramOwnershipTest {
         receiveFactory: BufferFactory,
         sendFactory: BufferFactory,
     ): IceAgentDriver {
-        val vnet = Vnets.flat(bufferFactory = receiveFactory)
+        val vnet = Vnets.flat()
         val clock: () -> Instant = { EPOCH + scope.testScheduler.currentTime.milliseconds }
         val config = IceConfig(consentInterval = 1.seconds, consentTimeout = 1000.seconds, bufferFactory = sendFactory)
-        val binder = DatagramBinder { vnet.bind(it) }
+        val binder = DatagramBinder { vnet.bind(it, bufferFactory = receiveFactory) }
         val alice = IceAgentDriver(IceRole.Controlling, Random(1), binder, scope.backgroundScope, clock, config)
         val bob = IceAgentDriver(IceRole.Controlled, Random(2), binder, scope.backgroundScope, clock, config)
         alice.start()

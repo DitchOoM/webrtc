@@ -251,15 +251,23 @@ public class MdnsEndpoint(
                     is DatagramReadResult.Closed -> return
                 }
             val start = datagram.payload.position()
-            val response = responder.serveOne(socket.channel, datagram, socket.group)
-            onResponse(response)
-            // After the observer, not before: [MdnsResponder.serveOne] hands the answer's payload back so a
-            // caller can look at what it just sent, and this loop is that caller. Nothing refers to it once
-            // [onResponse] returns — an observer that wants to keep the bytes has to copy them.
-            if (response is MdnsResponse.Answer) response.payload.releaseAfterSend()
-            if (response is MdnsResponse.Silent && response.reason == MdnsSilenceReason.NotAQuery) {
-                datagram.payload.position(start)
-                deliver(MdnsMessage.decodeAnswers(datagram.payload))
+            try {
+                val response = responder.serveOne(socket.channel, datagram, socket.group)
+                onResponse(response)
+                // After the observer, not before: [MdnsResponder.serveOne] hands the answer's payload back so a
+                // caller can look at what it just sent, and this loop is that caller. Nothing refers to it once
+                // [onResponse] returns — an observer that wants to keep the bytes has to copy them.
+                if (response is MdnsResponse.Answer) response.payload.releaseAfterSend()
+                if (response is MdnsResponse.Silent && response.reason == MdnsSilenceReason.NotAQuery) {
+                    datagram.payload.position(start)
+                    deliver(MdnsMessage.decodeAnswers(datagram.payload))
+                }
+            } finally {
+                // The RECEIVED datagram, distinct from the answer released above: this loop consumes it
+                // rather than transferring it, so it is the last reader (see [releaseReceived]). Safe
+                // because nothing outlives the iteration — an `AnswerRecord` is a String plus a numeric
+                // `IpAddress`, and `deliver` completes its waiters with that value, not with the slice.
+                datagram.payload.releaseReceived()
             }
         }
     }

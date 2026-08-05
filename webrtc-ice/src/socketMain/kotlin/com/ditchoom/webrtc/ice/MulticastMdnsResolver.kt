@@ -72,6 +72,10 @@ public class MulticastMdnsResolver(
         // shipped with (#123); [bufferFactory] stays for what we *encode*, which we do own.
         val channel = UdpSocket.bindMulticast(MDNS_PORT, family)
         try {
+            // A separate channel from the ICE socket, so a separately answerable requirement (#131) — and
+            // one worth asking, because the failure here is *quieter* than on the ICE path: a query that
+            // the send path refuses looks exactly like a `.local` name nobody answered.
+            channel.requireSendableWith(bufferFactory, WireBufferSeam.MdnsBufferFactory)
             val group = UdpSocket.resolve(if (isV4) MDNS_GROUP_V4 else MDNS_GROUP_V6, MDNS_PORT)
             channel.joinGroup(MulticastMembership(group, MulticastInterface.Default))
             channel.setTimeToLive(MDNS_TTL)

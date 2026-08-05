@@ -69,6 +69,15 @@ import kotlin.time.Instant
  * inside [config] have their buffer factories replaced by [bufferFactory], since having those disagree is
  * a bug rather than a configuration. To set them apart, construct [NativePeerConnection] directly.
  *
+ * A [bufferFactory] this platform's send path cannot transmit from is **refused at the first bind**, as
+ * an [UnsendableBufferFactoryException][com.ditchoom.webrtc.ice.UnsendableBufferFactoryException] naming
+ * the seam (issue #131) — rather than, as before, `send requires a native-memory buffer` raised from
+ * inside io_uring on the first connectivity check, with gathering already reported successful. One
+ * factory is fanned out to every layer here, so checking it where ICE binds covers the DTLS records and
+ * SCTP-bearing datagrams that ride the same socket. A hand-built [NativePeerConnection] whose
+ * `DtlsConfig.bufferFactory` differs from its `IceConfig.bufferFactory` is the one arrangement that
+ * check cannot see, and is exactly the case this factory exists to stop anyone needing.
+ *
  * @param onGatheringNotice non-fatal gathering refusals — an unsupported `turns:` URL, a name that did
  *   not resolve, a `turn:` server with no credential. Each explains an absent candidate, which is
  *   otherwise indistinguishable from a server that never answered. Defaults to discarding them.

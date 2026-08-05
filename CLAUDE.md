@@ -26,7 +26,9 @@ Released on Maven Central; the data-channel stack is complete. It establishes an
 against Chrome, Firefox, WebKit, Pion and werift over real NAT kernels in CI across
 `{x64, arm64} × {v4, v6, dual}`, and every lane also gates on the data-channel *semantics* sequence
 (fragmentation, unordered, PR-SCTP, multiplexing, reverse-direction, per-channel close, graceful
-shutdown). Pinned at socket 4.0.2 + buffer 6.23.0 (buffer 6.25.0 is out; we have not moved).
+shutdown). Pinned at socket 4.1.0 + buffer 6.25.0 — the pair that carries
+`DatagramCapabilities.requiresNativeMemoryBuffers` (buffer #328/#330, socket #281), which is what #131
+consumes. They move together: socket-udp 4.1.0's POM pins buffer 6.25.0.
 
 What works that is easy to under-estimate:
 
@@ -82,11 +84,17 @@ What is genuinely left, and why the data-channel stack is not yet something a st
   to `sealApplicationData`, which copies it into a record allocated from the *DTLS* factory, so it never
   reaches a socket). Scope was **K/N Linux only**, where `BufferFactory.Default` is a GC-heap buffer that
   io_uring rejects. Check the issue before restating any of it: that table has been wrong twice.
-  What is genuinely left is **#131** — nothing fails fast when an injected factory cannot back real socket
-  I/O, so the failure still lands on the first connectivity check rather than at config time. It is no
-  longer a design question: buffer #328 adds `DatagramCapabilities.requiresNativeMemoryBuffers` and
-  socket-udp advertises it, which is exactly the seam #131 wants. **Both are committed upstream and in no
-  tag** (not in buffer 6.25.0, not in socket 4.0.2), so #131 is waiting on a release, not on us.
+  **#131 is closed too.** An injected factory that the send path cannot transmit from is now refused at the
+  bind that precedes the first send, as a typed `UnsendableBufferFactoryException` naming the `WireBufferSeam`
+  to change, instead of surfacing as `IllegalStateException: send requires a native-memory buffer` on the
+  first connectivity check — after gathering had succeeded and the app believed it had a session. The
+  question is put to the **channel** (`DatagramCapabilities.requiresNativeMemoryBuffers`, buffer #330 +
+  socket #281), never to a platform table and never as "is this buffer native": the JVM/NIO and Node send
+  paths take a heap buffer happily, so the buffer-side phrasing would break three working configurations to
+  fix one. The 1-byte probe only runs once a channel has said it needs a raw address, so a vnet run costs
+  nothing. Checked at both `IceAgentDriver` binds and at `MdnsEndpoint.socketFor` — the last deliberately
+  *outside* `SocketUdpMdnsBinder`, whose catch-all maps every exception to "mDNS is unavailable here",
+  which would have swallowed the diagnosis into exactly the silence #131 existed to end.
   The workaround — `BufferPool(factory = BufferFactory.deterministic())`, native-backed *and* refcounted —
   is genuinely usable: the "it only reclaims what the stack releases, and `webrtc-stun` releases
   nothing" caveat that used to sit here is **obsolete**, because releasing is exactly what the ownership
@@ -96,12 +104,17 @@ What is genuinely left, and why the data-channel stack is not yet something a st
     *reference* (decoded attributes are slices of it), so "release when done" needs a last-reader rule
     first, or it turns a leak into a use-after-free. `LeakTrackingFactory` cannot see it either — the
     receive buffer comes from the *channel's* factory, not `IceConfig`'s.
-  * **DitchOoM/socket#277 is fixed upstream and not yet released.** socket's JVM/NIO and Node send paths
-    sliced the payload and dropped the `TrackedSlice` without releasing it, so on those backends one send
-    cost one pool chunk, permanently, however exact this repo is (Linux and Apple were always clean;
-    proven with pool stats, not inferred). `fix(socket-udp): send must not pin a pooled chunk forever`
-    landed on socket's main — and is in **no tag**, including 4.0.2. So the leak is still real for anything
-    resolving socket from Central: it needs a socket release, then a bump here.
+  * **DitchOoM/socket#277 shipped in socket 4.0.1 — this bullet used to say "released nowhere", and that
+    was wrong.** socket's JVM/NIO and Node send paths sliced the payload and dropped the `TrackedSlice`
+    without releasing it, so on those backends one send cost one pool chunk, permanently, however exact
+    this repo is (Linux and Apple were always clean; proven with pool stats, not inferred). It is fixed,
+    and has been since **4.0.1** — before the 4.0.2 we were already pinned to.
+    **Why the claim survived, because the same trap is one command away from anyone re-checking it:** the
+    commit whose subject is `fix(socket-udp): send must not pin a pooled chunk forever (#277)` sits on an
+    unmerged branch, so `git tag --contains <that sha>` prints nothing, and `git log origin/main` does not
+    list it. Its *content* reached main under a different sha (`a8301009`, the #269+#275 merge). A subject
+    line is not a unit of release — **check the tree, not the commit**: `git show v4.0.2:<file>` shows
+    `NioDatagramChannel.stage()` carrying the fix and naming #277 in its comment.
 - **TURN is no longer short-lived**, as of #137/#138: the allocation refreshes at a fraction of the
   *granted* LIFETIME, permissions are re-installed (§9), every request retransmits, and the
   long-term-credential key is the RFC 8489 §9.2.2 `MD5(user:realm:pass)` — pure-Kotlin MD5 in
@@ -121,12 +134,18 @@ Things that have cost real time here. Read before acting on a premise that sound
   something already published. socket's `LinuxSockets` cinterop klib embeds only `liburing.a`, and socket
   and `buffer-crypto` resolve to the *same* `boringssl-canonical`, which Gradle dedupes. Verified by
   linking the native peer on linuxX64 **and** linuxArm64 with socket core present.
-- **Stale premises are this codebase's recurring failure mode** — seven separate instances so far, each
+- **Stale premises are this codebase's recurring failure mode** — eight separate instances so far, each
   costing between a wrong comment and ~1000 wrong lines. When a comment explains why something *cannot*
   be done, check whether it still can't before building around it. The fifth instance was **this file**:
   it claimed foreign-initiated renegotiation was unexercised for months after #87 shipped five lanes
   proving otherwise. A document that is read first is the worst place for a stale premise — correct this
   section as soon as the state it describes changes.
+  The eighth was **socket#277 "released nowhere"** (below), and it is the one worth generalizing, because
+  the evidence for it was a command that answered a subtly different question. A fix reaches a release as
+  *content*, not as a commit: rebases, squashes and merge-commits all detach the subject line from the sha
+  that shipped it, so `git tag --contains <sha>` answers "was this object released", which is not what you
+  wanted to know. **Check the tree at the tag** (`git show v<x>:<file>`) before writing down that something
+  is unreleased — and before building a workaround around the belief.
 - **A config file the server never read: coturn's `-n` meant every relay lane tested an OPEN RELAY.**
   `entrypoint.sh` ended `exec turnserver -c "$CONF" -n`, and in coturn **`-n` means "do not use a
   configuration file"** — so `lt-cred-mech`, `user`, `realm` and `min-port`/`max-port` were all inert and
@@ -184,9 +203,9 @@ Things that have cost real time here. Read before acting on a premise that sound
   **those** backends a pooled buffer never returned to the pool no matter how diligent this repo's release
   paths are. The vnet cannot see it, and neither can `LeakTrackingFactory` — `freeNativeMemory()` marks a
   buffer freed whichever way the refcount went, so only `pool.stats().currentPoolSize` discriminates,
-  which is how it was proven rather than argued. **Fixed on socket's main, released nowhere** (see the
-  bullet above), so until a socket release lands, anything claiming pool-exactness on a real
-  JVM/Android/Node socket is still claiming it about socket too.
+  which is how it was proven rather than argued. **Fixed and released in socket 4.0.1**, so at the pin
+  above the send side is pool-exact on every backend. What is left to caveat is the *receive* side, which
+  is ours (see the bullet above) — not socket's.
 
 ## Standing directives
 

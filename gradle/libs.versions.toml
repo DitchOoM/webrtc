@@ -42,7 +42,13 @@ kotlinxCoroutines = "1.11.0"
 # becomes `EcnPreference` (OsDefault | NotEct | Ect1 | Ect0 | Ce), since `Ecn.Unknown` was double-booked
 # as both "cannot report" and "do not set". One class cannot implement both source refinements — their
 # `localAddress` types conflict — so an endpoint's addressing mode is fixed at construction.
-buffer = "6.23.0"
+# 6.25.0 (buffer PR #330, closing #328) adds `DatagramCapabilities.requiresNativeMemoryBuffers` — the
+# one capability field whose PRESENCE constrains the caller rather than whose absence degrades a
+# feature. It is what webrtc#131 was waiting on: "does this channel's send path demand a raw address",
+# asked of the CHANNEL rather than of the platform, which is the only phrasing that does not over-reject
+# (one process can run an in-memory endpoint and a real socket side by side, and NIO accepts a heap
+# ByteBuffer quite happily). 6.24.0 in between is hex <-> String conversions (#324), which we do not use.
+buffer = "6.25.0"
 # DitchOoM socket sibling — the UDP `DatagramChannel` **actuals** webrtc's transport track binds to for
 # real-network candidate gathering (host/srflx/relay). The seam itself is buffer-flow's
 # `DatagramChannel` (on Central, above); `socket-udp` is only the platform real-socket implementation
@@ -82,7 +88,13 @@ buffer = "6.23.0"
 #       `isTransient` is the predicate that matters to us: on real hardware (Realme RMX3933, API 35)
 #       Android grants INTERNET ~0.7-1s before VALIDATED on every reassociation, so without it an
 #       IceRestartPolicy.OnNetworkChange would restart the session on every Wi-Fi reassociation.
-socket = "4.0.2"
+# 4.1.0 (socket PR #281) is the socket-side half of buffer #330 above, and the only change over 4.0.2:
+# every socket-udp actual now ADVERTISES `requiresNativeMemoryBuffers` instead of leaving it at the
+# conservative `false` — linux io_uring `true`, Apple NW + POSIX `true`, JVM/NIO `false`, Node `false`.
+# The two halves must move together (4.1.0's POM pins buffer 6.25.0), and together they are the seam
+# webrtc#131 consumes to reject an unusable injected bufferFactory at construction rather than at the
+# first connectivity check.
+socket = "4.1.0"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"

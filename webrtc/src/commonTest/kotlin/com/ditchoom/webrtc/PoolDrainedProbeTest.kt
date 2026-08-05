@@ -54,6 +54,30 @@ class PoolDrainedProbeTest {
         assertContains(e.message, "outstanding reference")
     }
 
+    /**
+     * **Buffer already has the fix, and it is not a new primitive — it is releasing the slice.**
+     *
+     * `TrackedSlice`'s own contract says so: "once the slice is released (`releaseToPool` /
+     * `freeNativeMemory`) **and** the parent chunk's refcount reaches zero, the raw buffer is returned to
+     * the pool's freelist". So N decode-side slices need N releases, and the arithmetic closes.
+     *
+     * This matters because it settles what the remaining work actually is. Closing
+     * [PooledReceiveChunkTest] does **not** require a non-refcounting view upstream in `buffer` — it
+     * requires the decode paths in `webrtc-stun`/`webrtc-sctp` to own the slices they take. Proven here
+     * rather than assumed, on the same shape the codecs produce: slice repeatedly, release each, and the
+     * chunk comes home.
+     */
+    @Test
+    fun releasing_every_slice_returns_the_chunk_even_with_many_outstanding_views() {
+        val factory = LeakTrackingFactory()
+        val buffer = factory.allocate(256, ByteOrder.BIG_ENDIAN)
+        // Ten sub-views, exactly as decoding ten attributes off one datagram would take.
+        val slices = List(10) { buffer.slice(ByteOrder.BIG_ENDIAN) }
+        slices.forEach { it.freeIfNeeded() }
+        buffer.freeIfNeeded()
+        factory.assertPoolDrained("a chunk whose every slice was released")
+    }
+
     private fun assertContains(
         actual: String?,
         expected: String,

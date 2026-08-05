@@ -26,7 +26,7 @@ Released on Maven Central; the data-channel stack is complete. It establishes an
 against Chrome, Firefox, WebKit, Pion and werift over real NAT kernels in CI across
 `{x64, arm64} × {v4, v6, dual}`, and every lane also gates on the data-channel *semantics* sequence
 (fragmentation, unordered, PR-SCTP, multiplexing, reverse-direction, per-channel close, graceful
-shutdown). Pinned at socket 4.0.0 + buffer 6.23.0.
+shutdown). Pinned at socket 4.0.2 + buffer 6.23.0 (buffer 6.25.0 is out; we have not moved).
 
 What works that is easy to under-estimate:
 
@@ -48,10 +48,15 @@ What works that is easy to under-estimate:
   table says so in the type (`NetworkMonitorSupport.Unavailable`); one that can enumerate but has nothing
   pushing returns `Degraded(monitor, reason)`, so "it will be slower, and here is why" is answerable at
   config time rather than by inspecting a live session.
-- **`PeerConnection.diagnostics`** is a sealed, non-fatal observation stream (watcher stopped, remote
-  candidate discarded, interface probe failed). Channel-backed rather than a `SharedFlow` on purpose: a
-  Channel buffers from construction, and the most important diagnostic is emitted during start-up, which
-  no caller can reliably subscribe ahead of.
+- **`PeerConnection.diagnostics`** is a sealed, non-fatal observation stream: watcher stopped, remote
+  candidate discarded, interface probe failed, **transmit failed** (#143) and **relay permission refused**
+  (#150). Channel-backed rather than a `SharedFlow` on purpose: a Channel buffers from construction, and
+  the most important diagnostic is emitted during start-up, which no caller can reliably subscribe ahead of.
+  The last two exist because the alternative is a *silent* failure that looks like the network: a socket
+  refusing every send and a TURN server answering `443 Peer Address Family Mismatch` both used to present
+  identically to a peer that stopped answering — the session ending at `NoCandidatePairs`, naming the
+  symptom while the cause was already known and typed one layer down. `RelayPermissionRefused.error` is a
+  protocol code and therefore a real discriminant, unlike the `Throwable` payloads beside it.
 - **`IceRestartPolicy` defaults to `Manual`** deliberately — an automatic restart is a renegotiation only
   the app's signaling channel can carry, so it is opt-in rather than a default flip.
 
@@ -71,23 +76,32 @@ What is genuinely left, and why the data-channel stack is not yet something a st
   mDNS defaults **on** in the factory only; a hand-built `NativePeerConnection` is unchanged. What it
   still cannot honour is refused by typed reason rather than dropped: `turns:`, `?transport=tcp`, a
   credential-free `turn:`, an unresolvable name.
-- **No shippable native `bufferFactory` default** (#125), and no fail-fast when an injected one cannot back
-  real socket I/O (#131). This is the sharpest remaining gap: on the 7 native targets the README calls
-  "Full", a session built with the documented defaults dies on its **first connectivity check**, because
-  `BufferFactory.Default` is a GC-heap buffer on K/N and io_uring rejects it. Nothing caught it because
-  everything that touches a real native socket injects its own factory.
+- **The native `bufferFactory` default is fixed** — #125 closed with #145. The bullet that stood here called
+  it "the sharpest remaining gap" on "the 7 native targets"; **both halves were wrong**, and the issue
+  itself carries two corrections of its own table (`SctpConfig` was never affected — an SCTP chunk is input
+  to `sealApplicationData`, which copies it into a record allocated from the *DTLS* factory, so it never
+  reaches a socket). Scope was **K/N Linux only**, where `BufferFactory.Default` is a GC-heap buffer that
+  io_uring rejects. Check the issue before restating any of it: that table has been wrong twice.
+  What is genuinely left is **#131** — nothing fails fast when an injected factory cannot back real socket
+  I/O, so the failure still lands on the first connectivity check rather than at config time. It is no
+  longer a design question: buffer #328 adds `DatagramCapabilities.requiresNativeMemoryBuffers` and
+  socket-udp advertises it, which is exactly the seam #131 wants. **Both are committed upstream and in no
+  tag** (not in buffer 6.25.0, not in socket 4.0.2), so #131 is waiting on a release, not on us.
   The workaround — `BufferPool(factory = BufferFactory.deterministic())`, native-backed *and* refcounted —
-  is now genuinely usable: the "it only reclaims what the stack releases, and `webrtc-stun` releases
+  is genuinely usable: the "it only reclaims what the stack releases, and `webrtc-stun` releases
   nothing" caveat that used to sit here is **obsolete**, because releasing is exactly what the ownership
-  work did. Two things still bound it, and neither is ours alone:
+  work did. One thing still bounds it:
   * **The receive side is unowned.** Nothing releases a received datagram — not the driver's loop, not
     TURN's demux, not the gather. It is not a bug site so much as a missing half: the buffer is shared by
     *reference* (decoded attributes are slices of it), so "release when done" needs a last-reader rule
     first, or it turns a leak into a use-after-free. `LeakTrackingFactory` cannot see it either — the
     receive buffer comes from the *channel's* factory, not `IceConfig`'s.
-  * **DitchOoM/socket#277:** socket's own JVM/NIO and Node send paths slice the payload and drop the
-    `TrackedSlice` without releasing it, so on those backends one send costs one pool chunk, permanently,
-    however exact this repo is. Linux and Apple are clean. Proven with pool stats, not inferred.
+  * **DitchOoM/socket#277 is fixed upstream and not yet released.** socket's JVM/NIO and Node send paths
+    sliced the payload and dropped the `TrackedSlice` without releasing it, so on those backends one send
+    cost one pool chunk, permanently, however exact this repo is (Linux and Apple were always clean;
+    proven with pool stats, not inferred). `fix(socket-udp): send must not pin a pooled chunk forever`
+    landed on socket's main — and is in **no tag**, including 4.0.2. So the leak is still real for anything
+    resolving socket from Central: it needs a socket release, then a bump here.
 - **TURN is no longer short-lived**, as of #137/#138: the allocation refreshes at a fraction of the
   *granted* LIFETIME, permissions are re-installed (§9), every request retransmits, and the
   long-term-credential key is the RFC 8489 §9.2.2 `MD5(user:realm:pass)` — pure-Kotlin MD5 in
@@ -165,13 +179,14 @@ Things that have cost real time here. Read before acting on a premise that sound
   retransmission that nobody releases pins the chunk for good. Slice when something else needs a second
   live view (`StunTransaction` emits `SendRequest` outputs a driver may hold) — not to survive a send.
 
-  The converse is the open half, filed as **DitchOoM/socket#277**: socket's own JVM/NIO `stage()` and Node
-  `sendPayload()` slice the payload internally and drop the `TrackedSlice` without releasing it, so on
-  **those** backends a pooled buffer never returns to the pool no matter how diligent this repo's release
+  The converse was the other half, **DitchOoM/socket#277**: socket's own JVM/NIO `stage()` and Node
+  `sendPayload()` sliced the payload internally and dropped the `TrackedSlice` without releasing it, so on
+  **those** backends a pooled buffer never returned to the pool no matter how diligent this repo's release
   paths are. The vnet cannot see it, and neither can `LeakTrackingFactory` — `freeNativeMemory()` marks a
   buffer freed whichever way the refcount went, so only `pool.stats().currentPoolSize` discriminates,
-  which is how it was proven rather than argued. Anything claiming pool-exactness on a real
-  JVM/Android/Node socket is claiming it about socket too.
+  which is how it was proven rather than argued. **Fixed on socket's main, released nowhere** (see the
+  bullet above), so until a socket release lands, anything claiming pool-exactness on a real
+  JVM/Android/Node socket is still claiming it about socket too.
 
 ## Standing directives
 
@@ -264,9 +279,15 @@ above) and a `gradle.properties`, and `include(":…")` it in `settings.gradle.k
 - **Release** (`merged.yaml`): version bump controlled by PR labels (`major` / `minor`, else patch;
   `skip-release` / `draft-release` change the flow) → build → validate → `consumer-smoke` (maven-local,
   both hosts — `publish` needs it, so a consumer-breaking release never reaches Central) →
-  `publish-to-central` → finalize (tag + GitHub release). `release.yaml` completes/cancels a draft;
-  `released.yaml` mirrors a pushed tag **and then re-runs `consumer-smoke` against Maven Central only**
-  (no `mavenLocal()` fallback), which is what proves the publish itself.
+  `publish-to-central` → finalize (tag + GitHub release). `release.yaml` completes/cancels a draft.
+- **What proves the publish is `consumer-smoke-central`, a job inside `merged.yaml`** — it resolves the
+  just-pushed version from Maven Central and nothing else (no `mavenLocal()` fallback), both hosts, cold.
+  **Not `released.yaml`.** That workflow triggers on a tag *push*, and since #128 the tag is created
+  through the REST API with `secrets.GITHUB_TOKEN`, for which GitHub dispatches no workflow events — so it
+  silently stopped firing after v0.14.0 and the check was moved rather than left hanging off an event that
+  never arrives. `released.yaml` having no recent runs is therefore **expected and not a broken gate**;
+  reading it as one costs an investigation (it did, once). Check `consumer-smoke-central` on the
+  `merged.yaml` run instead — green for v0.22.0 and v0.23.0 on linuxX64 + macosArm64.
 - Version is auto-derived from Maven Central metadata + the label bump.
 - Every published artifact (including `webrtc-testsuite`) goes through `validate-artifacts` from its
   first release.

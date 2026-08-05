@@ -9,6 +9,7 @@ import com.ditchoom.buffer.codec.annotations.Endianness
 import com.ditchoom.buffer.codec.annotations.ProtocolMessage
 import com.ditchoom.buffer.codec.annotations.RemainingBytes
 import com.ditchoom.buffer.codec.annotations.When
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.managed
 import kotlin.jvm.JvmInline
 
@@ -409,7 +410,22 @@ private val SctpParameter.bodyLength: Int get() = minOf(length, value.remaining(
 // The value region bounded to its declared length. Every decode below validates the length FIRST, so a
 // generated codec only ever runs against a body whose shape it can read — which is what keeps the
 // interpretation total (T0) without wrapping the codec in a catch.
-private fun SctpParameter.body(): ReadBuffer = value.slice().also { it.setLimit(bodyLength) }
+// The value region bounded to its declared length, released the moment the codec has read it.
+//
+// `slice()` on a pooled datagram is `addRef()`, and `TrackedSlice` re-parents to the ROOT chunk — so
+// this borrow is a reference against the received buffer. Every call site consumes it synchronously
+// (the generated wire types hold value types only, never a view), so the release belongs here rather
+// than at five call sites that could each forget it: "released exactly once" becomes a property of the
+// shape. This used to be a bare `body()` whose result was dropped, which pinned the datagram once per
+// RE-CONFIG parameter — the last pin in a full session.
+private inline fun <T> SctpParameter.withBody(block: (ReadBuffer) -> T): T {
+    val body = value.slice().also { it.setLimit(bodyLength) }
+    return try {
+        block(body)
+    } finally {
+        body.freeIfNeeded()
+    }
+}
 
 private fun SctpParameter.malformed(reason: ReConfigMalformedReason) = ReConfigParameterDecode.Malformed(type, reason)
 
@@ -427,7 +443,7 @@ private fun SctpParameter.checkStreamList(fixed: Int): ReConfigParameterDecode? 
 
 private fun SctpParameter.decodeOutgoingSsnReset(): ReConfigParameterDecode {
     checkStreamList(OUTGOING_FIXED_BYTES)?.let { return it }
-    val w = OutgoingSsnResetWireCodec.decode(body(), DecodeContext.Empty)
+    val w = withBody { OutgoingSsnResetWireCodec.decode(it, DecodeContext.Empty) }
     return ReConfigParameterDecode.Interpreted(
         ReConfigParameter.OutgoingSsnReset(
             w.requestSequenceNumber,
@@ -440,7 +456,7 @@ private fun SctpParameter.decodeOutgoingSsnReset(): ReConfigParameterDecode {
 
 private fun SctpParameter.decodeIncomingSsnReset(): ReConfigParameterDecode {
     checkStreamList(INCOMING_FIXED_BYTES)?.let { return it }
-    val w = IncomingSsnResetWireCodec.decode(body(), DecodeContext.Empty)
+    val w = withBody { IncomingSsnResetWireCodec.decode(it, DecodeContext.Empty) }
     return ReConfigParameterDecode.Interpreted(
         ReConfigParameter.IncomingSsnReset(w.requestSequenceNumber, w.streams.map { StreamId(it.value.toInt()) }),
     )
@@ -449,14 +465,14 @@ private fun SctpParameter.decodeIncomingSsnReset(): ReConfigParameterDecode {
 private fun SctpParameter.decodeSsnTsnReset(): ReConfigParameterDecode {
     val n = bodyLength
     if (n != SEQ_BYTES) return malformed(ReConfigMalformedReason.WrongLength(n))
-    val w = SsnTsnResetWireCodec.decode(body(), DecodeContext.Empty)
+    val w = withBody { SsnTsnResetWireCodec.decode(it, DecodeContext.Empty) }
     return ReConfigParameterDecode.Interpreted(ReConfigParameter.SsnTsnReset(w.requestSequenceNumber))
 }
 
 private fun SctpParameter.decodeResponse(): ReConfigParameterDecode {
     val n = bodyLength
     if (n != RESPONSE_SHORT_BYTES && n != RESPONSE_LONG_BYTES) return malformed(ReConfigMalformedReason.WrongLength(n))
-    val w = ReConfigResponseWireCodec.decode(body(), DecodeContext.Empty)
+    val w = withBody { ReConfigResponseWireCodec.decode(it, DecodeContext.Empty) }
     val result = ReConfigResult.ofWire(w.result) ?: return malformed(ReConfigMalformedReason.UnassignedResult(w.result))
     // The generated cascading trailer makes the two TSNs independently nullable because the wire does;
     // the model pairs them. The length check above already guaranteed both or neither, so a half-present
@@ -487,7 +503,7 @@ private class Optional<T>(
 private fun SctpParameter.decodeAddStreams(): ReConfigParameterDecode {
     val n = bodyLength
     if (n != ADD_STREAMS_BYTES) return malformed(ReConfigMalformedReason.WrongLength(n))
-    val w = AddStreamsWireCodec.decode(body(), DecodeContext.Empty)
+    val w = withBody { AddStreamsWireCodec.decode(it, DecodeContext.Empty) }
     val parameter =
         if (type == ParameterType.AddOutgoingStreamsRequest) {
             ReConfigParameter.AddOutgoingStreams(w.requestSequenceNumber, w.count)

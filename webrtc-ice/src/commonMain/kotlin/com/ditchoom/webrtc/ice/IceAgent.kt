@@ -588,11 +588,25 @@ public class IceAgent(
         out: MutableList<IceOutput>,
     ) {
         val message = (StunMessage.decode(event.data) as? StunDecodeResult.Success)?.message ?: return
-        if (message.messageType.method != StunMethod.Binding) return
-        when (message.messageType.stunClass) {
-            StunClass.Request -> onInboundCheck(message, event.localBase, event.source, now, out)
-            StunClass.SuccessResponse, StunClass.ErrorResponse -> onInboundResponse(message, event.source, now, out)
-            StunClass.Indication -> Unit
+        // `finally`, because every handler below is dense with early returns — an unauthenticated check,
+        // an unknown ufrag, a role conflict answered — and each one is an exit that owes the decode's
+        // views (see [StunMessage.release]). Releasing on the success path alone would give the chunk
+        // back only for the packets that did everything right, which is the opposite of what a peer
+        // sending junk should cost us.
+        //
+        // Safe because nothing survives the call: the agent reads attributes into value types (String,
+        // Long, TransportAddress) and `StunTransaction.onResponse` returns the message without storing
+        // it. The buffer `event.data` itself is NOT freed here — the drive loop still owns it and
+        // releases it after `handle`, under the last-reader rule.
+        try {
+            if (message.messageType.method != StunMethod.Binding) return
+            when (message.messageType.stunClass) {
+                StunClass.Request -> onInboundCheck(message, event.localBase, event.source, now, out)
+                StunClass.SuccessResponse, StunClass.ErrorResponse -> onInboundResponse(message, event.source, now, out)
+                StunClass.Indication -> Unit
+            }
+        } finally {
+            message.release()
         }
     }
 

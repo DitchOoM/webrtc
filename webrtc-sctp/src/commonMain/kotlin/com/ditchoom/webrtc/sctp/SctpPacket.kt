@@ -7,6 +7,7 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.managed
 import com.ditchoom.webrtc.sctp.SctpDecodeResult.Reject
 import com.ditchoom.webrtc.sctp.SctpDecodeResult.Success
@@ -28,7 +29,37 @@ public class SctpPacket internal constructor(
     private val source: ReadBuffer?,
     private val sourceStart: Int,
     private val packetLength: Int,
+    // The per-chunk spans `decode` sliced off the datagram. Held only so [release] can give them back:
+    // each chunk's own fields are slices of these, but `TrackedSlice` re-parents to the ROOT chunk, so
+    // these are independent references against the datagram rather than a chain, and dropping them
+    // pinned it just as surely as dropping the chunks' own views.
+    private val chunkSpans: List<ReadBuffer> = emptyList(),
 ) {
+    /**
+     * Give back every buffer reference **decoding this packet took** — and nothing else. Call it once the
+     * last reader is done, before the datagram's own owner releases it.
+     *
+     * It does **not** free the datagram. [decode] is zero-copy: every chunk's variable region is a slice
+     * over the received buffer, and on a pooled one `slice()` is `addRef()`. A packet bundling N chunks
+     * therefore takes several references against the chunk while the datagram's owner returns exactly
+     * **one**, under the last-reader rule. Without this the arithmetic never closes and the memory never
+     * returns to the pool, however disciplined that owner is — measured at 23 chunks created and 0
+     * returned across a full session, while every buffer-level leak assertion passed.
+     *
+     * Safe on every configuration: releasing a borrow returns only the reference that borrow took. On a
+     * pooled parent it decrements; on a plain native buffer `NativeBufferSlice.freeNativeMemory()` is a
+     * documented no-op, so a non-pooled path pays nothing. The datagram is still freed exactly once, by
+     * whoever owns it.
+     *
+     * **The rule for callers:** no borrow may outlive this. The association reads chunks into value types
+     * and copies out the two things that must survive (`ReassemblyQueue`'s user data and the INIT-ACK
+     * cookie, both via `copyOf`), so nothing it keeps points back into the packet.
+     */
+    public fun release() {
+        for (chunk in chunks) chunk.releaseViews()
+        for (span in chunkSpans) span.freeIfNeeded()
+    }
+
     public val sourcePort: UShort get() = header.sourcePort
     public val destinationPort: UShort get() = header.destinationPort
     public val verificationTag: VerificationTag get() = header.verificationTag
@@ -86,32 +117,45 @@ public class SctpPacket internal constructor(
             val header = SctpCommonHeaderCodec.decode(source, DecodeContext.Empty)
             // The generated codec advanced position by 12; walk chunks from there using absolute reads.
             val chunks = mutableListOf<SctpChunk>()
+            val spans = mutableListOf<ReadBuffer>()
             var pos = start + SctpCommonHeader.SIZE_BYTES
             val end = source.limit()
+
+            // A reject part-way through the walk still owes every view built so far. Decoding is
+            // zero-copy, so those are references against the datagram on a pooled buffer (see [release]),
+            // and a Reject hands the caller no object to release them through — so abandoning them pinned
+            // the chunk permanently. That is peer-controlled input: a stream of malformed SCTP would have
+            // exhausted the pool without ever completing a parse.
+            fun reject(reason: SctpRejectReason): Reject {
+                for (chunk in chunks) chunk.releaseViews()
+                for (span in spans) span.freeIfNeeded()
+                return Reject(reason)
+            }
             while (pos < end) {
-                if (pos + TLV_HEADER_BYTES > end) return Reject(SctpRejectReason.MalformedChunkHeader(pos))
+                if (pos + TLV_HEADER_BYTES > end) return reject(SctpRejectReason.MalformedChunkHeader(pos))
                 val chunkType = SctpChunkType(source.u8(pos).toUByte())
                 val flags = source.u8(pos + 1).toUByte()
                 val declaredLength = source.u16(pos + 2)
-                if (declaredLength < TLV_HEADER_BYTES) return Reject(SctpRejectReason.MalformedChunkHeader(pos))
+                if (declaredLength < TLV_HEADER_BYTES) return reject(SctpRejectReason.MalformedChunkHeader(pos))
                 val valueEnd = pos + declaredLength
                 if (valueEnd > end) {
-                    return Reject(SctpRejectReason.ChunkLengthBeyondPacket(pos, declaredLength, end - pos))
+                    return reject(SctpRejectReason.ChunkLengthBeyondPacket(pos, declaredLength, end - pos))
                 }
                 val valueView = source.sliceOf(pos + TLV_HEADER_BYTES, valueEnd)
+                spans += valueView
                 val chunk =
                     SctpChunk.decodeBody(chunkType, flags, valueView)
-                        ?: return Reject(SctpRejectReason.MalformedChunkBody(pos, chunkType))
+                        ?: return reject(SctpRejectReason.MalformedChunkBody(pos, chunkType))
                 chunks += chunk
                 // The next chunk starts at the 4-byte-aligned end of this one (RFC 4960 §3.2 padding);
                 // stop cleanly if only < 4 pad bytes remain.
                 pos += paddedLength(declaredLength)
             }
-            if (chunks.isEmpty()) return Reject(SctpRejectReason.NoChunks)
+            if (chunks.isEmpty()) return reject(SctpRejectReason.NoChunks)
 
             // The consumed extent from the packet start — what verify/re-encode cover.
             val consumed = pos.coerceAtMost(end) - start
-            return Success(SctpPacket(header, chunks, source, start, consumed))
+            return Success(SctpPacket(header, chunks, source, start, consumed, spans))
         }
 
         /** Writes [header] then each chunk (type, flags, length, value, zero-padding to a 4-byte boundary). */

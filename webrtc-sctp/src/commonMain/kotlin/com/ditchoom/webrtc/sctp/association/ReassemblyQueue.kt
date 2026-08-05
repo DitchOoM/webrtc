@@ -3,6 +3,7 @@ package com.ditchoom.webrtc.sctp.association
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.webrtc.sctp.DataChunkFlags
 import com.ditchoom.webrtc.sctp.ForwardTsnStream
 import com.ditchoom.webrtc.sctp.PayloadProtocolId
@@ -281,12 +282,20 @@ internal class ReassemblyQueue(
     }
 
     private fun copyOf(view: ReadBuffer): PlatformBuffer {
+        // The slice is taken only to read `view` without disturbing its cursor, and it is dead the moment
+        // the copy is made — but on a pooled datagram `slice()` is `addRef()`, and `TrackedSlice`
+        // re-parents to the ROOT chunk, so dropping it pinned the received datagram once per call. The
+        // copy itself is genuinely owned by the caller and is NOT released here.
         val slice = view.slice()
-        val len = slice.remaining()
-        val copy = config.bufferFactory.allocate(maxOf(1, len), ByteOrder.BIG_ENDIAN)
-        copy.write(slice)
-        copy.resetForRead()
-        copy.setLimit(len)
-        return copy
+        return try {
+            val len = slice.remaining()
+            val copy = config.bufferFactory.allocate(maxOf(1, len), ByteOrder.BIG_ENDIAN)
+            copy.write(slice)
+            copy.resetForRead()
+            copy.setLimit(len)
+            copy
+        } finally {
+            slice.freeIfNeeded()
+        }
     }
 }

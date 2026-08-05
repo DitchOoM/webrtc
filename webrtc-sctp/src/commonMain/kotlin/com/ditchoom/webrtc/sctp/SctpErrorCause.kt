@@ -3,6 +3,7 @@ package com.ditchoom.webrtc.sctp
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.managed
 import kotlin.jvm.JvmInline
 
@@ -50,6 +51,12 @@ public class SctpErrorCause internal constructor(
 ) {
     /** The declared-length value view (padding excluded). */
     public val value: ReadBuffer = paddedValue.sliceOf(0, minOf(length, paddedValue.remaining()))
+
+    /** Give back both views this cause holds — see `SctpPacket.release`. */
+    internal fun releaseViews() {
+        value.freeIfNeeded()
+        paddedValue.freeIfNeeded()
+    }
 
     override fun equals(other: Any?): Boolean =
         this === other ||

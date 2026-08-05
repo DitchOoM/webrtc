@@ -3,6 +3,7 @@ package com.ditchoom.webrtc.sctp
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.managed
 import kotlin.jvm.JvmInline
 
@@ -79,6 +80,16 @@ public class SctpParameter internal constructor(
 ) {
     /** The declared-length value view (padding excluded) — what the typed interpreters read. */
     public val value: ReadBuffer = paddedValue.sliceOf(0, minOf(length, paddedValue.remaining()))
+
+    /**
+     * Give back both views this parameter holds. See `SctpPacket.release` for why decoding needs a
+     * release at all: on a pooled datagram every one of these slices is a reference against the chunk,
+     * and [value] is derived in the constructor so it exists whether or not anyone reads it.
+     */
+    internal fun releaseViews() {
+        value.freeIfNeeded()
+        paddedValue.freeIfNeeded()
+    }
 
     override fun equals(other: Any?): Boolean =
         this === other ||

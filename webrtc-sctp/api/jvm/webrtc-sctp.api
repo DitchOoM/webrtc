@@ -806,6 +806,7 @@ public final class com/ditchoom/webrtc/sctp/SctpPacket {
 	public final fun getHeader ()Lcom/ditchoom/webrtc/sctp/SctpCommonHeader;
 	public final fun getSourcePort-Mh2AYeg ()S
 	public final fun getVerificationTag-FZlQ57E ()I
+	public final fun release ()V
 	public final fun verifyChecksum ()Z
 }
 

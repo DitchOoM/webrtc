@@ -32,6 +32,7 @@ import com.ditchoom.webrtc.sctp.association.SctpFailureReason
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sctp.datachannel.SctpClosedException
 import com.ditchoom.webrtc.sctp.datachannel.SctpDataChannelStack
+import com.ditchoom.webrtc.sctp.datachannel.SctpDatagramTransport
 import com.ditchoom.webrtc.sctp.datachannel.SctpRole
 import com.ditchoom.webrtc.sdp.AppliedSdpType
 import com.ditchoom.webrtc.sdp.DataChannelParameters
@@ -978,6 +979,13 @@ public class NativePeerConnection(
                     }
                 }
             }
+            // Close the DTLS session explicitly, before the ICE pair under it goes away. It used to be
+            // reached only through the SCTP stack's own teardown — which runs when that stack notices its
+            // transport has closed — so a PeerConnection whose association had not torn down left the
+            // session, its certificate identity and its traffic keys alive until the whole scope died.
+            // On a long-lived application scope that is key material outliving the connection it belongs
+            // to, which is worse than the memory: `close()` is exactly when a caller expects it gone.
+            (dataChannels as? DataChannelStack.Up)?.secured?.close()
             startedTransport()?.close()
             localCandidateChannel.close()
             incomingChannels.close()
@@ -1233,7 +1241,7 @@ public class NativePeerConnection(
                 liveStack.shutdown()
                 return null
             }
-            dataChannels = DataChannelStack.Up(liveStack)
+            dataChannels = DataChannelStack.Up(liveStack, secured)
             for (pending in pendingChannels) scope.launch { pending.bind(liveStack) }
             pendingChannels.clear()
         }
@@ -1498,6 +1506,11 @@ public class NativePeerConnection(
 
         data class Up(
             val stack: SctpDataChannelStack,
+            /**
+             * The secured transport under [stack]. Held so [close] can end the DTLS session directly
+             * rather than only through the stack's own teardown — see the note there.
+             */
+            val secured: SctpDatagramTransport,
         ) : DataChannelStack
     }
 

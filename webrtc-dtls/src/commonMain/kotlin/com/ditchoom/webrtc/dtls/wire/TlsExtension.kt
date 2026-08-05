@@ -2,6 +2,7 @@ package com.ditchoom.webrtc.dtls.wire
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.freeIfNeeded
 import kotlin.jvm.JvmInline
 
 /** A TLS extension type (RFC 8446 §4.2 registry). Unknown values are preserved verbatim. */
@@ -74,6 +75,13 @@ internal class Extension(
         dest.writeView(body)
     }
 
+    /**
+     * Give back the reference [body] took. **Decoded extensions only** — see [releaseDecodedViews].
+     */
+    fun releaseViews() {
+        body.freeIfNeeded()
+    }
+
     companion object {
         /**
          * Encodes a `uint16`-length-prefixed extension list into [dest] (the trailing block of a
@@ -108,16 +116,38 @@ internal class Extension(
             if (listEnd > end) return null
             val out = ArrayList<Extension>(4)
             while (pos < listEnd) {
-                if (pos + 4 > listEnd) return null
+                if (pos + 4 > listEnd) return out.rejected()
                 val type = region.u16(pos)
                 val len = region.u16(pos + 2)
                 val bodyStart = pos + 4
                 val bodyEnd = bodyStart + len
-                if (bodyEnd > listEnd) return null
+                if (bodyEnd > listEnd) return out.rejected()
                 out += Extension(ExtensionType(type), region.sliceOf(bodyStart, bodyEnd))
                 pos = bodyEnd
             }
             return out
         }
+
+        /**
+         * The typed reject, with the views already taken given back. A malformed tail after two good
+         * extensions used to `return null` on top of two live slices, so a peer could pin one chunk per
+         * datagram by sending exactly that — remote-triggered, not bookkeeping.
+         */
+        private fun List<Extension>.rejected(): List<Extension>? {
+            releaseDecodedViews()
+            return null
+        }
     }
+}
+
+/**
+ * Give back every reference a **decoded** extension list took.
+ *
+ * Decoded only, and the distinction is the same one `RawAttribute.owned` makes in webrtc-stun: a decoded
+ * body is a `sliceOf` the region being parsed — a reference on a pooled chunk, and this list's to return —
+ * while a *built* extension's body is a buffer its builder allocated and releases on its own flight path.
+ * Calling this on a built list would be a double free, which is why nothing in the encode direction does.
+ */
+internal fun List<Extension>.releaseDecodedViews() {
+    for (e in this) e.releaseViews()
 }

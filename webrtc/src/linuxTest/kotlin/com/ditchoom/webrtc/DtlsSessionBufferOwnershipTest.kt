@@ -13,6 +13,7 @@ import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sdp.SdpType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
@@ -39,20 +40,28 @@ import kotlin.time.Instant
  * be the exact target this bug is real on, since it is the only one whose receive factory is a raw
  * `malloc` rather than something the collector reclaims.
  *
- * ## What it asserts, and the seam it deliberately does not
+ * ## Three trackers, one per seam
  *
- * The tracker goes on **[TestNet]'s factory** — the copy-on-receive seam, standing in for the socket's
- * receive buffer, which is the thing that travels ICE → DTLS → SCTP and was released by nobody. That is
- * this fixture's invariant and it holds.
+ * One goes on **[TestNet]'s factory** — the copy-on-receive seam, standing in for the socket's receive
+ * buffer, which is the thing that travels ICE → DTLS → SCTP. The other two go on each peer's
+ * [DtlsConfig.bufferFactory], the DTLS **record** seam: every record `Dtls13Handshake.encode`s comes from
+ * there and goes to `IceDataTransport.send`, which explicitly does not take ownership, so the pump owes
+ * the release (`PureKotlinDtls.apply`).
  *
- * It does **not** assert on [DtlsConfig.bufferFactory], the DTLS *record* seam, because that one is still
- * unowned and is a separate piece of work. Measured while writing this: a session of this size ends with
- * **262 of 262** record buffers live. The dominant term is the send side — every record `encode`s into a
- * fresh buffer from that factory and goes to `IceDataTransport.send`, which explicitly does *not* take
- * ownership, so nothing ever frees it — with `HandshakeReassembler`'s per-message assembly buffers behind
- * it. Neither is on the path this change is about, and folding a send-side fix into a receive-side one
- * would make both harder to review. The two trackers must stay separate whoever does it: pointing one
- * factory at both seams produces a number that cannot be attributed to either.
+ * They must stay separate. A single tracker pointed at two seams produces a number that cannot be
+ * attributed to either, which is the whole reason this file exists beside the `commonTest` sibling.
+ *
+ * ## Why [LeakTrackingFactory.assertPoolDrained] and not just `assertNoLeaks`
+ *
+ * `assertNoLeaks` proves `freeNativeMemory()` was called on every buffer. It is structurally **blind** to
+ * a borrow: `freed` is set by the first free whatever the refcount does, so an unreleased `sliceOf` taken
+ * while decoding is invisible to it. Both are asserted, weaker first, because `assertNoLeaks` is the one
+ * that names *which* buffer.
+ *
+ * A session of this size used to end with **262 of 262** record buffers live. The per-version breakdown
+ * — and DTLS 1.2, which two of our own peers never negotiate — is
+ * `webrtc-dtls`' own `DtlsRecordSeamOwnershipTest`; this one proves the same property through the pump,
+ * the ICE transport and a real `PeerConnection` teardown, which that one cannot reach.
  */
 class DtlsSessionBufferOwnershipTest {
     private val timeout = 60.seconds
@@ -66,8 +75,10 @@ class DtlsSessionBufferOwnershipTest {
             val binder = DatagramBinder { net.bind(it) }
             val clock: () -> Instant = { epoch + testScheduler.currentTime.milliseconds }
 
-            val aliceDtls = PureKotlinDtls(backgroundScope, clock)
-            val bobDtls = PureKotlinDtls(backgroundScope, clock)
+            val aliceRecords = LeakTrackingFactory()
+            val bobRecords = LeakTrackingFactory()
+            val aliceDtls = PureKotlinDtls(backgroundScope, clock, DtlsConfig(bufferFactory = aliceRecords))
+            val bobDtls = PureKotlinDtls(backgroundScope, clock, DtlsConfig(bufferFactory = bobRecords))
 
             val alice =
                 NativePeerConnection(
@@ -115,8 +126,23 @@ class DtlsSessionBufferOwnershipTest {
 
             alice.close()
             bob.close()
+            // Let both DTLS pumps finish tearing down before anything is counted. `close()` cancels a pump
+            // that is parked in `select`; its `finally` — which frees the engine, its certificate identity
+            // and its traffic keys — needs a dispatch to run, and `advanceUntilIdle()` alone does not give
+            // a cancelled background coroutine one. Measuring first reported a confident 28-buffer "leak"
+            // that was entirely this.
+            delay(1.seconds)
+            testScheduler.advanceUntilIdle()
 
+            // `assertNoLeaks` first: it names WHICH buffer was never freed. `assertPoolDrained` is the
+            // stronger claim and the one an unreleased *slice* shows up in — a borrow taken while decoding
+            // a record costs a reference on a pooled chunk however diligently its owner freed it.
             received.assertNoLeaks("a real-DTLS session's received datagrams")
+            aliceRecords.assertNoLeaks("alice's DTLS record seam")
+            bobRecords.assertNoLeaks("bob's DTLS record seam")
+            received.assertPoolDrained("a real-DTLS session's received datagrams")
+            aliceRecords.assertPoolDrained("alice's DTLS record seam")
+            bobRecords.assertPoolDrained("bob's DTLS record seam")
         }
 
     private fun trickle(

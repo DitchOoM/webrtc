@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.freeIfNeeded
 
 /**
  * A minimal DER (ASN.1 Distinguished Encoding Rules) writer — only the productions a self-signed
@@ -11,11 +12,22 @@ import com.ditchoom.buffer.WriteBuffer
  * ASN.1 library: no parsing, no indefinite lengths, no BER. Every element is built innermost-first as a
  * complete `tag ‖ length ‖ value` [ReadBuffer], then composed. Definite lengths use the short form
  * below 128 and the big-endian long form above — the DER-canonical minimal encoding.
+ *
+ * ## Every combinator CONSUMES its children
+ *
+ * Innermost-first composition means each element's bytes are copied into its parent and the child is
+ * then dead — so each combinator releases what it was given, and only the outermost result is the
+ * caller's. Without this, encoding one certificate costs a buffer per ASN.1 node (about thirty), none of
+ * which any caller has a name for: the intermediates are anonymous sub-expressions, so there is nowhere
+ * *else* the release could go.
+ *
+ * The one thing this forbids is passing the same child to two parents — build it twice instead. It is a
+ * few bytes at construction, and it is what keeps the rule total rather than "consuming, except…".
  */
 internal class Der(
     private val factory: BufferFactory,
 ) {
-    /** Wraps [content] in a `tag ‖ length ‖ content` TLV. */
+    /** Wraps [content] in a `tag ‖ length ‖ content` TLV, **consuming [content]**. */
     fun tlv(
         tag: Int,
         content: ReadBuffer,
@@ -27,6 +39,7 @@ internal class Der(
         for (o in lengthOctets) out.writeByte(o.toByte())
         writeView(out, content)
         out.resetForRead()
+        content.freeIfNeeded()
         return out
     }
 
@@ -51,7 +64,8 @@ internal class Der(
         wrapped.writeByte(0)
         writeView(wrapped, content)
         wrapped.resetForRead()
-        return tlv(0x03, wrapped)
+        content.freeIfNeeded()
+        return tlv(0x03, wrapped) // tlv consumes `wrapped`
     }
 
     /** `UTCTime` (`YYMMDDHHMMSSZ`). */
@@ -75,11 +89,13 @@ internal class Der(
         return out
     }
 
+    /** Joins [children] into one buffer, **consuming every one of them**. */
     fun concat(children: List<ReadBuffer>): ReadBuffer {
         val total = children.sumOf { it.remaining() }
         val out = factory.allocate(maxOf(total, 1), ByteOrder.BIG_ENDIAN)
         for (c in children) writeView(out, c)
         out.resetForRead()
+        for (c in children) c.freeIfNeeded()
         return out
     }
 

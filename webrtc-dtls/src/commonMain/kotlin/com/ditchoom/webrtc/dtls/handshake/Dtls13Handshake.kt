@@ -17,6 +17,7 @@ import com.ditchoom.buffer.crypto.ecdsaSignatureToDer
 import com.ditchoom.buffer.crypto.ecdsaSignatureToP1363
 import com.ditchoom.buffer.crypto.signatures
 import com.ditchoom.buffer.crypto.spkiToEcPublicKey
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.webrtc.dtls.DtlsConfig
 import com.ditchoom.webrtc.dtls.DtlsFailureReason
 import com.ditchoom.webrtc.dtls.DtlsRole
@@ -118,6 +119,7 @@ internal class Dtls13Handshake(
 
     private var sendMsgSeq = 0
     private var started = false
+    private var closed = false
     private var terminal: DtlsState? = null
 
     // Retransmission (RFC 9147 §5.8): the last flight + a backoff timer.
@@ -157,7 +159,15 @@ internal class Dtls13Handshake(
             val clientHs: ReadBuffer,
             val serverHs: ReadBuffer,
             val protection: Dtls13RecordProtection,
-        ) : Keys
+        ) : Keys {
+            /** Wipe-and-free the three secrets and the epoch's record protection. */
+            fun release() {
+                protection.close()
+                master.freeIfNeeded()
+                clientHs.freeIfNeeded()
+                serverHs.freeIfNeeded()
+            }
+        }
 
         /** Epoch-3 application traffic keys + the RFC 8446 §7.5 exporter_master_secret, over retained hs keys. */
         class Application(
@@ -273,6 +283,10 @@ internal class Dtls13Handshake(
                     it.writeByte(0) // close_notify
                 }
             out += prot.seal(alert, ContentType.Alert.value, EPOCH_APP, epoch3Seq++)
+            // `seal` copies its content and deliberately does not consume it — the flight path re-seals
+            // the SAME payload on every retransmit. This alert is never retransmitted, so it is the one
+            // caller that owes the release, and it is owed exactly once per session that closes cleanly.
+            alert.freeIfNeeded()
         }
         cancelRetransmit()
         terminal = DtlsState.Closed
@@ -281,10 +295,41 @@ internal class Dtls13Handshake(
 
     override fun nextDeadline(now: Instant): Instant? = if (terminal != null) null else retransmitDeadline
 
+    /**
+     * Release everything this FSM holds — key material, retained handshake artifacts, the transcript, the
+     * reassembler's partial messages, and the last flight kept for retransmission. Idempotent.
+     *
+     * Every field here outlives a single `handle` by design (that is what makes it state rather than
+     * scratch), so this is the only place any of it can be freed. The `keys` phase is walked rather than
+     * read through the convenience accessors: [handshakeProtection] resolves *through* an
+     * [Keys.Application], so closing via the accessors alone would leave the epoch-2 secrets behind.
+     */
     override fun close() {
+        if (closed) return
+        closed = true
         ecdhe?.close()
-        handshakeProtection?.close()
-        appProtection?.close()
+        when (val k = keys) {
+            Keys.Pending -> Unit
+            is Keys.Handshake -> k.release()
+            is Keys.Application -> {
+                k.protection.close()
+                k.exporterMaster.freeIfNeeded()
+                k.handshake.release()
+            }
+        }
+        keys = Keys.Pending
+        if (::localRandom.isInitialized) localRandom.freeIfNeeded()
+        hrrCookie?.freeIfNeeded()
+        hrrCookie = null
+        peerCertDer?.freeIfNeeded()
+        peerCertDer = null
+        peerPoint?.freeIfNeeded()
+        peerPoint = null
+        lastFlight?.forEach { it.payload.freeIfNeeded() }
+        lastFlight = null
+        transcript.close()
+        reassembler.close()
+        schedule.close()
     }
 
     // ── inbound record demux (mixed plaintext epoch-0 + unified-header epoch-2/3 in one datagram) ──
@@ -327,7 +372,14 @@ internal class Dtls13Handshake(
                 if (firstByte == ContentType.Handshake.value) {
                     // Same as the epoch-2 case: a plaintext (epoch-0) handshake retransmit after we finished.
                     if (terminal is DtlsState.Established) peerRetransmitAfterEstablished = true
-                    processHandshakeBytes(datagram.let { sliceOf(it, bodyStart, bodyEnd) }, out, now)
+                    // A slice of the received datagram — a REFERENCE on a pooled one, so it is released
+                    // here rather than dropped. Every plaintext record in every ClientHello datagram.
+                    val body = sliceOf(datagram, bodyStart, bodyEnd)
+                    try {
+                        processHandshakeBytes(body, out, now)
+                    } finally {
+                        body.freeIfNeeded()
+                    }
                 }
                 // ChangeCipherSpec / Alert / ACK in cleartext are ignored (DTLS 1.3 sends none of these plaintext).
                 pos = bodyEnd
@@ -342,12 +394,25 @@ internal class Dtls13Handshake(
         appData: MutableList<ReadBuffer>,
         now: Instant,
     ) {
+        // `opened.content` is the AEAD's own output buffer, narrowed in place — not a slice — so exactly
+        // one of these branches owes it a release and only the app-data one transfers it onward.
         when (opened.contentType) {
-            ContentType.Handshake.value -> processHandshakeBytes(opened.content, out, now)
-            ContentType.ApplicationData.value -> appData += opened.content
-            ContentType.Alert.value -> fail(DtlsFailureReason.HandshakeFailure)
-            ACK_CONTENT_TYPE -> Unit // RFC 9147 §7 ACK — nothing to do on a lossless caller-clocked path
-            else -> Unit
+            ContentType.Handshake.value -> {
+                try {
+                    processHandshakeBytes(opened.content, out, now)
+                } finally {
+                    opened.content.freeIfNeeded()
+                }
+            }
+            ContentType.ApplicationData.value -> appData += opened.content // transferred to the driver
+            ContentType.Alert.value -> {
+                opened.content.freeIfNeeded()
+                fail(DtlsFailureReason.HandshakeFailure)
+            }
+            // RFC 9147 §7 ACK — nothing to do on a lossless caller-clocked path — and any content type we
+            // do not model. Dropped, which means released: a peer could otherwise send unknown-type
+            // records to leak a buffer each.
+            else -> opened.content.freeIfNeeded()
         }
     }
 
@@ -357,12 +422,36 @@ internal class Dtls13Handshake(
         now: Instant,
     ) {
         val fragments = HandshakeFragment.decodeAll(handshakeBytes) ?: return
+        // Each fragment body is a `sliceOf` the record — a BORROW, and on a pooled buffer a reference. The
+        // reassembler copies it into its own assembly buffer, so the borrow is spent the moment `offer`
+        // returns; releasing it is what stops one inbound handshake message pinning one chunk for good.
+        // `finally`, because a `terminal` early-exit below leaves the rest of the list unvisited.
+        try {
+            processFragments(fragments, out, now)
+        } finally {
+            for (fragment in fragments) fragment.fragmentBody.freeIfNeeded()
+        }
+    }
+
+    private fun processFragments(
+        fragments: List<HandshakeFragment>,
+        out: MutableList<ReadBuffer>,
+        now: Instant,
+    ) {
         for (fragment in fragments) {
             for (message in reassembler.offer(fragment)) {
                 cancelRetransmit()
-                when (role) {
-                    DtlsRole.Client -> handleAsClient(message, out, now)
-                    DtlsRole.Server -> handleAsServer(message, out, now)
+                // The reassembler transfers each body (see HandshakeReassembler.offer). Everything the
+                // handler keeps past this call it has COPIED — the peer cert, the ECDHE point, the HRR
+                // cookie all go through `copyOf`, and the transcript appends its own normalized encoding
+                // — so this is the message's last reader, including on the `terminal` early exit.
+                try {
+                    when (role) {
+                        DtlsRole.Client -> handleAsClient(message, out, now)
+                        DtlsRole.Server -> handleAsServer(message, out, now)
+                    }
+                } finally {
+                    message.body.freeIfNeeded()
                 }
                 if (terminal != null) return
             }
@@ -379,44 +468,26 @@ internal class Dtls13Handshake(
         when (message.msgType.value) {
             HandshakeType.ServerHello.value -> {
                 val sh = ServerHello.parse(message.body) ?: return fail(DtlsFailureReason.HandshakeFailure)
-                // A ServerHello whose Random is the HelloRetryRequest sentinel is an HRR, not a real
-                // ServerHello — handle the group retry before any key-schedule work (RFC 8446 §4.1.4).
-                if (Tls13Bodies.isHelloRetryRandom(sh.random)) return handleHelloRetryRequest(message, sh, out, now)
-                val versionExt = sh.extensions.firstOrNull { it.type.value == ExtensionType.SupportedVersions.value }
-                if (versionExt == null || Tls13Bodies.selectedVersion(versionExt.body) != ProtocolVersion.Dtls13.value) {
-                    // We offered DTLS 1.3 but the peer selected a lower version (checked BEFORE the cipher
-                    // suite, so a genuine 1.2 ServerHello is diagnosed as a downgrade, not a cipher mismatch).
-                    // RFC 8446 §4.1.3: a 1.3-capable server that negotiates down stamps its Random with the
-                    // downgrade sentinel, so its presence means our 1.3 offer was stripped by an attacker.
-                    return fail(
-                        if (carriesDowngradeSentinel(
-                                sh.random,
-                            )
-                        ) {
-                            DtlsFailureReason.DowngradeDetected
-                        } else {
-                            DtlsFailureReason.HandshakeFailure
-                        },
-                    )
+                // Every field of `sh` is a view over `message.body`, and this handler keeps nothing that is
+                // not COPIED (the peer point below). The reject paths inside are many and all of them are
+                // reachable from the wire, so the release lives in one `finally` rather than on each.
+                try {
+                    handleServerHello(message, sh, out, now)
+                } finally {
+                    sh.releaseViews()
                 }
-                if (sh.cipherSuite.value != CipherSuiteId.TlsAes128GcmSha256.value) return fail(DtlsFailureReason.HandshakeFailure)
-                val ksExt =
-                    sh.extensions.firstOrNull { it.type.value == ExtensionType.KeyShare.value }
-                        ?: return fail(DtlsFailureReason.HandshakeFailure)
-                val serverShare = Tls13Bodies.parseKeyShareServerHello(ksExt.body) ?: return fail(DtlsFailureReason.HandshakeFailure)
-                // The real ServerHello MUST key_share the group we actually key-shared ([negotiatedGroup]) —
-                // our preferred group in the 1-RTT case, or the HRR-requested group after a retry. Any other
-                // group (even one we advertised but did not share a key for) is a protocol error. Reject it.
-                if (serverShare.group.value != negotiatedGroup.namedGroup.value) return fail(DtlsFailureReason.HandshakeFailure)
-                peerPoint = copyOf(serverShare.point)
-                transcript.append(message)
-                deriveHandshakeSecrets(client = true)
             }
             HandshakeType.EncryptedExtensions.value -> transcript.append(message)
             HandshakeType.CertificateRequest.value -> transcript.append(message) // mutual auth — we answer with our cert
             HandshakeType.Certificate.value -> {
-                peerCertDer = Tls13Bodies.parseCertificate13(message.body)?.let { copyOf(it) }
-                    ?: return fail(DtlsFailureReason.PeerCertificateMissing)
+                // `parseCertificate13` hands back a view over the message; `copyOf` is what we keep, so the
+                // view is given back either way — including when the copy is what fails.
+                val der = Tls13Bodies.parseCertificate13(message.body) ?: return fail(DtlsFailureReason.PeerCertificateMissing)
+                try {
+                    peerCertDer = copyOf(der)
+                } finally {
+                    der.freeIfNeeded()
+                }
                 transcript.append(message)
             }
             HandshakeType.CertificateVerify.value -> {
@@ -434,6 +505,52 @@ internal class Dtls13Handshake(
         }
     }
 
+    /**
+     * The ServerHello branch of [handleAsClient], split out so its many wire-reachable rejects can share
+     * one release of [sh]'s views. Keeps nothing uncopied: the server's key-share point goes through
+     * `copyOf`, and the HRR path copies the cookie it retains.
+     */
+    private fun handleServerHello(
+        message: HandshakeMessage,
+        sh: ServerHello,
+        out: MutableList<ReadBuffer>,
+        now: Instant,
+    ) {
+        // A ServerHello whose Random is the HelloRetryRequest sentinel is an HRR, not a real
+        // ServerHello — handle the group retry before any key-schedule work (RFC 8446 §4.1.4).
+        if (Tls13Bodies.isHelloRetryRandom(sh.random)) return handleHelloRetryRequest(message, sh, out, now)
+        val versionExt = sh.extensions.firstOrNull { it.type.value == ExtensionType.SupportedVersions.value }
+        if (versionExt == null || Tls13Bodies.selectedVersion(versionExt.body) != ProtocolVersion.Dtls13.value) {
+            // We offered DTLS 1.3 but the peer selected a lower version (checked BEFORE the cipher
+            // suite, so a genuine 1.2 ServerHello is diagnosed as a downgrade, not a cipher mismatch).
+            // RFC 8446 §4.1.3: a 1.3-capable server that negotiates down stamps its Random with the
+            // downgrade sentinel, so its presence means our 1.3 offer was stripped by an attacker.
+            return fail(
+                if (carriesDowngradeSentinel(sh.random)) {
+                    DtlsFailureReason.DowngradeDetected
+                } else {
+                    DtlsFailureReason.HandshakeFailure
+                },
+            )
+        }
+        if (sh.cipherSuite.value != CipherSuiteId.TlsAes128GcmSha256.value) return fail(DtlsFailureReason.HandshakeFailure)
+        val ksExt =
+            sh.extensions.firstOrNull { it.type.value == ExtensionType.KeyShare.value }
+                ?: return fail(DtlsFailureReason.HandshakeFailure)
+        val serverShare = Tls13Bodies.parseKeyShareServerHello(ksExt.body) ?: return fail(DtlsFailureReason.HandshakeFailure)
+        try {
+            // The real ServerHello MUST key_share the group we actually key-shared ([negotiatedGroup]) —
+            // our preferred group in the 1-RTT case, or the HRR-requested group after a retry. Any other
+            // group (even one we advertised but did not share a key for) is a protocol error. Reject it.
+            if (serverShare.group.value != negotiatedGroup.namedGroup.value) return fail(DtlsFailureReason.HandshakeFailure)
+            peerPoint = copyOf(serverShare.point)
+        } finally {
+            serverShare.releaseViews()
+        }
+        transcript.append(message)
+        deriveHandshakeSecrets(client = true)
+    }
+
     private fun sendClientHelloFlight(
         out: MutableList<ReadBuffer>,
         now: Instant,
@@ -449,17 +566,27 @@ internal class Dtls13Handshake(
         extensions += Tls13Bodies.keyShareClientHello(keyShareGroup, ecdhe!!.localPublicPoint, factory)
         // RFC 8446 §4.2.2: the second ClientHello MUST echo any cookie the HelloRetryRequest carried.
         hrrCookie?.let { extensions += Extension(ExtensionType.Cookie, it) }
+        val legacySessionId = empty()
+        val legacyCookie = empty() // DTLS 1.3 carries no legacy cookie; return-routability is the extension
         val ch =
             buildBody {
                 ClientHello(
                     ProtocolVersion.Dtls12, // legacy_version; the real version is in supported_versions
                     localRandom,
-                    empty(),
-                    empty(), // DTLS 1.3 carries no legacy cookie; return-routability is the cookie extension
+                    legacySessionId,
+                    legacyCookie,
                     listOf(CipherSuiteId.TlsAes128GcmSha256),
                     extensions,
                 ).bodyInto(it)
             }
+        // Every part of the hello is copied into `ch` by `bodyInto`, so this is their last reader. The
+        // cookie extension is the exception: its body is `hrrCookie`, which the FSM retains for a possible
+        // second retry and releases in [close].
+        legacySessionId.freeIfNeeded()
+        legacyCookie.freeIfNeeded()
+        for (extension in extensions) {
+            if (extension.type.value != ExtensionType.Cookie.value) extension.body.freeIfNeeded()
+        }
         emitFlight(listOf(queueHandshake(HandshakeType.ClientHello, ch, EPOCH_0)), out, now)
     }
 
@@ -530,45 +657,22 @@ internal class Dtls13Handshake(
         when (message.msgType.value) {
             HandshakeType.ClientHello.value -> {
                 val ch = ClientHello.parse(message.body) ?: return fail(DtlsFailureReason.HandshakeFailure)
-                if (ch.cipherSuites.none { it.value == CipherSuiteId.TlsAes128GcmSha256.value }) {
-                    return fail(
-                        DtlsFailureReason.HandshakeFailure,
-                    )
+                // As on the client side: every field of `ch` is a view over `message.body`, this handler
+                // keeps only what it copies, and the rejects below are all reachable from the wire — so
+                // one `finally` rather than a release on each.
+                try {
+                    handleClientHello(message, ch, out, now)
+                } finally {
+                    ch.releaseViews()
                 }
-                val ksExt =
-                    ch.extensions.firstOrNull { it.type.value == ExtensionType.KeyShare.value }
-                        ?: return fail(DtlsFailureReason.HandshakeFailure)
-                val clientShare = Tls13Bodies.parseKeyShareClientHello(ksExt.body) ?: return fail(DtlsFailureReason.HandshakeFailure)
-                // We prefer config.keyExchangeGroup. If the client key-shared a different group but DID
-                // advertise our preferred one in supported_groups, ask it to retry with a HelloRetryRequest
-                // (RFC 8446 §4.1.4). Only once — a second ClientHello is answered with a real ServerHello.
-                if (!sentHrr) {
-                    val preferred = config.keyExchangeGroup
-                    val sgExt = ch.extensions.firstOrNull { it.type.value == ExtensionType.SupportedGroups.value }
-                    val clientOffersPreferred = sgExt != null && Tls13Bodies.supportedGroupsContains(sgExt.body, preferred.namedGroup)
-                    if (clientShare.group.value != preferred.namedGroup.value && clientOffersPreferred) {
-                        sentHrr = true
-                        hrrRequestedGroup = preferred
-                        // Transcript over CH1 collapses to message_hash before the HRR (RFC 8446 §4.4.1).
-                        transcript.append(message)
-                        transcript.collapseToMessageHash()
-                        sendHelloRetryRequest(preferred, out, now)
-                        return
-                    }
-                } else {
-                    // Second ClientHello after our HRR: it MUST key_share the group we requested.
-                    if (clientShare.group.value != hrrRequestedGroup?.namedGroup?.value) return fail(DtlsFailureReason.HandshakeFailure)
-                }
-                // Adopt whichever supported group the client key-shared (X25519 or P-256) and match its curve.
-                negotiatedGroup = clientShare.group.toKeyExchangeGroupOrNull() ?: return fail(DtlsFailureReason.HandshakeFailure)
-                peerPoint = copyOf(clientShare.point)
-                ecdhe = EcdheKeyExchange.generate(negotiatedGroup.agreementCurve)
-                transcript.append(message)
-                sendServerFlight(out, now)
             }
             HandshakeType.Certificate.value -> {
-                peerCertDer = Tls13Bodies.parseCertificate13(message.body)?.let { copyOf(it) }
-                    ?: return fail(DtlsFailureReason.PeerCertificateMissing)
+                val der = Tls13Bodies.parseCertificate13(message.body) ?: return fail(DtlsFailureReason.PeerCertificateMissing)
+                try {
+                    peerCertDer = copyOf(der)
+                } finally {
+                    der.freeIfNeeded()
+                }
                 transcript.append(message)
             }
             HandshakeType.CertificateVerify.value -> {
@@ -582,6 +686,55 @@ internal class Dtls13Handshake(
             }
             else -> Unit
         }
+    }
+
+    /**
+     * The ClientHello branch of [handleAsServer], split out so its wire-reachable rejects share one
+     * release of [ch]'s views. The only thing kept past the call is the peer's key-share point, copied.
+     */
+    private fun handleClientHello(
+        message: HandshakeMessage,
+        ch: ClientHello,
+        out: MutableList<ReadBuffer>,
+        now: Instant,
+    ) {
+        if (ch.cipherSuites.none { it.value == CipherSuiteId.TlsAes128GcmSha256.value }) {
+            return fail(DtlsFailureReason.HandshakeFailure)
+        }
+        val ksExt =
+            ch.extensions.firstOrNull { it.type.value == ExtensionType.KeyShare.value }
+                ?: return fail(DtlsFailureReason.HandshakeFailure)
+        val clientShare = Tls13Bodies.parseKeyShareClientHello(ksExt.body) ?: return fail(DtlsFailureReason.HandshakeFailure)
+        try {
+            // We prefer config.keyExchangeGroup. If the client key-shared a different group but DID
+            // advertise our preferred one in supported_groups, ask it to retry with a HelloRetryRequest
+            // (RFC 8446 §4.1.4). Only once — a second ClientHello is answered with a real ServerHello.
+            if (!sentHrr) {
+                val preferred = config.keyExchangeGroup
+                val sgExt = ch.extensions.firstOrNull { it.type.value == ExtensionType.SupportedGroups.value }
+                val clientOffersPreferred = sgExt != null && Tls13Bodies.supportedGroupsContains(sgExt.body, preferred.namedGroup)
+                if (clientShare.group.value != preferred.namedGroup.value && clientOffersPreferred) {
+                    sentHrr = true
+                    hrrRequestedGroup = preferred
+                    // Transcript over CH1 collapses to message_hash before the HRR (RFC 8446 §4.4.1).
+                    transcript.append(message)
+                    transcript.collapseToMessageHash()
+                    sendHelloRetryRequest(preferred, out, now)
+                    return
+                }
+            } else {
+                // Second ClientHello after our HRR: it MUST key_share the group we requested.
+                if (clientShare.group.value != hrrRequestedGroup?.namedGroup?.value) return fail(DtlsFailureReason.HandshakeFailure)
+            }
+            // Adopt whichever supported group the client key-shared (X25519 or P-256) and match its curve.
+            negotiatedGroup = clientShare.group.toKeyExchangeGroupOrNull() ?: return fail(DtlsFailureReason.HandshakeFailure)
+            peerPoint = copyOf(clientShare.point)
+        } finally {
+            clientShare.releaseViews()
+        }
+        ecdhe = EcdheKeyExchange.generate(negotiatedGroup.agreementCurve)
+        transcript.append(message)
+        sendServerFlight(out, now)
     }
 
     /**
@@ -615,19 +768,25 @@ internal class Dtls13Handshake(
         now: Instant,
     ) {
         // ServerHello is plaintext (epoch 0); it triggers the handshake keys.
+        val legacySessionId = empty()
+        val serverExtensions =
+            listOf(
+                Tls13Bodies.supportedVersionsServerHello(factory),
+                Tls13Bodies.keyShareServerHello(negotiatedGroup.namedGroup, ecdhe!!.localPublicPoint, factory),
+            )
         val sh =
             buildBody {
                 ServerHello(
                     ProtocolVersion.Dtls12,
                     localRandom,
-                    empty(),
+                    legacySessionId,
                     CipherSuiteId.TlsAes128GcmSha256,
-                    listOf(
-                        Tls13Bodies.supportedVersionsServerHello(factory),
-                        Tls13Bodies.keyShareServerHello(negotiatedGroup.namedGroup, ecdhe!!.localPublicPoint, factory),
-                    ),
+                    serverExtensions,
                 ).bodyInto(it)
             }
+        // Copied into `sh` above; nothing retains them (see the ClientHello twin).
+        legacySessionId.freeIfNeeded()
+        for (extension in serverExtensions) extension.body.freeIfNeeded()
         val flight = mutableListOf<FlightItem>()
         flight += queueHandshake(HandshakeType.ServerHello, sh, EPOCH_0)
         deriveHandshakeSecrets(client = false)
@@ -649,32 +808,47 @@ internal class Dtls13Handshake(
         val hs =
             try {
                 val early = schedule.earlySecret()
-                schedule.handshakeSecret(early, ecdheSecret)
+                try {
+                    schedule.handshakeSecret(early, ecdheSecret)
+                } finally {
+                    // The Early Secret is a salt for one Extract; nothing downstream reads it again.
+                    early.freeIfNeeded()
+                }
             } finally {
                 ecdheSecret.freeNativeMemory()
             }
-        val thChSh = transcript.currentSha256()
-        val cHs = schedule.deriveSecret(hs, Tls13KeySchedule.CLIENT_HANDSHAKE_LABEL, thChSh)
-        val sHs = schedule.deriveSecret(hs, Tls13KeySchedule.SERVER_HANDSHAKE_LABEL, thChSh)
-        val local = if (client) cHs else sHs
-        val peer = if (client) sHs else cHs
-        val protection = Dtls13RecordProtection.fromTrafficSecrets(schedule, local, peer, factory)
-        keys = Keys.Handshake(schedule.masterSecret(hs), cHs, sHs, protection)
+        withTranscriptHash { thChSh ->
+            val cHs = schedule.deriveSecret(hs, Tls13KeySchedule.CLIENT_HANDSHAKE_LABEL, thChSh)
+            val sHs = schedule.deriveSecret(hs, Tls13KeySchedule.SERVER_HANDSHAKE_LABEL, thChSh)
+            val local = if (client) cHs else sHs
+            val peer = if (client) sHs else cHs
+            val protection = Dtls13RecordProtection.fromTrafficSecrets(schedule, local, peer, factory)
+            keys = Keys.Handshake(schedule.masterSecret(hs), cHs, sHs, protection)
+        }
+        // The Handshake Secret's only jobs were the two traffic secrets and the Master Secret, all taken
+        // above; the three that are retained live in [Keys.Handshake] and are released by [close].
+        hs.freeIfNeeded()
     }
 
     private fun deriveApplicationSecrets() {
         val hk = handshakeKeys ?: return
         if (keys is Keys.Application) return
-        val thChSFin = transcript.currentSha256()
-        val cAp = schedule.deriveSecret(hk.master, Tls13KeySchedule.CLIENT_APPLICATION_LABEL, thChSFin)
-        val sAp = schedule.deriveSecret(hk.master, Tls13KeySchedule.SERVER_APPLICATION_LABEL, thChSFin)
-        // The exporter_master_secret is bound to the SAME transcript point (CH…server Finished, RFC 8446 §7.5).
-        val exporterMaster = schedule.exporterMasterSecret(hk.master, thChSFin)
-        val client = role == DtlsRole.Client
-        val local = if (client) cAp else sAp
-        val peer = if (client) sAp else cAp
-        val protection = Dtls13RecordProtection.fromTrafficSecrets(schedule, local, peer, factory)
-        keys = Keys.Application(hk, protection, exporterMaster)
+        withTranscriptHash { thChSFin ->
+            val cAp = schedule.deriveSecret(hk.master, Tls13KeySchedule.CLIENT_APPLICATION_LABEL, thChSFin)
+            val sAp = schedule.deriveSecret(hk.master, Tls13KeySchedule.SERVER_APPLICATION_LABEL, thChSFin)
+            // The exporter_master_secret is bound to the SAME transcript point (CH…server Finished, RFC 8446 §7.5).
+            val exporterMaster = schedule.exporterMasterSecret(hk.master, thChSFin)
+            val client = role == DtlsRole.Client
+            val local = if (client) cAp else sAp
+            val peer = if (client) sAp else cAp
+            val protection = Dtls13RecordProtection.fromTrafficSecrets(schedule, local, peer, factory)
+            // The two application traffic secrets are consumed by `fromTrafficSecrets` (which expands its
+            // own keys/IVs out of them) and never read again — unlike the handshake pair, which the
+            // Finished verification still needs.
+            cAp.freeIfNeeded()
+            sAp.freeIfNeeded()
+            keys = Keys.Application(hk, protection, exporterMaster)
+        }
     }
 
     override fun exportKeyingMaterial(
@@ -687,27 +861,36 @@ internal class Dtls13Handshake(
         return schedule.exportKeyingMaterial(exporterMaster, label, context, length)
     }
 
-    private fun buildFinished(baseSecret: ReadBuffer): FlightItem {
-        val verifyData = schedule.verifyData(baseSecret, transcript.currentSha256())
-        return queueHandshake(HandshakeType.Finished, verifyData, EPOCH_HANDSHAKE)
-    }
+    private fun buildFinished(baseSecret: ReadBuffer): FlightItem =
+        withTranscriptHash { hash ->
+            queueHandshake(HandshakeType.Finished, schedule.verifyData(baseSecret, hash), EPOCH_HANDSHAKE)
+        }
 
     private fun verifyPeerFinished(
         message: HandshakeMessage,
         baseSecret: ReadBuffer,
     ): Boolean {
         if (message.length != Tls13KeySchedule.HASH_LEN) return false
-        val expected = schedule.verifyData(baseSecret, transcript.currentSha256())
-        return constantTimeEquals(expected, message.body)
+        val expected = withTranscriptHash { schedule.verifyData(baseSecret, it) }
+        return try {
+            constantTimeEquals(expected, message.body)
+        } finally {
+            expected.freeIfNeeded()
+        }
     }
 
     // ── CertificateVerify (RFC 8446 §4.4.3) ───────────────────────────────────────────────────────
 
     private fun buildCertificateVerify(context: String): FlightItem {
-        val input = certVerifyInput(context, transcript.currentSha256())
+        val input = withTranscriptHash { certVerifyInput(context, it) }
         val raw = signatures().ops.signBlocking(certificate.signingKey, input)
         val derSig = if (ecdsaSignatureEncoding == EcdsaSignatureEncoding.Der) raw else ecdsaSignatureToDer(SignatureScheme.EcdsaP256, raw)
         val body = buildBody { CertificateVerify(SignatureSchemeId.EcdsaSecp256r1Sha256, derSig).bodyInto(it) }
+        // The signed input, the raw r‖s signature and (where it differs) its DER re-encode are all spent
+        // once the body carries the bytes. `raw === derSig` on targets that sign in DER already.
+        input.freeIfNeeded()
+        if (derSig !== raw) raw.freeIfNeeded()
+        derSig.freeIfNeeded()
         return queueHandshake(HandshakeType.CertificateVerify, body, EPOCH_HANDSHAKE)
     }
 
@@ -716,10 +899,20 @@ internal class Dtls13Handshake(
         context: String,
     ): Boolean {
         val cv = CertificateVerify.parse(message.body) ?: return false
-        val verifyKey = verifyKeyFromCert(peerCertDer ?: return false) ?: return false
-        // The signature covers the transcript up to (not including) this CertificateVerify — the current hash.
-        val input = certVerifyInput(context, transcript.currentSha256())
-        return verifyWireSignature(verifyKey, input, cv.signature)
+        // `cv.signature` is a view over `message.body`, read here and kept nowhere — so it is given back on
+        // every exit, including the two `return false`s that come before the verify even runs.
+        try {
+            val verifyKey = verifyKeyFromCert(peerCertDer ?: return false) ?: return false
+            // The signature covers the transcript up to (not including) this CertificateVerify — the current hash.
+            val input = withTranscriptHash { certVerifyInput(context, it) }
+            return try {
+                verifyWireSignature(verifyKey, input, cv.signature)
+            } finally {
+                input.freeIfNeeded()
+            }
+        } finally {
+            cv.releaseViews()
+        }
     }
 
     /** `64×0x20 ‖ context ‖ 0x00 ‖ transcriptHash` — the CertificateVerify signed content (RFC 8446 §4.4.3). */
@@ -738,6 +931,12 @@ internal class Dtls13Handshake(
 
     // ── flight assembly + record emission ─────────────────────────────────────────────────────────
 
+    /**
+     * Frame [body] as one handshake message, hash it into the transcript, and return the flight item.
+     * **Consumes [body]** — the transcript keeps its own normalized encoding and the flight keeps [wire],
+     * so the caller's body is copied twice and then dead. Every message this FSM sends goes through here,
+     * which is what makes one release cover them all rather than one per builder.
+     */
     private fun queueHandshake(
         msgType: HandshakeType,
         body: ReadBuffer,
@@ -748,7 +947,21 @@ internal class Dtls13Handshake(
         val wire = factory.allocate(message.wireSize, ByteOrder.BIG_ENDIAN)
         message.encodeInto(wire)
         wire.resetForRead()
+        body.freeIfNeeded()
         return FlightItem(ContentType.Handshake.value, wire, epoch)
+    }
+
+    /**
+     * Run [block] with the transcript hash at this instant, releasing it afterwards. Every use of the
+     * running hash is a one-shot input to a signature, a MAC or a key derivation — none of them retain it.
+     */
+    private inline fun <T> withTranscriptHash(block: (ReadBuffer) -> T): T {
+        val hash = transcript.currentSha256()
+        return try {
+            block(hash)
+        } finally {
+            hash.freeIfNeeded()
+        }
     }
 
     private fun emitFlight(
@@ -757,6 +970,10 @@ internal class Dtls13Handshake(
         now: Instant,
     ) {
         for (item in flight) out += emit(item)
+        // The previous flight is superseded: it will never be retransmitted again, and this is the only
+        // reference to its payloads. Overwriting the field without this leaked one buffer per flight — the
+        // client's ClientHello, dropped the moment its auth flight replaced it.
+        lastFlight?.forEach { it.payload.freeIfNeeded() }
         lastFlight = flight
         retransmitBackoff = INITIAL_RETRANSMIT
         retransmitDeadline = now + retransmitBackoff
@@ -781,8 +998,18 @@ internal class Dtls13Handshake(
                 spkiToEcPublicKey(KeyAgreementCurve.P256, spki, factory)
             } catch (_: Throwable) {
                 return null
+            } finally {
+                // Extracted from the cert for this one conversion, on both the success and the
+                // malformed-cert paths — the latter being the peer-controlled one.
+                spki.freeIfNeeded()
             }
-        return VerifyKey.ecdsaP256(point)
+        return try {
+            VerifyKey.ecdsaP256(point)
+        } finally {
+            // `ecdsaP256` copies the point into the key's own material (the same contract as
+            // `AesGcmKey.of`), so the decoded point is spent here.
+            point.freeIfNeeded()
+        }
     }
 
     private fun verifyWireSignature(
@@ -800,6 +1027,11 @@ internal class Dtls13Handshake(
             signatures().ops.verifyBlocking(verifyKey, message, sig)
         } catch (_: Throwable) {
             false
+        } finally {
+            // Only when we transcoded: otherwise `sig === wireSignature`, which belongs to the caller.
+            // Unreachable on every target that runs the engine today (all of them answer DER), which is
+            // exactly why it is written down rather than left to the next platform to discover.
+            if (sig !== wireSignature) sig.freeIfNeeded()
         }
     }
 

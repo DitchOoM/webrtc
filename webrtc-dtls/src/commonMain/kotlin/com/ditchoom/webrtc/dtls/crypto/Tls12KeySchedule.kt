@@ -5,6 +5,8 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.crypto.HmacSha256Mac
+import com.ditchoom.buffer.crypto.secure
+import com.ditchoom.buffer.freeIfNeeded
 
 /**
  * The TLS 1.2 PRF and the DTLS 1.2 key schedule for the WebRTC cipher suite
@@ -19,8 +21,16 @@ import com.ditchoom.buffer.crypto.HmacSha256Mac
  * ```
  */
 internal class Tls12KeySchedule(
-    private val factory: BufferFactory,
+    callerFactory: BufferFactory,
 ) {
+    /**
+     * **Every buffer this class allocates is key material or a seed over it, so all of them are wiped on
+     * free** — the same reasoning as [Tls13KeySchedule], and load-bearing for the same reason: these are
+     * now *released* rather than leaked, and an unwiped master secret handed back to a `BufferPool` is a
+     * chunk the next `allocate()` gets. That would trade a leak for key disclosure, which is worse.
+     */
+    private val factory: BufferFactory = callerFactory.secure()
+
     /** `PRF(secret, label, seed)` truncated to [outLen] bytes (RFC 5246 §5). */
     fun prf(
         secret: ReadBuffer,
@@ -32,7 +42,13 @@ internal class Tls12KeySchedule(
         for (ch in label) labelSeed.writeByte(ch.code.toByte())
         writeView(labelSeed, seed)
         labelSeed.resetForRead()
-        return pSha256(secret, labelSeed, outLen)
+        // `labelSeed` exists for this one expansion — one per derived secret, key block and verify_data,
+        // which is what made a 1.2 handshake cost dozens of chunks.
+        return try {
+            pSha256(secret, labelSeed, outLen)
+        } finally {
+            labelSeed.freeIfNeeded()
+        }
     }
 
     /**
@@ -50,7 +66,7 @@ internal class Tls12KeySchedule(
         if (sessionHash != null) {
             prf(premaster, "extended master secret", sessionHash, MASTER_SECRET_BYTES)
         } else {
-            prf(premaster, "master secret", concat(clientRandom, serverRandom), MASTER_SECRET_BYTES)
+            withSeed(concat(clientRandom, serverRandom)) { prf(premaster, "master secret", it, MASTER_SECRET_BYTES) }
         }
 
     /**
@@ -63,7 +79,7 @@ internal class Tls12KeySchedule(
         serverRandom: ReadBuffer,
         clientRandom: ReadBuffer,
         outLen: Int,
-    ): ReadBuffer = prf(masterSecret, "key expansion", concat(serverRandom, clientRandom), outLen)
+    ): ReadBuffer = withSeed(concat(serverRandom, clientRandom)) { prf(masterSecret, "key expansion", it, outLen) }
 
     /**
      * The 12-byte Finished `verify_data` = `PRF(master_secret, finished_label, Hash(handshake_messages))`.
@@ -106,8 +122,25 @@ internal class Tls12KeySchedule(
                 out.resetForRead()
                 out
             }
-        return prf(masterSecret, label, seed, length)
+        return withSeed(seed) { prf(masterSecret, label, it, length) }
     }
+
+    /**
+     * Run [block] over a seed this class built for exactly one PRF call, and give the seed back after.
+     *
+     * The three callers all compose their seed from buffers they do **not** own (the two randoms, a
+     * caller-supplied context), so the concatenation is the only thing here that could be freed — and it
+     * is anonymous at the call site, which is precisely why the release cannot live there.
+     */
+    private inline fun withSeed(
+        seed: ReadBuffer,
+        block: (ReadBuffer) -> ReadBuffer,
+    ): ReadBuffer =
+        try {
+            block(seed)
+        } finally {
+            seed.freeIfNeeded()
+        }
 
     // ── P_SHA256 ─────────────────────────────────────────────────────────────────────────────────
 
@@ -125,9 +158,18 @@ internal class Tls12KeySchedule(
             block.setLimit(take)
             block.position(0)
             out.write(block)
+            block.freeIfNeeded() // copied into `out`; one of these per 32 bytes of every derived secret
             written += take
-            if (written < outLen) a = hmac(secret, a) // A(i+1) = HMAC(secret, A(i))
+            if (written < outLen) {
+                // A(i) is superseded here, and **a superseded field is a leak**: the previous A was the
+                // only reference to that buffer, so overwriting it without a release drops one chunk per
+                // PRF round. Free before reassigning, never after.
+                val next = hmac(secret, a) // A(i+1) = HMAC(secret, A(i))
+                a.freeIfNeeded()
+                a = next
+            }
         }
+        a.freeIfNeeded() // the last A(i), which no round consumed
         out.resetForRead()
         return out
     }

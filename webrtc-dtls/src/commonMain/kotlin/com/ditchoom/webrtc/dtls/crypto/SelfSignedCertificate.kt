@@ -12,6 +12,7 @@ import com.ditchoom.buffer.crypto.SyncCapableSigningKey
 import com.ditchoom.buffer.crypto.ecdsaSignatureEncoding
 import com.ditchoom.buffer.crypto.ecdsaSignatureToDer
 import com.ditchoom.buffer.crypto.signatures
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.webrtc.dtls.CertificateFingerprint
 import kotlin.random.Random
 
@@ -32,6 +33,9 @@ internal class SelfSignedCertificate private constructor(
 ) : AutoCloseable {
     override fun close() {
         signingKey.close()
+        // The cert DER is this object's own buffer, from the engine's factory, and outlives the whole
+        // handshake — the one allocation in [generate] that is deliberately NOT consumed by a DER parent.
+        derEncoded.freeIfNeeded()
     }
 
     companion object {
@@ -70,7 +74,11 @@ internal class SelfSignedCertificate private constructor(
             val spki = signingKey.verifyKey.exportSpki()
 
             val der = Der(factory)
-            val name =
+
+            // Built TWICE rather than shared between issuer and subject. Every [Der] combinator consumes
+            // its children, so one buffer in two parents would be a double free — and building the same
+            // twenty bytes again, once per process, is the cheaper half of that trade.
+            fun name() =
                 der.sequence(
                     listOf(
                         der.set(
@@ -91,10 +99,10 @@ internal class SelfSignedCertificate private constructor(
                         der.explicit(0, der.integer(der.literal(0x02))), // version v3 (INTEGER 2)
                         der.integer(serialMagnitude(factory, random)),
                         der.literal(*ECDSA_WITH_SHA256),
-                        name, // issuer
+                        name(), // issuer
                         der.sequence(listOf(der.utcTime(NOT_BEFORE), der.utcTime(NOT_AFTER))),
-                        name, // subject == issuer (reused; writeView restores position)
-                        spki,
+                        name(), // subject == issuer, byte-identical
+                        spki, // buffer-crypto's fresh export; consumed here like any other child
                     ),
                 )
 
@@ -103,17 +111,21 @@ internal class SelfSignedCertificate private constructor(
                 if (ecdsaSignatureEncoding == EcdsaSignatureEncoding.Der) {
                     rawSig
                 } else {
+                    // A re-encode allocates a second buffer, leaving the raw r‖s one spent. On the
+                    // targets where the encoding is already DER the two are the SAME object, so the
+                    // identity check is what keeps this from being a double free.
                     ecdsaSignatureToDer(SignatureScheme.EcdsaP256, rawSig)
                 }
 
             val certificate =
                 der.sequence(
                     listOf(
-                        tbs,
+                        tbs, // signed above, consumed here — ordering matters, not ownership
                         der.literal(*ECDSA_WITH_SHA256),
                         der.bitString(derSig),
                     ),
                 )
+            if (derSig !== rawSig) rawSig.freeIfNeeded()
             certificate.position(0)
             return SelfSignedCertificate(signingKey, certificate, fingerprintOf(certificate, factory))
         }
@@ -133,6 +145,9 @@ internal class SelfSignedCertificate private constructor(
                 val v = digest.readByte().toInt() and 0xFF
                 sb.append("0123456789abcdef"[v ushr 4]).append("0123456789abcdef"[v and 0xF])
             }
+            // The fingerprint escapes as a String; the digest buffer does not. Called once per local cert
+            // and once per peer cert, so this is small — but it is also the whole of the leak.
+            digest.freeIfNeeded()
             return CertificateFingerprint.ofHex(sb.toString())
         }
 

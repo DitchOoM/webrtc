@@ -11,6 +11,7 @@ import com.ditchoom.buffer.crypto.CryptoCapabilities
 import com.ditchoom.buffer.crypto.SyncCapableAesGcmKey
 import com.ditchoom.buffer.crypto.VerificationFailed
 import com.ditchoom.buffer.crypto.aesGcm
+import com.ditchoom.buffer.freeIfNeeded
 
 /**
  * DTLS 1.2 AEAD record protection for `AES_128_GCM` (RFC 5246 §6.2.3.3, RFC 5288, RFC 6347 §4.1.2). The
@@ -55,6 +56,12 @@ internal class Dtls12RecordProtection private constructor(
         ctTag.position(0)
         fragment.write(ctTag)
         fragment.resetForRead()
+        // Everything above is scratch for this one record and is copied into `fragment`: four buffers per
+        // record sealed, which on a busy connection is four chunks per datagram sent.
+        explicit.freeIfNeeded()
+        nonce.freeIfNeeded()
+        aad.freeIfNeeded()
+        ctTag.freeIfNeeded()
         return fragment
     }
 
@@ -82,12 +89,24 @@ internal class Dtls12RecordProtection private constructor(
             ops.openWithNonceBlocking(nonce, ctTag, openKey, Aad.Of(aad), factory)
         } catch (_: VerificationFailed) {
             null
+        } finally {
+            // **The failure path too**: a peer that can make one tag fail can otherwise cost a chunk per
+            // datagram, remote-triggered. `explicit`/`ctTag` are borrows over the caller's fragment and
+            // `nonce`/`aad` are ours; all four are spent the moment the AEAD returns either way.
+            explicit.freeIfNeeded()
+            ctTag.freeIfNeeded()
+            nonce.freeIfNeeded()
+            aad.freeIfNeeded()
         }
     }
 
     override fun close() {
         sealKey.close()
         openKey.close()
+        // The two fixed IVs are this instance's own copies of the key block's ([fromKeyBlock]), retained
+        // for its whole life, so nothing else can free them.
+        sealIv.freeIfNeeded()
+        openIv.freeIfNeeded()
     }
 
     private fun explicitNonce(
@@ -182,10 +201,17 @@ internal class Dtls12RecordProtection private constructor(
         const val KEY_BLOCK_BYTES = 2 * KEY_BYTES + 2 * FIXED_IV_BYTES
 
         /**
-         * Slices the [keyBlock] by [role] into a directional record-protection instance. The client
-         * seals with the `client_write_*` material and opens with the `server_write_*`; the server is the
-         * mirror. The key bytes are copied into wiped AEAD keys, so the key block buffer may be released
-         * afterward.
+         * Splits the [keyBlock] by role into a directional record-protection instance. The client seals
+         * with the `client_write_*` material and opens with the `server_write_*`; the server is the mirror.
+         *
+         * **Everything is copied, and the copy is load-bearing.** `AesGcmKey.of` already copies into a
+         * wiped key, but the two fixed IVs are retained for the instance's whole life — so taking them as
+         * *views* would make the key block un-releasable, and releasing it anyway is a use-after-free
+         * rather than a leak: on a bare `deterministic()` factory a slice's own `freeNativeMemory()` is a
+         * documented no-op and every read `checkOpen()`s the parent, so the first record sealed after the
+         * key block was freed threw. (On a pooled factory the refcount hides it, which is exactly the kind
+         * of difference that makes a bug show up only on one target.) With a copy, the caller may release
+         * the key block the moment this returns — which is what it does.
          */
         fun fromKeyBlock(
             keyBlock: ReadBuffer,
@@ -194,37 +220,29 @@ internal class Dtls12RecordProtection private constructor(
         ): Dtls12RecordProtection {
             val base = keyBlock.position()
 
-            fun slice(
+            fun copy(
                 off: Int,
                 len: Int,
-            ): ReadBuffer = subview(keyBlock, base + off, base + off + len)
+            ): ReadBuffer {
+                val out = factory.allocate(len, ByteOrder.BIG_ENDIAN)
+                for (i in 0 until len) out.writeByte(keyBlock.get(base + off + i))
+                out.resetForRead()
+                return out
+            }
 
-            val clientKey = AesGcmKey.of(slice(0, KEY_BYTES))
-            val serverKey = AesGcmKey.of(slice(KEY_BYTES, KEY_BYTES))
-            val clientIv = slice(2 * KEY_BYTES, FIXED_IV_BYTES)
-            val serverIv = slice(2 * KEY_BYTES + FIXED_IV_BYTES, FIXED_IV_BYTES)
+            val clientKeyBytes = copy(0, KEY_BYTES)
+            val clientKey = AesGcmKey.of(clientKeyBytes)
+            clientKeyBytes.freeIfNeeded()
+            val serverKeyBytes = copy(KEY_BYTES, KEY_BYTES)
+            val serverKey = AesGcmKey.of(serverKeyBytes)
+            serverKeyBytes.freeIfNeeded()
+            val clientIv = copy(2 * KEY_BYTES, FIXED_IV_BYTES)
+            val serverIv = copy(2 * KEY_BYTES + FIXED_IV_BYTES, FIXED_IV_BYTES)
             return if (client) {
                 Dtls12RecordProtection(clientKey, clientIv, serverKey, serverIv, factory)
             } else {
                 Dtls12RecordProtection(serverKey, serverIv, clientKey, clientIv, factory)
             }
-        }
-
-        private fun subview(
-            buf: ReadBuffer,
-            start: Int,
-            endExclusive: Int,
-        ): ReadBuffer {
-            val savedPos = buf.position()
-            val savedLimit = buf.limit()
-            buf.position(0)
-            buf.setLimit(endExclusive)
-            buf.position(start)
-            val view = buf.slice(ByteOrder.BIG_ENDIAN)
-            buf.position(0)
-            buf.setLimit(savedLimit)
-            buf.position(savedPos)
-            return view
         }
     }
 }

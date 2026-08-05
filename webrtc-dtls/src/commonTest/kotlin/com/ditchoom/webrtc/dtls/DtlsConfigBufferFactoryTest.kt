@@ -30,11 +30,10 @@ import kotlin.test.assertTrue
  * Linux by design. The invariant below is the stronger claim it was always standing in for: whatever the
  * default resolves to, **this platform's socket can send from it**.
  *
- * The Linux trade is real and is not hidden by this test passing: the fallback is `malloc`-backed and
- * freed by hand, and the receive side of this stack still has no last-reader rule, so inbound datagrams
- * can accumulate there. It replaces a hard crash on the first connectivity check, and it ends when
- * `buffer` gives Kotlin/Native Linux a GC-managed native buffer — the thing Apple gets from ARC and the
- * JVM from `Arena.ofAuto` — after which [networkBuffer] picks `Default` back up with no change here.
+ * The Linux fallback is `malloc`-backed and freed by hand, which is why every seam above it is owned by
+ * name — see [DtlsRecordSeamOwnershipTest], which gates this module at zero outstanding chunks. It ends
+ * when `buffer` gives Kotlin/Native Linux a GC-managed native buffer — the thing Apple gets from ARC and
+ * the JVM from `Arena.ofAuto` — after which [networkBuffer] picks `Default` back up with no change here.
  */
 class DtlsConfigBufferFactoryTest {
     @Test

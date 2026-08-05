@@ -3,6 +3,7 @@ package com.ditchoom.webrtc.dtls.wire
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.freeIfNeeded
 import kotlin.jvm.JvmInline
 
 // Shared wire helpers for the hand-written DTLS layers (records, handshake messages, TLS extensions).
@@ -60,6 +61,49 @@ internal fun ReadBuffer.sliceOf(
     setLimit(savedLimit)
     position(savedPos)
     return view
+}
+
+/**
+ * The views one parse has taken so far, so a **reject** can give them all back.
+ *
+ * Zero-copy decode takes a *reference* per `sliceOf`, so a parser that bails out three fields in has
+ * already pinned three chunks — and on a pooled buffer nothing else will ever return them. Every one of
+ * these parsers reads bytes an unauthenticated peer chose, so "malformed message" is not a rare path: it
+ * is the path an attacker picks, once per datagram, for free.
+ *
+ * Usage is the same shape everywhere: take views through [add]/[addVector]/[addAll], and call [keep] on
+ * the single success path just before constructing the message. [use] releases whatever was taken unless
+ * [keep] said the message now owns it.
+ */
+internal class ViewLedger {
+    private val taken = ArrayList<ReadBuffer>(DEFAULT_VIEWS)
+    private var kept = false
+
+    /** Track [view] and hand it straight back, so a parse reads as it did before. */
+    fun add(view: ReadBuffer): ReadBuffer = view.also { taken += it }
+
+    /** Track the value view of a `uint8`-length-prefixed vector; null (an overrun) is passed through. */
+    fun addVector(vector: Pair<ReadBuffer, Int>?): Pair<ReadBuffer, Int>? = vector?.also { taken += it.first }
+
+    /** Track every body in a decoded extension list; null (a malformed list) is passed through. */
+    fun addAll(extensions: List<Extension>?): List<Extension>? = extensions?.also { list -> for (e in list) taken += e.body }
+
+    /** The parse succeeded: the message now owns these views and [use] must not release them. */
+    fun keep() {
+        kept = true
+    }
+
+    fun <R> use(block: (ViewLedger) -> R): R =
+        try {
+            block(this)
+        } finally {
+            if (!kept) for (view in taken) view.freeIfNeeded()
+            taken.clear()
+        }
+
+    private companion object {
+        const val DEFAULT_VIEWS = 4
+    }
 }
 
 /** Writes [view]'s remaining bytes without disturbing its position (decoded views are shared). */

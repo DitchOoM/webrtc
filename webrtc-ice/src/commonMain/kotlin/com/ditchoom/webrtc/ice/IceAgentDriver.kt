@@ -557,6 +557,26 @@ public class IceAgentDriver(
         appInbound.close()
         inbox.close()
         gathered.close()
+        // Closing a channel does not release what is still sitting in it, and both of these carry
+        // datagrams whose ownership was transferred to a reader that will now never run. Draining after
+        // `close()` is what makes this the last reader: the close is what guarantees nothing more is
+        // enqueued behind us, so the drain cannot race a producer into freeing a live buffer.
+        drainAndRelease()
+    }
+
+    // Undelivered receive-side transfers, released. Both channels are UNLIMITED, so a session torn down
+    // mid-flight can be holding several — and on Kotlin/Native Linux each one is a malloc nobody else
+    // will ever free (see [releaseReceived]).
+    private fun drainAndRelease() {
+        while (true) {
+            val packet = appInbound.tryReceive().getOrNull() ?: break
+            packet.releaseReceived()
+        }
+        while (true) {
+            val command = inbox.tryReceive().getOrNull() ?: break
+            val event = (command as? Command.Event)?.event
+            if (event is IceEvent.DatagramReceived) event.data.releaseReceived()
+        }
     }
 
     private fun bind(
@@ -627,16 +647,41 @@ public class IceAgentDriver(
                         is DatagramReadResult.Closed -> return@launch
                     }
                 // RFC 7983 demux: STUN → the ICE agent; anything else is application data (DTLS/SCTP).
+                // Both arms TRANSFER ownership of the payload (see [releaseReceived]) — this loop must
+                // not release after either, and must release when a transfer does not happen.
                 if (isStun(datagram.payload)) {
-                    post(IceEvent.DatagramReceived(base, datagram.peer.toTransportAddress(), datagram.payload))
+                    // → the drive loop, which releases once `agent.handle` returns. Posted through the
+                    // inbox directly rather than through [post]: that one is public and returns Unit, so
+                    // it cannot say whether the transfer happened, and the answer decides who releases.
+                    // The channel is UNLIMITED, so the only refusal is a closed inbox.
+                    val event = IceEvent.DatagramReceived(base, datagram.peer.toTransportAddress(), datagram.payload)
+                    if (inbox.trySend(Command.Event(event)).isFailure) datagram.payload.releaseReceived()
                 } else {
-                    appInbound.trySend(datagram.payload)
+                    // → [IceDataTransport.receive], whose contract already says ownership transfers to
+                    // the caller. A refused offer means the seam is closed and nobody will ever read it,
+                    // so this loop is still the last reader and owes the release.
+                    if (appInbound.trySend(datagram.payload).isFailure) datagram.payload.releaseReceived()
                 }
             }
         }
     }
 
-    private fun isStun(payload: ReadBuffer): Boolean = StunMessage.decode(payload.slice()) is StunDecodeResult.Success
+    /**
+     * RFC 7983 demux, read without taking a reference on the payload.
+     *
+     * This used to be `decode(payload.slice())`, and the slice was the point: `decode` advances the
+     * buffer, and the demux must not consume what it is only classifying. But `PooledBuffer.slice()`
+     * takes a **reference on the chunk**, and nothing released this one — so on a pooled receive factory
+     * every inbound datagram pinned its chunk for good, independently of whether the datagram itself was
+     * released. Saving and restoring the cursor answers the same question and owns nothing, which is
+     * what [MdnsEndpoint.dispatch] already does one layer over.
+     */
+    private fun isStun(payload: ReadBuffer): Boolean {
+        val start = payload.position()
+        val isStun = StunMessage.decode(payload) is StunDecodeResult.Success
+        payload.position(start)
+        return isStun
+    }
 
     private suspend fun driveLoop() {
         while (true) {
@@ -660,6 +705,13 @@ public class IceAgentDriver(
                     if (command.event == IceEvent.Restart) beginRestartGeneration()
                     val event = command.event
                     apply(agent.handle(event, clock()))
+                    // This loop is the last reader of a received datagram (see [releaseReceived]). Safe
+                    // because nothing survives `handle`: the agent reads attributes into value types
+                    // (TransportAddress, String, Long), `StunTransaction.onResponse` returns the message
+                    // without storing it, and every IceOutput.Transmit `apply` just sent was built fresh
+                    // rather than sliced from the input. After `apply`, deliberately — an output is
+                    // transmitted there, and releasing before that would free memory a send may read.
+                    if (event is IceEvent.DatagramReceived) event.data.releaseReceived()
                     // Published here, after the agent has applied it: `localCredentials` now names the
                     // generation this candidate is genuinely in, even if a restart overtook the gathering
                     // coroutine that produced it (RFC 8838 §3.1).

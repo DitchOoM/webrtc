@@ -3,6 +3,7 @@
 package com.ditchoom.webrtc.ice
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
@@ -198,15 +199,20 @@ public suspend fun gatherServerReflexive(
                             }
                         }
                     }
-                    val response = withTimeoutOrNull(retransmitInterval) { receiveMatchingResponse(socket, transactionId) }
-                    when {
-                        response == null -> Unit // no answer within the interval — retransmit
-                        response.messageType.stunClass == StunClass.SuccessResponse -> {
+                    val matched = withTimeoutOrNull(retransmitInterval) { receiveMatchingResponse(socket, transactionId) }
+                    if (matched == null) continue // no answer within the interval — retransmit
+                    // Ownership arrived with it. `mapped` is a TransportAddress — a value, copied out of
+                    // the slice — so releasing here outlives nothing the caller can still read.
+                    val response = matched.message
+                    try {
+                        if (response.messageType.stunClass == StunClass.SuccessResponse) {
                             val mapped = response.firstOrNull(StunAttributeType.XorMappedAddress)?.asXorMappedAddress(transactionId)
                             return@withTimeoutOrNull mapped?.let { ServerReflexiveResult.Discovered(it) }
                                 ?: ServerReflexiveResult.Unavailable.MalformedResponse
                         }
-                        else -> return@withTimeoutOrNull ServerReflexiveResult.Unavailable.Rejected
+                        return@withTimeoutOrNull ServerReflexiveResult.Unavailable.Rejected
+                    } finally {
+                        matched.payload.releaseReceived()
                     }
                 }
                 @Suppress("UNREACHABLE_CODE")
@@ -279,19 +285,36 @@ public sealed interface ServerReflexiveResult {
 private suspend fun receiveMatchingResponse(
     socket: AddressedDatagramChannel,
     transactionId: TransactionId,
-): StunMessage? {
+): MatchedResponse? {
     while (true) {
         val datagram =
             when (val result = socket.receiveOrClosed()) {
                 is DatagramReadResult.Received -> result.datagram
                 is DatagramReadResult.Closed -> return null
             }
-        val message = (StunMessage.decode(datagram.payload) as? StunDecodeResult.Success)?.message ?: continue
-        val stunClass = message.messageType.stunClass
+        val message = (StunMessage.decode(datagram.payload) as? StunDecodeResult.Success)?.message
+        val stunClass = message?.messageType?.stunClass
         val isResponse = stunClass == StunClass.SuccessResponse || stunClass == StunClass.ErrorResponse
-        if (message.transactionId == transactionId && isResponse) return message
+        if (message != null && message.transactionId == transactionId && isResponse) {
+            return MatchedResponse(message, datagram.payload)
+        }
+        // Not ours: an unparseable datagram, an indication, or another transaction's response. This loop
+        // is its last reader, so it owes the release (see [releaseReceived]). Before the fix this was a
+        // bare `continue`, which on a busy socket dropped one buffer per uninteresting packet.
+        datagram.payload.releaseReceived()
     }
 }
+
+/**
+ * A STUN response **and the datagram it was parsed out of**, because the two cannot be separated: every
+ * attribute the caller is about to read is a slice of that payload. Returning the message alone would
+ * make it impossible to release the payload without guessing when the borrows died — the exact shape of
+ * "a leak fix becomes a use-after-free" this rule exists to prevent. Ownership transfers to the caller.
+ */
+private class MatchedResponse(
+    val message: StunMessage,
+    val payload: ReadBuffer,
+)
 
 /** Default gathering round-trip budget — generous under virtual time, tight enough on a real network. */
 public val DEFAULT_GATHER_TIMEOUT: Duration = 3.seconds

@@ -557,6 +557,10 @@ public class IceAgentDriver(
         appInbound.close()
         inbox.close()
         gathered.close()
+        // The agent owns no I/O, but it does own the request buffer of every check still in flight — a
+        // `StunTransaction` releases that only when it finishes, and a session closing mid-check finishes
+        // nothing. This is the one place that knows the session is over.
+        agent.close()
         // Closing a channel does not release what is still sitting in it, and both of these carry
         // datagrams whose ownership was transferred to a reader that will now never run. Draining after
         // `close()` is what makes this the last reader: the close is what guarantees nothing more is

@@ -14,6 +14,7 @@ import com.ditchoom.buffer.crypto.SyncCapableAesGcmKey
 import com.ditchoom.buffer.crypto.VerificationFailed
 import com.ditchoom.buffer.crypto.aesEcb
 import com.ditchoom.buffer.crypto.aesGcm
+import com.ditchoom.buffer.freeIfNeeded
 
 /**
  * DTLS 1.3 AEAD record protection for `TLS_AES_128_GCM_SHA256` (RFC 9147 §4 over RFC 8446 §5.2), matched
@@ -92,6 +93,13 @@ internal class Dtls13RecordProtection private constructor(
         ctTag.position(0)
         out.write(ctTag)
         out.resetForRead()
+        // Everything but [out] was scratch for this one record: the inner plaintext, the AAD header, the
+        // nonce, and the AEAD's own ciphertext+tag once it is copied into the wire record. Four buffers
+        // per record sealed, which on a busy channel is the dominant term in this whole seam.
+        inner.freeIfNeeded()
+        aad.freeIfNeeded()
+        nonce.freeIfNeeded()
+        ctTag.freeIfNeeded()
         return out
     }
 
@@ -113,6 +121,10 @@ internal class Dtls13RecordProtection private constructor(
         // Record-number decryption: sample the ciphertext, generate the mask, recover the wire seq bytes.
         val sample = sliceOf(datagram, ciphertextStart, ciphertextStart + AES_BLOCK)
         val mask = recordNumberMask(openSn, sample)
+        // A slice of the received datagram, so on a pooled buffer it is a REFERENCE to that chunk — not a
+        // copy, and not free. Two of these per record (this and `ctTag` below) would pin every inbound
+        // datagram forever, which is the shape `assertNoLeaks` cannot see.
+        sample.freeIfNeeded()
         val encSeqHi = datagram.get(start + 1).toInt() and 0xFF
         val encSeqLo = datagram.get(start + 2).toInt() and 0xFF
         val wireSeq = (((encSeqHi xor mask.first) shl 8) or (encSeqLo xor mask.second)) and 0xFFFF
@@ -129,6 +141,13 @@ internal class Dtls13RecordProtection private constructor(
                 aead.openWithNonceBlocking(nonce, ctTag, openKey, Aad.Of(aad), factory)
             } catch (_: VerificationFailed) {
                 return null
+            } finally {
+                // Released on BOTH paths, including the dropped-record one — a peer that can make the tag
+                // fail could otherwise leak a chunk per forged datagram, which is a remote-triggered leak
+                // rather than a bookkeeping one.
+                aad.freeIfNeeded()
+                nonce.freeIfNeeded()
+                ctTag.freeIfNeeded()
             }
         if (fullSeq > highestOpenedSeq) highestOpenedSeq = fullSeq
         return stripInnerPlaintext(inner)
@@ -139,6 +158,10 @@ internal class Dtls13RecordProtection private constructor(
         openKey.close()
         sealSn.close()
         openSn.close()
+        // The two IVs are this instance's own buffers (see fromTrafficSecrets), and nothing else holds
+        // them. The AES keys wipe their own copies.
+        sealIv.freeIfNeeded()
+        openIv.freeIfNeeded()
     }
 
     // ── helpers ────────────────────────────────────────────────────────────────────────────────────
@@ -187,17 +210,33 @@ internal class Dtls13RecordProtection private constructor(
         out.resetForRead()
         val m0 = out.get(0).toInt() and 0xFF
         val m1 = out.get(1).toInt() and 0xFF
+        // Only two bytes of the mask escape, as Ints — the block and its ciphertext are dead here. One of
+        // each per record in both directions.
+        block.freeIfNeeded()
+        out.freeIfNeeded()
         return m0 to m1
     }
 
-    /** Strips the trailing content-type byte (and any zero padding) from a decrypted TLSInnerPlaintext. */
+    /**
+     * Strips the trailing content-type byte (and any zero padding) from a decrypted TLSInnerPlaintext.
+     *
+     * **Narrows [inner] in place; it does not slice it.** The distinction is the whole reason this is a
+     * named function: [inner] is the AEAD's fresh output buffer and nothing else holds a reference to it,
+     * so a slice would have made [Opened.content] a view over a parent no caller could reach — releasing
+     * the content would decrement a refcount on a chunk whose owner was already unreachable, i.e. a
+     * silent no-op that reads exactly like a correct release. Returning [inner] itself makes the
+     * consumer's release the real one.
+     */
     private fun stripInnerPlaintext(inner: ReadBuffer): Opened? {
         var end = inner.limit()
         while (end > inner.position() && (inner.get(end - 1).toInt() and 0xFF) == 0) end--
-        if (end <= inner.position()) return null // all-zero: no content type — malformed
+        if (end <= inner.position()) {
+            inner.freeIfNeeded() // malformed: all-zero, no content type — this is its last reader
+            return null
+        }
         val type = inner.get(end - 1).toInt() and 0xFF
-        val content = sliceOf(inner, inner.position(), end - 1)
-        return Opened(type, content)
+        inner.setLimit(end - 1)
+        return Opened(type, inner)
     }
 
     private fun writeView(
@@ -246,12 +285,16 @@ internal class Dtls13RecordProtection private constructor(
             peerSecret: ReadBuffer,
             factory: BufferFactory,
         ): Dtls13RecordProtection {
-            val sealKeyBuf = schedule.expandLabel(localSecret, "key", emptyBuf(factory), Tls13KeySchedule.KEY_LEN)
-            val sealIv = schedule.expandLabel(localSecret, "iv", emptyBuf(factory), Tls13KeySchedule.IV_LEN)
-            val sealSnBuf = schedule.expandLabel(localSecret, "sn", emptyBuf(factory), Tls13KeySchedule.SN_KEY_LEN)
-            val openKeyBuf = schedule.expandLabel(peerSecret, "key", emptyBuf(factory), Tls13KeySchedule.KEY_LEN)
-            val openIv = schedule.expandLabel(peerSecret, "iv", emptyBuf(factory), Tls13KeySchedule.IV_LEN)
-            val openSnBuf = schedule.expandLabel(peerSecret, "sn", emptyBuf(factory), Tls13KeySchedule.SN_KEY_LEN)
+            // The zero-length HKDF context is `ReadBuffer.EMPTY_BUFFER`, not a fresh allocation. This used to
+            // mint one per call — six per epoch, none of them freed — for a buffer nothing reads beyond
+            // `remaining() == 0`.
+            val empty = ReadBuffer.EMPTY_BUFFER
+            val sealKeyBuf = schedule.expandLabel(localSecret, "key", empty, Tls13KeySchedule.KEY_LEN)
+            val sealIv = schedule.expandLabel(localSecret, "iv", empty, Tls13KeySchedule.IV_LEN)
+            val sealSnBuf = schedule.expandLabel(localSecret, "sn", empty, Tls13KeySchedule.SN_KEY_LEN)
+            val openKeyBuf = schedule.expandLabel(peerSecret, "key", empty, Tls13KeySchedule.KEY_LEN)
+            val openIv = schedule.expandLabel(peerSecret, "iv", empty, Tls13KeySchedule.IV_LEN)
+            val openSnBuf = schedule.expandLabel(peerSecret, "sn", empty, Tls13KeySchedule.SN_KEY_LEN)
             return Dtls13RecordProtection(
                 sealKey = AesGcmKey.of(sealKeyBuf),
                 sealIv = sealIv,
@@ -260,14 +303,16 @@ internal class Dtls13RecordProtection private constructor(
                 openIv = openIv,
                 openSn = AesEcbKey.of(openSnBuf),
                 factory = factory,
-            )
-        }
-
-        private fun emptyBuf(factory: BufferFactory): ReadBuffer {
-            val b = factory.allocate(1, ByteOrder.BIG_ENDIAN)
-            b.resetForRead()
-            b.setLimit(0)
-            return b
+            ).also {
+                // `AesGcmKey.of` / `AesEcbKey.of` COPY the material into their own (secure, wiped) buffer
+                // — checked in buffer-crypto, not assumed — so the four key buffers are spent here. The
+                // two IVs are not: they are read on every record, so they belong to the instance and are
+                // released by [close]. Freeing them here is the memory-unsafe version of this change.
+                sealKeyBuf.freeIfNeeded()
+                sealSnBuf.freeIfNeeded()
+                openKeyBuf.freeIfNeeded()
+                openSnBuf.freeIfNeeded()
+            }
         }
 
         /**

@@ -16,6 +16,8 @@ import com.ditchoom.webrtc.dtls.wire.ExtensionType
 import com.ditchoom.webrtc.dtls.wire.HandshakeFragment
 import com.ditchoom.webrtc.dtls.wire.HandshakeType
 import com.ditchoom.webrtc.dtls.wire.Tls13Bodies
+import com.ditchoom.webrtc.dtls.wire.Tls13Bodies.KeyShareEntry
+import com.ditchoom.webrtc.dtls.wire.releaseDecodedViews
 import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -59,11 +61,13 @@ public enum class KeyExchangeGroup { X25519, Secp256r1 }
  *   obsolete since the W4b flip made the engine pure Kotlin; BoringSSL survives only as a `linuxTest`
  *   differential oracle. Verify before propagating.
  *
- *   **Kotlin/Native Linux is the one target that reaches the fallback**, and it is a trade rather than
- *   a fix: `deterministic()` is `malloc`-backed and freed by hand, and this stack's receive side has no
- *   owner yet, so inbound datagrams can accumulate there. It replaces a hard crash on the first
- *   connectivity check, which is why it ships — but the end of webrtc#125 is `buffer` giving that
- *   target a GC-managed native buffer, after which [networkBuffer] picks `Default` back up on its own.
+ *   **Kotlin/Native Linux is the one target that reaches the fallback**: `deterministic()` is
+ *   `malloc`-backed and freed by hand, so on that target — and only there — a buffer nobody releases
+ *   stays allocated. Every seam this engine touches is owned: a record is the caller's to free once it
+ *   has been sent (`PureKotlinDtls.apply`), a datagram fed to [DtlsEngine.onDatagram] is the caller's to
+ *   free after the step, and `DtlsRecordSeamOwnershipTest` gates that at zero outstanding chunks for both
+ *   negotiated versions. webrtc#125 ends when `buffer` gives that target a GC-managed native buffer,
+ *   after which [networkBuffer] picks `Default` back up on its own.
  * @param enableDtls13 negotiate up to DTLS 1.3; min always stays 1.2 (§11.3). **On by default**: both
  *   major browser engines now ship DTLS 1.3 for WebRTC (Firefox in Release, Chrome/BoringSSL on by
  *   default since the libwebrtc flip in 2025), and BoringSSL itself defaults to it. Version negotiation
@@ -274,25 +278,43 @@ public class DtlsEngine(
      * parse as a 1.3-capable ClientHello falls back to the 1.2 FSM.
      */
     private fun clientHelloOffersDtls13(datagram: ReadBuffer): Boolean {
+        // A read-only peek that decodes three levels deep, so it takes three levels of views — and it runs
+        // exactly once per session, on the server, over a datagram it does not own. Every one of them is
+        // given back here: this function reads a version number and keeps nothing.
         val records = DtlsRecord.decodeAll(datagram) ?: return false
-        for (record in records) {
-            if (record.contentType.value != ContentType.Handshake.value) continue
-            val fragments = HandshakeFragment.decodeAll(record.fragment) ?: continue
-            for (fragment in fragments) {
-                if (fragment.msgType.value != HandshakeType.ClientHello.value) continue
-                if (fragment.fragmentOffset != 0 || fragment.fragmentLength != fragment.length) continue
-                val ch = ClientHello.parse(fragment.fragmentBody) ?: continue
-                val offersVersion =
-                    ch.extensions
-                        .firstOrNull { it.type.value == ExtensionType.SupportedVersions.value }
-                        ?.let { Tls13Bodies.offersDtls13(it.body) } ?: false
-                val offersKeyShare =
-                    ch.extensions
-                        .firstOrNull { it.type.value == ExtensionType.KeyShare.value }
-                        ?.let { Tls13Bodies.parseKeyShareClientHello(it.body) != null } ?: false
-                if (offersVersion && offersKeyShare) return true
-            }
+        return try {
+            records
+                .filter { it.contentType.value == ContentType.Handshake.value }
+                .any { recordOffersDtls13(it) }
+        } finally {
+            records.releaseDecodedViews()
         }
-        return false
     }
+
+    private fun recordOffersDtls13(record: DtlsRecord): Boolean {
+        val fragments = HandshakeFragment.decodeAll(record.fragment) ?: return false
+        return try {
+            fragments.any { it.isCompleteClientHello() && helloOffersDtls13(it.fragmentBody) }
+        } finally {
+            fragments.releaseDecodedViews()
+        }
+    }
+
+    private fun HandshakeFragment.isCompleteClientHello(): Boolean =
+        msgType.value == HandshakeType.ClientHello.value && fragmentOffset == 0 && fragmentLength == length
+
+    private fun helloOffersDtls13(body: ReadBuffer): Boolean {
+        val ch = ClientHello.parse(body) ?: return false
+        return try {
+            ch.offers(ExtensionType.SupportedVersions) { Tls13Bodies.offersDtls13(it) } &&
+                ch.offers(ExtensionType.KeyShare) { Tls13Bodies.parseKeyShareClientHello(it)?.also(KeyShareEntry::releaseViews) != null }
+        } finally {
+            ch.releaseViews()
+        }
+    }
+
+    private fun ClientHello.offers(
+        type: ExtensionType,
+        predicate: (ReadBuffer) -> Boolean,
+    ): Boolean = extensions.firstOrNull { it.type.value == type.value }?.let { predicate(it.body) } ?: false
 }

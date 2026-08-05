@@ -17,6 +17,7 @@ import com.ditchoom.buffer.crypto.ecdsaSignatureToDer
 import com.ditchoom.buffer.crypto.ecdsaSignatureToP1363
 import com.ditchoom.buffer.crypto.signatures
 import com.ditchoom.buffer.crypto.spkiToEcPublicKey
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.webrtc.dtls.DtlsConfig
 import com.ditchoom.webrtc.dtls.DtlsFailureReason
 import com.ditchoom.webrtc.dtls.DtlsRole
@@ -47,6 +48,7 @@ import com.ditchoom.webrtc.dtls.wire.ServerHello
 import com.ditchoom.webrtc.dtls.wire.ServerKeyExchange
 import com.ditchoom.webrtc.dtls.wire.SignatureSchemeId
 import com.ditchoom.webrtc.dtls.wire.SrtpProtectionProfile
+import com.ditchoom.webrtc.dtls.wire.releaseDecodedViews
 import com.ditchoom.webrtc.dtls.wire.u16
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
@@ -107,6 +109,7 @@ internal class Dtls12Handshake(
 
     private var sendMsgSeq = 0
     private var started = false
+    private var closed = false
     private var terminal: DtlsState? = null
 
     // ── retransmission (RFC 6347 §4.2.4): last flight + a backoff timer ───────────────────────────
@@ -178,21 +181,27 @@ internal class Dtls12Handshake(
         val out = mutableListOf<ReadBuffer>()
         val appData = mutableListOf<ReadBuffer>()
         peerRetransmitAfterEstablished = false
-        for (rec in records) {
-            when (rec.contentType.value) {
-                ContentType.Handshake.value -> {
-                    // A handshake record after we finished = the peer retransmitting (our last flight was
-                    // lost). Flag it so we re-send below, instead of dedup-swallowing it and deadlocking.
-                    if (terminal is DtlsState.Established) peerRetransmitAfterEstablished = true
-                    processHandshakeRecord(rec, out, now)
+        // Each `rec.fragment` is a view over `datagram` — a reference on a pooled chunk, and this loop's to
+        // return. `finally`, because the terminal early-exit below leaves the rest of the list unvisited.
+        try {
+            for (rec in records) {
+                when (rec.contentType.value) {
+                    ContentType.Handshake.value -> {
+                        // A handshake record after we finished = the peer retransmitting (our last flight was
+                        // lost). Flag it so we re-send below, instead of dedup-swallowing it and deadlocking.
+                        if (terminal is DtlsState.Established) peerRetransmitAfterEstablished = true
+                        processHandshakeRecord(rec, out, now)
+                    }
+                    ContentType.ChangeCipherSpec.value -> Unit // epoch is read from each record's own header
+                    ContentType.ApplicationData.value -> decryptApplicationData(rec)?.let { appData += it }
+                    ContentType.Alert.value -> fail(DtlsFailureReason.HandshakeFailure)
+                    else -> Unit // unknown content type — drop (RFC 6347)
                 }
-                ContentType.ChangeCipherSpec.value -> Unit // epoch is read from each record's own header
-                ContentType.ApplicationData.value -> decryptApplicationData(rec)?.let { appData += it }
-                ContentType.Alert.value -> fail(DtlsFailureReason.HandshakeFailure)
-                else -> Unit // unknown content type — drop (RFC 6347)
+                // Stop on a terminal FAILURE/CLOSE, but not on Established — we still append any re-send below.
+                if (terminal is DtlsState.Failed || terminal is DtlsState.Closed) return DtlsStep(out, appData, terminal!!)
             }
-            // Stop on a terminal FAILURE/CLOSE, but not on Established — we still append any re-send below.
-            if (terminal is DtlsState.Failed || terminal is DtlsState.Closed) return DtlsStep(out, appData, terminal!!)
+        } finally {
+            records.releaseDecodedViews()
         }
         // Retransmit our last flight if the peer is still handshaking after we established (RFC 6347 §4.2.4),
         // rate-limited to once per INITIAL_RETRANSMIT so two finished peers don't echo forever (see the field).
@@ -239,7 +248,12 @@ internal class Dtls12Handshake(
         val seq = epoch1Seq++
         val fragment = prot.seal(applicationData, EPOCH_1, seq, ContentType.ApplicationData.value, DTLS12)
         val record = DtlsRecord(ContentType.ApplicationData, ProtocolVersion.Dtls12, EPOCH_1, seq, fragment)
-        return DtlsStep(listOf(encode(record)), emptyList(), terminal!!)
+        return try {
+            DtlsStep(listOf(encode(record)), emptyList(), terminal!!)
+        } finally {
+            // `encode` copies the fragment into the record buffer; nothing retransmits application data.
+            fragment.freeIfNeeded()
+        }
     }
 
     /**
@@ -259,6 +273,11 @@ internal class Dtls12Handshake(
             val seq = epoch1Seq++
             val fragment = prot.seal(alert, EPOCH_1, seq, ContentType.Alert.value, DTLS12)
             out += encode(DtlsRecord(ContentType.Alert, ProtocolVersion.Dtls12, EPOCH_1, seq, fragment))
+            // Both are spent: `seal` copies the plaintext rather than consuming it (the flight path
+            // re-seals the same payload per retransmit, so it cannot), and `encode` copies the sealed
+            // fragment into the record. Nothing retransmits a close_notify.
+            alert.freeIfNeeded()
+            fragment.freeIfNeeded()
         }
         cancelRetransmit()
         terminal = DtlsState.Closed
@@ -279,10 +298,41 @@ internal class Dtls12Handshake(
         return keySchedule.exportKeyingMaterial(master, label, cr, sr, context, length)
     }
 
+    /**
+     * Release everything this FSM holds — key material, retained handshake artifacts, the transcript, the
+     * reassembler's partial messages, and the last flight kept for retransmission. Idempotent.
+     *
+     * Every field here outlives a single `handle` by design (that is what makes it state rather than
+     * scratch), so this is the only place any of it can be freed. Mirrors the DTLS 1.3 twin.
+     */
     override fun close() {
+        if (closed) return
+        closed = true
         ecdhe.close()
-        protection?.close()
+        (keys as? Keys.Derived)?.let {
+            it.protection.close()
+            it.master.freeIfNeeded()
+        }
+        keys = Keys.Pending
+        if (::localRandom.isInitialized) localRandom.freeIfNeeded()
+        // A server whose config offers 1.3 stamps a SECOND buffer for its ServerHello random
+        // ([stampDowngradeSentinel]); otherwise both names are the same buffer as `localRandom`, and the
+        // identity checks are what keep this from being a double release.
+        clientRandom?.takeIf { it !== localRandomOrNull() }?.freeIfNeeded()
+        serverRandom?.takeIf { it !== localRandomOrNull() && it !== clientRandom }?.freeIfNeeded()
+        clientRandom = null
+        serverRandom = null
+        peerCertDer?.freeIfNeeded()
+        peerCertDer = null
+        peerEcdhPoint?.freeIfNeeded()
+        peerEcdhPoint = null
+        lastFlight?.forEach { it.payload.freeIfNeeded() }
+        lastFlight = null
+        transcript.close()
+        reassembler.close()
     }
+
+    private fun localRandomOrNull(): ReadBuffer? = if (::localRandom.isInitialized) localRandom else null
 
     // ── handshake record processing ──────────────────────────────────────────────────────────────
 
@@ -291,21 +341,76 @@ internal class Dtls12Handshake(
         out: MutableList<ReadBuffer>,
         now: Instant,
     ) {
-        val handshakeBytes =
+        // Two owners, told apart deliberately: a decrypted record is the AEAD's OWN output buffer and this
+        // method's to free, while a plaintext one is a view the caller (`onDatagram`) already owes. Freeing
+        // the second here would be a double release of the datagram's chunk.
+        val decrypted =
             if (record.epoch >= EPOCH_1) {
                 val prot = protection ?: return // encrypted before keys — drop
                 prot.open(record.fragment, record.epoch, record.sequenceNumber, ContentType.Handshake.value, DTLS12)
                     ?: return // undecryptable handshake record — drop (RFC 6347)
             } else {
-                record.fragment
+                null
             }
-        val fragments = HandshakeFragment.decodeAll(handshakeBytes) ?: return
+        try {
+            val handshakeBytes = decrypted ?: record.fragment
+            val fragments = HandshakeFragment.decodeAll(handshakeBytes) ?: return
+            // Each fragment body is a `sliceOf` the record — a BORROW, and on a pooled buffer a reference.
+            // The reassembler copies it into its own assembly buffer, so the borrow is spent the moment
+            // `offer` returns; releasing it is what stops one inbound handshake message pinning one chunk
+            // for good. `finally`, because a `terminal` early-exit below leaves the rest unvisited.
+            try {
+                processFragments(fragments, out, now)
+            } finally {
+                fragments.releaseDecodedViews()
+            }
+        } finally {
+            decrypted?.freeIfNeeded()
+        }
+    }
+
+    private fun processFragments(
+        fragments: List<HandshakeFragment>,
+        out: MutableList<ReadBuffer>,
+        now: Instant,
+    ) {
         for (fragment in fragments) {
             for (message in reassembler.offer(fragment)) {
-                handleHandshakeMessage(message, out, now)
+                // The reassembler transfers each body (see HandshakeReassembler.offer). Everything a
+                // handler keeps past this call it has COPIED — the peer cert, the ECDH point, both
+                // randoms — and the transcript appends its own normalized encoding, so this is the
+                // message's last reader, including on the `terminal` early exit.
+                try {
+                    handleHandshakeMessage(message, out, now)
+                } finally {
+                    message.body.freeIfNeeded()
+                }
                 if (terminal != null) return
             }
         }
+    }
+
+    /**
+     * Adopt the peer's end-entity certificate from a Certificate message, or fail the handshake.
+     *
+     * Shared by both roles because the body is identical and so is its ownership: the DER is a view over
+     * `message.body`, [copyOf] is what the FSM keeps, and the views go back either way. Returns false when
+     * the handshake has been failed, so the caller skips the transcript append.
+     */
+    private fun adoptPeerCertificate(message: HandshakeMessage): Boolean {
+        val cert = CertificateMessage.parse(message.body) ?: return failed(DtlsFailureReason.HandshakeFailure)
+        try {
+            val der = cert.certificates.firstOrNull() ?: return failed(DtlsFailureReason.PeerCertificateMissing)
+            peerCertDer = copyOf(der)
+        } finally {
+            cert.releaseViews()
+        }
+        return true
+    }
+
+    private fun failed(reason: DtlsFailureReason): Boolean {
+        fail(reason)
+        return false
     }
 
     private fun handleHandshakeMessage(
@@ -330,23 +435,31 @@ internal class Dtls12Handshake(
         when (message.msgType.value) {
             HandshakeType.ServerHello.value -> {
                 val sh = ServerHello.parse(message.body) ?: return fail(DtlsFailureReason.HandshakeFailure)
-                if (sh.cipherSuite.value != CipherSuiteId.TlsEcdheEcdsaAes128GcmSha256.value) {
-                    return fail(DtlsFailureReason.HandshakeFailure)
+                // Every field is a view over `message.body`; what survives this handler is copied. One
+                // `finally` covers the reject in the middle, which any peer can reach.
+                try {
+                    if (sh.cipherSuite.value != CipherSuiteId.TlsEcdheEcdsaAes128GcmSha256.value) {
+                        return fail(DtlsFailureReason.HandshakeFailure)
+                    }
+                    serverRandom = copyOf(sh.random)
+                    useExtendedMasterSecret = sh.extensions.any { it.type.value == ExtensionType.ExtendedMasterSecret.value }
+                } finally {
+                    sh.releaseViews()
                 }
-                serverRandom = copyOf(sh.random)
-                useExtendedMasterSecret = sh.extensions.any { it.type.value == ExtensionType.ExtendedMasterSecret.value }
                 transcript.append(message)
             }
             HandshakeType.Certificate.value -> {
-                val cert = CertificateMessage.parse(message.body) ?: return fail(DtlsFailureReason.HandshakeFailure)
-                peerCertDer = cert.certificates.firstOrNull()?.let { copyOf(it) }
-                    ?: return fail(DtlsFailureReason.PeerCertificateMissing)
+                if (!adoptPeerCertificate(message)) return
                 transcript.append(message)
             }
             HandshakeType.ServerKeyExchange.value -> {
                 val ske = ServerKeyExchange.parse(message.body) ?: return fail(DtlsFailureReason.HandshakeFailure)
-                if (!verifyServerKeyExchange(ske)) return fail(DtlsFailureReason.HandshakeFailure)
-                peerEcdhPoint = copyOf(ske.publicPoint)
+                try {
+                    if (!verifyServerKeyExchange(ske)) return fail(DtlsFailureReason.HandshakeFailure)
+                    peerEcdhPoint = copyOf(ske.publicPoint)
+                } finally {
+                    ske.releaseViews()
+                }
                 transcript.append(message)
             }
             HandshakeType.CertificateRequest.value -> {
@@ -397,6 +510,11 @@ internal class Dtls12Handshake(
         val raw = signatures().ops.signBlocking(certificate.signingKey, message)
         val derSig = if (ecdsaSignatureEncoding == EcdsaSignatureEncoding.Der) raw else ecdsaSignatureToDer(SignatureScheme.EcdsaP256, raw)
         val body = buildBody { CertificateVerify(SignatureSchemeId.EcdsaSecp256r1Sha256, derSig).bodyInto(it) }
+        // All three are scratch for this one signature, and `derSig === raw` on a platform whose native
+        // encoding is already DER — freeing it twice would be a double release, hence the identity check.
+        message.freeIfNeeded()
+        if (derSig !== raw) raw.freeIfNeeded()
+        derSig.freeIfNeeded()
         return queueHandshake(HandshakeType.CertificateVerify, body, EPOCH_0, encrypted = false)
     }
 
@@ -410,35 +528,41 @@ internal class Dtls12Handshake(
         when (message.msgType.value) {
             HandshakeType.ClientHello.value -> {
                 val ch = ClientHello.parse(message.body) ?: return fail(DtlsFailureReason.HandshakeFailure)
-                if (ch.cipherSuites.none { it.value == CipherSuiteId.TlsEcdheEcdsaAes128GcmSha256.value }) {
-                    return fail(DtlsFailureReason.HandshakeFailure)
+                try {
+                    if (ch.cipherSuites.none { it.value == CipherSuiteId.TlsEcdheEcdsaAes128GcmSha256.value }) {
+                        return fail(DtlsFailureReason.HandshakeFailure)
+                    }
+                    clientRandom = copyOf(ch.random)
+                    useExtendedMasterSecret = ch.extensions.any { it.type.value == ExtensionType.ExtendedMasterSecret.value }
+                    // RFC 5746 secure-renegotiation indication: the client signals support with an (empty)
+                    // renegotiation_info extension or the TLS_EMPTY_RENEGOTIATION_INFO_SCSV. OpenSSL aborts a
+                    // server that doesn't echo it ("unsafe legacy renegotiation disabled"), so track + echo it.
+                    peerAdvertisedRenegotiation =
+                        ch.extensions.any { it.type.value == ExtensionType.RenegotiationInfo.value } ||
+                        ch.cipherSuites.any { it.value == RENEGOTIATION_SCSV }
+                    // RFC 5764 DTLS-SRTP: a WebRTC peer always offers `use_srtp`, and a strict client (pion/dtls)
+                    // sends a fatal alert if the server does not echo it, even for a data-channel-only session
+                    // (BoringSSL/OpenSSL tolerate the omission — the same lenient-vs-strict split as RFC 5746
+                    // above). Select a mutually-supported profile to echo in the ServerHello. We negotiate the
+                    // extension but don't derive SRTP keys until media (Phase 2, via the DTLS exporter).
+                    negotiatedSrtpProfile = selectSrtpProfile(ch)
+                } finally {
+                    ch.releaseViews()
                 }
-                clientRandom = copyOf(ch.random)
-                useExtendedMasterSecret = ch.extensions.any { it.type.value == ExtensionType.ExtendedMasterSecret.value }
-                // RFC 5746 secure-renegotiation indication: the client signals support with an (empty)
-                // renegotiation_info extension or the TLS_EMPTY_RENEGOTIATION_INFO_SCSV. OpenSSL aborts a
-                // server that doesn't echo it ("unsafe legacy renegotiation disabled"), so track + echo it.
-                peerAdvertisedRenegotiation =
-                    ch.extensions.any { it.type.value == ExtensionType.RenegotiationInfo.value } ||
-                    ch.cipherSuites.any { it.value == RENEGOTIATION_SCSV }
-                // RFC 5764 DTLS-SRTP: a WebRTC peer always offers `use_srtp`, and a strict client (pion/dtls)
-                // sends a fatal alert if the server does not echo it, even for a data-channel-only session
-                // (BoringSSL/OpenSSL tolerate the omission — the same lenient-vs-strict split as RFC 5746
-                // above). Select a mutually-supported profile to echo in the ServerHello. We negotiate the
-                // extension but don't derive SRTP keys until media (Phase 2, via the DTLS exporter).
-                negotiatedSrtpProfile = selectSrtpProfile(ch)
                 transcript.append(message)
                 sendServerHelloFlight(out, now)
             }
             HandshakeType.Certificate.value -> {
-                val cert = CertificateMessage.parse(message.body) ?: return fail(DtlsFailureReason.HandshakeFailure)
-                peerCertDer = cert.certificates.firstOrNull()?.let { copyOf(it) }
-                    ?: return fail(DtlsFailureReason.PeerCertificateMissing)
+                if (!adoptPeerCertificate(message)) return
                 transcript.append(message)
             }
             HandshakeType.ClientKeyExchange.value -> {
                 val cke = ClientKeyExchange.parse(message.body) ?: return fail(DtlsFailureReason.HandshakeFailure)
-                peerEcdhPoint = copyOf(cke.publicPoint)
+                try {
+                    peerEcdhPoint = copyOf(cke.publicPoint)
+                } finally {
+                    cke.releaseViews()
+                }
                 transcript.append(message)
                 deriveKeys(client = false)
             }
@@ -472,22 +596,30 @@ internal class Dtls12Handshake(
         // Echo the selected DTLS-SRTP profile (RFC 5764 §4.1.2) when the client offered use_srtp — required
         // by pion/dtls, which fatally alerts a server that omits it. Server response = one selected profile.
         negotiatedSrtpProfile?.let { extensions += useSrtpServerExtension(it) }
+        val legacySessionId = empty()
         val sh =
             buildBody {
                 ServerHello(
                     ProtocolVersion.Dtls12,
                     serverRandom!!,
-                    empty(),
+                    legacySessionId,
                     CipherSuiteId.TlsEcdheEcdsaAes128GcmSha256,
                     extensions,
                 ).bodyInto(it)
             }
+        legacySessionId.freeIfNeeded()
+        for (extension in extensions) extension.body.freeIfNeeded()
         flight += queueHandshake(HandshakeType.ServerHello, sh, EPOCH_0, encrypted = false)
 
         val certMsg = buildBody { CertificateMessage(listOf(certificate.derEncoded)).bodyInto(it) }
         flight += queueHandshake(HandshakeType.Certificate, certMsg, EPOCH_0, encrypted = false)
 
-        val ske = buildBody { serverKeyExchange().bodyInto(it) }
+        val skeMessage = serverKeyExchange()
+        val ske = buildBody { skeMessage.bodyInto(it) }
+        // `serverKeyExchange` builds both of these itself (a copy of our point, a fresh signature) and
+        // `bodyInto` copies them into `ske` — so despite the name, this is the *built* case of
+        // [ServerKeyExchange.releaseViews], not the decoded one, and the buffers really are ours.
+        skeMessage.releaseViews()
         flight += queueHandshake(HandshakeType.ServerKeyExchange, ske, EPOCH_0, encrypted = false)
 
         // CertificateRequest — WebRTC mutual auth (RFC 8827): ask the client for its certificate.
@@ -509,8 +641,13 @@ internal class Dtls12Handshake(
 
     private fun serverKeyExchange(): ServerKeyExchange {
         val point = copyOf(ecdhe.localPublicPoint)
-        val unsigned = ServerKeyExchange(NamedGroup.Secp256r1, point, SignatureSchemeId.EcdsaSecp256r1Sha256, empty())
+        // `unsigned` exists only so `signServerParams` can serialize the params it signs over; its
+        // placeholder signature is a real buffer and its `point` is shared with the result below, so only
+        // the placeholder is released here.
+        val placeholder = empty()
+        val unsigned = ServerKeyExchange(NamedGroup.Secp256r1, point, SignatureSchemeId.EcdsaSecp256r1Sha256, placeholder)
         val signed = signServerParams(unsigned)
+        placeholder.freeIfNeeded()
         return ServerKeyExchange(NamedGroup.Secp256r1, point, SignatureSchemeId.EcdsaSecp256r1Sha256, signed)
     }
 
@@ -526,14 +663,33 @@ internal class Dtls12Handshake(
                 keySchedule.masterSecret(premaster, cr, sr, sessionHash)
             } finally {
                 premaster.freeNativeMemory()
+                // The session hash is a one-shot input to the extended-master-secret PRF (RFC 7627).
+                sessionHash?.freeIfNeeded()
             }
         val keyBlock = keySchedule.keyBlock(master, sr, cr, Dtls12RecordProtection.KEY_BLOCK_BYTES)
-        keys = Keys.Derived(master, Dtls12RecordProtection.fromKeyBlock(keyBlock, client = client, factory))
+        // `fromKeyBlock` slices the block; the AEAD keys copy and the two IV views are released by
+        // `Dtls12RecordProtection.close()`, so the block itself is spent as soon as it has been split.
+        val protection = Dtls12RecordProtection.fromKeyBlock(keyBlock, client = client, factory)
+        keyBlock.freeIfNeeded()
+        keys = Keys.Derived(master, protection)
     }
 
-    private fun buildFinished(label: String): FlightItem {
-        val verifyData = keySchedule.verifyData(masterSecret!!, label, transcript.currentSha256())
-        return queueHandshake(HandshakeType.Finished, verifyData, EPOCH_1, encrypted = true)
+    private fun buildFinished(label: String): FlightItem =
+        withTranscriptHash { hash ->
+            queueHandshake(HandshakeType.Finished, keySchedule.verifyData(masterSecret!!, label, hash), EPOCH_1, encrypted = true)
+        }
+
+    /**
+     * Run [block] with the transcript hash at this instant, releasing it afterwards. Every use of the
+     * running hash is a one-shot input to a signature, a MAC or a key derivation — none of them retain it.
+     */
+    private inline fun <T> withTranscriptHash(block: (ReadBuffer) -> T): T {
+        val hash = transcript.currentSha256()
+        return try {
+            block(hash)
+        } finally {
+            hash.freeIfNeeded()
+        }
     }
 
     private fun verifyPeerFinished(
@@ -541,8 +697,12 @@ internal class Dtls12Handshake(
         label: String,
     ): Boolean {
         if (message.length != Tls12KeySchedule.VERIFY_DATA_BYTES) return false
-        val expected = keySchedule.verifyData(masterSecret!!, label, transcript.currentSha256())
-        return constantTimeEquals(expected, message.body)
+        val expected = withTranscriptHash { keySchedule.verifyData(masterSecret!!, label, it) }
+        return try {
+            constantTimeEquals(expected, message.body)
+        } finally {
+            expected.freeIfNeeded()
+        }
     }
 
     // ── ECDSA sign / verify over the ServerKeyExchange params ─────────────────────────────────────
@@ -551,20 +711,39 @@ internal class Dtls12Handshake(
         val message = signedParamsBytes(ske)
         val support = signatures()
         val raw = support.ops.signBlocking(certificate.signingKey, message)
-        return if (ecdsaSignatureEncoding == EcdsaSignatureEncoding.Der) raw else ecdsaSignatureToDer(SignatureScheme.EcdsaP256, raw)
+        message.freeIfNeeded() // serialized for this one signature and nothing else
+        val der = if (ecdsaSignatureEncoding == EcdsaSignatureEncoding.Der) raw else ecdsaSignatureToDer(SignatureScheme.EcdsaP256, raw)
+        if (der !== raw) raw.freeIfNeeded() // identical on a platform whose native encoding is already DER
+        return der
     }
 
     private fun verifyServerKeyExchange(ske: ServerKeyExchange): Boolean {
         val verifyKey = verifyKeyFromCert(peerCertDer ?: return false) ?: return false
-        return verifyWireSignature(verifyKey, signedParamsBytes(ske), ske.signature)
+        val signed = signedParamsBytes(ske)
+        return try {
+            verifyWireSignature(verifyKey, signed, ske.signature)
+        } finally {
+            signed.freeIfNeeded()
+        }
     }
 
     private fun verifyCertificateVerify(message: HandshakeMessage): Boolean {
         val cv = CertificateVerify.parse(message.body) ?: return false
-        val verifyKey = verifyKeyFromCert(peerCertDer ?: return false) ?: return false
-        // The signature covers the handshake_messages up to (not including) this CertificateVerify —
-        // which is exactly the current transcript, since it is verified before being appended.
-        return verifyWireSignature(verifyKey, transcript.currentBytes(), cv.signature)
+        // `cv.signature` is a view over `message.body`, read here and kept nowhere — given back on every
+        // exit, including the two `return false`s that come before the verify runs.
+        try {
+            val verifyKey = verifyKeyFromCert(peerCertDer ?: return false) ?: return false
+            // The signature covers the handshake_messages up to (not including) this CertificateVerify —
+            // which is exactly the current transcript, since it is verified before being appended.
+            val signed = transcript.currentBytes()
+            return try {
+                verifyWireSignature(verifyKey, signed, cv.signature)
+            } finally {
+                signed.freeIfNeeded()
+            }
+        } finally {
+            cv.releaseViews()
+        }
     }
 
     /** Lifts a P-256 [VerifyKey] out of an X.509 certificate DER, or null if it doesn't parse. */
@@ -575,8 +754,18 @@ internal class Dtls12Handshake(
                 spkiToEcPublicKey(KeyAgreementCurve.P256, spki, factory)
             } catch (_: Throwable) {
                 return null
+            } finally {
+                // Extracted from the cert for this one conversion, on both the success and the
+                // malformed-cert paths — the latter being the peer-controlled one.
+                spki.freeIfNeeded()
             }
-        return VerifyKey.ecdsaP256(point)
+        return try {
+            VerifyKey.ecdsaP256(point)
+        } finally {
+            // `ecdsaP256` copies the point into the key's own material (the same contract as
+            // `AesGcmKey.of`), so the decoded point is spent here.
+            point.freeIfNeeded()
+        }
     }
 
     /** Verifies a DER-on-the-wire ECDSA-P256 signature, transcoding to the platform encoding if needed. */
@@ -595,6 +784,9 @@ internal class Dtls12Handshake(
             signatures().ops.verifyBlocking(verifyKey, message, sig)
         } catch (_: Throwable) {
             false
+        } finally {
+            // Only when we transcoded: otherwise `sig === wireSignature`, which belongs to the caller.
+            if (sig !== wireSignature) sig.freeIfNeeded()
         }
     }
 
@@ -616,6 +808,7 @@ internal class Dtls12Handshake(
         writeView(out, serverRandom!!)
         writeView(out, params)
         out.resetForRead()
+        params.freeIfNeeded() // copied into `out`
         return out
     }
 
@@ -644,17 +837,24 @@ internal class Dtls12Handshake(
                 // expects it. Our server (below) echoes the selected profile back.
                 useSrtpClientExtension(),
             )
+        val legacySessionId = empty()
+        val legacyCookie = empty() // no cookie on the initial hello
         val ch =
             buildBody {
                 ClientHello(
                     ProtocolVersion.Dtls12,
                     clientRandom!!,
-                    empty(),
-                    empty(), // no cookie on the initial hello
+                    legacySessionId,
+                    legacyCookie,
                     listOf(CipherSuiteId.TlsEcdheEcdsaAes128GcmSha256),
                     extensions,
                 ).bodyInto(it)
             }
+        // Every part of the hello is copied into `ch` by `bodyInto`, so this is their last reader. The two
+        // randoms are NOT here: `clientRandom` is retained for the key schedule and freed in [close].
+        legacySessionId.freeIfNeeded()
+        legacyCookie.freeIfNeeded()
+        for (extension in extensions) extension.body.freeIfNeeded()
         val item = queueHandshake(HandshakeType.ClientHello, ch, EPOCH_0, encrypted = false)
         emitFlight(listOf(item), out, now)
     }
@@ -670,6 +870,9 @@ internal class Dtls12Handshake(
         val wire = factory.allocate(message.wireSize, ByteOrder.BIG_ENDIAN)
         message.encodeInto(wire)
         wire.resetForRead()
+        // A consuming combinator, exactly like the 1.3 twin: every caller passes a freshly built body as an
+        // anonymous sub-expression, so there is nowhere else the release could live.
+        body.freeIfNeeded()
         return FlightItem(ContentType.Handshake.value, wire, epoch, encrypted)
     }
 
@@ -679,6 +882,9 @@ internal class Dtls12Handshake(
         now: Instant,
     ) {
         for (item in flight) out += emit(item)
+        // Superseded: the previous flight is never retransmitted again and this field was its only
+        // reference (see the DTLS 1.3 twin).
+        lastFlight?.forEach { it.payload.freeIfNeeded() }
         lastFlight = flight
         retransmitBackoff = INITIAL_RETRANSMIT
         retransmitDeadline = now + retransmitBackoff
@@ -686,13 +892,16 @@ internal class Dtls12Handshake(
 
     private fun emit(item: FlightItem): ReadBuffer {
         val seq = if (item.epoch == EPOCH_0) epoch0Seq++ else epoch1Seq++
-        val fragment =
-            if (item.encrypted) {
-                protection!!.seal(item.payload, item.epoch, seq, item.contentType, DTLS12)
-            } else {
-                item.payload
-            }
-        return encode(DtlsRecord(ContentType(item.contentType), ProtocolVersion.Dtls12, item.epoch, seq, fragment))
+        // Two owners again: a sealed fragment is `seal`'s own output and this method's to free once
+        // `encode` has copied it into the record, while a plaintext one IS `item.payload`, which the
+        // flight retains for retransmission and only [emitFlight]/[close] may release.
+        val sealed = if (item.encrypted) protection!!.seal(item.payload, item.epoch, seq, item.contentType, DTLS12) else null
+        val fragment = sealed ?: item.payload
+        return try {
+            encode(DtlsRecord(ContentType(item.contentType), ProtocolVersion.Dtls12, item.epoch, seq, fragment))
+        } finally {
+            sealed?.freeIfNeeded()
+        }
     }
 
     private fun decryptApplicationData(record: DtlsRecord): ReadBuffer? {

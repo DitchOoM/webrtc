@@ -2,6 +2,7 @@ package com.ditchoom.webrtc.dtls.wire
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.freeIfNeeded
 import kotlin.jvm.JvmInline
 
 /** A TLS cipher suite code point (RFC 8446 / RFC 8422). */
@@ -45,35 +46,50 @@ internal class ClientHello(
         Extension.encodeList(dest, extensions)
     }
 
+    /** Give back every reference this decode took. **Decoded only** — see [releaseDecodedViews]. */
+    fun releaseViews() {
+        random.freeIfNeeded()
+        sessionId.freeIfNeeded()
+        cookie.freeIfNeeded()
+        extensions.releaseDecodedViews()
+    }
+
     companion object {
-        fun parse(body: ReadBuffer): ClientHello? {
-            val n = body.remaining()
-            var off = 0
-            if (off + 2 + RANDOM_BYTES > n) return null
-            val version = ProtocolVersion(body.u16(off))
-            off += 2
-            val random = body.sliceOf(off, off + RANDOM_BYTES)
-            off += RANDOM_BYTES
-            val sid = readU8Vector(body, off, n) ?: return null
-            off = sid.second
-            val cookie = readU8Vector(body, off, n) ?: return null
-            off = cookie.second
-            if (off + 2 > n) return null
-            val csLen = body.u16(off)
-            off += 2
-            if (csLen % 2 != 0 || off + csLen > n) return null
-            val suites = ArrayList<CipherSuiteId>(csLen / 2)
-            repeat(csLen / 2) {
-                suites += CipherSuiteId(body.u16(off))
+        /**
+         * The whole body is parsed inside a [ViewLedger] so that **every** reject path gives back the
+         * views taken before it. A ClientHello is the first thing an unauthenticated peer can send, so a
+         * `return null` on top of three live slices is a chunk pinned per malformed datagram.
+         */
+        fun parse(body: ReadBuffer): ClientHello? =
+            ViewLedger().use { taken ->
+                val n = body.remaining()
+                var off = 0
+                if (off + 2 + RANDOM_BYTES > n) return@use null
+                val version = ProtocolVersion(body.u16(off))
                 off += 2
+                val random = taken.add(body.sliceOf(off, off + RANDOM_BYTES))
+                off += RANDOM_BYTES
+                val sid = taken.addVector(readU8Vector(body, off, n)) ?: return@use null
+                off = sid.second
+                val cookie = taken.addVector(readU8Vector(body, off, n)) ?: return@use null
+                off = cookie.second
+                if (off + 2 > n) return@use null
+                val csLen = body.u16(off)
+                off += 2
+                if (csLen % 2 != 0 || off + csLen > n) return@use null
+                val suites = ArrayList<CipherSuiteId>(csLen / 2)
+                repeat(csLen / 2) {
+                    suites += CipherSuiteId(body.u16(off))
+                    off += 2
+                }
+                if (off + 1 > n) return@use null
+                val compLen = body.u8(off)
+                off += 1 + compLen
+                if (off > n) return@use null
+                val exts = taken.addAll(Extension.decodeList(body, off, n)) ?: return@use null
+                taken.keep()
+                ClientHello(version, random, sid.first, cookie.first, suites, exts)
             }
-            if (off + 1 > n) return null
-            val compLen = body.u8(off)
-            off += 1 + compLen
-            if (off > n) return null
-            val exts = Extension.decodeList(body, off, n) ?: return null
-            return ClientHello(version, random, sid.first, cookie.first, suites, exts)
-        }
     }
 }
 
@@ -85,6 +101,11 @@ internal class HelloVerifyRequest(
     fun bodyInto(dest: WriteBuffer) {
         dest.writeShort(version.value.toShort())
         writeU8Vector(dest, cookie)
+    }
+
+    /** Give back every reference this decode took. **Decoded only** — see [releaseDecodedViews]. */
+    fun releaseViews() {
+        cookie.freeIfNeeded()
     }
 
     companion object {
@@ -115,24 +136,33 @@ internal class ServerHello(
         Extension.encodeList(dest, extensions)
     }
 
+    /** Give back every reference this decode took. **Decoded only** — see [releaseDecodedViews]. */
+    fun releaseViews() {
+        random.freeIfNeeded()
+        sessionId.freeIfNeeded()
+        extensions.releaseDecodedViews()
+    }
+
     companion object {
-        fun parse(body: ReadBuffer): ServerHello? {
-            val n = body.remaining()
-            var off = 0
-            if (off + 2 + RANDOM_BYTES > n) return null
-            val version = ProtocolVersion(body.u16(off))
-            off += 2
-            val random = body.sliceOf(off, off + RANDOM_BYTES)
-            off += RANDOM_BYTES
-            val sid = readU8Vector(body, off, n) ?: return null
-            off = sid.second
-            if (off + 3 > n) return null
-            val suite = CipherSuiteId(body.u16(off))
-            off += 2
-            off += 1 // compression method
-            val exts = Extension.decodeList(body, off, n) ?: return null
-            return ServerHello(version, random, sid.first, suite, exts)
-        }
+        fun parse(body: ReadBuffer): ServerHello? =
+            ViewLedger().use { taken ->
+                val n = body.remaining()
+                var off = 0
+                if (off + 2 + RANDOM_BYTES > n) return@use null
+                val version = ProtocolVersion(body.u16(off))
+                off += 2
+                val random = taken.add(body.sliceOf(off, off + RANDOM_BYTES))
+                off += RANDOM_BYTES
+                val sid = taken.addVector(readU8Vector(body, off, n)) ?: return@use null
+                off = sid.second
+                if (off + 3 > n) return@use null
+                val suite = CipherSuiteId(body.u16(off))
+                off += 2
+                off += 1 // compression method
+                val exts = taken.addAll(Extension.decodeList(body, off, n)) ?: return@use null
+                taken.keep()
+                ServerHello(version, random, sid.first, suite, exts)
+            }
     }
 }
 
@@ -152,25 +182,32 @@ internal class CertificateMessage(
         }
     }
 
+    /** Give back every reference this decode took. **Decoded only** — see [releaseDecodedViews]. */
+    fun releaseViews() {
+        for (c in certificates) c.freeIfNeeded()
+    }
+
     companion object {
-        fun parse(body: ReadBuffer): CertificateMessage? {
-            val n = body.remaining()
-            if (n < 3) return null
-            val total = body.u24(0)
-            var off = 3
-            if (off + total > n) return null
-            val end = off + total
-            val certs = ArrayList<ReadBuffer>(1)
-            while (off < end) {
-                if (off + 3 > end) return null
-                val len = body.u24(off)
-                off += 3
-                if (off + len > end) return null
-                certs += body.sliceOf(off, off + len)
-                off += len
+        fun parse(body: ReadBuffer): CertificateMessage? =
+            ViewLedger().use { taken ->
+                val n = body.remaining()
+                if (n < 3) return@use null
+                val total = body.u24(0)
+                var off = 3
+                if (off + total > n) return@use null
+                val end = off + total
+                val certs = ArrayList<ReadBuffer>(1)
+                while (off < end) {
+                    if (off + 3 > end) return@use null
+                    val len = body.u24(off)
+                    off += 3
+                    if (off + len > end) return@use null
+                    certs += taken.add(body.sliceOf(off, off + len))
+                    off += len
+                }
+                taken.keep()
+                CertificateMessage(certs)
             }
-            return CertificateMessage(certs)
-        }
     }
 }
 
@@ -201,23 +238,32 @@ internal class ServerKeyExchange(
         writeU8Vector(dest, publicPoint)
     }
 
+    /** Give back every reference this decode took. **Decoded only** — see [releaseDecodedViews]. */
+    fun releaseViews() {
+        publicPoint.freeIfNeeded()
+        signature.freeIfNeeded()
+    }
+
     companion object {
         private const val NAMED_CURVE = 3
 
-        fun parse(body: ReadBuffer): ServerKeyExchange? {
-            val n = body.remaining()
-            if (n < 4 || body.u8(0) != NAMED_CURVE) return null
-            val curve = NamedGroup(body.u16(1))
-            val point = readU8Vector(body, 3, n) ?: return null
-            var off = point.second
-            if (off + 4 > n) return null
-            val scheme = SignatureSchemeId(body.u16(off))
-            off += 2
-            val sigLen = body.u16(off)
-            off += 2
-            if (off + sigLen > n) return null
-            return ServerKeyExchange(curve, point.first, scheme, body.sliceOf(off, off + sigLen))
-        }
+        fun parse(body: ReadBuffer): ServerKeyExchange? =
+            ViewLedger().use { taken ->
+                val n = body.remaining()
+                if (n < 4 || body.u8(0) != NAMED_CURVE) return@use null
+                val curve = NamedGroup(body.u16(1))
+                val point = taken.addVector(readU8Vector(body, 3, n)) ?: return@use null
+                var off = point.second
+                if (off + 4 > n) return@use null
+                val scheme = SignatureSchemeId(body.u16(off))
+                off += 2
+                val sigLen = body.u16(off)
+                off += 2
+                if (off + sigLen > n) return@use null
+                val signature = taken.add(body.sliceOf(off, off + sigLen))
+                taken.keep()
+                ServerKeyExchange(curve, point.first, scheme, signature)
+            }
     }
 }
 
@@ -227,13 +273,20 @@ internal class ClientKeyExchange(
 ) {
     fun bodyInto(dest: WriteBuffer) = writeU8Vector(dest, publicPoint)
 
+    /** Give back every reference this decode took. **Decoded only** — see [releaseDecodedViews]. */
+    fun releaseViews() {
+        publicPoint.freeIfNeeded()
+    }
+
     companion object {
-        fun parse(body: ReadBuffer): ClientKeyExchange? {
-            val n = body.remaining()
-            val point = readU8Vector(body, 0, n) ?: return null
-            if (point.second != n) return null
-            return ClientKeyExchange(point.first)
-        }
+        fun parse(body: ReadBuffer): ClientKeyExchange? =
+            ViewLedger().use { taken ->
+                val n = body.remaining()
+                val point = taken.addVector(readU8Vector(body, 0, n)) ?: return@use null
+                if (point.second != n) return@use null
+                taken.keep()
+                ClientKeyExchange(point.first)
+            }
     }
 }
 
@@ -248,12 +301,18 @@ internal class CertificateVerify(
         dest.writeView(signature)
     }
 
+    /** Give back every reference this decode took. **Decoded only** — see [releaseDecodedViews]. */
+    fun releaseViews() {
+        signature.freeIfNeeded()
+    }
+
     companion object {
         fun parse(body: ReadBuffer): CertificateVerify? {
             val n = body.remaining()
             if (n < 4) return null
             val scheme = SignatureSchemeId(body.u16(0))
             val sigLen = body.u16(2)
+            // Checked before the slice is taken, so this reject has nothing to give back.
             if (4 + sigLen != n) return null
             return CertificateVerify(scheme, body.sliceOf(4, n))
         }

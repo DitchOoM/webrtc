@@ -9,6 +9,8 @@ import com.ditchoom.buffer.crypto.HmacSha256Mac
 import com.ditchoom.buffer.crypto.Info
 import com.ditchoom.buffer.crypto.Salt
 import com.ditchoom.buffer.crypto.Sha256Digest
+import com.ditchoom.buffer.crypto.secure
+import com.ditchoom.buffer.freeIfNeeded
 
 /**
  * The DTLS 1.3 key schedule for `TLS_AES_128_GCM_SHA256` (RFC 9147 §5 over RFC 8446 §7.1). The suite's
@@ -36,24 +38,46 @@ import com.ditchoom.buffer.crypto.Sha256Digest
  * TranscriptHash(context))`.
  */
 internal class Tls13KeySchedule(
-    private val factory: BufferFactory,
-) {
-    /** `SHA-256("")` — the transcript hash of the empty string, used by every `"derived"` step. */
-    val emptyTranscriptHash: ReadBuffer by lazy {
-        val digest = Sha256Digest()
-        val out = factory.allocate(HASH_LEN, ByteOrder.BIG_ENDIAN)
-        digest.digestInto(out)
-        digest.close()
-        out.resetForRead()
-        out
-    }
+    callerFactory: BufferFactory,
+) : AutoCloseable {
+    /**
+     * **Every buffer this class allocates is key material, so all of them are wiped on free.**
+     *
+     * That matters specifically because these are now *released* rather than leaked. A traffic secret
+     * handed back to a `BufferPool` unwiped is a chunk the next `allocate()` gets — which would trade a
+     * leak for key disclosure, a strictly worse bug. `secure()` decorates each buffer so
+     * `freeNativeMemory()` zeroes it before it goes back, and it composes with whatever the caller
+     * passed: pooled, native, or a plain heap factory in a fixture.
+     *
+     * The one thing in here that is not a secret is the `HkdfLabel` scratch, which carries a length and a
+     * label. Wiping it too costs a memset of ~20 bytes and saves having to justify the exception.
+     */
+    private val factory: BufferFactory = callerFactory.secure()
 
-    private val zeros: ReadBuffer by lazy {
-        val b = factory.allocate(HASH_LEN, ByteOrder.BIG_ENDIAN)
-        repeat(HASH_LEN) { b.writeByte(0) }
-        b.resetForRead()
-        b
-    }
+    // Held as explicit `Lazy` handles, not `by lazy` properties, so [close] can free only what was
+    // actually forced — reading a `by lazy` property to release it would create it.
+    private val lazyEmptyTranscriptHash =
+        lazy {
+            val digest = Sha256Digest()
+            val out = factory.allocate(HASH_LEN, ByteOrder.BIG_ENDIAN)
+            digest.digestInto(out)
+            digest.close()
+            out.resetForRead()
+            out as ReadBuffer
+        }
+
+    /** `SHA-256("")` — the transcript hash of the empty string, used by every `"derived"` step. */
+    val emptyTranscriptHash: ReadBuffer get() = lazyEmptyTranscriptHash.value
+
+    private val lazyZeros =
+        lazy {
+            val b = factory.allocate(HASH_LEN, ByteOrder.BIG_ENDIAN)
+            repeat(HASH_LEN) { b.writeByte(0) }
+            b.resetForRead()
+            b as ReadBuffer
+        }
+
+    private val zeros: ReadBuffer get() = lazyZeros.value
 
     /**
      * `HKDF-Expand-Label(secret, label, context, length)` with the DTLS 1.3 `"dtls13"` label prefix.
@@ -80,6 +104,10 @@ internal class Tls13KeySchedule(
         val prkPos = secret.position()
         Hkdf.expandInto(secret, Info.Of(info), length, out)
         secret.position(prkPos)
+        // `info` is the HkdfLabel structure and exists only for this one expansion. It is the single
+        // hottest allocation in the schedule — one per derived key, IV, sn key and secret — so leaving it
+        // to the caller's factory to reclaim is what made a handshake cost dozens of chunks.
+        info.freeIfNeeded()
         out.resetForRead()
         return out
     }
@@ -98,13 +126,27 @@ internal class Tls13KeySchedule(
     fun handshakeSecret(
         earlySecret: ReadBuffer,
         ecdheSecret: ReadBuffer,
-    ): ReadBuffer = extract(derived(earlySecret), ecdheSecret)
+    ): ReadBuffer = withDerived(earlySecret) { salt -> extract(salt, ecdheSecret) }
 
     /** The Master Secret `HKDF-Extract(salt=Derive(handshake,"derived",""), ikm=0^32)`. */
-    fun masterSecret(handshakeSecret: ReadBuffer): ReadBuffer = extract(derived(handshakeSecret), zeros)
+    fun masterSecret(handshakeSecret: ReadBuffer): ReadBuffer = withDerived(handshakeSecret) { salt -> extract(salt, zeros) }
+
+    // The `"derived"` bridge secret is a salt for exactly one Extract and is never seen again — a
+    // scratch buffer that happens to be key material, so it is released as soon as the Extract has read it.
+    private inline fun withDerived(
+        secret: ReadBuffer,
+        block: (ReadBuffer) -> ReadBuffer,
+    ): ReadBuffer {
+        val salt = derived(secret)
+        return try {
+            block(salt)
+        } finally {
+            salt.freeIfNeeded()
+        }
+    }
 
     /** The `"finished"` HMAC key for a Finished / verify_data derived from a sender's traffic secret. */
-    fun finishedKey(baseSecret: ReadBuffer): ReadBuffer = expandLabel(baseSecret, "finished", empty, HASH_LEN)
+    fun finishedKey(baseSecret: ReadBuffer): ReadBuffer = expandLabel(baseSecret, "finished", ReadBuffer.EMPTY_BUFFER, HASH_LEN)
 
     /**
      * A Finished `verify_data` = `HMAC-SHA256(finished_key(baseSecret), transcriptHash)` (RFC 8446 §4.4.4).
@@ -124,6 +166,9 @@ internal class Tls13KeySchedule(
         val out = factory.allocate(HASH_LEN, ByteOrder.BIG_ENDIAN)
         mac.doFinalInto(out)
         mac.close()
+        // The finished key is derived per Finished message and consumed by the MAC above — never retained,
+        // so nothing else can free it.
+        key.freeIfNeeded()
         out.resetForRead()
         return out
     }
@@ -154,7 +199,15 @@ internal class Tls13KeySchedule(
     ): ReadBuffer {
         val secret0 = expandLabel(exporterMasterSecret, label, emptyTranscriptHash, HASH_LEN) // Derive-Secret(EMS, label, "")
         val contextHash = if (context == null || context.remaining() == 0) emptyTranscriptHash else sha256(context)
-        return expandLabel(secret0, "exporter", contextHash, length)
+        return try {
+            expandLabel(secret0, "exporter", contextHash, length)
+        } finally {
+            secret0.freeIfNeeded()
+            // Only the freshly hashed one. `emptyTranscriptHash` is this schedule's own cached value and
+            // is released by [close] — freeing it here would leave every later derivation reading a
+            // buffer that has gone back to the pool.
+            if (contextHash !== emptyTranscriptHash) contextHash.freeIfNeeded()
+        }
     }
 
     /** `SHA-256(data)` into a fresh 32-byte read buffer; [data]'s position is preserved. */
@@ -192,11 +245,14 @@ internal class Tls13KeySchedule(
         return out
     }
 
-    private val empty: ReadBuffer by lazy {
-        val b = factory.allocate(1, ByteOrder.BIG_ENDIAN)
-        b.resetForRead()
-        b.setLimit(0)
-        b
+    /**
+     * Release the two constants this schedule caches. Only what was actually forced: these are `lazy`,
+     * and touching one here to free it would *allocate* it — a close that leaks is the failure mode worth
+     * naming, since it looks exactly like success.
+     */
+    override fun close() {
+        if (lazyEmptyTranscriptHash.isInitialized()) emptyTranscriptHash.freeIfNeeded()
+        if (lazyZeros.isInitialized()) zeros.freeIfNeeded()
     }
 
     private fun writeView(

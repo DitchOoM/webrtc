@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.crypto.Sha256Digest
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.webrtc.dtls.wire.HandshakeMessage
 
 /**
@@ -38,7 +39,22 @@ internal class TranscriptHash(
 
     /** Discards everything appended so far (client received a HelloVerifyRequest). */
     fun reset() {
+        releaseAll()
         messages.clear()
+    }
+
+    /**
+     * Drop the retained transcript. The whole point of this class is that it *keeps* every message —
+     * a few KB per handshake — so nothing else can free them, and the FSM's own close is the only place
+     * they stop being needed.
+     */
+    fun close() {
+        releaseAll()
+        messages.clear()
+    }
+
+    private fun releaseAll() {
+        for (m in messages) m.freeIfNeeded()
     }
 
     /**
@@ -58,6 +74,7 @@ internal class TranscriptHash(
      */
     fun collapseToMessageHash() {
         val hash = currentSha256()
+        releaseAll()
         messages.clear()
         val synthetic = factory.allocate(HandshakeMessage.TLS13_HEADER_BYTES + 32, ByteOrder.BIG_ENDIAN)
         synthetic.writeByte(MESSAGE_HASH_TYPE.toByte()) // synthetic handshake type 254
@@ -68,6 +85,7 @@ internal class TranscriptHash(
         synthetic.write(hash)
         hash.position(p)
         synthetic.resetForRead()
+        hash.freeIfNeeded() // copied into `synthetic` above; nothing else holds it
         messages += synthetic
     }
 

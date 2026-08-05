@@ -2,6 +2,7 @@ package com.ditchoom.webrtc.dtls.wire
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.freeIfNeeded
 
 /**
  * One DTLS record (RFC 6347 §4.1 `DTLSPlaintext` / `DTLSCiphertext`). The 13-byte header is common to
@@ -70,11 +71,14 @@ internal class DtlsRecord(
             val out = ArrayList<DtlsRecord>(2)
             var pos = start
             while (pos < end) {
-                if (pos + HEADER_BYTES > end) return null // a partial header is malformed framing
+                // A reject gives back the fragment views taken for the records already walked. Without
+                // that, a datagram of one good record and a truncated header — which any peer can send —
+                // pins a chunk per datagram, on the receive seam, forever.
+                if (pos + HEADER_BYTES > end) return out.rejected() // a partial header is malformed framing
                 val length = datagram.u16(pos + LENGTH_OFFSET)
                 val bodyStart = pos + HEADER_BYTES
                 val bodyEnd = bodyStart + length
-                if (bodyEnd > end) return null // fragment runs past the datagram
+                if (bodyEnd > end) return out.rejected() // fragment runs past the datagram
                 out +=
                     DtlsRecord(
                         contentType = ContentType(datagram.u8(pos + CONTENT_TYPE_OFFSET)),
@@ -87,7 +91,24 @@ internal class DtlsRecord(
             }
             return out
         }
+
+        private fun List<DtlsRecord>.rejected(): List<DtlsRecord>? {
+            releaseDecodedViews()
+            return null
+        }
     }
+}
+
+/**
+ * Give back the reference each [DtlsRecord.fragment] took over the datagram it was decoded from.
+ *
+ * A `sliceOf` is a *borrow* — it must not outlive the datagram — but on a pooled buffer it is also an
+ * `addRef`, so the borrow has to be handed back or the datagram's own release never returns the chunk.
+ * Releasing the view is not releasing the datagram: the datagram is still freed exactly once, by its
+ * owner, under the last-reader rule.
+ */
+internal fun List<DtlsRecord>.releaseDecodedViews() {
+    for (record in this) record.fragment.freeIfNeeded()
 }
 
 /**

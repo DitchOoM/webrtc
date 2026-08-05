@@ -10,6 +10,7 @@ import com.ditchoom.buffer.crypto.KeyAgreementPrivateKey
 import com.ditchoom.buffer.crypto.KeyAgreementPublicKey
 import com.ditchoom.buffer.crypto.KeyAgreementSupport
 import com.ditchoom.buffer.crypto.keyAgreement
+import com.ditchoom.buffer.freeIfNeeded
 
 /**
  * The ephemeral (EC)DHE half of the DTLS handshake over one [curve] (RFC 8422 / RFC 7748). Wraps one
@@ -43,8 +44,18 @@ internal class EcdheKeyExchange private constructor(
      * (including the RFC 7748 §6.1 all-zero X25519 secret).
      */
     fun premasterSecret(peerPoint: ReadBuffer): PlatformBuffer {
+        // `KeyAgreementPublicKey.of` SLICES [peerPoint] ("the buffer is sliced so the caller may reuse
+        // theirs") and the type it returns is not `AutoCloseable`, so nothing downstream can give that
+        // reference back. On a pooled buffer a slice is an `addRef`, so the peer's key-share point stayed
+        // out of the pool for the life of the process — one chunk per peer, per session, invisible to
+        // `assertNoLeaks` because the buffer itself is freed exactly once. The key is dead the moment the
+        // agreement returns, so the borrow is handed back here.
         val peer = KeyAgreementPublicKey.of(curve, peerPoint)
-        return rawEcdhPremaster(ops, keyPair.privateKey, peer)
+        return try {
+            rawEcdhPremaster(ops, keyPair.privateKey, peer)
+        } finally {
+            peer.encoded.freeIfNeeded()
+        }
     }
 
     override fun close() {

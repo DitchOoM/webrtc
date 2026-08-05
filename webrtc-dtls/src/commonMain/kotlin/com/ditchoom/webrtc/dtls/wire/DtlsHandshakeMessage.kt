@@ -2,6 +2,7 @@ package com.ditchoom.webrtc.dtls.wire
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.freeIfNeeded
 
 /**
  * A complete (reassembled) DTLS handshake message (RFC 6347 §4.2.2). The 12-byte header carries the
@@ -111,15 +112,18 @@ internal class HandshakeFragment(
             val out = ArrayList<HandshakeFragment>(2)
             var pos = start
             while (pos < end) {
-                if (pos + HandshakeMessage.HEADER_BYTES > end) return null
+                // Every reject gives back the bodies taken for the fragments already walked — see
+                // [releaseDecodedViews]. A record of one good fragment and a malformed tail is something
+                // any peer can send, and it used to cost a pinned chunk each time.
+                if (pos + HandshakeMessage.HEADER_BYTES > end) return out.rejected()
                 val length = region.u24(pos + 1)
                 val messageSeq = region.u16(pos + 4)
                 val fragmentOffset = region.u24(pos + 6)
                 val fragmentLength = region.u24(pos + 9)
                 val bodyStart = pos + HandshakeMessage.HEADER_BYTES
                 val bodyEnd = bodyStart + fragmentLength
-                if (bodyEnd > end) return null
-                if (fragmentOffset + fragmentLength > length) return null // fragment escapes the message
+                if (bodyEnd > end) return out.rejected()
+                if (fragmentOffset + fragmentLength > length) return out.rejected() // fragment escapes the message
                 out +=
                     HandshakeFragment(
                         msgType = HandshakeType(region.u8(pos)),
@@ -133,5 +137,21 @@ internal class HandshakeFragment(
             }
             return out
         }
+
+        private fun List<HandshakeFragment>.rejected(): List<HandshakeFragment>? {
+            releaseDecodedViews()
+            return null
+        }
     }
+}
+
+/**
+ * Give back the reference each [HandshakeFragment.fragmentBody] took over the record it was decoded from.
+ *
+ * The reassembler *copies* every body it accepts into its own assembly buffer, so the borrow is spent the
+ * moment `offer` returns — but on a pooled buffer the borrow is also an `addRef`, so spending it is not
+ * the same as returning it.
+ */
+internal fun List<HandshakeFragment>.releaseDecodedViews() {
+    for (fragment in this) fragment.fragmentBody.freeIfNeeded()
 }

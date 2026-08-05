@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.freeIfNeeded
 
 /**
  * Reassembles fragmented DTLS handshake messages (RFC 6347 §4.2.3) and delivers them **in `message_seq`
@@ -83,9 +84,12 @@ internal class HandshakeReassembler(
 
     /**
      * Feeds one parsed [fragment]; returns any handshake messages that became deliverable (in
-     * `message_seq` order, possibly several as a gap fills), or empty. The returned bodies are views over
-     * assembly buffers owned by this reassembler until the next call touches the same sequence — the FSM
-     * consumes them synchronously within the step, matching the sans-io contract.
+     * `message_seq` order, possibly several as a gap fills), or empty.
+     *
+     * **A delivered message's body is transferred to the caller**, which owes it a release once it has
+     * finished processing it. It is the assembly buffer itself, narrowed to `[0, length)` — deliberately
+     * not a slice of it, because the assembly is dropped from [pending] in the same breath, and a slice
+     * of a parent nobody can reach is a buffer whose release is a silent no-op.
      */
     fun offer(fragment: HandshakeFragment): List<HandshakeMessage> {
         if (fragment.messageSeq < nextSeq) return emptyList() // already delivered — a retransmit
@@ -111,10 +115,20 @@ internal class HandshakeReassembler(
             if (!a.isComplete) break
             a.buffer.position(0)
             a.buffer.setLimit(a.length)
-            ready += HandshakeMessage(a.msgType, nextSeq, a.buffer.slice(ByteOrder.BIG_ENDIAN))
+            ready += HandshakeMessage(a.msgType, nextSeq, a.buffer)
             pending.remove(nextSeq)
             nextSeq++
         }
         return ready
+    }
+
+    /**
+     * Drop every partially-assembled message. A handshake that fails, times out, or is abandoned leaves
+     * whatever it had reordered in here — up to [maxPending] buffers, each sized to a whole handshake
+     * message — and nothing outside this object ever had a reference to them.
+     */
+    fun close() {
+        for (assembly in pending.values) assembly.buffer.freeIfNeeded()
+        pending.clear()
     }
 }

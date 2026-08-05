@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.freeIfNeeded
 
 /**
  * The TLS 1.3 / DTLS 1.3 handshake extensions and message bodies the WebRTC handshake needs (RFC 8446 §4,
@@ -83,7 +84,15 @@ internal object Tls13Bodies {
     class KeyShareEntry(
         val group: NamedGroup,
         val point: ReadBuffer,
-    )
+    ) {
+        /**
+         * Give back the reference [point] took. Always a decoded view — this class has no builder — so
+         * every caller of `parseKeyShare*` owes exactly this once it has copied the point it keeps.
+         */
+        fun releaseViews() {
+            point.freeIfNeeded()
+        }
+    }
 
     // ── supported_groups (RFC 8446 §4.2.7) ─────────────────────────────────────────────────────────
 

@@ -2,7 +2,6 @@
 
 package com.ditchoom.webrtc
 
-import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.webrtc.dtls.CertificateFingerprint
 import com.ditchoom.webrtc.dtls.DtlsConfig
@@ -155,7 +154,14 @@ public class PureKotlinDtls(
                                 is IceDataReadResult.Received -> read.packet
                                 IceDataReadResult.Closed -> break
                             }
-                        inbound.send(record)
+                        // `trySend`, not `send`: `inbound` is UNLIMITED so it never suspends, and a
+                        // CLOSED one must not throw here — this loop is then still the record's last
+                        // reader and owes the release (see [releaseReceived]). A plain `send` both threw
+                        // into a launched coroutine and lost the buffer.
+                        if (inbound.trySend(record).isFailure) {
+                            record.releaseReceived()
+                            break
+                        }
                     }
                     // The pair went away: unblock a handshake that would otherwise wait out its budget.
                     inbound.close()
@@ -200,6 +206,21 @@ public class PureKotlinDtls(
             forwarder?.cancel()
             appData.close()
             iceData.close()
+            // Closing a channel does not release what is still sitting in it, and both of these carry
+            // transfers whose reader will now never run: `inbound` holds records the pump owed a release
+            // for, `appData` holds decrypted plaintext the SCTP stack would have owned. Draining after the
+            // closes is what makes this the last reader — the close is what guarantees nothing more is
+            // enqueued behind us. (`outbound` is not drained here: its payloads belong to the SCTP caller,
+            // and `failPendingSends` in the pump's `finally` is what those senders are owed.)
+            drainAndRelease(inbound)
+            drainAndRelease(appData)
+        }
+
+        private fun drainAndRelease(channel: Channel<ReadBuffer>) {
+            while (true) {
+                val buffer = channel.tryReceive().getOrNull() ?: break
+                buffer.releaseReceived()
+            }
         }
 
         private suspend fun pumpLoop(role: EngineRole) {
@@ -209,7 +230,7 @@ public class PureKotlinDtls(
                 var state = engine.start(role, clock()).also { apply(it) }.state
                 while (state !is DtlsState.Failed && state !is DtlsState.Closed) {
                     val deadline = engine.nextDeadline(clock())
-                    val step =
+                    val pumped =
                         if (deadline == null) {
                             selectWithoutTimer() ?: break
                         } else {
@@ -219,8 +240,19 @@ public class PureKotlinDtls(
                             val wait = (deadline - clock()).coerceAtLeast(Duration.ZERO)
                             selectWithTimer(wait) ?: break
                         }
-                    apply(step)
-                    state = step.state
+                    apply(pumped.step)
+                    // This loop is the last reader of an inbound record (see [releaseReceived]) — after
+                    // `apply`, deliberately, since `apply` puts this step's records on the wire.
+                    //
+                    // Safe because the engine keeps no VIEW of the datagram: a fragmented handshake
+                    // message is copied into the reassembler's own assembly buffer, every field the FSM
+                    // retains across calls (peer certificate, randoms, ECDHE point, HRR cookie) is stored
+                    // through `copyOf`, and decrypted application data is a fresh allocation from the AEAD
+                    // `open`, never an in-place view. Records the step emits are freshly encoded too.
+                    // Attributes read *within* the call are borrows over the datagram, which is exactly
+                    // why this waits until the step has been fully applied.
+                    pumped.consumed?.releaseReceived()
+                    state = pumped.step.state
                 }
             } finally {
                 // Whatever ended us — established-then-closed, failure, or cancellation — the engine and
@@ -238,25 +270,25 @@ public class PureKotlinDtls(
             }
         }
 
-        private suspend fun selectWithoutTimer(): DtlsStep? =
+        private suspend fun selectWithoutTimer(): PumpStep? =
             select {
                 inbound.onReceiveCatching { result ->
-                    result.getOrNull()?.let { engine.onDatagram(it, clock()) }
+                    result.getOrNull()?.let { PumpStep(engine.onDatagram(it, clock()), consumed = it) }
                 }
                 outbound.onReceiveCatching { result ->
-                    result.getOrNull()?.let { encrypt(it) }
+                    result.getOrNull()?.let { PumpStep(encrypt(it), consumed = null) }
                 }
             }
 
-        private suspend fun selectWithTimer(wait: Duration): DtlsStep? =
+        private suspend fun selectWithTimer(wait: Duration): PumpStep? =
             select {
                 inbound.onReceiveCatching { result ->
-                    result.getOrNull()?.let { engine.onDatagram(it, clock()) }
+                    result.getOrNull()?.let { PumpStep(engine.onDatagram(it, clock()), consumed = it) }
                 }
                 outbound.onReceiveCatching { result ->
-                    result.getOrNull()?.let { encrypt(it) }
+                    result.getOrNull()?.let { PumpStep(encrypt(it), consumed = null) }
                 }
-                onTimeout(wait) { engine.onTimeout(clock()) }
+                onTimeout(wait) { PumpStep(engine.onTimeout(clock()), consumed = null) }
             }
 
         private fun encrypt(request: SendRequest): DtlsStep {
@@ -278,9 +310,8 @@ public class PureKotlinDtls(
             for (data in step.applicationData) {
                 // trySend can fail if a concurrent close() already closed appData (a final inbound
                 // record decrypted mid-teardown). Release that buffer instead of dropping it on the
-                // floor: freeNativeMemory() returns a pooled buffer to its pool (or frees native memory,
-                // or no-ops for GC-managed), so a pooled factory doesn't leak it (directive #6).
-                if (appData.trySend(data).isFailure) (data as? PlatformBuffer)?.freeNativeMemory()
+                // floor: this loop is then its last reader (see [releaseReceived]).
+                if (appData.trySend(data).isFailure) data.releaseReceived()
             }
             when (val state = step.state) {
                 is DtlsState.Established -> established.complete(state)
@@ -301,5 +332,22 @@ public class PureKotlinDtls(
     private class SendRequest(
         val payload: ReadBuffer,
         val ack: CompletableDeferred<Unit>,
+    )
+
+    /**
+     * One [DtlsStep] together with the received record that produced it, so the pump can release that
+     * record after applying the step.
+     *
+     * The payload travels **with** the step for the same reason `IceGathering.MatchedResponse` and
+     * `TurnAllocation`'s `TurnExchange.payload` carry theirs: returning the step alone would leave the
+     * pump unable to release without guessing when the borrows over the datagram died.
+     *
+     * [consumed] is null for the two steps that did not come from an inbound record — an expired timer,
+     * and an outbound `SendRequest`, whose payload belongs to the SCTP caller (`send` explicitly does not
+     * take ownership) and must never be released here.
+     */
+    private class PumpStep(
+        val step: DtlsStep,
+        val consumed: ReadBuffer?,
     )
 }

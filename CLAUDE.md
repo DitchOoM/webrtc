@@ -99,11 +99,24 @@ What is genuinely left, and why the data-channel stack is not yet something a st
   is genuinely usable: the "it only reclaims what the stack releases, and `webrtc-stun` releases
   nothing" caveat that used to sit here is **obsolete**, because releasing is exactly what the ownership
   work did. One thing still bounds it:
-  * **The receive side is unowned.** Nothing releases a received datagram — not the driver's loop, not
-    TURN's demux, not the gather. It is not a bug site so much as a missing half: the buffer is shared by
-    *reference* (decoded attributes are slices of it), so "release when done" needs a last-reader rule
-    first, or it turns a leak into a use-after-free. `LeakTrackingFactory` cannot see it either — the
-    receive buffer comes from the *channel's* factory, not `IceConfig`'s.
+  * **The receive side is owned now, top to bottom** (PRs #155 + #156) — this bullet used to say "the
+    receive side is unowned" and that is **obsolete**. The rule is written once on
+    `IceProtocol.releaseReceived` and restated at each module's seam: a received payload has exactly one
+    owner, and the loop that received it either *consumes* it (release before the next iteration) or
+    *transfers* it (the receiver then owes it). A decoded attribute is neither — `RawAttribute` carries
+    `owned = false` because it is a slice of the datagram, so borrows are never released, they merely must
+    not outlive the owner. That distinction is what kept it from turning a leak into a use-after-free.
+    Covered: the ICE driver's loops, TURN's four-boundary control plane, both mDNS loops, the DTLS pump,
+    and SCTP's drive loop. Proven red-then-green at both seams (26→0 and 17→0 datagrams per session).
+    `LeakTrackingFactory` still cannot see any of it from `IceConfig.bufferFactory` — the receive buffer
+    comes from the **channel's** factory, which is why the fixtures point a tracker at the vnet/`TestNet`
+    instead, and why they must never point one at a link that also carries harness servers.
+  * **What is still unowned is the DTLS *record* seam — the send side, not this one.** Every record
+    `Dtls12Handshake.encode`s comes from `DtlsConfig.bufferFactory` and goes to `IceDataTransport.send`,
+    which explicitly does not take ownership, so nothing frees it; `HandshakeReassembler`'s per-message
+    assembly buffers sit behind it. Measured, not guessed: **262 of 262 live** at the end of a small
+    session (`DtlsSessionBufferOwnershipTest` documents the number and deliberately does not assert on it).
+    Same K/N-Linux-only blast radius as everything else here.
   * **DitchOoM/socket#277 shipped in socket 4.0.1 — this bullet used to say "released nowhere", and that
     was wrong.** socket's JVM/NIO and Node send paths sliced the payload and dropped the `TrackedSlice`
     without releasing it, so on those backends one send cost one pool chunk, permanently, however exact

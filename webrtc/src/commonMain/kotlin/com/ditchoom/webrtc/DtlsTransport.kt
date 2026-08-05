@@ -1,10 +1,31 @@
 package com.ditchoom.webrtc
 
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.webrtc.ice.IceDataReadResult
 import com.ditchoom.webrtc.ice.IceDataTransport
 import com.ditchoom.webrtc.sctp.datachannel.SctpDatagramTransport
 import com.ditchoom.webrtc.sdp.Fingerprint
+
+/**
+ * Release a received buffer whose last reader has finished with it — this module's copy of the rule
+ * `webrtc-ice`'s `IceProtocol.releaseReceived` states and `webrtc-sctp` restates at its own seam.
+ *
+ * There are three of these, one per module, and the duplication is deliberate: each is `internal` to a
+ * leaf that depends only downward (ARCHITECTURE §3), so sharing one would mean an upward dependency or a
+ * new published artifact for a two-line function. They are expected to change together.
+ *
+ * The rule: a received payload has exactly one owner at a time. The loop that received it either
+ * **consumes** it (reads what it needs, releases before the next iteration) or **transfers** it (across a
+ * channel or deferred, after which the receiver owes the release). A decoded view is neither — a borrow is
+ * never released, it merely must not outlive the owner.
+ *
+ * [PureKotlinDtls] owns two chains of this: records arriving from the ICE seam, and the decrypted
+ * application data it hands to SCTP.
+ */
+internal fun ReadBuffer.releaseReceived() {
+    if (this is PlatformBuffer) freeNativeMemory()
+}
 
 /**
  * Which side of the DTLS handshake this endpoint plays (RFC 8842 / the SDP `a=setup` attribute): the

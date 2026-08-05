@@ -1,7 +1,7 @@
 package com.ditchoom.webrtc.sctp.datachannel
 
-import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.freeIfNeeded
 
 /**
  * The point-to-point datagram seam beneath the SCTP association — **the boundary where DTLS slots in**
@@ -59,5 +59,5 @@ public interface SctpDatagramTransport {
  * chunk being encoded may still be reading the inbound view it was echoed from.
  */
 internal fun ReadBuffer.releaseReceived() {
-    if (this is PlatformBuffer) freeNativeMemory()
+    freeIfNeeded()
 }

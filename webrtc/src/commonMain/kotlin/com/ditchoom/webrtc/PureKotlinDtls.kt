@@ -14,6 +14,7 @@ import com.ditchoom.webrtc.ice.IceDataReadResult
 import com.ditchoom.webrtc.ice.IceDataTransport
 import com.ditchoom.webrtc.sctp.datachannel.SctpDatagramTransport
 import com.ditchoom.webrtc.sdp.Fingerprint
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -306,7 +307,40 @@ public class PureKotlinDtls(
             // A whole flight is drained and sent as ONE datagram. Valid: DTLS records self-delimit, and
             // it is correct on the vnet — a real-MTU path may need per-record datagram framing / PMTU
             // fragmentation (a tracked follow-up).
-            for (record in step.records) iceData.send(record)
+            //
+            // Two things this must not do, and both used to happen — the same pair `IceAgentDriver.apply`
+            // already names one layer down.
+            //
+            // **A raised send must not escape.** `IceDataTransport.send` throws deliberately (its KDoc:
+            // swallowing there "would tell DTLS its record went out when it did not"), and this is the
+            // caller that was supposed to answer for it. It did not: the pump is a plain `scope.launch` on
+            // the application's scope, so a failed write propagated to the root and, on Kotlin/Native,
+            // killed the process. That is not hypothetical — the `auto-restart-pion` interop lane crashed
+            // with `DatagramSendException: destination unreachable (errno=101)` at the carrier switch,
+            // where the old interface's route disappears while a flight is in flight, which is precisely
+            // when this send is *expected* to fail. A record that could not be put on the wire is
+            // indistinguishable from one lost on it, and DTLS already owns the answer to that: the
+            // retransmit timer resends the flight. So the failure is absorbed and the flight continues.
+            //
+            // **And the release is owed on every exit**, not just the one that sent — `record` comes from
+            // `DtlsConfig.bufferFactory` and `send` does not take ownership, so a throw between the two
+            // leaked it outright. `finally` states that (see [releaseAfterSend]).
+            for (record in step.records) {
+                try {
+                    iceData.send(record)
+                } catch (e: CancellationException) {
+                    // Cooperative cancellation is the pump being torn down, never a transport failure, so
+                    // it must keep unwinding rather than be absorbed below. The `finally` still returns
+                    // the buffer — releasing here as well would be a double free.
+                    throw e
+                } catch (_: Throwable) {
+                    // Absorbed on purpose; the retransmit timer is the recovery path. Surfacing it as a
+                    // `SessionDiagnostic.TransmitFailed` would need a diagnostics seam plumbed into this
+                    // factory — worth doing, and deliberately not smuggled into an ownership change.
+                } finally {
+                    record.releaseAfterSend()
+                }
+            }
             for (data in step.applicationData) {
                 // trySend can fail if a concurrent close() already closed appData (a final inbound
                 // record decrypted mid-teardown). Release that buffer instead of dropping it on the

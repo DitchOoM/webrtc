@@ -2,6 +2,9 @@
 
 package com.ditchoom.webrtc.sctp.datachannel
 
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.ByteOrder
+import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
@@ -36,7 +39,11 @@ internal class MemoryTransportPair(
     ) : SctpDatagramTransport {
         override suspend fun send(packet: ReadBuffer) {
             packet.position(0)
-            val copy = packet.slice()
+            // A real COPY, not `packet.slice()`. `receive()` transfers ownership to the SCTP stack, which
+            // releases what it is handed — and a slice takes a reference on the *sender's* chunk, so the
+            // receiver's release would free a buffer the sender still owns. A wire is a copy anyway; the
+            // slice was only ever standing in for one.
+            val copy = copyOf(packet)
             if (lossRate > 0.0 && random.nextDouble() < lossRate) return
             if (delay == Duration.ZERO) {
                 sendCh.trySend(copy)
@@ -53,5 +60,15 @@ internal class MemoryTransportPair(
         override fun close() {
             sendCh.close()
         }
+    }
+
+    private fun copyOf(packet: ReadBuffer): ReadBuffer {
+        val slice = packet.slice()
+        val len = slice.remaining()
+        val copy = BufferFactory.Default.allocate(maxOf(1, len), ByteOrder.BIG_ENDIAN)
+        copy.write(slice)
+        copy.resetForRead()
+        copy.setLimit(len)
+        return copy
     }
 }

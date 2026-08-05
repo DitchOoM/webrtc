@@ -62,12 +62,24 @@ import kotlin.time.Instant
  * `BufferPool(factory = BufferFactory.deterministic())`, which is the configuration `CLAUDE.md`
  * recommends to consumers as the workaround. That is what makes it worth a standing fixture.
  *
- * ## What would make it green
+ * ## What would make it green — **entirely in this repo; `buffer` already provides the mechanism**
  *
- * A borrow must not take a reference. `buffer` currently offers no non-owning sub-view — `slice()` is the
- * only mechanism and it always `addRef`s on a pooled parent — so closing this needs either a
- * non-refcounting view upstream in `buffer`, or an explicit release lifecycle on decoded messages in
- * `webrtc-stun`/`webrtc-sctp`. Un-`@Ignore` this the moment either lands.
+ * The fix is not a new primitive. `TrackedSlice`'s own contract states it: "once the slice is released
+ * (`releaseToPool` / `freeNativeMemory`) **and** the parent chunk's refcount reaches zero, the raw buffer
+ * is returned to the pool's freelist". So N decode-side slices need N releases and the arithmetic closes
+ * — `PoolDrainedProbeTest.releasing_every_slice_returns_the_chunk_even_with_many_outstanding_views`
+ * proves exactly that on the shape the codecs produce, rather than asserting it.
+ *
+ * So what is missing is **ownership of the slices in `webrtc-stun`/`webrtc-sctp`**, not an upstream
+ * change: a decoded `StunMessage`/`SctpPacket` has to be releasable, and every borrow it hands out has to
+ * die with it. `RawAttribute.value` is the sharpest case — it slices in the *constructor*, so a second
+ * reference is taken for every attribute whether or not anyone reads it, and `releaseIfOwned()` frees
+ * only `paddedValue`.
+ *
+ * (`buffer` genuinely has no *non-refcounting* sub-view, which would let a borrow cost nothing at all.
+ * That would be a nicer primitive, but it is an optimisation, not the blocker — this is closable today.)
+ *
+ * Un-`@Ignore` this the moment that lands.
  */
 @Ignore
 class PooledReceiveChunkTest {

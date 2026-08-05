@@ -4,6 +4,7 @@ package com.ditchoom.webrtc.ice
 
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.webrtc.stun.TransportAddress
 import kotlin.time.ExperimentalTime
 
@@ -190,13 +191,21 @@ public sealed interface IceConnectionState {
 /**
  * Release a buffer whose last read was the send that just completed — see [IceOutput.Transmit].
  *
- * Mirrors `webrtc-stun`'s own release helper: buffer's read-side APIs answer [ReadBuffer], and only a
- * [PlatformBuffer] has memory to give back, so a view that was never ours is a no-op rather than an
- * error. `send` is a suspending call that has finished writing by the time it returns, which is what
- * makes releasing here safe on a real socket and not only on the in-memory vnet.
+ * Mirrors `webrtc-stun`'s own release helper: buffer's read-side APIs answer [ReadBuffer], and only
+ * something with memory to give back has anything to do, so a view that was never ours is a no-op rather
+ * than an error. `send` is a suspending call that has finished writing by the time it returns, which is
+ * what makes releasing here safe on a real socket and not only on the in-memory vnet.
+ *
+ * The body delegates to buffer's own [freeIfNeeded] rather than hand-rolling
+ * `if (this is PlatformBuffer) freeNativeMemory()`. Behaviourally identical today — every releasable type
+ * buffer defines ([com.ditchoom.buffer.pool.TrackedSlice], `OwnerTransferringSlice`) is a
+ * [PlatformBuffer] that *overrides* `freeNativeMemory()` to do the right thing, `TrackedSlice` routing it
+ * to `releaseToPool()` so the parent's refcount is what moves. The difference is what happens next: a
+ * future `PoolReleasable` that is **not** a [PlatformBuffer] would be silently skipped by the hand-rolled
+ * test and handled by this one, and a silent skip is precisely the shape of DitchOoM/socket#277.
  */
 internal fun ReadBuffer.releaseAfterSend() {
-    if (this is PlatformBuffer) freeNativeMemory()
+    freeIfNeeded()
 }
 
 /**
@@ -232,5 +241,5 @@ internal fun ReadBuffer.releaseAfterSend() {
  * `deterministicBufferFactory` aliases the ARC-backed default there.
  */
 internal fun ReadBuffer.releaseReceived() {
-    if (this is PlatformBuffer) freeNativeMemory()
+    freeIfNeeded()
 }

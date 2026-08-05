@@ -1,7 +1,7 @@
 package com.ditchoom.webrtc
 
-import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.webrtc.ice.IceDataReadResult
 import com.ditchoom.webrtc.ice.IceDataTransport
 import com.ditchoom.webrtc.sctp.datachannel.SctpDatagramTransport
@@ -24,7 +24,21 @@ import com.ditchoom.webrtc.sdp.Fingerprint
  * application data it hands to SCTP.
  */
 internal fun ReadBuffer.releaseReceived() {
-    if (this is PlatformBuffer) freeNativeMemory()
+    freeIfNeeded()
+}
+
+/**
+ * Release a buffer **this module allocated and has now finished sending** — a DTLS record out of
+ * `DtlsConfig.bufferFactory`, handed to `IceDataTransport.send`, which explicitly does not take ownership.
+ *
+ * Deliberately a different function from [releaseReceived], exactly as `webrtc-ice` keeps its own pair
+ * apart. They compile to the same call today and are answerable to different arguments: this one's safety
+ * rests on `send` having finished reading by the time it returns (socket-udp transmits the window
+ * `[position, limit)` without consuming it, on all four backends), while [releaseReceived]'s rests on the
+ * last-reader rule. Sharing one helper would mean one KDoc defending two unrelated claims.
+ */
+internal fun ReadBuffer.releaseAfterSend() {
+    freeIfNeeded()
 }
 
 /**

@@ -10,207 +10,156 @@ import kotlin.test.assertEquals
 import kotlin.test.fail
 
 /**
+ * Counts the chunks a [BufferPool] actually creates, by sitting **underneath** it.
+ *
+ * This is the ground truth, and it exists because three earlier probes tried to derive the same number
+ * from `PoolStats` and every one of them was wrong:
+ *
+ * - `totalAllocations - poolHits - currentPoolSize` — recorded in CLAUDE.md as wrong in *both* directions.
+ * - `currentPoolSize == poolMisses` — reports a false failure; the pool legitimately creates buffers that
+ *   never reach its freelist (`allocate()` acquires, and on a byte-order mismatch releases that chunk and
+ *   hands back an unpooled one).
+ * - `currentPoolSize == peakPoolSize` — cannot see a run where nothing was *ever* returned, because the
+ *   peak is then zero too.
+ *
+ * `BufferPool` calls its backing factory exactly once per chunk it allocates, so [created] needs no model
+ * of buckets, size classes, hits, or that byte-order path. Measure the thing; do not infer it.
+ */
+internal class CountingBackingFactory(
+    private val delegate: BufferFactory = BufferFactory.deterministic(),
+) : BufferFactory {
+    var created: Int = 0
+        private set
+
+    override fun allocate(
+        size: Int,
+        byteOrder: ByteOrder,
+    ): PlatformBuffer = delegate.allocate(size, byteOrder).also { created++ }
+
+    override fun wrap(
+        array: ByteArray,
+        byteOrder: ByteOrder,
+    ): PlatformBuffer = delegate.wrap(array, byteOrder).also { created++ }
+}
+
+/**
  * **Leak tracking that can see the free side**, for the `webrtc` module's own fixtures.
  *
  * A deliberate twin of `webrtc-ice`'s `LeakTrackingFactory`, which is `internal` to *that* module's test
  * source set and therefore invisible here. The duplication is the lesser evil — the alternative is
- * publishing a test artifact solely to share forty lines — and it is the same trade `webrtc-dtls`'
+ * publishing a test artifact solely to share fifty lines — and it is the same trade `webrtc-dtls`'
  * `networkBuffer()` already makes against `webrtc-ice`'s copy. Keep the two in step.
  *
- * ## Two probes, and they answer different questions — use both
- *
- * `BufferFactory` is `allocate`/`wrap` only: there is no free hook, which is why every *counting* factory
- * in this repo counts allocations and stops. A pool can see the other half, and it can see it two ways:
+ * ## Two probes, answering different questions — use both
  *
  * - [assertNoLeaks] asks each buffer whether it was released, because a `PooledBuffer` refuses every
  *   read, write and slice once freed. That catches a **missing free**.
- * - [assertPoolDrained] compares the pool's own counters, because the buffer-level probe is *blind* to a
- *   refcount that never reached zero — `freed` is set by the first `freeNativeMemory()` whatever the
- *   refcount does. That catches an **unreleased slice**, which is the socket#277 class and the one the
- *   decode paths in `webrtc-stun`/`webrtc-sctp` produce.
+ * - [assertPoolDrained] compares chunks created against chunks idle, because the buffer-level probe is
+ *   *blind* to a refcount that never reached zero — `freed` is set by the first `freeNativeMemory()`
+ *   whatever the refcount does. That catches an **unreleased slice**: on a pooled buffer `slice()` is
+ *   `addRef()`, so a borrow nobody released keeps the memory out of the pool however diligently its owner
+ *   freed it. That is the socket#277 class, and the one zero-copy decode produces.
  *
- * Neither subsumes the other. `PoolDrainedProbeTest` injects both conditions and pins both verdicts.
+ * Neither subsumes the other; `PoolDrainedProbeTest` injects both conditions and pins both verdicts.
  *
- * The one metric that is **not** used is `totalAllocations - poolHits - currentPoolSize`: CLAUDE.md
- * records it as wrong in *both* directions at once, and it must not be resurrected.
+ * ## Why the pool is native-backed
+ *
+ * `deterministic()` is the factory production actually uses on Kotlin/Native Linux — a raw malloc that
+ * must be closed — so fixtures run against the configuration the leak is real in rather than a GC-managed
+ * stand-in that reclaims our mistakes for us. Pooled *and* native is also exactly the
+ * `BufferPool(factory = BufferFactory.deterministic())` shape CLAUDE.md recommends to consumers.
  *
  * ## Where to point it
  *
  * At **one** seam, and never at a seam shared with scenery. [TestNet]'s copy-on-receive factory is the
  * receive side of both peers — both production code, no harness servers on that link — which is what
- * makes it a valid target here. A `DtlsConfig.bufferFactory` is the DTLS record seam of one peer.
- * Pointing a single tracker at both would conflate them and make a number that cannot be attributed.
+ * makes it a valid target here. Pointing a single tracker at two seams produces a number that cannot be
+ * attributed to either.
  *
- * It **records without decorating** — the pool's own buffer is handed back unchanged — so the
- * `nativeMemoryAccess` resolution a real io_uring send depends on is untouched.
+ * It **records without decorating** — the pool's own buffer is handed back unchanged. That matters twice
+ * over: a decorating tracker risks breaking `nativeMemoryAccess` resolution for io_uring sends, and an
+ * earlier version of this class that *did* decorate (to count slices) perturbed the very balance it was
+ * measuring, because its own [assertNoLeaks] probe took a slice that nothing counted.
  */
 internal class LeakTrackingFactory(
+    private val backing: CountingBackingFactory = CountingBackingFactory(),
     private val pool: BufferPool =
         BufferPool(
             maxPoolSize = MAX_TRACKED_POOL,
             defaultBufferSize = TRACKED_BUFFER_SIZE,
-            // Native-backed on purpose, not `BufferFactory.Default`. `deterministic()` is the factory
-            // production actually uses on Kotlin/Native Linux (a raw malloc that must be closed), so a
-            // fixture on it is testing the configuration the leak is real in rather than a GC-managed
-            // stand-in that would reclaim the mistake for us. Pooled *and* native is also exactly the
-            // `BufferPool(factory = BufferFactory.deterministic())` shape CLAUDE.md recommends to
-            // consumers, so the harness now exercises the recommendation.
-            factory = BufferFactory.deterministic(),
+            factory = backing,
         ),
 ) : BufferFactory {
     private val handedOut = mutableListOf<PlatformBuffer>()
-    private var slicesTaken = 0
-    private var slicesReleased = 0
-
-    // Where each still-live slice was taken. A count alone says "something pins the datagram"; this says
-    // which line, which is the difference between a fix and a hunt.
-    //
-    // Keyed on the WRAPPER, which is unique per slice — not on the raw buffer. Two earlier attempts got
-    // this wrong and reported no sites while the count said 21: a map keyed by the raw buffer collapsed
-    // entries because buffer's types compare by CONTENT, and a list keyed by raw identity still collided
-    // because the pool REUSES chunks, so the same object is sliced again later and the removal took out a
-    // still-live entry. The wrapper is created once per slice and never recycled.
-    private val liveSliceSites = mutableListOf<Counting>()
-
-    /** How many slices this run took — for a fixture that wants to assert it exercised zero-copy decode. */
-    val slices: Int get() = slicesTaken
 
     override fun allocate(
         size: Int,
         byteOrder: ByteOrder,
-    ): PlatformBuffer = Counting(pool.allocate(size, byteOrder), isSlice = false).also { handedOut += it }
+    ): PlatformBuffer = pool.allocate(size, byteOrder).also { handedOut += it }
 
     override fun wrap(
         array: ByteArray,
         byteOrder: ByteOrder,
-    ): PlatformBuffer = Counting(pool.wrap(array, byteOrder), isSlice = false).also { handedOut += it }
-
-    /**
-     * Counts `slice()` against its release, transitively.
-     *
-     * This one *does* decorate, unlike the rest of this factory, and that is a deliberate exception with
-     * a bounded blast radius: decorating risks breaking `nativeMemoryAccess` resolution for io_uring
-     * sends, so it must never be pointed at a real socket. Every fixture using it runs on the in-memory
-     * vnet, where there is no such path. Nested slices are wrapped too — `slice()` on a slice takes
-     * another reference on the same root chunk, so an untracked inner view would hide exactly the pin
-     * this is looking for.
-     */
-    private inner class Counting(
-        private val inner: PlatformBuffer,
-        // Only a SLICE's release balances a `slice()`. The root buffer is freed by its owner under the
-        // last-reader rule and was never counted as taken, so counting its free would hide one missing
-        // slice release per datagram.
-        private val isSlice: Boolean,
-        val site: String? = null,
-    ) : PlatformBuffer by inner {
-        private var released = false
-
-        override fun slice(byteOrder: ByteOrder): PlatformBuffer {
-            slicesTaken++
-            val sliced = inner.slice(byteOrder)
-            return Counting(sliced, isSlice = true, site = Throwable().stackTraceToString())
-                .also { liveSliceSites += it }
-        }
-
-        override fun freeNativeMemory() {
-            // Guarded: `freeNativeMemory()` is idempotent on the real types, so a double release must not
-            // be counted twice or a genuine imbalance could be masked by one.
-            if (!released) {
-                released = true
-                if (isSlice) {
-                    slicesReleased++
-                    val at = liveSliceSites.indexOfFirst { it === this@Counting }
-                    if (at >= 0) liveSliceSites.removeAt(at)
-                }
-            }
-            inner.freeNativeMemory()
-        }
-    }
+    ): PlatformBuffer = pool.wrap(array, byteOrder).also { handedOut += it }
 
     /** How many buffers this factory has handed out — the denominator an assertion should report. */
     val allocations: Int get() = handedOut.size
 
-    /** How many are still live. Exposed so a fixture can report the *before* number it is fixing. */
-    val live: Int get() = handedOut.count { !it.isReleased() }
+    /** Chunks the pool created but has not got back — 0 when every reference has been returned. */
+    val outstandingChunks: Int get() = backing.created - pool.stats().currentPoolSize
 
     /**
-     * **The assertion that can see a reference that never came back** — the one [assertNoLeaks]
-     * structurally cannot make.
+     * **Every chunk the pool created is back in it.** The probe [assertNoLeaks] structurally cannot make.
      *
-     * ## Why the other one is blind
+     * `backing.created` counts real chunk allocations (see [CountingBackingFactory]) and
+     * `currentPoolSize` counts what is idle, so the difference is exactly what is still referenced. No
+     * arithmetic over `PoolStats`, because every such formula tried here has been wrong.
      *
-     * [assertNoLeaks] asks each buffer "are you released?" by probing `slice()`. But `PooledBuffer` sets
-     * its `freed` flag on the *first* `freeNativeMemory()` and `checkNotFreed()` throws from then on —
-     * **regardless of the refcount**. A chunk with outstanding decode-side slices therefore reads as
-     * "released" while its memory has not come back. That is the socket#277 failure class.
-     *
-     * ## Why this counts slices rather than doing arithmetic on the pool's counters
-     *
-     * The obvious probe is a formula over `PoolStats`, and **every such formula tried here has been
-     * wrong**. `totalAllocations - poolHits - currentPoolSize` is recorded in CLAUDE.md as wrong in both
-     * directions at once. `currentPoolSize == poolMisses` (tried next) reports a false failure, because
-     * the pool legitimately creates chunks that never reach its freelist. `currentPoolSize ==
-     * peakPoolSize` cannot see a run where nothing was *ever* returned, since the peak is then zero too.
-     * The counters do not model what we actually want to know.
-     *
-     * So this measures the thing itself. `slice()` on a pooled parent is `addRef()`, and the only way the
-     * refcount reaches zero is a matching release on every slice. Counting the two and comparing is exact,
-     * needs no model of the pool's internals, and points at a *number of missing releases* rather than a
-     * derived quantity — which is also why it survives a pool implementation change.
+     * The [MAX_TRACKED_POOL] guard is load-bearing: `release()` starts *dropping* chunks once
+     * `pooledCount` reaches `maxPoolSize`, which would make this under-report through no fault of the
+     * code under test.
      */
-    fun assertSlicesBalanced(what: String) {
-        val outstanding = slicesTaken - slicesReleased
+    fun assertPoolDrained(what: String) {
+        val stats = pool.stats()
+        assertEquals(
+            true,
+            stats.peakPoolSize < MAX_TRACKED_POOL,
+            "$what filled the tracking pool (peak ${stats.peakPoolSize} of $MAX_TRACKED_POOL) — " +
+                "release() drops chunks at the cap, so this measurement can no longer be trusted",
+        )
         assertEquals(
             0,
-            outstanding,
-            "$what left $outstanding of $slicesTaken slice(s) unreleased. On a pooled buffer each is a " +
-                "reference the chunk never got back, so its memory stays out of the pool however " +
-                "diligently the owner called freeNativeMemory().\n  taken at:\n" + liveSiteSummary(),
+            outstandingChunks,
+            "$what did not return every chunk: the pool created ${backing.created} and only " +
+                "${stats.currentPoolSize} are idle, so $outstandingChunks still has a reference nobody " +
+                "released (a slice, not a missing free)",
         )
+        // Anti-vacuity: a run that never made the pool allocate proves nothing.
+        assertEquals(true, backing.created > 0, "$what never allocated a chunk — the fixture exercised nothing")
     }
-
-    // The distinct call sites still holding a slice, most frequent first — trimmed to the frames that are
-    // ours, since the buffer/coroutine frames above and below them are never the answer.
-    private fun liveSiteSummary(): String =
-        liveSliceSites
-            .map { entry ->
-                (entry.site ?: "")
-                    .lines()
-                    .filter { it.contains(".kt:") && !it.contains("LeakTrackingFactory") }
-                    .take(2)
-                    .joinToString(" <- ") { it.trim().removePrefix("at ") }
-            }.groupingBy { it }
-            .eachCount()
-            .entries
-            .sortedByDescending { it.value }
-            .take(6)
-            .joinToString("\n") { "    ${it.value}x  ${it.key}" }
 
     /**
      * The invariant directive 6 has always claimed: every buffer a run allocated came back. [what] names
      * the run, since a count alone says nothing about where.
      *
-     * **Weaker than [assertPoolDrained]** — see that KDoc. This one proves `freeNativeMemory()` was
-     * *called* on each buffer; it cannot prove the memory came back.
+     * **Weaker than [assertPoolDrained]** — this proves `freeNativeMemory()` was *called* on each buffer;
+     * it cannot prove the memory came back.
      */
     fun assertNoLeaks(what: String) {
-        val leaked = live
+        val leaked = handedOut.count { !it.isReleased() }
         if (leaked != 0) {
             fail("$what leaked $leaked of $allocations buffer(s): they were never released back to the pool")
         }
-        // Not just `leaked == 0`: a run that allocated nothing would satisfy that vacuously, and these
-        // fixtures exist to watch a session that definitely allocates.
+        // Not just `leaked == 0`: a run that allocated nothing would satisfy that vacuously.
         assertEquals(true, allocations > 0, "$what allocated nothing — the fixture cannot have exercised anything")
     }
 
     // A pooled buffer refuses every operation once released, which is the only free-side signal buffer
-    // exposes. `slice()` takes a reference on a live one; harmless, since this runs at the end of a run.
+    // exposes. The probe slice is released immediately: `slice()` also takes a REFERENCE, so a probe that
+    // kept one would pin the very chunk [assertPoolDrained] is asking about. The measurement must not
+    // perturb the thing measured — an earlier version of this file got that wrong.
     private fun PlatformBuffer.isReleased(): Boolean =
         try {
-            // Released immediately: `slice()` is the only free-side signal buffer exposes, but it also
-            // takes a reference — and since this factory now COUNTS slices, a probe that kept one would
-            // corrupt the very balance [assertSlicesBalanced] measures. The measurement must not perturb
-            // the thing measured.
             slice().freeIfNeeded()
             false
         } catch (_: IllegalStateException) {

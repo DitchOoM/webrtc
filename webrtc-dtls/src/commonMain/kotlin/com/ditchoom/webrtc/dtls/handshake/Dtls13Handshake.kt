@@ -1027,6 +1027,11 @@ internal class Dtls13Handshake(
             signatures().ops.verifyBlocking(verifyKey, message, sig)
         } catch (_: Throwable) {
             false
+        } finally {
+            // Only when we transcoded: otherwise `sig === wireSignature`, which belongs to the caller.
+            // Unreachable on every target that runs the engine today (all of them answer DER), which is
+            // exactly why it is written down rather than left to the next platform to discover.
+            if (sig !== wireSignature) sig.freeIfNeeded()
         }
     }
 

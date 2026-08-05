@@ -37,9 +37,32 @@ public class RawAttribute internal constructor(
     /** The declared-length value view (padding excluded) — what the typed interpreters read. */
     public val value: ReadBuffer = paddedValue.sliceOf(0, length)
 
-    /** Release [paddedValue] if this attribute owns it. Called once, from [StunMessageBuilder.encode]. */
-    internal fun releaseIfOwned() {
-        if (owned) paddedValue.releaseIfOwnable()
+    /**
+     * Give back **every** buffer reference this attribute took — both the [value] view and, when this
+     * attribute owns it, [paddedValue] itself. Idempotent-by-construction: called once, from
+     * [StunMessageBuilder.encode] for a built attribute and from [StunMessage.release] for a decoded one.
+     *
+     * ## Why [value] is released in both cases, and why it used to be released in neither
+     *
+     * [value] is a sub-view this class creates in its **constructor**, so it exists for every attribute
+     * whether or not anyone reads it. On a pooled buffer `slice()` is `addRef()`, and `TrackedSlice`
+     * re-parents to the *root* chunk — so the reference is against the datagram (decoded) or against
+     * [paddedValue] (built), and in both cases it is ours and nobody else's to return. Releasing only
+     * [paddedValue], which is what this method used to do, left that second reference outstanding
+     * forever: a built attribute went 2 → 1 and a decoded one left the datagram pinned.
+     *
+     * ## Why releasing a decoded [paddedValue] is safe — the `owned = false` KDoc still holds
+     *
+     * That flag says "not ours to **free**", and it is still right: a decoded [paddedValue] is a slice
+     * over a datagram shared with every other attribute, so *freeing the datagram* here would hand the
+     * rest of the parse reclaimed memory. Releasing the **slice** is a different act — it returns the one
+     * reference this attribute took and nothing else. On a pooled parent it decrements; on a plain
+     * native buffer `NativeBufferSlice.freeNativeMemory()` is a documented no-op, so it costs nothing.
+     * The datagram is still freed exactly once, by its own owner, under the last-reader rule.
+     */
+    internal fun releaseViews() {
+        value.releaseIfOwnable()
+        paddedValue.releaseIfOwnable()
     }
 
     override fun equals(other: Any?): Boolean =

@@ -135,7 +135,11 @@ class PooledReceiveChunkTest {
             alice.close()
             bob.close()
 
-            received.assertPoolDrained("a plaintext session's received datagrams")
+            // Both probes, in this order, because together they NAME the failure: assertNoLeaks passing
+            // while assertPoolDrained fails means an unreleased slice (a pin); assertNoLeaks failing means
+            // a datagram nobody freed at all. Diagnosing from one of them alone is guesswork.
+            received.assertNoLeaks("a plaintext session's received datagrams")
+            received.assertSlicesBalanced("a plaintext session's received datagrams")
         }
 
     private fun trickle(

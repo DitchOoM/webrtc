@@ -2,6 +2,7 @@ package com.ditchoom.webrtc.sctp
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.freeIfNeeded
 import kotlin.jvm.JvmInline
 
 /**
@@ -591,5 +592,36 @@ public sealed interface SctpChunk {
             dest.write(view)
             view.position(p)
         }
+    }
+}
+
+/**
+ * Give back every buffer view this chunk holds — see [SctpPacket.release] for the why.
+ *
+ * An **exhaustive `when` with no `else`**, deliberately: decoding is zero-copy, so adding a variant that
+ * carries a `ReadBuffer` and forgetting to release it is a silent pin on a pooled datagram, which no test
+ * on the default factory can see. This way the compiler refuses the new variant until it says which of the
+ * two it is. The `Unit` arm is chunks whose fields are all value types — a claim each one is making, not
+ * an oversight.
+ *
+ * An internal **extension** rather than an interface member: a member of a public sealed interface is
+ * public API, and this is an ownership detail of the codec, not something a consumer implements.
+ */
+internal fun SctpChunk.releaseViews() {
+    when (this) {
+        is SctpChunk.Data -> userData.freeIfNeeded()
+        is SctpChunk.CookieEcho -> cookie.freeIfNeeded()
+        is SctpChunk.Unrecognized -> value.freeIfNeeded()
+        is SctpChunk.Init -> parameters.forEach { it.releaseViews() }
+        is SctpChunk.InitAck -> parameters.forEach { it.releaseViews() }
+        is SctpChunk.ReConfig -> parameters.forEach { it.releaseViews() }
+        is SctpChunk.Heartbeat -> info.releaseViews()
+        is SctpChunk.HeartbeatAck -> info.releaseViews()
+        is SctpChunk.Abort -> causes.forEach { it.releaseViews() }
+        is SctpChunk.Error -> causes.forEach { it.releaseViews() }
+        // Value types only — nothing borrowed from the datagram.
+        is SctpChunk.Sack, is SctpChunk.Shutdown, is SctpChunk.ShutdownComplete, is SctpChunk.ForwardTsn,
+        SctpChunk.ShutdownAck, SctpChunk.CookieAck,
+        -> Unit
     }
 }

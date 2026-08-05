@@ -220,6 +220,7 @@ public final class com/ditchoom/webrtc/stun/StunMessage {
 	public final fun getHeader ()Lcom/ditchoom/webrtc/stun/StunHeader;
 	public final fun getMessageType-HLhQuLA ()S
 	public final fun getTransactionId ()Lcom/ditchoom/webrtc/stun/TransactionId;
+	public final fun release ()V
 	public final fun unknownComprehensionRequired (Ljava/util/Set;)Ljava/util/List;
 	public final fun verifyFingerprint ()Z
 	public final fun verifyMessageIntegrity (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/BufferFactory;)Z

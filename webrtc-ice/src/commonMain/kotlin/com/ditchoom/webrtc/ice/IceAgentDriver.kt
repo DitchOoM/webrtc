@@ -678,9 +678,15 @@ public class IceAgentDriver(
      */
     private fun isStun(payload: ReadBuffer): Boolean {
         val start = payload.position()
-        val isStun = StunMessage.decode(payload) is StunDecodeResult.Success
+        val decoded = StunMessage.decode(payload)
+        // Decoding is zero-copy, so even *classifying* a datagram takes two references per attribute
+        // against the chunk (see [StunMessage.release]). This throws the parse away immediately, which
+        // makes it the last reader of every view it just created — on a pooled receive factory, skipping
+        // this pinned the chunk of every inbound packet, STUN or not, before the demux had even decided
+        // what the packet was.
+        if (decoded is StunDecodeResult.Success) decoded.message.release()
         payload.position(start)
-        return isStun
+        return decoded is StunDecodeResult.Success
     }
 
     /**

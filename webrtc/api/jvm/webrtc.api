@@ -364,6 +364,21 @@ public final class com/ditchoom/webrtc/SessionDiagnostic$NetworkWatcherStopped :
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/SessionDiagnostic$RelayPermissionRefused : com/ditchoom/webrtc/SessionDiagnostic {
+	public fun <init> (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/StunErrorCode;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public final fun component2 ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public final fun component3 ()Lcom/ditchoom/webrtc/stun/StunErrorCode;
+	public final fun copy (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/StunErrorCode;)Lcom/ditchoom/webrtc/SessionDiagnostic$RelayPermissionRefused;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/SessionDiagnostic$RelayPermissionRefused;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/StunErrorCode;ILjava/lang/Object;)Lcom/ditchoom/webrtc/SessionDiagnostic$RelayPermissionRefused;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getError ()Lcom/ditchoom/webrtc/stun/StunErrorCode;
+	public final fun getPeer ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public final fun getRelay ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/SessionDiagnostic$RemoteCandidateDiscarded : com/ditchoom/webrtc/SessionDiagnostic {
 	public fun <init> (Ljava/lang/String;Lcom/ditchoom/webrtc/ice/CandidateDiscardReason;)V
 	public final fun component1 ()Ljava/lang/String;

@@ -244,6 +244,9 @@ public class IceAgentDriver(
     private val transmitFailures =
         Channel<IceTransmitFailure>(TRANSMIT_FAILURE_DIAGNOSTIC_BUFFER, BufferOverflow.DROP_OLDEST)
 
+    private val permissionRefusals =
+        Channel<TurnPermissionRefusal>(PERMISSION_REFUSAL_DIAGNOSTIC_BUFFER, BufferOverflow.DROP_OLDEST)
+
     /**
      * Every local candidate as it is gathered (host/srflx/relay) — the trickle (RFC 8838) source — paired
      * with the ufrag of the ICE generation it actually landed in, so the session layer can stamp RFC 8838
@@ -291,6 +294,19 @@ public class IceAgentDriver(
      * reports it.
      */
     public val transmitFailed: Flow<IceTransmitFailure> get() = transmitFailures.receiveAsFlow()
+
+    /**
+     * CreatePermissions a TURN server refused, across **every** relay allocation this generation gathered
+     * (see [TurnAllocation.permissionRefused]).
+     *
+     * Merged here rather than exposed per-allocation because the allocations are the driver's own — it
+     * creates one per relay candidate inside [gatherRelay] and never hands them out — so this is the only
+     * point at which a session layer could reach them. Each refusal names its own [TurnPermissionRefusal.relay],
+     * which is what keeps a dual-stack session's two allocations tellable apart after the merge.
+     *
+     * **Bounded and lossy** on the same reasoning as [transmitFailed], with the same size.
+     */
+    public val relayPermissionRefused: Flow<TurnPermissionRefusal> get() = permissionRefusals.receiveAsFlow()
 
     /** Launch the serialized drive loop. Gather candidates and feed remote state after this. */
     public fun start() {
@@ -373,6 +389,11 @@ public class IceAgentDriver(
         // an ephemeral allocation publishes `raddr <ip> rport 0`, which is not a place anything lives.
         val baseAddress = boundAddress(ip, underlying)
         val allocation = TurnAllocation(underlying, turnServer, username, password, gatheringRandom, scope, config.bufferFactory)
+        // Merge this allocation's refusals into the driver-wide diagnostic. Launched before `allocate()`
+        // rather than after a successful one: the allocation is the only object that can report these, and
+        // a subscription started later would miss the refusals a first relayed send provokes. Ends with
+        // [scope], which is the generation's — a retired allocation's channel closes and the collect returns.
+        scope.launch { allocation.permissionRefused.collect { permissionRefusals.trySend(it) } }
         val relayedSocket =
             when (val result = allocation.allocate()) {
                 is TurnAllocationResult.Allocated -> result.relayed
@@ -763,3 +784,11 @@ private const val DISCARD_DIAGNOSTIC_BUFFER = 32
  * window on what the socket is doing *now*.
  */
 private const val TRANSMIT_FAILURE_DIAGNOSTIC_BUFFER = 8
+
+/**
+ * How many refused permissions [IceAgentDriver.relayPermissionRefused] holds. Deliberately the same size
+ * as [TRANSMIT_FAILURE_DIAGNOSTIC_BUFFER] even though it merges every allocation's stream: a dual-stack
+ * session gathers two relay candidates, so the merge at most doubles the rate of something that was
+ * already "notice it, do not count it".
+ */
+private const val PERMISSION_REFUSAL_DIAGNOSTIC_BUFFER = 8

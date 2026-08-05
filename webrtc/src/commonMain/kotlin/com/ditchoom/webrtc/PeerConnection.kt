@@ -1033,6 +1033,15 @@ public class NativePeerConnection(
             // `ConsentExpired`, naming the symptom, while the cause was local and already known here.
             d.transmitFailed.collect { report(SessionDiagnostic.TransmitFailed(cause = it.cause)) }
         }
+        scope.launch {
+            // A TURN server refusing a permission — the relay's own version of the case above, and the
+            // one that is genuinely invisible otherwise: the refusal is spoken by the server, absorbed
+            // inside the allocation, and everything downstream only sees a relay candidate that carries
+            // nothing. See `SessionDiagnostic.RelayPermissionRefused`.
+            d.relayPermissionRefused.collect {
+                report(SessionDiagnostic.RelayPermissionRefused(relay = it.relay, peer = it.peer, error = it.error))
+            }
+        }
         establishJob = scope.launch { runEstablishment(d, sctpRandom) }
         when (val policy = config.iceRestartPolicy) {
             IceRestartPolicy.Manual -> Unit

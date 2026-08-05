@@ -2,6 +2,8 @@ package com.ditchoom.webrtc
 
 import com.ditchoom.webrtc.ice.CandidateDiscardReason
 import com.ditchoom.webrtc.ice.InterfaceEnumerationFailure
+import com.ditchoom.webrtc.stun.StunErrorCode
+import com.ditchoom.webrtc.stun.TransportAddress
 
 /**
  * Something a session decided that a caller cannot otherwise see — **non-fatal by construction**
@@ -113,5 +115,39 @@ public sealed interface SessionDiagnostic {
          * permanent for that payload, where a transport failure is worth another attempt.
          */
         public val cause: Throwable,
+    ) : SessionDiagnostic
+
+    /**
+     * A **TURN server refused a permission** (RFC 8656 §9), so that relay allocation will not carry
+     * traffic to that peer.
+     *
+     * Non-fatal for the same reason the rest of this type is: a permission is per-peer and a session
+     * normally has several pairs, so one refusal leaves the others working. Where it is *not* survivable —
+     * a relay-only session, or a peer behind a symmetric NAT where the relay is the only path — the
+     * existing ICE terminals still fire on their own schedule; this is what makes them explicable rather
+     * than what reports them.
+     *
+     * **The silent case it exists to end.** A refused permission and a peer that never answered present
+     * identically: checks go out, nothing comes back, and the session ends at
+     * `IceFailureReason.NoCandidatePairs` — a symptom that points at the network while the server had
+     * already said, in as many words, that it would not relay this. That cost a dual-stack `relay-only`
+     * lane a full investigation whose only evidence was a packet capture, twice.
+     *
+     * The refusal that matters most is **443 Peer Address Family Mismatch** (RFC 6156 §9.1) and it is
+     * reachable without any client fault: a server that reports an allocation at an address of the wrong
+     * family hands out a relay candidate whose own permissions it then refuses. **403 Forbidden** is the
+     * other — a policy or quota decision, and permanent for that peer.
+     */
+    public data class RelayPermissionRefused(
+        /** Which allocation refused — its relayed address; a dual-stack session holds more than one. */
+        public val relay: TransportAddress,
+        /** The peer the permission was for. */
+        public val peer: TransportAddress,
+        /**
+         * What the server answered. Unlike the `Throwable` payloads here this **is** a discriminant — it
+         * is a protocol code, not a foreign type — so branch on [StunErrorCode.code]; the reason text is
+         * the server's own and is diagnostic only.
+         */
+        public val error: StunErrorCode,
     ) : SessionDiagnostic
 }

@@ -14,6 +14,7 @@ import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.Ecn
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.channels.Channel
 import kotlin.random.Random
@@ -97,13 +98,23 @@ internal class TestNet(
     }
 
     private fun copyOf(payload: ReadBuffer): PlatformBuffer {
+        // The slice reads `payload` without disturbing the sender's cursor and is dead once copied — but
+        // on a pooled buffer `slice()` is `addRef()`, so leaving it pinned the SENDER's chunk. That made
+        // the harness itself look like a production leak: a tracker on `IceConfig.bufferFactory` reported
+        // three unreleased slices, and all three were these. Exactly the hazard `LeakTrackingFactory`
+        // warns about — harness buffers attributed to the code under test — so the harness has to be
+        // clean before its numbers mean anything.
         val slice = payload.slice()
-        val len = slice.remaining()
-        val copy = bufferFactory.allocate(maxOf(1, len))
-        copy.write(slice)
-        copy.resetForRead()
-        copy.setLimit(len)
-        return copy
+        return try {
+            val len = slice.remaining()
+            val copy = bufferFactory.allocate(maxOf(1, len))
+            copy.write(slice)
+            copy.resetForRead()
+            copy.setLimit(len)
+            copy
+        } finally {
+            slice.freeIfNeeded()
+        }
     }
 
     private class FlatChannel(

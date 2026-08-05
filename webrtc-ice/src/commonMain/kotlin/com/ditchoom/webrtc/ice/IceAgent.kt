@@ -878,6 +878,11 @@ public class IceAgent(
         // rewrite states it never checked.
         val inFlight = (entry.state as? CheckState.InProgress)?.check ?: return
         current.byTransaction.remove(inFlight.transaction.transactionId)
+        // Dropping a transaction is not the same as finishing one: nothing will deliver it a response or
+        // a timeout now, so `goTerminal` — the only place its request buffer is released — would never
+        // run. Consent revocation sweeps the whole checklist through here, which made a revoked session
+        // leak one request per pair still in flight.
+        inFlight.transaction.abandon()
         entry.state = becomes
     }
 
@@ -977,6 +982,10 @@ public class IceAgent(
      */
     private fun onRestart(out: MutableList<IceOutput>) {
         val outgoing = current
+        // Whatever happens to `outgoing` below — retained, or dropped — its in-flight checks are over:
+        // the new generation has its own credentials, so no answer to them can ever be matched. Their
+        // request buffers are released here because nothing else will deliver those transactions an end.
+        outgoing.abandonInFlight()
         // A restart on top of an in-flight restart keeps the ORIGINAL retained generation: that is the one
         // still carrying application data. The intermediate generation never nominated, so it owns nothing
         // to preserve, and overwriting the retention with it would drop the live pair on the floor.
@@ -999,6 +1008,8 @@ public class IceAgent(
         out: MutableList<IceOutput>,
     ) {
         val previous = (retained as? RetainedGeneration.Retained)?.generation ?: return
+        // The generation being rolled back OUT of is discarded here and will never be answered.
+        current.abandonInFlight()
         retained = RetainedGeneration.None
         current = previous
         // The retained generation was frozen for the restart window — it carried data but ran no consent
@@ -1200,6 +1211,20 @@ public class IceAgent(
     }
 
     /**
+     * Release everything this agent still holds — every in-flight check's request buffer, in the current
+     * generation and in a retained one.
+     *
+     * The agent is sans-io and owns no sockets, so this is not a lifecycle in the usual sense; it exists
+     * because `StunTransaction` releases its request only when it *finishes*, and a session that closes
+     * mid-check finishes nothing. `IceAgentDriver.close` calls it, which is the one place that knows the
+     * session is over. Idempotent: `abandon()` is.
+     */
+    public fun close() {
+        current.abandonInFlight()
+        (retained as? RetainedGeneration.Retained)?.generation?.abandonInFlight()
+    }
+
+    /**
      * One **ICE generation** (RFC 8445 §9): the credentials the agent advertises plus every piece of
      * state derived from them. A restart swaps the whole object, so "what a restart resets" is answered
      * by membership here rather than by a list of assignments that can silently fall out of date.
@@ -1207,6 +1232,7 @@ public class IceAgent(
      * [role] lives here so a rollback restores the role the retained generation actually settled on, but
      * a restart *inherits* it rather than redetermining it (§9 → §6.1.1).
      */
+
     private class Generation(
         var role: IceRole,
         val localCredentials: IceCredentials,
@@ -1225,6 +1251,19 @@ public class IceAgent(
         val remoteCandidates: MutableList<IceCandidate> = mutableListOf()
         val checklist: MutableList<PairEntry> = mutableListOf()
         val byTransaction: HashMap<TransactionId, PairEntry> = HashMap()
+
+        /**
+         * Abandon every check still in flight, releasing the request buffer each one holds.
+         *
+         * A transaction releases its request in `goTerminal`, which a response or a timeout reaches. A
+         * generation that is simply **discarded** — by a restart, a rollback, or the session closing —
+         * delivers neither, so without this its in-flight requests are never freed.
+         */
+        fun abandonInFlight() {
+            for (entry in checklist) (entry.state as? CheckState.InProgress)?.check?.transaction?.abandon()
+            byTransaction.clear()
+        }
+
         var state: IceConnectionState = IceConnectionState.New
 
         /** What this generation has nominated, and — for [Selection.Nominated] — its consent clock. */

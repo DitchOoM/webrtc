@@ -162,6 +162,22 @@ public class StunTransaction(
         return listOf(StunTransactionOutput.Completed(message))
     }
 
+    /**
+     * Abandon this transaction without an answer, releasing the request it still holds.
+     *
+     * [goTerminal] is reached by a response, a timeout, or a failure — every way a transaction *finishes*.
+     * It is not reached when one is simply **dropped**: consent revocation sweeps the checklist, and an
+     * ICE restart swaps the whole generation, and neither delivers an event to the transactions they
+     * discard. Their `request` buffers were then never released, so a session torn down mid-check leaked
+     * one per pair in flight. This is the discharge those paths were missing.
+     *
+     * Idempotent, and safe after a real terminal transition: `goTerminal` guards on [terminal] and
+     * `releaseIfOwnable` is itself idempotent.
+     */
+    public fun abandon() {
+        goTerminal()
+    }
+
     // No more retransmissions will be emitted, so nothing refers to `request` any more — see the class
     // KDoc's ownership note. `handle` short-circuits on `terminal`, so this runs exactly once.
     private fun goTerminal() {

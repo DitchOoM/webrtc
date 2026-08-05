@@ -330,6 +330,7 @@ public class IceAgentDriver(
     ): IceCandidate {
         val socketAddress = SocketAddress.ofLiteral(ip, port)
         val channel = binder.bind(socketAddress)
+        channel.requireSendableWith(config.bufferFactory, WireBufferSeam.IceBufferFactory)
         val hostAddress = boundAddress(ip, channel).toTransportAddress()
         // Host + its server-reflexive share one interface index (same socket): family-preferred, tie-unique.
         val ifaceIndex = nextInterfaceIndex(hostAddress.ip)
@@ -385,6 +386,10 @@ public class IceAgentDriver(
     ): RelayGatheringResult {
         val socketAddress = SocketAddress.ofLiteral(ip, port)
         val underlying = binder.bind(socketAddress)
+        // Checked on the UNDERLYING channel, not on the allocation that wraps it: the allocation's own
+        // send path is this socket, and the check must run before `allocate()` — a TURN Allocate request
+        // is itself a send, so a deferred check would report the misconfiguration as a TURN timeout.
+        underlying.requireSendableWith(config.bufferFactory, WireBufferSeam.IceBufferFactory)
         // The `raddr` of a relay candidate IS this local base, so it takes the bound port too — otherwise
         // an ephemeral allocation publishes `raddr <ip> rport 0`, which is not a place anything lives.
         val baseAddress = boundAddress(ip, underlying)

@@ -180,10 +180,12 @@ Every timeline replay and fuzz campaign asserts, not just crash-freedom:
    `MdnsEndpointTest`), while the `CountingBufferFactory` copies in `webrtc-sctp`, `webrtc-stun` and
    `webrtc-dtls` count allocations only, and the published `webrtc-testsuite` harness exposes just
    `WebRtcHarnessScope.allocationCount` — so a *consumer* cannot yet assert this invariant at all.
-   Two things bound how far it can go, and both are named in `CLAUDE.md`: the receive side has no
-   last-reader rule, so nothing releases an inbound datagram; and `LeakTrackingFactory` is blind to
-   DitchOoM/socket#277, where socket's own JVM/NIO and Node send paths drop a `TrackedSlice` unreleased
-   — only `pool.stats().currentPoolSize` discriminates that one.
+   One thing bounds how far it can go, and it is named in `CLAUDE.md`: the receive side has no
+   last-reader rule, so nothing releases an inbound datagram. DitchOoM/socket#277 — socket's own JVM/NIO
+   and Node send paths dropping a `TrackedSlice` unreleased — used to be the second bound, and is
+   **fixed and released in socket 4.0.1**, so it no longer is. Worth keeping from it: `LeakTrackingFactory`
+   was blind to that whole class of bug, because `freeNativeMemory()` marks a buffer freed whichever way
+   the refcount went. Only `pool.stats().currentPoolSize` discriminates a pinned pool chunk.
 2. **No illegal state transition** — ICE pair/checklist and `PeerConnectionState` never take an illegal edge.
 3. **Every native handle freed** — every DTLS wrapper freed, every TURN allocation released.
 4. **Errors are typed** — surface as sealed reasons, never strings.

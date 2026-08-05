@@ -1759,3 +1759,28 @@ public final class com/ditchoom/webrtc/ice/Ufrag {
 	public final synthetic fun unbox-impl ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/ice/UnsendableBufferFactoryException : java/lang/IllegalArgumentException {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/WireBufferSeam;)V
+	public final fun getSeam ()Lcom/ditchoom/webrtc/ice/WireBufferSeam;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/WireBufferSeam {
+	public abstract fun getDescription ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/WireBufferSeam$IceBufferFactory : com/ditchoom/webrtc/ice/WireBufferSeam {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/WireBufferSeam$IceBufferFactory;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/WireBufferSeam$MdnsBufferFactory : com/ditchoom/webrtc/ice/WireBufferSeam {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/WireBufferSeam$MdnsBufferFactory;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+

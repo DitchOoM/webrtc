@@ -63,6 +63,11 @@ private val resolvedNetworkBuffer: BufferFactory by lazy {
  * Shared with [webrtc-dtls]'s own copy of this decision (`DtlsConfig.bufferFactory`), which cannot see
  * this module — `webrtc-dtls` is a leaf over `buffer` alone and must not gain an upward dependency on
  * ICE to reach eight lines. Both delete together when `buffer` publishes the equivalent upstream.
+ *
+ * **Not made obsolete by `DatagramCapabilities.requiresNativeMemoryBuffers`**, which answers the *other*
+ * half of the question: the capability is what the CHANNEL demands, this is what the FACTORY supplies,
+ * and #131 is the comparison of the two ([requireSendableWith]). `BufferFactory` still exposes no
+ * capability flag of its own, so a probe remains the only way to ask it.
  */
 internal fun BufferFactory.backsNativeMemory(): Boolean {
     val probe: PlatformBuffer = allocate(1)

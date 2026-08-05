@@ -226,6 +226,12 @@ public class MdnsEndpoint(
                 MdnsGroupBinding.Unavailable -> return null
                 is MdnsGroupBinding.Bound -> binding.socket
             }
+        // Here rather than inside the binder (#131). `SocketUdpMdnsBinder.bind` maps *every* exception to
+        // [MdnsGroupBinding.Unavailable] on purpose — a host with no multicast route must cost the session
+        // its privacy, not its connectivity — and a misconfigured factory is not that kind of failure. Left
+        // in the binder it would be swallowed into "mDNS is unavailable here", which is the same silence
+        // #131 exists to end.
+        socket.channel.requireSendableWith(bufferFactory, WireBufferSeam.MdnsBufferFactory)
         val loop = scope.launch { dispatch(socket) }
         return BoundFamily(socket, loop).also { sockets[family] = it }
     }

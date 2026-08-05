@@ -9,6 +9,7 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.webrtc.ice.toSocketAddress
 import com.ditchoom.webrtc.ice.toTransportAddress
+import com.ditchoom.webrtc.stun.IpAddress
 import com.ditchoom.webrtc.stun.RawAttribute
 import com.ditchoom.webrtc.stun.StunAttributeType
 import com.ditchoom.webrtc.stun.StunClass
@@ -93,6 +94,16 @@ internal class TurnServer(
     private val lifetimeSeconds: UInt = DEFAULT_LIFETIME_SECONDS,
     private val permissionLifetimeSeconds: UInt = DEFAULT_PERMISSION_LIFETIME_SECONDS,
     private val noncePolicy: NoncePolicy = NoncePolicy.Fixed,
+    /**
+     * Refuse every CreatePermission **once this many have been granted** — 403 Forbidden, the answer a real
+     * server gives when its policy or quota turns against a peer it was previously relaying to.
+     *
+     * The seam exists because the two refusal paths in the client are reachable only from opposite sides of
+     * it: `0` refuses the very first install (the send path), while `1` lets the permission establish and
+     * refuses its **re-installation** (the maintenance path, §9), which is the arm where a permission that
+     * was working silently lapses. The 443 family rule below needs no seam — it is unconditional.
+     */
+    private val refusePermissionsAfter: Int = Int.MAX_VALUE,
     private val relayIp: String = address.ip,
     firstRelayPort: Int = FIRST_RELAY_PORT,
 ) {
@@ -109,6 +120,10 @@ internal class TurnServer(
 
     /** How many CreatePermission requests this server has granted (the first install and every renewal). */
     var permissionInstalls: Int = 0
+        private set
+
+    /** How many CreatePermissions this server refused 443 for a peer of the wrong family (RFC 6156 §9.1). */
+    var permissionRefusals: Int = 0
         private set
 
     /** How many requests this server rejected 438 because their NONCE had aged out (RFC 8656 §8). */
@@ -213,10 +228,35 @@ internal class TurnServer(
     ) {
         val user = authenticatedUser(request, client) ?: return
         val allocation = allocations[client] ?: return
-        request.attributes
-            .filter { it.type == StunAttributeType.XorPeerAddress }
-            .mapNotNull { it.asXorMappedAddress(request.transactionId) }
-            .forEach { armPermissionExpiry(allocation, it.toSocketAddress().ip) }
+        val peers =
+            request.attributes
+                .filter { it.type == StunAttributeType.XorPeerAddress }
+                .mapNotNull { it.asXorMappedAddress(request.transactionId) }
+        // RFC 6156 §9.1, and coturn does exactly this: a peer whose family differs from the RELAYED
+        // address's is refused 443, and the refusal covers the whole request rather than the offending
+        // attribute. Unconditional rather than a policy seam — a test server that permits what every real
+        // server refuses is not a mirror, it is a way to ship a bug. This is the arm that reproduces the
+        // dual-stack relay failure: a v6 allocation asked to permit a v4 peer.
+        val relayIsV6 = ':' in allocation.relayed.ip
+        val error =
+            when {
+                peers.any { (it.ip is IpAddress.V6) != relayIsV6 } ->
+                    StunErrorCode(PEER_ADDRESS_FAMILY_MISMATCH, "Peer Address Family Mismatch")
+                permissionInstalls >= refusePermissionsAfter -> StunErrorCode(FORBIDDEN, "Forbidden")
+                else -> null
+            }
+        if (error != null) {
+            permissionRefusals++
+            val refusal =
+                StunMessageBuilder
+                    .of(StunClass.ErrorResponse, StunMethod.CreatePermission, request.transactionId)
+                    .add(RawAttribute.ofErrorCode(error))
+                    .addMessageIntegrity(keyFor(user))
+                    .encode()
+            control.send(refusal, to = client)
+            return
+        }
+        peers.forEach { armPermissionExpiry(allocation, it.toSocketAddress().ip) }
         permissionInstalls++
         val response =
             StunMessageBuilder
@@ -399,5 +439,7 @@ internal class TurnServer(
         private const val STALE_NONCE = 438 // RFC 8656 §18 — good credentials, aged-out NONCE
         private const val ALLOCATION_MISMATCH = 437 // RFC 8656 §18 — no allocation for this 5-tuple
         private const val ADDRESS_FAMILY_NOT_SUPPORTED = 440 // RFC 8656 §18
+        private const val PEER_ADDRESS_FAMILY_MISMATCH = 443 // RFC 6156 §10.2 — peer family ≠ relayed family
+        private const val FORBIDDEN = 403 // RFC 8656 §18 — the server's policy refuses this peer
     }
 }

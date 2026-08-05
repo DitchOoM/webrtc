@@ -37,8 +37,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.random.Random
@@ -109,6 +112,10 @@ public class TurnAllocation(
     // Permitted peers by host, keeping the address itself: a permission has to be RE-installed before it
     // lapses (§9), and XOR-PEER-ADDRESS needs a transport address, not just the host string we key on.
     private val permitted = LinkedHashMap<String, SocketAddress>()
+
+    private val permissionRefusals =
+        Channel<TurnPermissionRefusal>(PERMISSION_REFUSAL_DIAGNOSTIC_BUFFER, BufferOverflow.DROP_OLDEST)
+
     private var credential: Credential = Credential.Unchallenged
     private var relayed: SocketAddress? = null
     private var closed = false
@@ -119,6 +126,20 @@ public class TurnAllocation(
     // addressed-mode, so it is bound by construction and its localAddress needs no unwrap — the old
     // `?: server` fallback stood only for a getsockname that could not fail here anyway.
     override val localAddress: SocketAddress get() = relayed ?: underlying.localAddress
+
+    /**
+     * CreatePermissions this server **answered and refused** (RFC 8656 §9) — a relay path that will not
+     * carry traffic for that peer, said in the one place that knows why.
+     *
+     * Never silence: an unanswered request is absorbed by the retransmit loop and is not reported here.
+     * See [TurnPermissionRefusal] for what a refusal costs and which codes to expect.
+     *
+     * **Bounded and lossy**, matching [IceAgentDriver.transmitFailed]: the producer is the send path, so an
+     * allocation whose permissions are all refused produces one of these per relayed datagram, and neither
+     * growing the heap for a collector nobody must attach nor stalling the send path on a rendezvous
+     * channel is acceptable. The newest are the ones describing what the server is refusing *now*.
+     */
+    public val permissionRefused: Flow<TurnPermissionRefusal> get() = permissionRefusals.receiveAsFlow()
     override val capabilities: DatagramCapabilities get() = underlying.capabilities
     override val isOpen: Boolean get() = !closed && underlying.isOpen
     override val maxWritableSize: Int get() = (underlying.maxWritableSize - TURN_OVERHEAD_BYTES).coerceAtLeast(0)
@@ -230,7 +251,34 @@ public class TurnAllocation(
     // Ensure a permission exists for [peer]'s IP so its inbound data reaches us (RFC 8656 §9).
     private suspend fun ensurePermission(peer: SocketAddress) {
         if (peer.host in permitted) return
-        if (createPermission(listOf(peer)) is TurnExchange.Succeeded) permitted[peer.host] = peer
+        when (val exchange = createPermission(listOf(peer))) {
+            is TurnExchange.Succeeded -> permitted[peer.host] = peer
+            // The server spoke and said no. Left un-permitted on purpose — the next send retries, which is
+            // right for a refusal that a re-derived nonce or a peer's own re-gather could clear — but
+            // reported, because a refusal that only manifests as an unreachable relay is indistinguishable
+            // from a peer that never answered. See [TurnPermissionRefusal].
+            is TurnExchange.Refused -> reportRefusal(peer, exchange.error)
+            // Silence, a malformed answer, or nothing ever sent: all three are "no permission yet, try
+            // again", and none of them is the server refusing. Conflating them here would report a lossy
+            // path as a policy decision.
+            TurnExchange.Unanswered, is TurnExchange.Malformed, is TurnExchange.NeverSent -> Unit
+        }
+    }
+
+    // The refusal channel's producer side. `localAddress` rather than `relayed` because it is the same
+    // address once allocated and never null — and a permission cannot be refused before an allocation
+    // exists to refuse it on.
+    private fun reportRefusal(
+        peer: SocketAddress,
+        error: StunErrorCode,
+    ) {
+        permissionRefusals.trySend(
+            TurnPermissionRefusal(
+                relay = localAddress.toTransportAddress(),
+                peer = peer.toTransportAddress(),
+                error = error,
+            ),
+        )
     }
 
     /**
@@ -319,14 +367,22 @@ public class TurnAllocation(
     private suspend fun reinstallPermissions(): PermissionOutcome {
         val peers = permitted.values.toList()
         if (peers.isEmpty()) return PermissionOutcome.Current
-        return when (createPermission(peers)) {
+        return when (val exchange = createPermission(peers)) {
             // Treated as silence on purpose: the maintenance loop's only question is *how soon to come
             // back*, and both answers are "sooner". The distinction is preserved where it changes a
             // caller's conclusion — `allocate()` above — not where it would only add an unused arm.
             TurnExchange.Unanswered, is TurnExchange.NeverSent -> PermissionOutcome.Unanswered
             // A refusal is not worth hurrying back for: the server is answering, and the next round at
-            // the normal cadence is as likely to succeed as one three seconds from now.
-            is TurnExchange.Succeeded, is TurnExchange.Refused, is TurnExchange.Malformed -> PermissionOutcome.Current
+            // the normal cadence is as likely to succeed as one three seconds from now. It IS worth
+            // reporting: one refusal here lapses a permission that was working, so the path stops
+            // carrying inbound traffic with nothing else to show for it. §9 refuses the whole request, so
+            // every peer in it lost its permission — one observation each, naming the peers by address
+            // rather than making a collector infer the set.
+            is TurnExchange.Refused -> {
+                for (peer in peers) reportRefusal(peer, exchange.error)
+                PermissionOutcome.Current
+            }
+            is TurnExchange.Succeeded, is TurnExchange.Malformed -> PermissionOutcome.Current
         }
     }
 
@@ -658,6 +714,14 @@ public sealed interface TurnAllocationResult {
 // field on TurnAllocation (see the one above, which predates this), and an error code is not API.
 private const val UNAUTHORIZED = 401
 private const val STALE_NONCE = 438 // RFC 8656 §18: the nonce a long-lived allocation was created under expired
+
+/**
+ * How many refused permissions [TurnAllocation.permissionRefused] holds for a collector that has not
+ * caught up. Sized like `TRANSMIT_FAILURE_DIAGNOSTIC_BUFFER` and for the same reason: a refusal is a
+ * condition to notice, not evidence to count, and a server that refuses one CreatePermission refuses the
+ * next — the eighth identical refusal tells a collector nothing the first did not.
+ */
+private const val PERMISSION_REFUSAL_DIAGNOSTIC_BUFFER = 8
 
 /** RFC 8656 §7.2's default allocation lifetime, used only when a server omits LIFETIME entirely. */
 private val DEFAULT_ALLOCATION_LIFETIME: Duration = 600.seconds

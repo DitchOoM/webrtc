@@ -15,13 +15,62 @@ public sealed interface SctpOutput {
      * Send [packet] over the transport below (DTLS → the selected ICE pair). It is positioned for
      * reading with the CRC32c already placed — the driver just hands it to `AddressedDatagramChannel.send`.
      *
-     * **Read-only, and not the driver's to free.** [packet] is a private read view: for a DATA chunk it
-     * spans the encoded packet the retransmission queue still owns (so a retransmit can re-emit the same
-     * bytes), and the association frees it when the chunk is acked or abandoned. Reading it — including
-     * moving this view's own position/limit or slicing it further — is fine and is what the driver does;
-     * writing into it or releasing it would corrupt or invalidate a future retransmission.
+     * **[packet] is always a read view, and always the driver's to release once the send has gone out.**
+     * Writing into it would corrupt a future retransmission; reading it — including moving this view's own
+     * position/limit, or slicing it further — is fine and is what the driver does.
+     *
+     * ## Why this is sealed: two ownership regimes hide behind one verb
+     *
+     * Releasing the *view* is not the same act as releasing the *bytes under it*, and which one the driver
+     * is doing depends on where the packet came from. Conflating them is not a leak either way round — it
+     * is a use-after-free in one direction and an unreclaimable chunk in the other:
+     *
+     * - [Owned] — a control packet, encoded for this one transmission and retained by nobody. The view
+     *   *is* the buffer, so the driver's release frees the bytes. Nothing else may hold it.
+     * - [Retained] — a DATA packet, whose bytes the retransmission queue keeps so a retransmit re-emits
+     *   them unchanged (RFC 4960 §6.1). The view is a borrow over those bytes; releasing it costs a
+     *   reference on a pooled buffer and nothing at all on a plain one, and in neither case are the bytes
+     *   freed. Those come back as [ReclaimRetained], and only then.
+     *
+     * The distinction is invisible to a driver that only *sends* — both are `send(packet)` — which is
+     * exactly why it has to be in the type. It is not inferable from the buffer: a slice of a pooled chunk
+     * and a pooled chunk answer every question a driver can ask identically.
      */
-    public data class Transmit(
+    public sealed interface Transmit : SctpOutput {
+        /** The datagram to put on the wire, positioned for reading. */
+        public val packet: PlatformBuffer
+
+        /**
+         * The driver owns these bytes outright — release [packet] once the send has completed. Every
+         * control packet (INIT, COOKIE ECHO, SACK, HEARTBEAT ACK, SHUTDOWN, RE-CONFIG, ABORT, FORWARD-TSN)
+         * is one of these: it is encoded for a single transmission and no part of the association keeps it.
+         */
+        public data class Owned(
+            override val packet: PlatformBuffer,
+        ) : Transmit
+
+        /**
+         * [packet] is a read view over bytes the association still owns for retransmission. Release the
+         * **view** once the send has completed; never the bytes behind it — the association hands those
+         * back as [ReclaimRetained] when the chunk is acked or abandoned.
+         */
+        public data class Retained(
+            override val packet: PlatformBuffer,
+        ) : Transmit
+    }
+
+    /**
+     * Bytes previously lent out as one or more [Transmit.Retained] views will never be transmitted again
+     * (the chunk was acked, abandoned, or discarded with the association) — the driver releases [packet].
+     *
+     * **It has to be the driver, and it has to be in order.** The association cannot free these itself:
+     * a driver that hands sends to a writer coroutine may still have a [Transmit.Retained] view of exactly
+     * these bytes queued behind it, and on a plain (non-refcounted) buffer freeing the parent invalidates
+     * that view mid-send. Emitted **after** every [Transmit] it could possibly race, so a driver that
+     * carries this through the same queue as its sends — the ordering it already needs to keep the wire
+     * deterministic — cannot get it wrong.
+     */
+    public data class ReclaimRetained(
         public val packet: PlatformBuffer,
     ) : SctpOutput
 
@@ -32,9 +81,11 @@ public sealed interface SctpOutput {
 
     /**
      * A complete user message was reassembled and is ready for delivery to the upper layer, in the
-     * correct order for its stream. [payload] is a fresh caller-owned buffer (the reassembly copy); the
-     * driver owns it. [unordered] and [payloadProtocolId] let the DataChannel layer route DCEP vs. app
-     * data (RFC 8831 §6.6).
+     * correct order for its stream. [payload] is a fresh buffer from `SctpConfig.bufferFactory` (the
+     * reassembly copy) and is **transferred**: the driver owns it and owes it a release, either by passing
+     * that ownership on to the application or by freeing it. [unordered] and [payloadProtocolId] let the
+     * DataChannel layer route DCEP vs. app data (RFC 8831 §6.6) — and a DCEP message is one no application
+     * ever sees, so nothing but the driver can free those.
      */
     public data class MessageReceived(
         public val streamId: StreamId,

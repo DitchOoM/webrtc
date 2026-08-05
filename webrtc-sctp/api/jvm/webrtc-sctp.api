@@ -1009,6 +1009,7 @@ public final class com/ditchoom/webrtc/sctp/association/SctpAssociation {
 	public static final field SCTP_DATA_CHANNEL_PORT S
 	public synthetic fun <init> (Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Lkotlin/random/Random;SSILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public synthetic fun <init> (Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Lkotlin/random/Random;SSLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun close ()Ljava/util/List;
 	public final fun getState ()Lcom/ditchoom/webrtc/sctp/association/SctpAssociationState;
 	public final fun handle (Lcom/ditchoom/webrtc/sctp/association/SctpEvent;Lkotlin/time/Instant;)Ljava/util/List;
 	public final fun nextDeadline (Lkotlin/time/Instant;)Lkotlin/time/Instant;
@@ -1286,6 +1287,17 @@ public final class com/ditchoom/webrtc/sctp/association/SctpOutput$PeerRestarted
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/sctp/association/SctpOutput$ReclaimRetained : com/ditchoom/webrtc/sctp/association/SctpOutput {
+	public fun <init> (Lcom/ditchoom/buffer/PlatformBuffer;)V
+	public final fun component1 ()Lcom/ditchoom/buffer/PlatformBuffer;
+	public final fun copy (Lcom/ditchoom/buffer/PlatformBuffer;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$ReclaimRetained;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/association/SctpOutput$ReclaimRetained;Lcom/ditchoom/buffer/PlatformBuffer;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$ReclaimRetained;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getPacket ()Lcom/ditchoom/buffer/PlatformBuffer;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/sctp/association/SctpOutput$StateChanged : com/ditchoom/webrtc/sctp/association/SctpOutput {
 	public fun <init> (Lcom/ditchoom/webrtc/sctp/association/SctpAssociationState;)V
 	public final fun component1 ()Lcom/ditchoom/webrtc/sctp/association/SctpAssociationState;
@@ -1297,13 +1309,28 @@ public final class com/ditchoom/webrtc/sctp/association/SctpOutput$StateChanged 
 	public fun toString ()Ljava/lang/String;
 }
 
-public final class com/ditchoom/webrtc/sctp/association/SctpOutput$Transmit : com/ditchoom/webrtc/sctp/association/SctpOutput {
+public abstract interface class com/ditchoom/webrtc/sctp/association/SctpOutput$Transmit : com/ditchoom/webrtc/sctp/association/SctpOutput {
+	public abstract fun getPacket ()Lcom/ditchoom/buffer/PlatformBuffer;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/SctpOutput$Transmit$Owned : com/ditchoom/webrtc/sctp/association/SctpOutput$Transmit {
 	public fun <init> (Lcom/ditchoom/buffer/PlatformBuffer;)V
 	public final fun component1 ()Lcom/ditchoom/buffer/PlatformBuffer;
-	public final fun copy (Lcom/ditchoom/buffer/PlatformBuffer;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$Transmit;
-	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/association/SctpOutput$Transmit;Lcom/ditchoom/buffer/PlatformBuffer;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$Transmit;
+	public final fun copy (Lcom/ditchoom/buffer/PlatformBuffer;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$Transmit$Owned;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/association/SctpOutput$Transmit$Owned;Lcom/ditchoom/buffer/PlatformBuffer;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$Transmit$Owned;
 	public fun equals (Ljava/lang/Object;)Z
-	public final fun getPacket ()Lcom/ditchoom/buffer/PlatformBuffer;
+	public fun getPacket ()Lcom/ditchoom/buffer/PlatformBuffer;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/SctpOutput$Transmit$Retained : com/ditchoom/webrtc/sctp/association/SctpOutput$Transmit {
+	public fun <init> (Lcom/ditchoom/buffer/PlatformBuffer;)V
+	public final fun component1 ()Lcom/ditchoom/buffer/PlatformBuffer;
+	public final fun copy (Lcom/ditchoom/buffer/PlatformBuffer;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$Transmit$Retained;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/association/SctpOutput$Transmit$Retained;Lcom/ditchoom/buffer/PlatformBuffer;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$Transmit$Retained;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getPacket ()Lcom/ditchoom/buffer/PlatformBuffer;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }

@@ -5,6 +5,7 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.managed
 
 /**
@@ -46,19 +47,29 @@ public sealed interface DataChannelMessage {
             // 4 UTF-8 bytes — not 6), which would desync the receiver.
             val labelBuf = encodeUtf8(label, factory)
             val protocolBuf = encodeUtf8(protocol, factory)
-            val labelBytes = labelBuf.remaining()
-            val protocolBytes = protocolBuf.remaining()
-            val dest = factory.allocate(OPEN_FIXED_BYTES + labelBytes + protocolBytes, ByteOrder.BIG_ENDIAN)
-            dest.writeByte(OPEN_TYPE.toByte())
-            dest.writeByte(channelType.raw.toByte())
-            dest.writeUShort(priority)
-            dest.writeUInt(reliabilityParameter)
-            dest.writeUShort(labelBytes.toUShort())
-            dest.writeUShort(protocolBytes.toUShort())
-            dest.write(labelBuf)
-            dest.write(protocolBuf)
-            dest.resetForRead()
-            return dest
+            try {
+                val labelBytes = labelBuf.remaining()
+                val protocolBytes = protocolBuf.remaining()
+                val dest = factory.allocate(OPEN_FIXED_BYTES + labelBytes + protocolBytes, ByteOrder.BIG_ENDIAN)
+                dest.writeByte(OPEN_TYPE.toByte())
+                dest.writeByte(channelType.raw.toByte())
+                dest.writeUShort(priority)
+                dest.writeUInt(reliabilityParameter)
+                dest.writeUShort(labelBytes.toUShort())
+                dest.writeUShort(protocolBytes.toUShort())
+                dest.write(labelBuf)
+                dest.write(protocolBuf)
+                dest.resetForRead()
+                return dest
+            } finally {
+                // Scratch, from the caller's factory like everything else here. Both are measured and
+                // copied into `dest` above, so this is their last reader — and on a pooled factory a
+                // scratch buffer nobody frees is a chunk that never comes home, one per data channel
+                // opened with a label. (`encodeUtf8` answers EMPTY_BUFFER for empty text, which frees
+                // to nothing.)
+                labelBuf.freeIfNeeded()
+                protocolBuf.freeIfNeeded()
+            }
         }
     }
 

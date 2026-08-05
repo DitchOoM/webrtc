@@ -111,6 +111,16 @@ What is genuinely left, and why the data-channel stack is not yet something a st
     `LeakTrackingFactory` still cannot see any of it from `IceConfig.bufferFactory` — the receive buffer
     comes from the **channel's** factory, which is why the fixtures point a tracker at the vnet/`TestNet`
     instead, and why they must never point one at a link that also carries harness servers.
+  * **The SCTP send seam is owned too**, as of #158, and the number CLAUDE.md and
+    `SessionSeamOwnershipTest` both used to record — *15 of 15 chunks still referenced* — is **obsolete**.
+    What blocked it was a **type**, not missing frees: `SctpOutput.Transmit` conflated two owners, since a
+    control packet is the driver's outright while a DATA packet is a *view* over bytes the retransmission
+    queue keeps for a retransmit, and no release at the emit site can be right for both. It is now sealed
+    into `Transmit.Owned` / `Transmit.Retained`, plus `SctpOutput.ReclaimRetained` for handing the retained
+    bytes back — which the driver must carry through the **same FIFO as its sends**, because freeing a
+    packet whose send is still queued behind it is a use-after-free on any non-refcounting buffer, not a
+    leak. `SctpAssociation.close()` covers the paths that never reach a protocol close. Red-then-green:
+    15→0 clean, 37→0 lossy, 6→0 torn down mid-flight, per peer.
   * **What is still unowned is the DTLS *record* seam — the send side, not this one.** Every record
     `Dtls12Handshake.encode`s comes from `DtlsConfig.bufferFactory` and goes to `IceDataTransport.send`,
     which explicitly does not take ownership, so nothing frees it; `HandshakeReassembler`'s per-message

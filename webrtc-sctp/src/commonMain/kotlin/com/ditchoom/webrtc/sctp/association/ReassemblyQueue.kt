@@ -12,7 +12,13 @@ import com.ditchoom.webrtc.sctp.StreamId
 import com.ditchoom.webrtc.sctp.StreamSequenceNumber
 import com.ditchoom.webrtc.sctp.Tsn
 
-/** A fully reassembled user message ready to hand up to the DataChannel layer. */
+/**
+ * A fully reassembled user message ready to hand up to the DataChannel layer.
+ *
+ * [payload] is allocated from `SctpConfig.bufferFactory` and is **transferred** — once this leaves the
+ * queue the driver owns it, and every message that never leaves (held for ordering, then dropped by a
+ * stream reset or a FORWARD-TSN that skips past it) is released here instead.
+ */
 internal class ReassembledMessage(
     val streamId: StreamId,
     val ppid: PayloadProtocolId,
@@ -104,7 +110,8 @@ internal class ReassemblyQueue(
             var t = cumulativeTsn.next()
             while (t.sackPrecedes(newCumulativeTsn) || t.value == newCumulativeTsn.value) {
                 aboveCumulative.remove(t.value)
-                fragments.remove(t.value)
+                // The peer abandoned this fragment, so its copy has no reader left: this is its last one.
+                fragments.remove(t.value)?.payload?.freeIfNeeded()
                 t = t.next()
             }
             cumulativeTsn = newCumulativeTsn
@@ -118,7 +125,12 @@ internal class ReassemblyQueue(
                 // Drop any already-reassembled-but-held ordered messages the skip jumps over — else a
                 // message the peer abandoned (yet whose fragments we happened to fully receive) sits in
                 // orderedReady forever, growing the map under sustained partial-reliability abandonment.
-                orderedReady[s.streamId]?.keys?.removeAll { it < skipTo }
+                // Each one is a reassembly buffer that will now never be delivered, so this is where it
+                // is released; dropping the map entry alone would leak the copy behind it.
+                orderedReady[s.streamId]?.let { ready ->
+                    val skipped = ready.keys.filter { it < skipTo }
+                    for (ssn in skipped) ready.remove(ssn)?.payload?.freeIfNeeded()
+                }
             }
         }
         return reassembleDeliverable()
@@ -143,17 +155,45 @@ internal class ReassemblyQueue(
         when (scope) {
             StreamResetScope.AllStreams -> {
                 nextOrderedSsn.clear()
+                releaseHeld(orderedReady.values)
                 orderedReady.clear()
+                releaseFragments(fragments.values)
                 fragments.clear()
             }
             is StreamResetScope.Streams -> {
                 for (id in scope.ids) {
                     nextOrderedSsn.remove(id)
-                    orderedReady.remove(id)
+                    orderedReady.remove(id)?.let { releaseHeld(listOf(it)) }
                 }
-                fragments.entries.removeAll { it.value.streamId in scope.ids }
+                val dropped = fragments.entries.filter { it.value.streamId in scope.ids }
+                for (entry in dropped) fragments.remove(entry.key)?.payload?.freeIfNeeded()
             }
         }
+    }
+
+    /**
+     * Discard everything still held — the association is going away. Unlike the send side there is no
+     * ordering hazard here: nothing outside this queue ever gets a view of a fragment copy or of a message
+     * still waiting on its Stream Sequence Number, so the last reader is this call.
+     */
+    fun drain() {
+        releaseHeld(orderedReady.values)
+        orderedReady.clear()
+        releaseFragments(fragments.values)
+        fragments.clear()
+        nextOrderedSsn.clear()
+        aboveCumulative.clear()
+        duplicates.clear()
+    }
+
+    private fun releaseHeld(streams: Collection<HashMap<Int, ReassembledMessage>>) {
+        for (ready in streams) {
+            for (message in ready.values) message.payload.freeIfNeeded()
+        }
+    }
+
+    private fun releaseFragments(held: Collection<Fragment>) {
+        for (fragment in held) fragment.payload.freeIfNeeded()
     }
 
     /** The SACK to send now (RFC 4960 §3.3.4): cumulative ack, gap blocks, duplicate TSNs; clears dups. */
@@ -267,6 +307,12 @@ internal class ReassemblyQueue(
         }
     }
 
+    /**
+     * Join a complete B..E run into the one buffer the message is delivered as, **consuming the run**:
+     * every fragment copy in it is either transferred (the single-fragment case, where the fragment's own
+     * buffer *is* the message and no copy is made) or released here, once its bytes are in [dest]. The
+     * caller drops the run from [fragments] straight after, so this is the last reader either way.
+     */
     private fun assemble(run: List<Fragment>): ReadBuffer {
         if (run.size == 1) return run.first().payload
         val total = run.sumOf { it.payload.remaining() }
@@ -278,6 +324,7 @@ internal class ReassemblyQueue(
         }
         dest.resetForRead()
         dest.setLimit(total)
+        for (frag in run) frag.payload.freeIfNeeded()
         return dest
     }
 

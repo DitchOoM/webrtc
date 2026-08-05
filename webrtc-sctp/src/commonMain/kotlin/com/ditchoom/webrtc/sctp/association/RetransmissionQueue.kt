@@ -34,9 +34,11 @@ internal enum class TxState {
  * TSN, flags, SSN, PPID, payload), so it is simply a fresh view of the same bytes — and the CRC is
  * computed once for the chunk's whole lifetime rather than once per transmission.
  *
- * The packet is retained (GC-managed) until the chunk is acked or abandoned and dropped from the queue.
- * [streamId], [ssn] and [flags] are kept because RFC 3758 abandonment reads them to build FORWARD-TSN;
- * [reliability] and [firstSentAt] drive the abandonment decision itself.
+ * The packet is owned here until the chunk is acked or abandoned and dropped from the queue, at which
+ * point it is surfaced for release ([SctpOutput.ReclaimRetained]) rather than freed on the spot — the
+ * driver may still be sending a view of it. [streamId], [ssn] and [flags] are kept because RFC 3758
+ * abandonment reads them to build FORWARD-TSN; [reliability] and [firstSentAt] drive the abandonment
+ * decision itself.
  */
 internal class OutstandingData(
     val tsn: Tsn,
@@ -45,7 +47,11 @@ internal class OutstandingData(
     val flags: DataChunkFlags,
     /** Payload bytes this chunk contributes to the flight size / peer window (user data only). */
     val bytes: Int,
-    private val packet: PlatformBuffer,
+    /**
+     * The encoded wire packet these bytes live in. Surfaced so the association can hand it back to the
+     * driver when this chunk leaves the queue; nothing here frees it (see [wirePacket]).
+     */
+    val packet: PlatformBuffer,
     val reliability: SctpReliability,
     val firstSentAt: Instant,
 ) {
@@ -58,6 +64,11 @@ internal class OutstandingData(
      * A fresh read view over the encoded packet, for the initial send and for every retransmit. The
      * position is pinned to 0 first so the view always spans the whole packet regardless of what a
      * previous holder did with its own view.
+     *
+     * **A view, not the buffer**, precisely so the driver can release what it is handed after each send
+     * without touching bytes a later retransmit still needs — the [SctpOutput.Transmit.Retained] half of
+     * the contract. On a pooled buffer that is one reference per transmission, balanced by the driver;
+     * on a plain one it is free.
      */
     fun wirePacket(): PlatformBuffer {
         packet.position(0)
@@ -65,13 +76,20 @@ internal class OutstandingData(
     }
 }
 
-/** What one SACK did to the retransmission queue — applied by the association to RTT/cwnd/timers. */
+/**
+ * What one SACK did to the retransmission queue — applied by the association to RTT/cwnd/timers.
+ *
+ * [reclaimed] is the ownership half: the encoded packets of every chunk this SACK removed. They are
+ * *returned*, never freed here, because a driver may still be sending a view of them — the association
+ * turns each into an [SctpOutput.ReclaimRetained] ordered behind the sends that could race it.
+ */
 internal class SackOutcome(
     val bytesNewlyAcked: Int,
     val cumulativeAdvanced: Boolean,
     val rttSample: kotlin.time.Duration?,
     val fastRetransmitTriggered: Boolean,
     val allDataAcknowledged: Boolean,
+    val reclaimed: List<PlatformBuffer>,
 )
 
 /**
@@ -158,6 +176,7 @@ internal class RetransmissionQueue(
         var bytesAcked = 0
         var rttSample: kotlin.time.Duration? = null
         var cumulativeAdvanced = false
+        val reclaimed = ArrayList<PlatformBuffer>()
 
         // 1. Cumulative ack: everything at or before cumulativeTsnAck is acknowledged.
         val cumIterator = outstanding.entries.iterator()
@@ -171,6 +190,7 @@ internal class RetransmissionQueue(
                 // RTT from the highest non-retransmitted, cum-acked chunk (Karn's algorithm).
                 if (data.retransmitCount == 0) rttSample = now - data.firstSentAt
                 cumIterator.remove()
+                reclaimed += data.packet
                 cumulativeAdvanced = true
             }
         }
@@ -197,6 +217,7 @@ internal class RetransmissionQueue(
                     outstandingBytes -= data.bytes
                 }
                 gapIterator.remove()
+                reclaimed += data.packet
             }
         }
 
@@ -218,7 +239,7 @@ internal class RetransmissionQueue(
 
         peerReceiveWindow = advertisedReceiverWindow
         if (outstandingBytes < 0) outstandingBytes = 0
-        return SackOutcome(bytesAcked, cumulativeAdvanced, rttSample, fastRetransmit, outstanding.isEmpty())
+        return SackOutcome(bytesAcked, cumulativeAdvanced, rttSample, fastRetransmit, outstanding.isEmpty(), reclaimed)
     }
 
     /**
@@ -271,8 +292,12 @@ internal class RetransmissionQueue(
         return abandonedStreams.entries.map { it.key to it.value }
     }
 
-    /** Chunks that must be discarded after a completed FORWARD-TSN (abandoned and now covered). */
-    fun purgeAbandonedThrough(tsn: Tsn) {
+    /**
+     * Chunks that must be discarded after a completed FORWARD-TSN (abandoned and now covered). Returns
+     * their encoded packets for the association to hand back to the driver — see [SackOutcome.reclaimed].
+     */
+    fun purgeAbandonedThrough(tsn: Tsn): List<PlatformBuffer> {
+        val reclaimed = ArrayList<PlatformBuffer>()
         val it = outstanding.entries.iterator()
         while (it.hasNext()) {
             val data = it.next().value
@@ -280,8 +305,22 @@ internal class RetransmissionQueue(
                 (data.tsn.sackPrecedes(tsn) || data.tsn.value == tsn.value)
             ) {
                 it.remove()
+                reclaimed += data.packet
             }
         }
+        return reclaimed
+    }
+
+    /**
+     * Drop every remaining chunk — the association is going away (teardown, abort, or a peer restart that
+     * re-seeds the TCB). Returns their encoded packets for release, for the same reason every other
+     * removal site does: this queue never frees what a driver may still be sending a view of.
+     */
+    fun drain(): List<PlatformBuffer> {
+        val reclaimed = outstanding.values.map { it.packet }
+        outstanding.clear()
+        outstandingBytes = 0
+        return reclaimed
     }
 
     // Advance the Advanced Peer Ack Point over a contiguous run of abandoned/acked chunks from the

@@ -701,29 +701,43 @@ public class TurnAllocation(
         val payload: ReadBuffer? get() = null
 
         /**
-         * Give the datagram back. Idempotent only in the sense that each exchange is consumed once —
-         * every consumer below runs it through [consuming], which is what makes "once" structural.
+         * The decoded message, when there is one — declared here rather than only on the three variants
+         * that carry it so [release] can give back its attribute views without a `when`.
+         */
+        val response: StunMessage? get() = null
+
+        /**
+         * Give the datagram back, **and the views decoded out of it**. Idempotent only in the sense that
+         * each exchange is consumed once — every consumer below runs it through [consuming], which is what
+         * makes "once" structural.
+         *
+         * The two are separate acts and both are owed. Releasing the payload alone left every attribute's
+         * `value` slice outstanding — a reference on a pooled chunk that the datagram's own release cannot
+         * balance, so the memory never returned however correct the payload half looked. `assertNoLeaks` is
+         * blind to exactly that, which is why it went unnoticed; `assertPoolDrained` in
+         * [ReceivedDatagramOwnershipTest] is what caught it, at 2 chunks per relay gather.
          */
         fun release() {
+            response?.release()
             payload?.releaseReceived()
         }
 
         /** The server answered with a success response. */
         class Succeeded(
-            val response: StunMessage,
+            override val response: StunMessage,
             override val payload: ReadBuffer,
         ) : TurnExchange
 
         /** The server answered with an error response carrying a decodable ERROR-CODE. */
         class Refused(
-            val response: StunMessage,
+            override val response: StunMessage,
             val error: StunErrorCode,
             override val payload: ReadBuffer,
         ) : TurnExchange
 
         /** The server answered with an error response we could not read an ERROR-CODE out of. */
         class Malformed(
-            val response: StunMessage,
+            override val response: StunMessage,
             override val payload: ReadBuffer,
         ) : TurnExchange
 

@@ -934,15 +934,60 @@ public final class com/ditchoom/webrtc/ice/IceServerUrlRejection$UnknownScheme :
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/ice/IceTransmitException : java/lang/RuntimeException {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/IceTransmitFailureReason;Ljava/lang/Throwable;)V
+	public fun getCause ()Ljava/lang/Throwable;
+	public final fun getReason ()Lcom/ditchoom/webrtc/ice/IceTransmitFailureReason;
+}
+
 public final class com/ditchoom/webrtc/ice/IceTransmitFailure {
-	public fun <init> (Lcom/ditchoom/webrtc/stun/TransportAddress;Ljava/lang/Throwable;)V
+	public fun <init> (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/ice/IceTransmitFailureReason;Ljava/lang/Throwable;)V
 	public final fun component1 ()Lcom/ditchoom/webrtc/stun/TransportAddress;
-	public final fun component2 ()Ljava/lang/Throwable;
-	public final fun copy (Lcom/ditchoom/webrtc/stun/TransportAddress;Ljava/lang/Throwable;)Lcom/ditchoom/webrtc/ice/IceTransmitFailure;
-	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/IceTransmitFailure;Lcom/ditchoom/webrtc/stun/TransportAddress;Ljava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceTransmitFailure;
+	public final fun component2 ()Lcom/ditchoom/webrtc/ice/IceTransmitFailureReason;
+	public final fun component3 ()Ljava/lang/Throwable;
+	public final fun copy (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/ice/IceTransmitFailureReason;Ljava/lang/Throwable;)Lcom/ditchoom/webrtc/ice/IceTransmitFailure;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/IceTransmitFailure;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/ice/IceTransmitFailureReason;Ljava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceTransmitFailure;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getCause ()Ljava/lang/Throwable;
+	public final fun getReason ()Lcom/ditchoom/webrtc/ice/IceTransmitFailureReason;
 	public final fun getTo ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/ice/IceTransmitFailureReason {
+}
+
+public final class com/ditchoom/webrtc/ice/IceTransmitFailureReason$DestinationUnreachable : com/ditchoom/webrtc/ice/IceTransmitFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/IceTransmitFailureReason$DestinationUnreachable;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/IceTransmitFailureReason$PayloadTooLarge : com/ditchoom/webrtc/ice/IceTransmitFailureReason {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/webrtc/ice/IceTransmitFailureReason$PayloadTooLarge;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/IceTransmitFailureReason$PayloadTooLarge;IIILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceTransmitFailureReason$PayloadTooLarge;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAttempted ()I
+	public final fun getLimit ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/IceTransmitFailureReason$Transient : com/ditchoom/webrtc/ice/IceTransmitFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/IceTransmitFailureReason$Transient;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/IceTransmitFailureReason$Unknown : com/ditchoom/webrtc/ice/IceTransmitFailureReason {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/IceTransmitFailureReason$Unknown;
+	public fun equals (Ljava/lang/Object;)Z
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }

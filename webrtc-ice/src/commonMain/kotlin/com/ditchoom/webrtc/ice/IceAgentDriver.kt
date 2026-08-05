@@ -703,7 +703,7 @@ public class IceAgentDriver(
                         // suspending it on a diagnostic nobody is obliged to collect would let a failing
                         // socket stall ICE itself — the same rule `discarded` follows below.
                         transmitFailures
-                            .trySend(IceTransmitFailure(to = output.to, cause = result.cause))
+                            .trySend(IceTransmitFailure(to = output.to, reason = result.reason, cause = result.cause))
                             .let { }
                     }
                 }

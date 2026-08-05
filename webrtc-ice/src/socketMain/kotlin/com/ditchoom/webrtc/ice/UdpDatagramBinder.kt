@@ -50,7 +50,10 @@ import com.ditchoom.socket.udp.UdpSocket
  */
 public fun udpDatagramBinder(): DatagramBinder =
     DatagramBinder { address ->
-        UdpSocket.bind(localHost = address.host, localPort = address.port)
+        // Wrapped so a refused send arrives upstairs already classified — see [TypedSendChannel]. The
+        // decoration is here rather than in the drivers because it is a property of socket-udp, not of
+        // ICE, and a caller supplying their own binder keeps the pre-existing untyped behaviour.
+        TypedSendChannel(UdpSocket.bind(localHost = address.host, localPort = address.port))
     }
 
 /**
@@ -68,5 +71,7 @@ public fun udpDatagramBinder(): DatagramBinder =
  */
 public fun udpDatagramBinder(bufferFactory: BufferFactory): DatagramBinder =
     DatagramBinder { address ->
-        UdpSocket.bind(localHost = address.host, localPort = address.port, bufferFactory = bufferFactory)
+        TypedSendChannel(
+            UdpSocket.bind(localHost = address.host, localPort = address.port, bufferFactory = bufferFactory),
+        )
     }

@@ -82,7 +82,7 @@ buffer = "6.23.0"
 #       `isTransient` is the predicate that matters to us: on real hardware (Realme RMX3933, API 35)
 #       Android grants INTERNET ~0.7-1s before VALIDATED on every reassociation, so without it an
 #       IceRestartPolicy.OnNetworkChange would restart the session on every Wi-Fi reassociation.
-socket = "4.0.1"
+socket = "4.0.2"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"

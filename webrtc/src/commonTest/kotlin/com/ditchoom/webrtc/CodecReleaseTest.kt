@@ -48,7 +48,7 @@ class CodecReleaseTest {
         decoded.message.release()
         datagram.freeIfNeeded()
 
-        factory.assertSlicesBalanced("a decoded STUN message")
+        factory.assertPoolDrained("a decoded STUN message")
     }
 
     @Test
@@ -65,7 +65,7 @@ class CodecReleaseTest {
         StunMessage.decode(datagram) // Reject; nothing for the caller to release
         datagram.freeIfNeeded()
 
-        factory.assertSlicesBalanced("a rejected STUN message")
+        factory.assertPoolDrained("a rejected STUN message")
     }
 
     @Test
@@ -79,7 +79,7 @@ class CodecReleaseTest {
         decoded.packet.release()
         datagram.freeIfNeeded()
 
-        factory.assertSlicesBalanced("a decoded SCTP packet")
+        factory.assertPoolDrained("a decoded SCTP packet")
     }
 
     // Built from `BufferFactory.managed()` (GC-heap on every target) so the fixture's own scaffolding

@@ -6,14 +6,14 @@ import kotlin.test.Test
 import kotlin.test.assertFailsWith
 
 /**
- * **The anti-vacuity check for [LeakTrackingFactory.assertSlicesBalanced].**
+ * **The anti-vacuity check for [LeakTrackingFactory.assertPoolDrained].**
  *
  * A diagnostic needs its own proof that it detects the thing it claims to — this repo has a standing
  * lesson about that: a previous leak metric was concluded correct from a test that could not have
  * discriminated either way, and the wrong conclusion reached a commit message. So each case below
  * *injects* the condition and asserts the probe's verdict, rather than reasoning about it.
  *
- * The third case is the one that matters, and the reason `assertSlicesBalanced` exists at all:
+ * The third case is the one that matters, and the reason `assertPoolDrained` exists at all:
  * an unreleased **slice** is invisible to [LeakTrackingFactory.assertNoLeaks] — `PooledBuffer` sets its
  * `freed` flag on the first `freeNativeMemory()` and refuses `slice()` from then on regardless of
  * refcount, so the buffer reads as "released" while its chunk has not come back. That is exactly the
@@ -24,7 +24,7 @@ class PoolDrainedProbeTest {
     fun a_run_that_releases_everything_passes() {
         val factory = LeakTrackingFactory()
         repeat(4) { factory.allocate(64, ByteOrder.BIG_ENDIAN).freeIfNeeded() }
-        factory.assertSlicesBalanced("a fully-released run")
+        factory.assertPoolDrained("a fully-released run")
     }
 
     /** A missing free is [LeakTrackingFactory.assertNoLeaks]'s job — the two probes divide the work. */
@@ -35,9 +35,12 @@ class PoolDrainedProbeTest {
         buffer.slice(ByteOrder.BIG_ENDIAN).freeIfNeeded() // slices balance…
         // …but the buffer itself is never freed.
         val e = assertFailsWith<AssertionError> { factory.assertNoLeaks("a run with one leak") }
-        assertContains(e.message, "leaked 1 of 1")
-        // And the slice probe is satisfied, because no slice is outstanding. Neither subsumes the other.
-        factory.assertSlicesBalanced("a run with one leak")
+        assertContains(e.message, "leaked 1 of")
+        // The chunk probe catches it too — a buffer nobody freed is also a chunk that never came back.
+        // `assertPoolDrained` is the STRICTLY STRONGER of the two; `assertNoLeaks` earns its keep by
+        // naming *which* buffer, which a chunk count cannot.
+        val stronger = assertFailsWith<AssertionError> { factory.assertPoolDrained("a run with one leak") }
+        assertContains(stronger.message, "reference nobody")
     }
 
     /**
@@ -54,8 +57,8 @@ class PoolDrainedProbeTest {
         // The weaker probe is satisfied — this is the blind spot, asserted rather than described.
         factory.assertNoLeaks("a freed buffer with a live slice")
 
-        val e = assertFailsWith<AssertionError> { factory.assertSlicesBalanced("a freed buffer with a live slice") }
-        assertContains(e.message, "unreleased")
+        val e = assertFailsWith<AssertionError> { factory.assertPoolDrained("a freed buffer with a live slice") }
+        assertContains(e.message, "reference nobody")
     }
 
     /**
@@ -79,7 +82,7 @@ class PoolDrainedProbeTest {
         val slices = List(10) { buffer.slice(ByteOrder.BIG_ENDIAN) }
         slices.forEach { it.freeIfNeeded() }
         buffer.freeIfNeeded()
-        factory.assertSlicesBalanced("a chunk whose every slice was released")
+        factory.assertPoolDrained("a chunk whose every slice was released")
     }
 
     private fun assertContains(

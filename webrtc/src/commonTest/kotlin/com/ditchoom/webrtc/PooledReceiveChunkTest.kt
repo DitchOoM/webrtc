@@ -17,7 +17,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.random.Random
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -27,61 +26,35 @@ import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
 /**
- * **A pooled receive factory never gets its chunks back.** Measured, currently red, deliberately
- * `@Ignore`d — this is an executable record of a known gap, not a gate.
+ * **A pooled receive factory gets every chunk back.** The invariant `SessionBufferOwnershipTest` cannot
+ * state, on the configuration `CLAUDE.md` recommends to consumers.
  *
- * ## What it measures, and why it is not the same question [SessionBufferOwnershipTest] answers
+ * ## Why this is a different question
  *
- * That fixture proves `freeNativeMemory()` is *called* on every received datagram, and it passes. This
- * one asks whether the memory actually came **back**, and it does not: a full plaintext session creates
- * **23 chunks and returns 0**.
+ * That fixture proves `freeNativeMemory()` was *called* on every received datagram. This one asks whether
+ * the memory actually came **back**, and for a long time it did not: a full session created 23 chunks and
+ * returned 0. The two disagree because `PooledBuffer` sets its `freed` flag on the first
+ * `freeNativeMemory()` and refuses `slice()` from then on **regardless of the refcount** — so the
+ * buffer-level probe reads "released" while the chunk is still pinned.
  *
- * The two disagree because `PooledBuffer` sets its `freed` flag on the first `freeNativeMemory()` and
- * refuses `slice()` from then on **regardless of the refcount** — so the buffer-level probe reads
- * "released" while the chunk is still pinned. `PoolDrainedProbeTest` pins that exact divergence.
+ * ## What was pinning it
  *
- * ## Why 0 of 23, when the driver does release
+ * Zero-copy decode takes a **reference**, not a borrow: `PooledBuffer.slice()` is `addRef()`, and
+ * `TrackedSlice` re-parents to the root chunk. `StunMessage.decode` slices once per attribute and
+ * `RawAttribute`'s constructor slices that again; `verifyMessageIntegrity` added three more per
+ * authenticated check; `SctpWire.sliceOf` slices per chunk, parameter and cause. So a datagram
+ * accumulated `1 + 2N` references while its owner returned exactly one. The receive-side ownership work
+ * was never wrong — one release simply cannot balance N. `StunMessage.release()` and
+ * `SctpPacket.release()` are the other half, and `CodecReleaseTest` pins each codec on its own.
  *
- * Zero-copy decode takes a **reference**, not a borrow. `PooledBuffer.slice()` is `addRef()` +
- * `TrackedSlice`, and the decode paths slice the datagram repeatedly:
+ * ## Why it is worth a standing fixture even though production does not hit it
  *
- * - `StunMessage.decode` slices once per attribute, and `RawAttribute`'s constructor slices *that* again
- *   (`value = paddedValue.sliceOf(0, length)`) — so 2 refs per attribute;
- * - `verifyMessageIntegrity` adds 3 more per authenticated check;
- * - `SctpWire.sliceOf` slices once per chunk, parameter and error cause.
- *
- * So a datagram accumulates `1 + 2N` references while the owner's `releaseReceived()` returns exactly
- * one. The receive-side ownership work is correct and is *not* what is broken here — it simply cannot
- * balance N releases with one.
- *
- * ## Why it is invisible in production today
- *
- * On Kotlin/Native Linux the shipped receive factory is a bare `BufferFactory.deterministic()`, not a
- * pool, and `NativeBufferSlice` does not override `freeNativeMemory()` — so slices are free no-ops and
- * the parent `malloc` is still released exactly once. The pin only bites under
- * `BufferPool(factory = BufferFactory.deterministic())`, which is the configuration `CLAUDE.md`
- * recommends to consumers as the workaround. That is what makes it worth a standing fixture.
- *
- * ## What would make it green — **entirely in this repo; `buffer` already provides the mechanism**
- *
- * The fix is not a new primitive. `TrackedSlice`'s own contract states it: "once the slice is released
- * (`releaseToPool` / `freeNativeMemory`) **and** the parent chunk's refcount reaches zero, the raw buffer
- * is returned to the pool's freelist". So N decode-side slices need N releases and the arithmetic closes
- * — `PoolDrainedProbeTest.releasing_every_slice_returns_the_chunk_even_with_many_outstanding_views`
- * proves exactly that on the shape the codecs produce, rather than asserting it.
- *
- * So what is missing is **ownership of the slices in `webrtc-stun`/`webrtc-sctp`**, not an upstream
- * change: a decoded `StunMessage`/`SctpPacket` has to be releasable, and every borrow it hands out has to
- * die with it. `RawAttribute.value` is the sharpest case — it slices in the *constructor*, so a second
- * reference is taken for every attribute whether or not anyone reads it, and `releaseIfOwned()` frees
- * only `paddedValue`.
- *
- * (`buffer` genuinely has no *non-refcounting* sub-view, which would let a borrow cost nothing at all.
- * That would be a nicer primitive, but it is an optimisation, not the blocker — this is closable today.)
- *
- * Un-`@Ignore` this the moment that lands.
+ * The shipped Kotlin/Native Linux receive factory is a *bare* `deterministic()`, not a pool, and
+ * `NativeBufferSlice` does not override `freeNativeMemory()` — so slices are no-ops there and the parent
+ * `malloc` is freed exactly once either way. The pin bites only under
+ * `BufferPool(factory = BufferFactory.deterministic())`, which is precisely what the docs tell consumers
+ * to use. This fixture is the reason that advice is now safe to follow.
  */
-@Ignore
 class PooledReceiveChunkTest {
     private val timeout = 60.seconds
     private val epoch = Instant.fromEpochSeconds(0)
@@ -139,7 +112,7 @@ class PooledReceiveChunkTest {
             // while assertPoolDrained fails means an unreleased slice (a pin); assertNoLeaks failing means
             // a datagram nobody freed at all. Diagnosing from one of them alone is guesswork.
             received.assertNoLeaks("a plaintext session's received datagrams")
-            received.assertSlicesBalanced("a plaintext session's received datagrams")
+            received.assertPoolDrained("a plaintext session's received datagrams")
         }
 
     private fun trickle(

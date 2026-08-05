@@ -207,6 +207,7 @@ public final class com/ditchoom/webrtc/ice/IceAgent {
 	public static final field ROLE_CONFLICT I
 	public fun <init> (Lcom/ditchoom/webrtc/ice/IceRole;Lkotlin/random/Random;Lcom/ditchoom/webrtc/ice/IceConfig;)V
 	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceRole;Lkotlin/random/Random;Lcom/ditchoom/webrtc/ice/IceConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun close ()V
 	public final fun getLocalCredentials ()Lcom/ditchoom/webrtc/ice/IceCredentials;
 	public final fun getPath ()Lcom/ditchoom/webrtc/ice/IcePath;
 	public final fun getRole ()Lcom/ditchoom/webrtc/ice/IceRole;

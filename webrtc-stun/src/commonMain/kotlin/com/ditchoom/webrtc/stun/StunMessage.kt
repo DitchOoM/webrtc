@@ -39,6 +39,41 @@ public class StunMessage internal constructor(
     public val messageType: StunMessageType get() = header.messageType
     public val transactionId: TransactionId get() = header.transactionId
 
+    /**
+     * Give back every buffer reference **decoding this message took** — and nothing else. Call it once the
+     * last reader of the message is done, before the datagram's own owner releases it.
+     *
+     * ## What this is, and what it is emphatically not
+     *
+     * It does **not** free the datagram. [decode] is zero-copy: each attribute is a slice over the
+     * received buffer, and on a pooled one `slice()` is `addRef()`. So decoding a message with N
+     * attributes takes **2N references** against the chunk — one for each attribute's padded span and one
+     * for the `value` view its constructor derives. The datagram's owner returns exactly **one**
+     * reference, under the last-reader rule. Without this, the arithmetic never closes and the chunk
+     * never returns to the pool no matter how disciplined that owner is.
+     *
+     * That is a real, measured gap and not a theoretical one: a full session created 23 chunks and got
+     * **0** back, while every buffer-level leak assertion passed — because `PooledBuffer` marks itself
+     * freed on the first `freeNativeMemory()` regardless of refcount, so the pin is invisible to
+     * everything except the pool's own counters.
+     *
+     * ## Why it is safe on every configuration
+     *
+     * Releasing a borrow only returns the reference that borrow took. On a **pooled** parent it
+     * decrements; on a plain native buffer `NativeBufferSlice.freeNativeMemory()` is a documented no-op,
+     * so a non-pooled path pays nothing and behaves exactly as before. Either way the datagram itself is
+     * still freed exactly once, by whoever owns it.
+     *
+     * ## The one rule for callers
+     *
+     * A borrow must not outlive this call. Every typed interpreter here reads into a value type — a
+     * `String`, a `TransportAddress`, a `Long` — so nothing a caller keeps points back into the message.
+     * Do not stash a `RawAttribute` (or its `value`) past the release.
+     */
+    public fun release() {
+        for (attribute in attributes) attribute.releaseViews()
+    }
+
     /** The first attribute of [type], or null if absent. */
     public fun firstOrNull(type: StunAttributeType): RawAttribute? = attributes.firstOrNull { it.type == type }
 
@@ -105,7 +140,17 @@ public class StunMessage internal constructor(
         feedIntegrityPrefix(src, miAt, TLV_HEADER_BYTES + HMAC_SHA1_BYTES, factory) { mac.update(it) }
         mac.doFinalInto(out)
         out.resetForRead()
-        return out.constantTimeEquals(src.sliceOf(miAt + TLV_HEADER_BYTES, miAt + TLV_HEADER_BYTES + HMAC_SHA1_BYTES))
+        // Both of these are scratch this call created — the computed MAC from [factory], and a view over
+        // the datagram for the on-wire value. Neither is released by anyone else, and on a pooled buffer
+        // the view is a reference against the chunk, so the comparison used to cost the caller two
+        // permanent pins per authenticated check. Compare, then give both back.
+        val onWire = src.sliceOf(miAt + TLV_HEADER_BYTES, miAt + TLV_HEADER_BYTES + HMAC_SHA1_BYTES)
+        return try {
+            out.constantTimeEquals(onWire)
+        } finally {
+            onWire.releaseIfOwnable()
+            out.releaseIfOwnable()
+        }
     }
 
     /**
@@ -129,9 +174,17 @@ public class StunMessage internal constructor(
         feedIntegrityPrefix(src, miAt, TLV_HEADER_BYTES + declaredLen, factory) { mac.update(it) }
         mac.doFinalInto(out)
         out.resetForRead()
-        // Compare only the declared (possibly truncated) prefix of the computed MAC.
+        // Compare only the declared (possibly truncated) prefix of the computed MAC. All three of these
+        // are this call's own scratch — see [verifyMessageIntegrity] — so all three are given back.
         val computed = out.sliceOf(0, declaredLen)
-        return computed.constantTimeEquals(src.sliceOf(miAt + TLV_HEADER_BYTES, miAt + TLV_HEADER_BYTES + declaredLen))
+        val onWire = src.sliceOf(miAt + TLV_HEADER_BYTES, miAt + TLV_HEADER_BYTES + declaredLen)
+        return try {
+            computed.constantTimeEquals(onWire)
+        } finally {
+            onWire.releaseIfOwnable()
+            computed.releaseIfOwnable()
+            out.releaseIfOwnable()
+        }
     }
 
     // Feeds the integrity-covered prefix to [update]: the 20-byte header with its length field
@@ -148,9 +201,17 @@ public class StunMessage internal constructor(
         val patched = factory.allocate(LENGTH_FIELD_BYTES, ByteOrder.BIG_ENDIAN)
         patched.writeUShort(patchedLength.toUShort())
         patched.resetForRead()
-        update(src.sliceOf(sourceStart, sourceStart + TYPE_FIELD_BYTES)) // message type
+        // Each of the three is consumed synchronously by [update] (an HMAC absorb), so each is released
+        // the moment it has been fed. Two are views over the datagram — references against the chunk on a
+        // pooled buffer — and `patched` is a fresh allocation; none of them was released before.
+        val messageType = src.sliceOf(sourceStart, sourceStart + TYPE_FIELD_BYTES)
+        update(messageType)
+        messageType.releaseIfOwnable()
         update(patched) // rewritten length
-        update(src.sliceOf(sourceStart + TYPE_FIELD_BYTES + LENGTH_FIELD_BYTES, attrAt)) // cookie‖txid‖attrs
+        patched.releaseIfOwnable()
+        val covered = src.sliceOf(sourceStart + TYPE_FIELD_BYTES + LENGTH_FIELD_BYTES, attrAt) // cookie‖txid‖attrs
+        update(covered)
+        covered.releaseIfOwnable()
     }
 
     /**
@@ -216,20 +277,30 @@ public class StunMessage internal constructor(
             var miSha256Offset: Int? = null
             var fpOffset: Int? = null
             var pos = attrStart
+
+            // A reject part-way through the walk still owes the views built so far. Each attribute is
+            // zero-copy — two references against the datagram on a pooled buffer (see [release]) — and a
+            // Reject hands the caller no object to release them through, so abandoning them here pinned
+            // the chunk permanently. That is peer-controlled input: a stream of malformed STUN would have
+            // exhausted the pool without ever completing a parse.
+            fun reject(reason: StunRejectReason): Reject {
+                for (attribute in attributes) attribute.releaseViews()
+                return Reject(reason)
+            }
             while (pos < attrEnd) {
-                if (pos + TLV_HEADER_BYTES > attrEnd) return Reject(StunRejectReason.MalformedAttribute(pos))
+                if (pos + TLV_HEADER_BYTES > attrEnd) return reject(StunRejectReason.MalformedAttribute(pos))
                 val type = StunAttributeType(source.u16be(pos).toUShort())
                 val len = source.u16be(pos + TYPE_FIELD_BYTES)
                 val valueStart = pos + TLV_HEADER_BYTES
                 val paddedEnd = valueStart + paddedLength(len)
-                if (paddedEnd > attrEnd) return Reject(StunRejectReason.MalformedAttribute(pos))
+                if (paddedEnd > attrEnd) return reject(StunRejectReason.MalformedAttribute(pos))
                 attributes += RawAttribute.ofWire(type, len, source.sliceOf(valueStart, paddedEnd))
                 if (type == StunAttributeType.MessageIntegrity && miOffset == null) miOffset = pos
                 if (type == StunAttributeType.MessageIntegritySha256 && miSha256Offset == null) miSha256Offset = pos
                 if (type == StunAttributeType.Fingerprint && fpOffset == null) fpOffset = pos
                 pos = paddedEnd
             }
-            if (pos != attrEnd) return Reject(StunRejectReason.MalformedAttribute(pos))
+            if (pos != attrEnd) return reject(StunRejectReason.MalformedAttribute(pos))
 
             return Success(StunMessage(header, attributes, source, start, miOffset, miSha256Offset, fpOffset))
         }

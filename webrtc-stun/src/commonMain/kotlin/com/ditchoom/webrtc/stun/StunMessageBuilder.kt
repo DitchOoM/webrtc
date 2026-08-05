@@ -118,7 +118,7 @@ public class StunMessageBuilder(
      */
     public fun encode(factory: BufferFactory = this.factory): PlatformBuffer {
         val encoded = build().encode(factory)
-        for (attribute in attributes) attribute.releaseIfOwned()
+        for (attribute in attributes) attribute.releaseViews()
         return encoded
     }
 

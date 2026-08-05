@@ -7,6 +7,7 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.webrtc.sctp.DataChunkFlags
 import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.ErrorCauseCode
@@ -594,6 +595,27 @@ public class SctpAssociation(
         out: MutableList<SctpOutput>,
     ) {
         val packet = (SctpPacket.decode(payload) as? SctpDecodeResult.Success)?.packet ?: return
+        // `finally`, because the two drops just below — a bad CRC32c and a bad verification tag — are the
+        // paths a corrupt or spoofed datagram takes, and each one is an exit that owes the decode's views
+        // (see [SctpPacket.release]). Releasing only on the path that processed the packet would give the
+        // chunk back for well-formed traffic and pin it for everything else, which is backwards.
+        //
+        // Safe because nothing survives the call: chunks are read into value types, and the two things
+        // that must outlive it are copied out explicitly — inbound user data in `ReassemblyQueue` and the
+        // INIT-ACK cookie, both via `copyOf`. The datagram itself is NOT freed here; the drive loop still
+        // owns it and releases it after `handle`.
+        try {
+            onDecodedPacket(packet, now, out)
+        } finally {
+            packet.release()
+        }
+    }
+
+    private fun onDecodedPacket(
+        packet: SctpPacket,
+        now: Instant,
+        out: MutableList<SctpOutput>,
+    ) {
         // Integrity: over DTLS the transport authenticates, but the SCTP CRC32c is still on the wire —
         // a mismatch is a corrupt datagram we drop (T0: never a throw).
         if (!packet.verifyChecksum()) return
@@ -1394,13 +1416,21 @@ public class SctpAssociation(
     }
 
     private fun copyOf(view: ReadBuffer): PlatformBuffer {
+        // The slice is taken only to read `view` without disturbing its cursor, and it is dead the moment
+        // the copy is made — but on a pooled datagram `slice()` is `addRef()`, and `TrackedSlice`
+        // re-parents to the ROOT chunk, so dropping it pinned the received datagram once per call. The
+        // copy itself is genuinely owned by the caller and is NOT released here.
         val slice = view.slice()
-        val len = slice.remaining()
-        val copy = config.bufferFactory.allocate(maxOf(1, len), ByteOrder.BIG_ENDIAN)
-        copy.write(slice)
-        copy.resetForRead()
-        copy.setLimit(len)
-        return copy
+        return try {
+            val len = slice.remaining()
+            val copy = config.bufferFactory.allocate(maxOf(1, len), ByteOrder.BIG_ENDIAN)
+            copy.write(slice)
+            copy.resetForRead()
+            copy.setLimit(len)
+            copy
+        } finally {
+            slice.freeIfNeeded()
+        }
     }
 
     // The Supported Extensions parameter (RFC 5061 §4.2.7) both the INIT and the INIT ACK carry. RE-CONFIG
@@ -1434,10 +1464,20 @@ public class SctpAssociation(
 
     /** null for anything that is not a cookie we minted — RFC 4960 §5.1.5 discards those silently. */
     private fun decodeCookie(view: ReadBuffer): StateCookie? {
+        // The slice exists only so the codec can read without disturbing `view`'s cursor, and it is dead
+        // when that read returns — `StateCookie` is value types only. But on a pooled datagram `slice()`
+        // is `addRef()`, so dropping it pinned the received buffer once per COOKIE-ECHO, including on the
+        // early return for a cookie too short to be ours (peer-controlled).
         val slice = view.slice()
-        if (slice.remaining() < StateCookie.SIZE_BYTES) return null
-        val cookie = StateCookieCodec.decode(slice, DecodeContext.Empty)
-        return cookie.takeIf { it.magic == StateCookie.MAGIC }
+        return try {
+            if (slice.remaining() < StateCookie.SIZE_BYTES) {
+                null
+            } else {
+                StateCookieCodec.decode(slice, DecodeContext.Empty).takeIf { it.magic == StateCookie.MAGIC }
+            }
+        } finally {
+            slice.freeIfNeeded()
+        }
     }
 
     public companion object {

@@ -557,6 +557,10 @@ public class IceAgentDriver(
         appInbound.close()
         inbox.close()
         gathered.close()
+        // The agent owns no I/O, but it does own the request buffer of every check still in flight — a
+        // `StunTransaction` releases that only when it finishes, and a session closing mid-check finishes
+        // nothing. This is the one place that knows the session is over.
+        agent.close()
         // Closing a channel does not release what is still sitting in it, and both of these carry
         // datagrams whose ownership was transferred to a reader that will now never run. Draining after
         // `close()` is what makes this the last reader: the close is what guarantees nothing more is
@@ -678,11 +682,33 @@ public class IceAgentDriver(
      */
     private fun isStun(payload: ReadBuffer): Boolean {
         val start = payload.position()
-        val isStun = StunMessage.decode(payload) is StunDecodeResult.Success
+        val decoded = StunMessage.decode(payload)
+        // Decoding is zero-copy, so even *classifying* a datagram takes two references per attribute
+        // against the chunk (see [StunMessage.release]). This throws the parse away immediately, which
+        // makes it the last reader of every view it just created — on a pooled receive factory, skipping
+        // this pinned the chunk of every inbound packet, STUN or not, before the demux had even decided
+        // what the packet was.
+        if (decoded is StunDecodeResult.Success) decoded.message.release()
         payload.position(start)
-        return isStun
+        return decoded is StunDecodeResult.Success
     }
 
+    /**
+     * The serialized loop that owns the agent. Every interaction with the core happens here.
+     *
+     * **`null` means the inbox is closed, and nothing else.** The timed branch used to answer `null` for
+     * *both* an expired deadline and a closed inbox, and the `when` below read that single `null` as
+     * "timer fired". After [close] — which closes the inbox — `onReceiveCatching` then completed
+     * immediately on every pass, so a driver torn down with any deadline armed (a live session always has
+     * one: consent, or a check's retransmit) never returned. It re-entered `handle(TimerFired)` as fast as
+     * the dispatcher would go, forever: a pegged core on a real clock, and an unbounded livelock under
+     * `runTest`, where virtual time cannot advance while a coroutine is runnable. The loop only ever died
+     * because the surrounding scope was cancelled, which is why every fixture that closed a *connected*
+     * pair had to be written after this was fixed rather than before.
+     *
+     * [Command.Timer] gives the deadline its own value, so the two outcomes stop sharing one, and the
+     * closed inbox reaches the `return` the untimed branch has always taken.
+     */
     private suspend fun driveLoop() {
         while (true) {
             val deadline = agent.nextDeadline(clock())
@@ -696,11 +722,11 @@ public class IceAgentDriver(
                     val wait = (deadline - clock()).coerceAtLeast(Duration.ZERO)
                     select<Command?> {
                         inbox.onReceiveCatching { it.getOrNull() }
-                        onTimeout(wait) { null }
-                    }
+                        onTimeout(wait) { Command.Timer }
+                    } ?: return
                 }
             when (command) {
-                null -> apply(agent.handle(IceEvent.TimerFired, clock()))
+                Command.Timer -> apply(agent.handle(IceEvent.TimerFired, clock()))
                 is Command.Event -> {
                     if (command.event == IceEvent.Restart) beginRestartGeneration()
                     val event = command.event
@@ -788,6 +814,14 @@ public class IceAgentDriver(
      * driver, not inside the sans-io [IceEvent] vocabulary, which stays free of `Deferred`s.
      */
     private sealed interface Command {
+        /**
+         * An armed deadline came due. Never sent to the inbox — [driveLoop]'s `select` produces it — but a
+         * [Command] rather than a `null` on purpose: `null` is what a **closed** inbox yields, and folding
+         * the two together is what used to spin this loop forever (see [driveLoop]). One value, one
+         * meaning. `SctpDataChannelStack.DriveItem.Timer` is the same shape for the same reason.
+         */
+        data object Timer : Command
+
         data class Event(
             val event: IceEvent,
         ) : Command

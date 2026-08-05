@@ -199,14 +199,22 @@ public class SctpDataChannelStack(
         // down on Kotlin/Native (the L2 harness caught exactly that: rc=139 at answerer teardown). A closed
         // inbox simply means the drive loop that would consume the item is already gone — the same
         // fail-quiet the other inbox writers (post / shutdown / closeChannel) already implement.
+        var undelivered: ReadBuffer? = null
         try {
             while (true) {
                 val packet = transport.receive() ?: break
+                // Held only across the send: if the inbox is closed the send throws, and this loop is
+                // then still the packet's last reader (see [releaseReceived]). Without this, every
+                // datagram racing a teardown was lost outright.
+                undelivered = packet
                 inbox.send(DriveItem.Inbound(packet))
+                undelivered = null
             }
             inbox.send(DriveItem.TransportClosed)
         } catch (_: kotlinx.coroutines.channels.ClosedSendChannelException) {
             // already torn down
+        } finally {
+            undelivered?.releaseReceived()
         }
     }
 
@@ -239,7 +247,14 @@ public class SctpDataChannelStack(
                     } ?: break
                 }
             when (item) {
-                is DriveItem.Inbound -> apply(association.handle(SctpEvent.DatagramReceived(item.packet), now()))
+                is DriveItem.Inbound -> {
+                    apply(association.handle(SctpEvent.DatagramReceived(item.packet), now()))
+                    // This loop is the last reader of a received packet (see [releaseReceived]): the
+                    // transport transferred it, and nothing the association kept is a view of it. After
+                    // `apply`, deliberately — `apply` transmits, and an outbound chunk echoed from the
+                    // inbound view (a HEARTBEAT-ACK's info) is still reading it until then.
+                    item.packet.releaseReceived()
+                }
                 is DriveItem.Command -> onCommand(item.command)
                 DriveItem.Timer -> apply(association.handle(SctpEvent.TimerFired, now()))
                 DriveItem.TransportClosed -> tearDown(null)
@@ -565,10 +580,18 @@ public class SctpDataChannelStack(
         outbound.close()
         transport.close()
         inbox.close()
-        // Fail every command still queued (and thus every caller suspended on its deferred).
+        // Fail every command still queued (and thus every caller suspended on its deferred), and release
+        // every packet still queued. Closing the inbox does not free what is sitting in it, and an
+        // Inbound item is a transfer whose reader — the drive loop — will now never run, so this drain is
+        // its last reader (see [releaseReceived]). Draining after `inbox.close()` is what makes that safe:
+        // the close is what guarantees no producer can enqueue behind us.
         while (true) {
             val item = inbox.tryReceive().getOrNull() ?: break
-            if (item is DriveItem.Command) failCommand(item.command, cause)
+            when (item) {
+                is DriveItem.Command -> failCommand(item.command, cause)
+                is DriveItem.Inbound -> item.packet.releaseReceived()
+                DriveItem.Timer, DriveItem.TransportClosed -> Unit
+            }
         }
         // …and every sender parked by backpressure. These are NOT in the inbox — their command was already
         // processed and their message queued; only the resume is outstanding. A tearDown that drained just

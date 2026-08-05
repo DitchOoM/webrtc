@@ -1,10 +1,45 @@
 package com.ditchoom.webrtc
 
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.webrtc.ice.IceDataReadResult
 import com.ditchoom.webrtc.ice.IceDataTransport
 import com.ditchoom.webrtc.sctp.datachannel.SctpDatagramTransport
 import com.ditchoom.webrtc.sdp.Fingerprint
+
+/**
+ * Release a received buffer whose last reader has finished with it — this module's copy of the rule
+ * `webrtc-ice`'s `IceProtocol.releaseReceived` states and `webrtc-sctp` restates at its own seam.
+ *
+ * There are three of these, one per module, and the duplication is deliberate: each is `internal` to a
+ * leaf that depends only downward (ARCHITECTURE §3), so sharing one would mean an upward dependency or a
+ * new published artifact for a two-line function. They are expected to change together.
+ *
+ * The rule: a received payload has exactly one owner at a time. The loop that received it either
+ * **consumes** it (reads what it needs, releases before the next iteration) or **transfers** it (across a
+ * channel or deferred, after which the receiver owes the release). A decoded view is neither — a borrow is
+ * never released, it merely must not outlive the owner.
+ *
+ * [PureKotlinDtls] owns two chains of this: records arriving from the ICE seam, and the decrypted
+ * application data it hands to SCTP.
+ */
+internal fun ReadBuffer.releaseReceived() {
+    freeIfNeeded()
+}
+
+/**
+ * Release a buffer **this module allocated and has now finished sending** — a DTLS record out of
+ * `DtlsConfig.bufferFactory`, handed to `IceDataTransport.send`, which explicitly does not take ownership.
+ *
+ * Deliberately a different function from [releaseReceived], exactly as `webrtc-ice` keeps its own pair
+ * apart. They compile to the same call today and are answerable to different arguments: this one's safety
+ * rests on `send` having finished reading by the time it returns (socket-udp transmits the window
+ * `[position, limit)` without consuming it, on all four backends), while [releaseReceived]'s rests on the
+ * last-reader rule. Sharing one helper would mean one KDoc defending two unrelated claims.
+ */
+internal fun ReadBuffer.releaseAfterSend() {
+    freeIfNeeded()
+}
 
 /**
  * Which side of the DTLS handshake this endpoint plays (RFC 8842 / the SDP `a=setup` attribute): the

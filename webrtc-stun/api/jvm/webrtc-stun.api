@@ -220,6 +220,7 @@ public final class com/ditchoom/webrtc/stun/StunMessage {
 	public final fun getHeader ()Lcom/ditchoom/webrtc/stun/StunHeader;
 	public final fun getMessageType-HLhQuLA ()S
 	public final fun getTransactionId ()Lcom/ditchoom/webrtc/stun/TransactionId;
+	public final fun release ()V
 	public final fun unknownComprehensionRequired (Ljava/util/Set;)Ljava/util/List;
 	public final fun verifyFingerprint ()Z
 	public final fun verifyMessageIntegrity (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/BufferFactory;)Z
@@ -400,6 +401,7 @@ public final class com/ditchoom/webrtc/stun/StunRetransmitPolicy$Companion {
 public final class com/ditchoom/webrtc/stun/StunTransaction {
 	public fun <init> (Lcom/ditchoom/webrtc/stun/TransactionId;Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/webrtc/stun/StunRetransmitPolicy;)V
 	public synthetic fun <init> (Lcom/ditchoom/webrtc/stun/TransactionId;Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/webrtc/stun/StunRetransmitPolicy;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun abandon ()V
 	public final fun getTransactionId ()Lcom/ditchoom/webrtc/stun/TransactionId;
 	public final fun handle (Lcom/ditchoom/webrtc/stun/StunTransactionEvent;Lkotlin/time/Instant;)Ljava/util/List;
 	public final fun isTerminal ()Z

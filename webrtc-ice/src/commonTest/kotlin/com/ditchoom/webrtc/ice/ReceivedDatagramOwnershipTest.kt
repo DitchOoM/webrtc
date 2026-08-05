@@ -70,6 +70,10 @@ class ReceivedDatagramOwnershipTest {
             )
             sent.assertNoLeaks("the datagrams an ICE session sent")
             received.assertNoLeaks("the datagrams an ICE session received")
+            // The stronger claim, and the only one that can see an unreleased BORROW: a decode slice costs
+            // a reference on a pooled chunk however diligently its owner freed the buffer.
+            sent.assertPoolDrained("the datagrams an ICE session sent")
+            received.assertPoolDrained("the datagrams an ICE session received")
         }
 
     /**
@@ -129,6 +133,7 @@ class ReceivedDatagramOwnershipTest {
 
             assertIs<RelayGatheringResult.Gathered>(result, "the vnet TURN server allocated a relay")
             received.assertNoLeaks("the datagrams a relay gather received")
+            received.assertPoolDrained("the datagrams a relay gather received")
         }
 
     /**

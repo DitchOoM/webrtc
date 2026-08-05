@@ -252,7 +252,16 @@ public class TurnAllocation(
     }
 
     private fun releaseTransport() {
+        // Close BEFORE draining, then drain: closing is what guarantees nothing more is enqueued behind
+        // us, and draining is what makes this the last reader. Closing a channel does not release what is
+        // still sitting in it, and `inbound` is UNLIMITED — a relay torn down while data is in flight can
+        // be holding a queue of decapsulated payloads whose reader will now never run, each one a buffer
+        // [enqueueData] allocated from [bufferFactory]. (`PureKotlinDtls.close` carries the same pair.)
         inbound.close()
+        while (true) {
+            val queued = inbound.tryReceive().getOrNull() ?: break
+            queued.payload.releaseReceived()
+        }
         underlying.close()
     }
 
@@ -490,7 +499,13 @@ public class TurnAllocation(
         copy.write(data)
         copy.resetForRead()
         copy.setLimit(length)
-        inbound.trySend(Datagram(payload = copy, peer = peer, ecn = Ecn.Unknown))
+        // A `trySend` into a closed channel does not deliver and does not throw: it returns a failure that
+        // is easy to discard, and discarding it drops the copy on the floor. The window is real — a relay
+        // that is still receiving when [close] runs — and every Data indication that lands in it costs one
+        // buffer. Failing to enqueue makes this the copy's last reader, so it is released here.
+        if (inbound.trySend(Datagram(payload = copy, peer = peer, ecn = Ecn.Unknown)).isFailure) {
+            copy.releaseReceived()
+        }
     }
 
     /**
@@ -686,29 +701,43 @@ public class TurnAllocation(
         val payload: ReadBuffer? get() = null
 
         /**
-         * Give the datagram back. Idempotent only in the sense that each exchange is consumed once —
-         * every consumer below runs it through [consuming], which is what makes "once" structural.
+         * The decoded message, when there is one — declared here rather than only on the three variants
+         * that carry it so [release] can give back its attribute views without a `when`.
+         */
+        val response: StunMessage? get() = null
+
+        /**
+         * Give the datagram back, **and the views decoded out of it**. Idempotent only in the sense that
+         * each exchange is consumed once — every consumer below runs it through [consuming], which is what
+         * makes "once" structural.
+         *
+         * The two are separate acts and both are owed. Releasing the payload alone left every attribute's
+         * `value` slice outstanding — a reference on a pooled chunk that the datagram's own release cannot
+         * balance, so the memory never returned however correct the payload half looked. `assertNoLeaks` is
+         * blind to exactly that, which is why it went unnoticed; `assertPoolDrained` in
+         * [ReceivedDatagramOwnershipTest] is what caught it, at 2 chunks per relay gather.
          */
         fun release() {
+            response?.release()
             payload?.releaseReceived()
         }
 
         /** The server answered with a success response. */
         class Succeeded(
-            val response: StunMessage,
+            override val response: StunMessage,
             override val payload: ReadBuffer,
         ) : TurnExchange
 
         /** The server answered with an error response carrying a decodable ERROR-CODE. */
         class Refused(
-            val response: StunMessage,
+            override val response: StunMessage,
             val error: StunErrorCode,
             override val payload: ReadBuffer,
         ) : TurnExchange
 
         /** The server answered with an error response we could not read an ERROR-CODE out of. */
         class Malformed(
-            val response: StunMessage,
+            override val response: StunMessage,
             override val payload: ReadBuffer,
         ) : TurnExchange
 

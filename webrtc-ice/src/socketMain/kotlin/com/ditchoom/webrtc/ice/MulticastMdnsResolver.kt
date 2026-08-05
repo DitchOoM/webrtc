@@ -79,7 +79,17 @@ public class MulticastMdnsResolver(
             val group = UdpSocket.resolve(if (isV4) MDNS_GROUP_V4 else MDNS_GROUP_V6, MDNS_PORT)
             channel.joinGroup(MulticastMembership(group, MulticastInterface.Default))
             channel.setTimeToLive(MDNS_TTL)
-            channel.send(MdnsMessage.encodeQuery(hostname, qType, bufferFactory), to = group)
+            val query = MdnsMessage.encodeQuery(hostname, qType, bufferFactory)
+            try {
+                channel.send(query, to = group)
+            } finally {
+                // Ours, built from [bufferFactory] for this one send, and nothing reads the question again
+                // — the answer arrives on the receive loop below. In a `finally` because a send that throws
+                // (a family with no multicast route) still leaves us holding the buffer, and both families
+                // are tried in turn, so "release only when the send worked" leaks one query per attempt.
+                // The two-way [MdnsEndpoint] carries the identical pair.
+                query.releaseAfterSend()
+            }
             return withTimeoutOrNull(queryTimeout) {
                 while (true) {
                     val datagram =

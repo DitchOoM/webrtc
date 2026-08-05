@@ -252,7 +252,16 @@ public class TurnAllocation(
     }
 
     private fun releaseTransport() {
+        // Close BEFORE draining, then drain: closing is what guarantees nothing more is enqueued behind
+        // us, and draining is what makes this the last reader. Closing a channel does not release what is
+        // still sitting in it, and `inbound` is UNLIMITED — a relay torn down while data is in flight can
+        // be holding a queue of decapsulated payloads whose reader will now never run, each one a buffer
+        // [enqueueData] allocated from [bufferFactory]. (`PureKotlinDtls.close` carries the same pair.)
         inbound.close()
+        while (true) {
+            val queued = inbound.tryReceive().getOrNull() ?: break
+            queued.payload.releaseReceived()
+        }
         underlying.close()
     }
 
@@ -490,7 +499,13 @@ public class TurnAllocation(
         copy.write(data)
         copy.resetForRead()
         copy.setLimit(length)
-        inbound.trySend(Datagram(payload = copy, peer = peer, ecn = Ecn.Unknown))
+        // A `trySend` into a closed channel does not deliver and does not throw: it returns a failure that
+        // is easy to discard, and discarding it drops the copy on the floor. The window is real — a relay
+        // that is still receiving when [close] runs — and every Data indication that lands in it costs one
+        // buffer. Failing to enqueue makes this the copy's last reader, so it is released here.
+        if (inbound.trySend(Datagram(payload = copy, peer = peer, ecn = Ecn.Unknown)).isFailure) {
+            copy.releaseReceived()
+        }
     }
 
     /**

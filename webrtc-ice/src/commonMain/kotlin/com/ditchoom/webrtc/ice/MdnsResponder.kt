@@ -281,6 +281,10 @@ public suspend fun MdnsResponder.serveOne(
  * over the buffer-flow seam, so the identical loop runs over a real multicast socket in production and over
  * the in-memory vnet under `runTest` on every target. [group] is the multicast destination for a shared
  * response; [onResponse] observes every decision, answers and silences alike.
+ *
+ * **This loop is the last reader of both buffers**, which is what makes it a driver rather than a helper:
+ * the received datagram it consumes, and the answer [serveOne] handed back for observation. An
+ * [onResponse] that wants to keep an answer's bytes past its own return has to copy them.
  */
 public suspend fun MdnsResponder.serve(
     channel: AddressedDatagramChannel,
@@ -294,7 +298,13 @@ public suspend fun MdnsResponder.serve(
                 is DatagramReadResult.Closed -> return
             }
         try {
-            onResponse(serveOne(channel, datagram, group))
+            val response = serveOne(channel, datagram, group)
+            onResponse(response)
+            // After the observer, not before: [serveOne] hands the answer's payload back so a caller can
+            // look at what it just sent, and this loop is that caller. Nothing refers to it once
+            // [onResponse] returns — an observer that wants to keep the bytes has to copy them.
+            // [MdnsEndpoint]'s own dispatch loop carries the identical pair; this is the standalone driver.
+            if (response is MdnsResponse.Answer) response.payload.releaseAfterSend()
         } finally {
             // This loop consumes the received datagram rather than transferring it — `respond` reads it
             // and builds any answer from its own factory — so it owes the release (see `releaseReceived`).

@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import kotlin.test.assertEquals
 import kotlin.test.fail
@@ -40,13 +41,41 @@ internal fun trackingPool(
 ): BufferPool = BufferPool(maxPoolSize = maxPoolSize, defaultBufferSize = defaultBufferSize, factory = factory)
 
 /**
+ * Counts the chunks a [BufferPool] actually creates, by sitting **underneath** it — the ground truth
+ * [LeakTrackingFactory.assertPoolDrained] compares against.
+ *
+ * It exists because every attempt to derive the same number from `PoolStats` was wrong, in both
+ * directions: `totalAllocations - poolHits - currentPoolSize` (see the note above);
+ * `currentPoolSize == poolMisses`, which the byte-order path falsifies; `currentPoolSize == peakPoolSize`,
+ * blind when nothing was ever returned. `BufferPool` calls its backing factory exactly once per chunk it
+ * creates, so [created] needs no model of buckets, size classes or hits. Measure it; do not infer it.
+ */
+internal class CountingBackingFactory(
+    private val delegate: BufferFactory = BufferFactory.Default,
+) : BufferFactory {
+    var created: Int = 0
+        private set
+
+    override fun allocate(
+        size: Int,
+        byteOrder: ByteOrder,
+    ): PlatformBuffer = delegate.allocate(size, byteOrder).also { created++ }
+
+    override fun wrap(
+        array: ByteArray,
+        byteOrder: ByteOrder,
+    ): PlatformBuffer = delegate.wrap(array, byteOrder).also { created++ }
+}
+
+/**
  * A [BufferFactory] over [pool] that remembers every buffer it handed out, so [assertNoLeaks] can ask
  * each one whether it came back. Point it at the thing under test — `IceConfig(bufferFactory = ...)` —
  * and **not** at the vnet: the vnet's copy-on-receive allocates from the same seam, and one factory
  * serving both would attribute the harness's buffers to production code.
  */
 internal class LeakTrackingFactory(
-    private val pool: BufferPool = trackingPool(),
+    private val backing: CountingBackingFactory = CountingBackingFactory(),
+    private val pool: BufferPool = trackingPool(factory = backing),
 ) : BufferFactory {
     private val handedOut = mutableListOf<PlatformBuffer>()
 
@@ -63,9 +92,15 @@ internal class LeakTrackingFactory(
     /** How many buffers this factory has handed out — the denominator an assertion should report. */
     val allocations: Int get() = handedOut.size
 
+    /** Chunks the pool created but has not got back — 0 when every reference has been returned. */
+    val outstandingChunks: Int get() = backing.created - pool.stats().currentPoolSize
+
     /**
      * The invariant directive 6 has always claimed and nothing has ever enforced: every buffer a run
      * allocated came back. [what] names the run, since a count alone says nothing about where.
+     *
+     * **Weaker than [assertPoolDrained]** — this proves `freeNativeMemory()` was *called* on each buffer;
+     * it cannot prove the memory came back. Assert it first anyway: it is the one that names *which*.
      */
     fun assertNoLeaks(what: String) {
         val live = handedOut.count { !it.isReleased() }
@@ -77,13 +112,41 @@ internal class LeakTrackingFactory(
         assertEquals(true, allocations > 0, "$what allocated nothing — the fixture cannot have exercised anything")
     }
 
+    /**
+     * **Every chunk the pool created is back in it** — the claim [assertNoLeaks] structurally cannot make,
+     * because `freed` is set by the first `freeNativeMemory()` whatever the refcount does. An unreleased
+     * `slice()` is invisible to one and visible to the other; on a pooled buffer `slice()` is `addRef()`.
+     *
+     * The [MAX_TRACKED_POOL] guard is load-bearing: `release()` starts *dropping* chunks once `pooledCount`
+     * reaches `maxPoolSize`, which would make this under-report through no fault of the code under test.
+     */
+    fun assertPoolDrained(what: String) {
+        val stats = pool.stats()
+        assertEquals(
+            true,
+            stats.peakPoolSize < MAX_TRACKED_POOL,
+            "$what filled the tracking pool (peak ${stats.peakPoolSize} of $MAX_TRACKED_POOL) — " +
+                "release() drops chunks at the cap, so this measurement can no longer be trusted",
+        )
+        assertEquals(
+            0,
+            outstandingChunks,
+            "$what did not return every chunk: the pool created ${backing.created} and only " +
+                "${stats.currentPoolSize} are idle, so $outstandingChunks still has a reference nobody " +
+                "released (a slice, not a missing free)",
+        )
+        assertEquals(true, backing.created > 0, "$what never allocated a chunk — the fixture exercised nothing")
+    }
+
     // A pooled buffer refuses every operation once released, which is the only free-side signal buffer
-    // exposes. `slice()` takes a reference on a live one; harmless, since this runs at the end of a run.
+    // exposes. The probe slice is released immediately: `slice()` also takes a REFERENCE, so a probe that
+    // kept one would pin the very chunk [assertPoolDrained] is asking about — the measurement must not
+    // perturb the thing measured.
     private fun PlatformBuffer.isReleased(): Boolean =
         try {
-            slice()
+            slice().freeIfNeeded()
             false
-        } catch (e: IllegalStateException) {
+        } catch (_: IllegalStateException) {
             true
         }
 }

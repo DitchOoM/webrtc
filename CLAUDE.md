@@ -296,6 +296,16 @@ above) and a `gradle.properties`, and `include(":…")` it in `settings.gradle.k
   **Not `released.yaml`**, which hangs off a tag *push* and therefore never fires: the tag is created
   through the REST API with `secrets.GITHUB_TOKEN`, for which GitHub dispatches no workflow events. An
   empty run list there is **expected and not a broken gate**; reading it as one costs an investigation.
+- **Merging three PRs in quick succession silently drops the middle one's release.** `merged.yaml` is
+  `concurrency: {group: deploy, cancel-in-progress: false}`, which keeps at most one *pending* run per
+  group: the first runs, the second queues, the third's arrival supersedes it. The second's commit is
+  still on `main`, so it normally rides out in the next release — **unless that next PR is docs-only**,
+  because the `Check if release is needed` gate correctly skips a change touching only `*.md` /
+  `.github/*` and every downstream job with it. That pair is how #160 ended up merged and unreleased.
+  The tree at the tag is the only answer to "did this ship" (`git log --oneline -1 v<latest>` against
+  `main`); a green run list is not. Recovery is built in and needs no sham PR — `merged.yaml`'s
+  `workflow_dispatch` path takes the bump directly and builds from `main`:
+  `gh workflow run merged.yaml -f version-bump=minor -f flow=release`.
 - Version is auto-derived from Maven Central metadata + the label bump.
 - Every published artifact (including `webrtc-testsuite`) goes through `validate-artifacts` from its
   first release.

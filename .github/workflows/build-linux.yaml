@@ -41,7 +41,7 @@ jobs:
 
       # Dependency + Gradle build cache (smarter than setup-java's cache:gradle; matches socket).
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v6.2.0
+        uses: gradle/actions/setup-gradle@v6.3.0
 
       # linuxArm64 BoringSSL (webrtc-dtls :buildBoringsslSslArm64) is cross-compiled with the aarch64 GNU
       # toolchain; the runner doesn't ship it. Without this, cmake fails "CMAKE_C_COMPILER

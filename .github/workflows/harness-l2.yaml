@@ -68,7 +68,7 @@ jobs:
           java-version: '21'
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v6.2.0
+        uses: gradle/actions/setup-gradle@v6.3.0
 
       # linuxArm64's BoringSSL is cross-compiled with the aarch64 GNU toolchain (webrtc-dtls'
       # buildBoringsslSslArm64); the runner doesn't ship it. linuxX64 uses the native gcc already present.

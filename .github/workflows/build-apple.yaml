@@ -39,7 +39,7 @@ jobs:
 
       # Dependency + Gradle build cache (smarter than setup-java's cache:gradle; matches socket).
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v6.2.0
+        uses: gradle/actions/setup-gradle@v6.3.0
 
       - name: Cache Konan
         uses: actions/cache@v6

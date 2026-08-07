@@ -48,8 +48,9 @@ import kotlin.time.Instant
  * whatever the refcount does. Every unreleased `sliceOf` in a wire decoder is invisible to it and visible
  * here. That is the whole point of the file.
  *
- * The **two record seams** are gated at zero on every target. The wire tracker is asserted at
- * `assertNoLeaks` only, for an upstream reason spelled out at the assertion itself.
+ * **All three trackers are gated at zero on every target** — the two record seams and the wire. The wire
+ * carried an `assertNoLeaks`-only exemption for an Apple-side upstream leak until buffer 6.26.0; the
+ * history is at the assertion itself.
  */
 class DtlsRecordSeamOwnershipTest {
     private var now: Instant = Instant.fromEpochSeconds(0)
@@ -92,21 +93,18 @@ class DtlsRecordSeamOwnershipTest {
         // seams — the thing this file is about — are gated at zero on every target.
         clientRecords.assertPoolDrained("the client's $version record seam")
         serverRecords.assertPoolDrained("the server's $version record seam")
-        // **The wire is deliberately NOT gated at zero here, and the reason is upstream.**
+        // The wire is gated at zero too, on every target — this is where an unreleased decode *borrow*
+        // over the received datagram would surface.
         //
-        // buffer-crypto's Apple AEAD `open` takes two `absoluteView` slices of the `ciphertextAndTag` it
-        // is handed (`Aead.apple.kt` / `AeadBridge.apple.kt`) and releases neither. Ours is a view over the
-        // received datagram, and `TrackedSlice.slice()` re-parents to the *root* chunk — so on Apple every
-        // record opened costs two references on the wire buffer that nothing downstream can hand back.
-        // Diagnosed from the shape of the failure rather than guessed: this fixture is green at zero on
-        // linuxX64 for all three trackers, and on macosArm64 both record seams still pass while only this
-        // line fails, which is exactly what a slice taken *inside* the AEAD off the ciphertext looks like.
-        // The seal path takes no view, and the record factories stay clean, which fits.
-        //
-        // The receive seam IS gated at zero where the AEAD returns its views: `DtlsSessionBufferOwnership`
-        // Test (webrtc/linuxTest) runs `assertPoolDrained` on the datagram factory through a whole
-        // PeerConnection. Raise this to `assertPoolDrained` here once buffer-crypto releases them.
-        wire.assertNoLeaks("the $version wire")
+        // It was not always. buffer-crypto's Apple AEAD `open` used to take two `absoluteView` slices of
+        // the `ciphertextAndTag` it was handed and release neither; ours is a view over the received
+        // datagram and `TrackedSlice.slice()` re-parents to the *root* chunk, so on Apple every opened
+        // record cost two references here that nothing downstream could hand back. That was diagnosed
+        // from the shape of the failure — green at zero on linuxX64 for all three trackers while only
+        // this line failed on macosArm64, both record seams still passing — and fixed upstream in buffer
+        // PR #335, which reads the ciphertext through pointer offsets rather than slices. We ride it from
+        // buffer 6.26.0, so the exemption this line carried is retired.
+        wire.assertPoolDrained("the $version wire")
     }
 
     private fun config(

@@ -26,9 +26,12 @@ Released on Maven Central; the data-channel stack is complete. It establishes an
 against Chrome, Firefox, WebKit, Pion and werift over real NAT kernels in CI across
 `{x64, arm64} × {v4, v6, dual}`, and every lane also gates on the data-channel *semantics* sequence
 (fragmentation, unordered, PR-SCTP, multiplexing, reverse-direction, per-channel close, graceful
-shutdown). Pinned at socket 4.1.0 + buffer 6.25.0 — the pair that carries
-`DatagramCapabilities.requiresNativeMemoryBuffers`, which is what the send-side buffer check consumes.
-They move together: socket-udp 4.1.0's POM pins buffer 6.25.0.
+shutdown). Pinned at socket 4.1.0 + buffer 6.26.0. socket 4.1.0 + buffer 6.25.0 is the pair that carries
+`DatagramCapabilities.requiresNativeMemoryBuffers`, which is what the send-side buffer check consumes,
+and that seam is why the two normally move together (socket-udp 4.1.0's POM pins buffer 6.25.0). Buffer
+rides one ahead of it deliberately: 6.26.0 is the Apple AEAD ownership fix (below), a pure internal fix
+to an Apple-only path with no API change, so resolving buffer up underneath a socket built against
+6.25.0 is safe. Re-align on a socket release that pins 6.26.0 or later.
 
 ### Capabilities that are easy to under-estimate
 
@@ -92,12 +95,14 @@ never reached zero. **`assertPoolDrained` is the gate.**
 | DTLS record (both 1.2 and 1.3) | `DtlsRecordSeamOwnershipTest`, `DtlsSessionBufferOwnershipTest` |
 | mDNS responder, TURN relay | `MdnsTurnSeamOwnershipTest` |
 
-**The one outstanding gap is upstream, not ours.** buffer-crypto's Apple AEAD `open` takes two
-`absoluteView` slices of the ciphertext it is handed (`Aead.apple.kt` / `AeadBridge.apple.kt`) and
-releases neither, so on Apple every opened DTLS record pins the *receive* chunk twice. Nothing here can
-reach those slices; `DtlsRecordSeamOwnershipTest` therefore gates its two record seams at zero on every
-target and asserts only `assertNoLeaks` on its wire stand-in, with the raise-it-back condition written at
-the assertion. The receive seam itself is still gated at zero on the target the blast radius covers.
+**Every seam in that table is now gated at zero, with no exemptions.** The last one was upstream rather
+than ours: buffer-crypto's Apple AEAD `open` took two `absoluteView` slices of the ciphertext it was
+handed (`Aead.apple.kt` / `AeadBridge.apple.kt`) and released neither, so on Apple every opened DTLS
+record pinned the *receive* chunk twice, and nothing here could reach those slices.
+`DtlsRecordSeamOwnershipTest` carried an `assertNoLeaks`-only exemption on its wire stand-in because of
+it. Fixed upstream in **buffer PR #335** (pointer offsets instead of slices), shipped in **buffer
+6.26.0**, which we now pin — so that fixture's wire tracker is `assertPoolDrained` like the rest. Do not
+re-derive the exemption from an old comment; check the assertion.
 
 Blast radius is **Kotlin/Native Linux only**: it is the sole target where `BufferFactory.Default` is a
 GC-heap buffer, so `networkBuffer()` falls back to `deterministic()` there and a buffer nobody releases

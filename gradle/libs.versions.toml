@@ -48,7 +48,19 @@ kotlinxCoroutines = "1.11.0"
 # asked of the CHANNEL rather than of the platform, which is the only phrasing that does not over-reject
 # (one process can run an in-memory endpoint and a real socket side by side, and NIO accepts a heap
 # ByteBuffer quite happily). 6.24.0 in between is hex <-> String conversions (#324), which we do not use.
-buffer = "6.25.0"
+# 6.26.0 (buffer PR #335) fixes the ONE buffer-ownership gap this stack could not reach from here:
+# buffer-crypto's Apple AEAD `open` took two `absoluteView` slices of the `ciphertextAndTag` it was handed
+# and released neither, so on Apple every opened DTLS record pinned the *receive* chunk twice. Ours is a
+# view over the received datagram and `TrackedSlice.slice()` re-parents to the root chunk, so nothing on
+# our side could hand those references back. It reads the ciphertext through pointer offsets now rather
+# than slices. This is what lets `DtlsRecordSeamOwnershipTest` gate its wire tracker with
+# `assertPoolDrained` instead of the weaker `assertNoLeaks` — the raise-it-back condition written at that
+# assertion. NOTE the skew this accepts deliberately: socket-udp's latest (4.1.3) POM still pins buffer
+# 6.25.0, so Gradle resolves buffer UP to 6.26.0 underneath a socket built against 6.25.0. That is safe
+# here because #335 is a pure internal fix to an Apple-only code path with no API change (the 6.25.0
+# `requiresNativeMemoryBuffers` seam the pair exists to carry is untouched); revisit if the two halves
+# ever diverge on API rather than on a bug fix.
+buffer = "6.26.0"
 # DitchOoM socket sibling — the UDP `DatagramChannel` **actuals** webrtc's transport track binds to for
 # real-network candidate gathering (host/srflx/relay). The seam itself is buffer-flow's
 # `DatagramChannel` (on Central, above); `socket-udp` is only the platform real-socket implementation

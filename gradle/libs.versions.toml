@@ -94,7 +94,20 @@ buffer = "6.25.0"
 # The two halves must move together (4.1.0's POM pins buffer 6.25.0), and together they are the seam
 # webrtc#131 consumes to reject an unusable injected bufferFactory at construction rather than at the
 # first connectivity check.
-socket = "4.1.0"
+# 4.1.3 is three patch releases over 4.1.0, two of which are unicast-`bind()` fixes on the exact two
+# platform actuals this library rides, and one that is inert here:
+#   - 4.1.1 (socket PR #283) stops `UdpSocket.linux.kt` setting SO_REUSEADDR on the *unicast* bind. The
+#     option is documented as multicast-only (it is what `bindMulticast` needs to share 224.0.0.251 /
+#     ff02::fb); on a unicast bind it lets a second socket overlap the first and take its packets. The
+#     rest of that PR is a socket-quic establishment gate we do not consume.
+#   - 4.1.2 (socket PR #284) is the same fix for `UdpSocket.apple.kt`. Darwin had been called immune when
+#     Linux was fixed, but that was measured only on *exact-duplicate* binds; wildcard-vs-specific is a
+#     different kernel check, and it is the overlap this library actually produces — `UdpDatagramBinder`
+#     binds a specific host:port for every ICE candidate while `MulticastMdnsEndpoint` binds the wildcard.
+#   - 4.1.3 (socket PR #285) is a QUIC close reason and Android-emulator CI diagnostics: nothing we call.
+# This does NOT move the buffer pin. socket-udp 4.1.1/4.1.2/4.1.3 all still pin buffer 6.25.0, so the
+# deliberate resolve-up to buffer 6.26.0 recorded above is neither helped nor worsened by this bump.
+socket = "4.1.3"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"

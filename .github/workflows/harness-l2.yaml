@@ -41,6 +41,13 @@ on:
       - 'webrtc-stun/**'
       - 'webrtc-sdp/**'
       - '.github/workflows/harness-l2.yaml'
+      # The version catalog belongs here because a dependency bump can move the datapath without
+      # touching a single line of ours. socket-udp IS the UDP actual every lane below rides
+      # (ARCHITECTURE §11.6) and buffer is the substrate under it, so a socket/buffer bump changes
+      # exactly what these NAT kernels exercise. Without this, a PR whose only diff is
+      # `gradle/libs.versions.toml` gets build + fuzz + standing-directives and NO interop lane at
+      # all -- the coverage such a PR needs most is the coverage it silently loses.
+      - 'gradle/libs.versions.toml'
   workflow_call:
 
 jobs:

@@ -3,6 +3,7 @@
 package com.ditchoom.webrtc.harness
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.encodeToPlatformBuffer
 import com.ditchoom.buffer.flow.AddressFamily
@@ -11,6 +12,8 @@ import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.socket.udp.UdpSocket
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -115,7 +118,15 @@ internal class UdpSignaling internal constructor(
             val acked =
                 withTimeoutOrNull(timeout) {
                     while (true) {
-                        channel.send(request.slice(), to = rendezvous)
+                        // A refused send is paced HERE rather than by the reply wait below. If the socket is
+                        // dead the `receive()` inside `awaitReply` returns `Closed` immediately, so
+                        // `withTimeoutOrNull(RETRANSMIT)` returns null without ever spending the interval —
+                        // and the loop would spin at full tilt for the whole 15s budget instead of
+                        // retransmitting ~30 times.
+                        if (!trySend(request.slice())) {
+                            delay(RETRANSMIT)
+                            continue
+                        }
                         // Wait a retransmit interval for an ack echoing OUR nonce (stale acks are drained).
                         if (withTimeoutOrNull(RETRANSMIT) { awaitReply(nonce) } != null) return@withTimeoutOrNull true
                     }
@@ -143,7 +154,9 @@ internal class UdpSignaling internal constructor(
         try {
             val records =
                 withTimeoutOrNull(timeout) {
-                    channel.send(request.slice(), to = rendezvous)
+                    // A refused send is indistinguishable from a lost one to this caller, and the contract
+                    // above already covers it: empty means "nothing new, poll again".
+                    if (!trySend(request.slice())) return@withTimeoutOrNull null
                     awaitReply(nonce)?.records?.map { it.payload }
                 }
             return records ?: emptyList()
@@ -151,6 +164,35 @@ internal class UdpSignaling internal constructor(
             request.freeNativeMemory()
         }
     }
+
+    /**
+     * Send one request, **answering** whether it went instead of raising — the harness-side twin of
+     * `webrtc-ice`'s `AddressedDatagramSink.sendOrFailure`, and it exists for the same reason.
+     *
+     * The signaling socket is bound to the peer's address at start-up, so the `interface-swap` topologies
+     * (`s8`/`s10`/`s11`) move the route to the rendezvous out from under it mid-run and the kernel answers
+     * `ENETUNREACH`. Both call sites run inside `bg.launch { for (r in outbox) sigOut.put(...) }`, and an
+     * unhandled throw in a launched coroutine **kills the Kotlin/Native process** — the offerer exits
+     * `rc=139` and the whole lane goes red at the exact moment the scenario is trying to prove a carrier
+     * switch works. The peer logs then show a successful establishment next to a dead process, which is
+     * the deterministic-"flake" shape CLAUDE.md warns costs an investigation every time.
+     *
+     * Signaling is already lossy-and-retried by construction (PUT retransmits to a matching ack, GET is
+     * re-polled), so a refused send needs no new recovery path — only to stop being fatal.
+     *
+     * [CancellationException] is rethrown: the watchdog cancelling this peer is not a socket condition,
+     * and swallowing it would keep the retransmit loop running after its scope died.
+     */
+    private suspend fun trySend(request: ReadBuffer): Boolean =
+        try {
+            channel.send(request, to = rendezvous)
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            println("[harness] signaling send refused (retrying): $e")
+            false
+        }
 
     fun close() = channel.close()
 

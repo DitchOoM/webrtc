@@ -11,6 +11,7 @@ import com.ditchoom.webrtc.stun.IpAddress
 import com.ditchoom.webrtc.stun.StunDecodeResult
 import com.ditchoom.webrtc.stun.StunMessage
 import com.ditchoom.webrtc.stun.TransportAddress
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -529,7 +530,7 @@ public class IceAgentDriver(
                         is IcePath.Nominated -> current.pair
                         is IcePath.Restarting -> current.previous
                     }
-                // Deliberately *not* guarded like the check path above, and the asymmetry is the point.
+                // Deliberately *not* absorbed like the check path above, and the asymmetry is the point.
                 // [packet] is the caller's buffer (DTLS's record), so there is nothing of ours to leak
                 // and no batch of ours to abandon — the two harms that made a raised send unacceptable in
                 // `apply()`. What is left is a failed application write, which is exactly the caller's to
@@ -537,7 +538,39 @@ public class IceAgentDriver(
                 // retransmission policy built on that lie is worse than the throw. Socket-udp absorbs and
                 // retries backpressure internally (DitchOoM/socket#278), so what reaches here is a real
                 // failure, not routine flow control.
-                channels[pair.local.base]?.send(packet, to = pair.remote.address.toSocketAddress())
+                //
+                // It is still raised — but it is no longer raised *silently*. The one caller,
+                // `PureKotlinDtls`'s pump, correctly absorbs it (DTLS's own retransmit timer is the
+                // recovery path for a record that did not go out, and on Kotlin/Native letting it escape
+                // a launched pump kills the process). Absorbed there and unreported here, a local send
+                // path that refuses every DTLS record was invisible on every surface: the session ends at
+                // `IceFailureReason.ConsentExpired` or `.NoCandidatePairs`, both naming the symptom and
+                // pointing at the peer, while the cause was local and already known right here. That is
+                // exactly the silent case [transmitFailed] exists to make visible, and the app-data seam
+                // was the one send path that could not reach it.
+                //
+                // Reported *before* the re-raise, and the original throwable is re-raised unchanged: the
+                // classification is for the diagnostic, and narrowing what `IceDataTransport.send` throws
+                // is not this change's to make.
+                val channel = channels[pair.local.base] ?: return
+                try {
+                    channel.send(packet, to = pair.remote.address.toSocketAddress())
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    val classified = e as? IceTransmitException
+                    // trySend on a DROP_OLDEST channel, never send — same rule as `apply()`: a diagnostic
+                    // nobody is obliged to collect must never suspend the path that reports it.
+                    transmitFailures
+                        .trySend(
+                            IceTransmitFailure(
+                                to = pair.remote.address,
+                                reason = classified?.reason ?: IceTransmitFailureReason.Unknown,
+                                cause = classified?.cause ?: e,
+                            ),
+                        ).let { }
+                    throw e
+                }
             }
 
             override suspend fun receive(): IceDataReadResult {

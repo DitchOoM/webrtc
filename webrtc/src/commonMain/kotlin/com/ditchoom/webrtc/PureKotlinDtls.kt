@@ -334,9 +334,15 @@ public class PureKotlinDtls(
                     // the buffer — releasing here as well would be a double free.
                     throw e
                 } catch (_: Throwable) {
-                    // Absorbed on purpose; the retransmit timer is the recovery path. Surfacing it as a
-                    // `SessionDiagnostic.TransmitFailed` would need a diagnostics seam plumbed into this
-                    // factory — worth doing, and deliberately not smuggled into an ownership change.
+                    // Absorbed on purpose; the retransmit timer is the recovery path.
+                    //
+                    // Absorbed is not the same as unreported, and it used to be. The failure is now
+                    // surfaced as `SessionDiagnostic.TransmitFailed` by the seam that actually raised it —
+                    // `IceAgentDriver.appDataTransport().send` reports to `transmitFailed` before it
+                    // re-raises, which `PeerConnection` already collects. That is a better site than this
+                    // one on both counts: it is where the socket's own typed error is still visible to be
+                    // classified, and it needs no diagnostics seam threaded through `DtlsConfig` to reach.
+                    // So there is deliberately nothing to do here beyond continuing the flight.
                 } finally {
                     record.releaseAfterSend()
                 }

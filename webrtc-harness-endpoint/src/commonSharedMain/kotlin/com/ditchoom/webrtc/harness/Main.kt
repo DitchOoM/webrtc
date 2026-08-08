@@ -28,6 +28,7 @@ import com.ditchoom.webrtc.sdp.SdpParseResult
 import com.ditchoom.webrtc.sdp.SdpType
 import com.ditchoom.webrtc.sdp.SessionDescription
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
@@ -97,7 +98,22 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
     coroutineScope {
         // One cancellable child scope for all long-lived machinery (pc, dtls, the gather/trickle/poll
         // loops) so the outer coroutineScope returns the moment the flow finishes and we cancel it.
-        val bg = CoroutineScope(coroutineContext + Job())
+        //
+        // The handler is a **backstop, not the fix**: `Job()` makes this a ROOT scope, so a throw escaping
+        // any `bg.launch` goes to the unhandled-exception path rather than to the enclosing
+        // `coroutineScope` — and on Kotlin/Native that terminates the process (`rc=139`), losing the
+        // scenario verdict and every log line still buffered. Each loop is expected to guard its own I/O
+        // (see `UdpSignaling.trySend`); this catches the one nobody thought of and leaves the peer alive
+        // long enough to report why. It deliberately does NOT cancel `bg`: the loops are independent, and
+        // one dead poll loop must not take a healthy data channel down with it.
+        val bg =
+            CoroutineScope(
+                coroutineContext + Job() +
+                    CoroutineExceptionHandler { ctx, e ->
+                        println("[harness] BUG: unhandled exception in $ctx — absorbed to keep the peer alive: $e")
+                        e.printStackTrace()
+                    },
+            )
 
         // Driver edge: the peer is a driver, not a sans-io core, so the injected clock's production value
         // is genuinely the wall clock (directive #2 — the seam is honored, its default supplied here).

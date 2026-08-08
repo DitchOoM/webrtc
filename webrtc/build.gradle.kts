@@ -49,6 +49,30 @@ kotlin {
         for (leaf in socketLeaves) {
             named(leaf) { dependsOn(socketMain) }
         }
+
+        // ── The test mirror: one real-socket suite, every platform that has a socket ──────────────
+        // Until this existed, **no real-socket test source set existed anywhere in the repo**. Linux's
+        // real-wire coverage came entirely from the Docker L2 harness and the harness module's own
+        // `JvmRealUdpLoopbackTest` — and `webrtc-harness-endpoint` is jvm + linuxX64 + linuxArm64 only, so
+        // it structurally cannot reach Apple. The result was that `macosArm64Test`/`iosSimulatorArm64Test`
+        // ran the vnet suite and nothing else: `udpDatagramBinder()`, the Apple send path (which reads
+        // `position()`/`remaining()` directly), and the `requiresNativeMemoryBuffers` bind check were
+        // compiled on Apple and never executed anywhere. That is the blind spot the buffer-crypto Apple
+        // AEAD leak sat in.
+        //
+        // Paired with `socketMain` and named to match, because it tests exactly what that source set adds.
+        // The leaves are the same minus Android: an Android *unit* test runs on a host JVM with no device,
+        // so a real bind there proves the JVM path a second time rather than the Android one — instrumented
+        // coverage is a different (and separately worthwhile) exercise. The `hostIsMac` guard is the same
+        // one above, for the same reason: those leaves do not exist when the host cannot build them.
+        val socketTest by creating { dependsOn(commonTest.get()) }
+        val socketTestLeaves = mutableListOf("jvmTest", "linuxTest")
+        if (org.jetbrains.kotlin.konan.target.HostManager.hostIsMac) {
+            socketTestLeaves += listOf("macosTest", "iosTest")
+        }
+        for (leaf in socketTestLeaves) {
+            named(leaf) { dependsOn(socketTest) }
+        }
     }
 }
 

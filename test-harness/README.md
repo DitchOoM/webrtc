@@ -245,7 +245,8 @@ cd test-harness
 ```
 
 Scenarios (in `run-interop.sh`): each NAT profile direct, `symmetric×symmetric` → relay, a mixed
-sym×port lane, an explicit `relay-only` lane, an `impaired` (netem) lane, the two carrier-grade NAT
+sym×port lane, an explicit `relay-only` lane, the two TURN-lifecycle lanes — **`turn-lifecycle`** (438
+Stale Nonce + allocation Refresh) and **`turn-quota`** (486; below) — an `impaired` (netem) lane, the two carrier-grade NAT
 (NAT444) lanes — **`cgnat`** (double NAT) and **`hairpin`** (shared carrier NAT → relay; above) — the
 native-offerer interop lanes — **`pion-interop`**, **`chrome-interop`**, **`firefox-interop`**,
 **`webkit-interop`** — and the **JVM-offerer** lanes — **`jvm-native`**, **`jvm-pion`**, **`jvm-chrome`**,
@@ -261,6 +262,46 @@ run tears the whole stack down (containers + networks + volumes) on exit.
 Selecting scenarios: positional args are an **allowlist** (`./run-interop.sh chrome-interop firefox-interop`
 runs just those); `HARNESS_SKIP="chrome-interop firefox-interop" ./run-interop.sh` is a **skiplist** (the CI
 `l2` job runs the full matrix minus the browser lanes, which run as their own parallel per-browser jobs).
+
+## TURN lifecycle — the `turn-lifecycle` / `turn-quota` lanes
+
+coturn's defaults put three of its own behaviours permanently out of a lane's reach: a NONCE lives 600 s,
+an allocation 3600 s, and there is no quota at all — every one of those outlives the longest session this
+harness runs. So 438 Stale Nonce, an allocation Refresh and 486 Allocation Quota Reached were implemented
+in `TurnAllocation`, covered by deterministic vnet fixtures, and **never once seen from a real server**.
+Two lanes close that, by compressing the *server's* clock the same way `PEER_CONSENT_INTERVAL_MS`
+compresses consent — a directive, not a provider feature:
+
+| lane | coturn directives | hold | what a green rc proves |
+|---|---|---|---|
+| `turn-lifecycle` | `stale-nonce=10`, `max-allocate-lifetime=20` | `PEER_IDLE_MS=35000` | the client answered a **438**, re-read REALM/NONCE, retried, and **renewed** an allocation that would otherwise have expired under it |
+| `turn-quota` | `user-quota=1` | default | one peer's relay was refused **486** and the session established anyway, over host/srflx |
+
+The knobs live in `harness.env` (empty = coturn's default, so every other lane is byte-unchanged),
+are exported per lane by `run-interop.sh`, and are appended to the config by `coturn/entrypoint.sh` —
+which also **echoes what it appended**:
+
+```
+[coturn] lifecycle: stale-nonce=10 max-allocate-lifetime=20
+```
+
+That echo is the first thing each lane asserts, and it is not ceremony: this file's own history has two
+separate episodes of a configured value the server never applied (the `-n` open relay, the duplicated
+`external-ip`), so a lane that assumed its directives took effect would pass green while proving nothing.
+The rest is read out of `docker compose logs coturn` — `error 438: Stale nonce`, and a `refreshed, realm=…
+lifetime=[1-9]` that excludes the `lifetime=0` deallocation `close()` sends, since otherwise a lane whose
+keep-alive never ran would be satisfied by its own teardown. `turn-lifecycle` pins `ice_policy=relay` and
+reuses the relay-pair assertion, so the session it holds really is riding the allocation under test.
+
+Timings are measured against coturn 4.6.3, not guessed: `TurnMaintenance` refreshes at 0.75 of the
+**granted** LIFETIME = 15 s, by which point the 10 s nonce has aged out, and the 35 s hold carries the
+session well past the 20 s allocation. One caveat for anyone reading the server log: coturn prints
+`new, …, lifetime=600` for our allocations, because it clamps a *requested* LIFETIME and our Allocate
+sends none — the response it returns still carries 20, which is what the client's 15 s cadence confirms.
+
+`turn-quota` is **v4-only**. A dual-stack lane gathers a relay per family, so one peer would exhaust a
+quota of 1 by itself and the property under test — *the other peer was refused* — would stop being what
+the lane measures.
 
 ## Data-channel semantics — what each lane now proves beyond `ping`/`pong`
 

@@ -3,14 +3,20 @@
 package com.ditchoom.webrtc.ice
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.buffer.use
 import com.ditchoom.webrtc.ice.vnet.LeakTrackingFactory
 import com.ditchoom.webrtc.ice.vnet.NatProfile
 import com.ditchoom.webrtc.ice.vnet.Vnets
+import com.ditchoom.webrtc.ice.vnet.utf8Buffer
+import com.ditchoom.webrtc.ice.vnet.vnetAddress
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.random.Random
@@ -137,6 +143,69 @@ class ReceivedDatagramOwnershipTest {
         }
 
     /**
+     * The three arms of the relay's receive path that a *gather* never reaches, and that therefore leaked
+     * in production behind a green [a_relay_gather_gives_back_every_datagram_the_turn_server_sent]:
+     *
+     * 1. **Every relayed datagram arrives as a Data indication.** TURN's demux released the datagram and
+     *    not the views decoded out of it — so on a relayed session, which is the only path a peer behind a
+     *    symmetric NAT has, one receive chunk was pinned *per inbound packet*, forever.
+     * 2. **The deallocating Refresh on [TurnAllocation.close].** Nothing reads its answer, so the exchange
+     *    was dropped without being released — the one hand-off with no return value, and the only reason
+     *    no fixture watched it.
+     * 3. **A response that settles after its awaiter has gone.** `close()` cancels the maintenance job
+     *    mid-Refresh; the demux has already taken the transaction out of `pending` by the time the
+     *    `finally` looks, so the map could not answer for that transfer and nobody released it.
+     *
+     * Each is invisible to `assertNoLeaks` — the datagram itself *is* freed in all three — and each shows
+     * up in `assertPoolDrained` as a chunk that never came back. Both are asserted, in that order, so a
+     * regression says which kind it is.
+     */
+    @Test
+    fun a_relayed_session_gives_back_every_data_indication_and_its_deallocation() =
+        runTest {
+            val received = LeakTrackingFactory()
+            val meetup = Vnets.meetup(backgroundScope, profileA = NatProfile.Symmetric, profileB = NatProfile.Symmetric)
+            val bobAddress = vnetAddress("203.0.113.50", 6000)
+            val bob = meetup.vnet.bind(bobAddress)
+            val alice =
+                TurnAllocation(
+                    // Only Alice's own socket is tracked — the vnet's TURN server keeps the default
+                    // factory, so its inbound copies stay scenery and out of the count.
+                    underlying = meetup.vnet.bind(meetup.aliceHost, bufferFactory = received),
+                    server = meetup.turnAddress,
+                    username = Vnets.TURN_USERNAME,
+                    password = Vnets.TURN_PASSWORD,
+                    random = Random(0x0DA7A),
+                    scope = backgroundScope,
+                )
+            assertIs<TurnAllocationResult.Allocated>(
+                withTimeoutOrNull(RELAY_TIMEOUT) { alice.allocate() },
+                "the vnet TURN server allocated a relay",
+            )
+
+            // Relay both ways, several times: outbound is a Send indication, and every inbound answer
+            // comes back as the Data indication whose views arm 1 is about. One round trip would leave a
+            // per-packet leak indistinguishable from a per-session one.
+            repeat(RELAYED_ROUND_TRIPS) { round ->
+                alice.send(utf8Buffer("relayed-$round"), to = bobAddress)
+                val atBob = assertIs<DatagramReadResult.Received>(withTimeoutOrNull(RELAY_TIMEOUT) { bob.receive() })
+                atBob.datagram.payload.use { bob.send(it, to = atBob.datagram.peer) }
+                val atAlice = assertIs<DatagramReadResult.Received>(withTimeoutOrNull(RELAY_TIMEOUT) { alice.receive() })
+                // The decapsulated copy is [TurnAllocation]'s, transferred to this reader — a different
+                // seam from the tracked one, and still ours to give back.
+                atAlice.datagram.payload.freeIfNeeded()
+            }
+
+            alice.close()
+            // close() posts the deallocating Refresh to `scope` and returns; the arms above live in the
+            // exchange it awaits, so the census has to be taken after that coroutine has actually run.
+            advanceUntilIdle()
+
+            received.assertNoLeaks("the datagrams a relayed session received")
+            received.assertPoolDrained("the datagrams a relayed session received")
+        }
+
+    /**
      * One connected host-to-host session between two **production** [IceAgentDriver]s, with the two
      * allocation seams held apart: [receiveFactory] is the vnet's copy-on-receive (the channel's factory
      * — socket-udp's, on a real kernel), [sendFactory] is `IceConfig`'s.
@@ -196,5 +265,9 @@ class ReceivedDatagramOwnershipTest {
         // Enough consent refreshes that the steady-state receive path — an inbound check per interval,
         // forever — dominates the establishment burst rather than being lost in it.
         const val CONSENT_CYCLES = 5L
+
+        // Several, so a per-packet leak cannot pass as a per-session one.
+        const val RELAYED_ROUND_TRIPS = 4
+        val RELAY_TIMEOUT = 30.seconds
     }
 }

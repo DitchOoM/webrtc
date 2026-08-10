@@ -110,6 +110,8 @@ internal object Vnets {
         turnLifetimeSeconds: UInt = TurnServer.DEFAULT_LIFETIME_SECONDS,
         turnPermissionLifetimeSeconds: UInt = TurnServer.DEFAULT_PERMISSION_LIFETIME_SECONDS,
         turnNoncePolicy: NoncePolicy = NoncePolicy.Fixed,
+        // Unlimited by default, which is coturn's own default and why 486 had no fixture until now.
+        turnAllocationQuota: Int = Int.MAX_VALUE,
     ): Meetup {
         val natA = nat(publicIp = "203.0.113.10", privatePrefix = "10.0.0.", profile = profileA)
         val natB = nat(publicIp = "203.0.113.20", privatePrefix = "10.0.1.", profile = profileB)
@@ -124,6 +126,7 @@ internal object Vnets {
                 lifetimeSeconds = turnLifetimeSeconds,
                 permissionLifetimeSeconds = turnPermissionLifetimeSeconds,
                 noncePolicy = turnNoncePolicy,
+                allocationQuota = turnAllocationQuota,
             ).also { it.start() }
         return Meetup(
             vnet = vnet,

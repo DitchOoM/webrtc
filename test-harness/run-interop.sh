@@ -223,6 +223,16 @@ docker run --rm --privileged --network host alpine:3.20 \
 # sends ZERO connectivity checks on the new generation — exactly as it did as the answerer. The defect is not
 # the asymmetry; it is that werift does not check a restarted generation in EITHER direction. Measurement in
 # the README's carrier-switch section.
+# `turn-lifecycle` and `turn-quota` are the two lanes that exist to make a REAL coturn do the three things
+# its defaults put out of reach — see harness.env's TURN lifecycle block, and turn_lifecycle_env below.
+# `turn-lifecycle` pins ice_policy=relay and holds the session past the allocation's granted LIFETIME with a
+# nonce that ages out inside one refresh cycle, so a green rc means the client answered a 438 Stale Nonce
+# and renewed an allocation that would otherwise have expired underneath it; both are asserted from
+# coturn's OWN log, not inferred from the session surviving. `turn-quota` runs ice_policy=all with a
+# one-allocation quota, so exactly one peer's relay is refused 486 and the session has to establish anyway
+# — a typed, non-fatal degradation rather than a failure. It is v4-only (V4_ONLY_SCENARIOS): a dual-stack
+# lane gathers a relay PER FAMILY, so one peer would exhaust a quota of 1 by itself and the property under
+# test — "the OTHER peer was refused" — would stop being what the lane measures.
 # `impaired-loss-delay` is NON-GATING (informational
 # — see $NON_GATING + the header): its kernel-random loss can't be provably flake-free, so the deterministic
 # DtlsSctpLossReproductionTest is the retained hard loss gate. Each expects BOTH peers to exit 0. The impl +
@@ -235,6 +245,8 @@ address-restricted   | address-restricted | address-restricted | all   | -      
 symmetric-relay      | symmetric          | symmetric          | all   | -                                                | native | native  | single
 mixed-sym-port       | symmetric          | port-restricted    | all   | -                                                | native | native  | single
 relay-only           | port-restricted    | port-restricted    | relay | -                                                | native | native  | single
+turn-lifecycle       | port-restricted    | port-restricted    | relay | -                                                | native | native  | single
+turn-quota           | port-restricted    | port-restricted    | all   | -                                                | native | native  | single
 firewall-relay6      | port-restricted    | port-restricted    | all   | -                                                | native | native  | single
 impaired-loss-delay  | port-restricted    | port-restricted    | all   | loss 5% delay 20ms 5ms distribution normal      | native | native  | single
 cgnat                | port-restricted    | port-restricted    | all   | -                                                | native | native  | cgnat
@@ -323,6 +335,7 @@ export PEER_CONSENT_TIMEOUT_MS="${HARNESS_CONSENT_TIMEOUT_MS:-8000}"
 # The s9 hold. MUST exceed PEER_CONSENT_TIMEOUT_MS — the phase fails ITSELF if it does not, because a hold
 # inside the window would watch nothing at all while still reporting a green phase. 0 turns s9 off.
 export PEER_IDLE_MS="${HARNESS_IDLE_MS:-10000}"
+PEER_IDLE_MS_DEFAULT="$PEER_IDLE_MS"   # run_scenario restores this; `turn-lifecycle` holds far longer
 
 # The sequence budget has to carry the s9 hold on top of everything else, or a lane's phases get cut off by
 # the outer watchdog and the run reports an ungraded "semantics: TIMEOUT" instead of per-phase verdicts.
@@ -348,6 +361,36 @@ SEMANTICS_NON_GATING=" ${HARNESS_SEMANTICS_NON_GATING-} "
 semantics_gate_for() {
     case "$SEMANTICS_NON_GATING" in *" $1 "*) echo 0; return ;; esac
     echo "${HARNESS_SEMANTICS_GATING:-1}"
+}
+
+# This lane's coturn lifecycle directives, and the hold that makes them observable. Called by BOTH runners
+# so the RESET happens on every lane — like V6_FORCE_RELAY, a value left exported by a previous lane would
+# quietly re-time somebody else's relay, and the mDNS runner is a separate function that would not
+# otherwise clear it. coturn reads these at `up` time and the stack is re-upped per scenario.
+#
+# Values are coturn-4.6.3-verified, not guessed:
+#
+#   turn-lifecycle: allocation LIFETIME capped at 20 s, NONCE stale at 10 s. TurnMaintenance refreshes at
+#     0.75 of the GRANTED lifetime = 15 s, by which point the nonce it holds has aged out — so the first
+#     Refresh draws 438 Stale Nonce, has to re-read REALM/NONCE and retry, and the allocation is renewed.
+#     Measured against a real TurnAllocation, and read off the CLIENT's cadence rather than coturn's
+#     `new, …, lifetime=` line: that one prints 600 here, because coturn clamps a REQUESTED lifetime and
+#     our Allocate sends no LIFETIME attribute, while the response it returns still carries 20.
+#     PEER_IDLE_MS then holds the session well past 20 s, so a client that failed either half loses the
+#     allocation and — on a relay-pinned lane — the session with it. Same move as
+#     PEER_CONSENT_INTERVAL_MS: compress the server's clock rather than add minutes of wall time.
+#   turn-quota: one allocation per username. Both peers authenticate as the SAME user, so whichever
+#     allocates second is refused 486 and has to carry on with host/srflx (ice_policy=all).
+turn_lifecycle_env() {
+    export PEER_IDLE_MS="$PEER_IDLE_MS_DEFAULT"
+    unset TURN_STALE_NONCE TURN_MAX_ALLOCATE_LIFETIME TURN_USER_QUOTA
+    case "$1" in
+        turn-lifecycle)
+            export TURN_MAX_ALLOCATE_LIFETIME=20 TURN_STALE_NONCE=10
+            export PEER_IDLE_MS="${HARNESS_TURN_LIFECYCLE_IDLE_MS:-35000}" ;;
+        turn-quota)
+            export TURN_USER_QUOTA=1 ;;
+    esac
 }
 
 # Grade one lane's semantics result off the offerer's summary line (the peer prints it; we never re-read
@@ -425,7 +468,7 @@ semantics_report() {
 # (carrier-switch is v4-only for the same reason as the carrier lanes: nat_a2 is a v4 NAT with a v4 public
 # identity, and "the peer's public address changed" is a v4 mapping statement. The v6 analog — a routed
 # prefix moving — needs a second v6 router and is a follow-up, not a skip of an existing property.)
-V4_ONLY_SCENARIOS=" symmetric-relay mixed-sym-port cgnat hairpin restart-native jvm-restart restart-pion restart-chrome restart-firefox restart-webkit auto-restart-native auto-restart-pion foreign-restart-native foreign-restart-pion foreign-restart-chrome foreign-restart-firefox foreign-restart-webkit mdns-chrome mdns-firefox "
+V4_ONLY_SCENARIOS=" turn-quota symmetric-relay mixed-sym-port cgnat hairpin restart-native jvm-restart restart-pion restart-chrome restart-firefox restart-webkit auto-restart-native auto-restart-pion foreign-restart-native foreign-restart-pion foreign-restart-chrome foreign-restart-firefox foreign-restart-webkit mdns-chrome mdns-firefox "
 V6_ONLY_SCENARIOS=" firewall-relay6 "
 family_skipped() {
     local name=" $1 "
@@ -710,6 +753,8 @@ run_scenario() {
     # a relay pair (like hairpin). V6_FORCE_RELAY MUST be reset each scenario (it may leak from this loop).
     if [ "$name" = "firewall-relay6" ]; then export V6_FORCE_RELAY=1; else unset V6_FORCE_RELAY; fi
 
+    turn_lifecycle_env "$name"
+
     # Choose the offerer ("our side", a_service) and the answerer (b_service), and activate exactly the
     # compose profiles for the non-default services this scenario needs. The Pion lane pins DTLS 1.2 on BOTH
     # peers (PEER_DTLS13=false) — Pion v3 is 1.2-only, and our offerer (native OR jvm, both read
@@ -875,6 +920,15 @@ run_scenario() {
     a_log=$(docker compose logs --no-log-prefix "$a_service" 2>/dev/null)
     b_log=$(docker compose logs --no-log-prefix "$b_service" 2>/dev/null)
 
+    # The TURN-lifecycle lanes assert on coturn's OWN log — the only place the SERVER says what it did, and
+    # the difference between "the session survived" and "the session survived a 438 and a real Refresh".
+    # Captured ONCE here, for the same reason the peer logs are (a second `docker compose logs` of the same
+    # container can hand back a truncated tail under CI load), and only on the lanes that read it.
+    local coturn_log=""
+    case "$name" in
+        turn-lifecycle|turn-quota) coturn_log=$(docker compose logs --no-log-prefix coturn 2>/dev/null) ;;
+    esac
+
     echo "── $a_service (offerer) ──"; printf '%s\n' "$a_log"
     echo "── $b_service (answerer) ──"; printf '%s\n' "$b_log"
 
@@ -900,9 +954,55 @@ run_scenario() {
         # `Connected(path=Known(pair=CandidatePair(…)))` — the state carries a sealed SelectedPath since the
         # ICE-restart work (a browser delegate reports SelectedPath.Opaque rather than a null pair), so the
         # rendering the assertion reads is `path=Known(pair=…)`, not the old `selectedPair=…`.
-        if { [ "$topo" = "hairpin" ] || [ "$name" = "firewall-relay6" ]; } \
+        if { [ "$topo" = "hairpin" ] || [ "$name" = "firewall-relay6" ] || [ "$name" = "turn-lifecycle" ]; } \
                 && ! grep -qE 'Connected\(path=Known\(pair=CandidatePair\(.*Relayed' <<< "$a_log"; then
             fail_scenario "$name" "established but the selected ICE pair is NOT a relay pair (this lane must traverse the coturn TURN relay)"; return
+        fi
+        # ── the three TURN behaviours coturn's defaults hide (see the scenario matrix) ────────────────
+        # Every one of these is read out of coturn's own log, because the alternative is inferring server
+        # behaviour from the session not dying — which is exactly how "modelled but never seen from a real
+        # server" happened. Each is an ANTI-VACUITY guard first and a regression check second: a lane whose
+        # coturn silently ignored `stale-nonce` would otherwise pass green while proving nothing.
+        if [ "$name" = "turn-lifecycle" ]; then
+            # 0. The directives reached the process, not just the file. Cheapest possible check, and the
+            #    one the `-n` open-relay episode says to make: a configured value that never shows up in
+            #    the output is evidence the config is not being read.
+            if ! grep -q 'lifecycle:.*stale-nonce=10.*max-allocate-lifetime=20' <<< "$coturn_log"; then
+                fail_scenario "$name" "coturn never reported the lane's lifecycle directives (stale-nonce/max-allocate-lifetime) — the config was not applied, so nothing below proves anything"; return
+            fi
+            # 1. 438 Stale Nonce, answered. The session is relay-pinned and outlived the nonce, so a client
+            #    that could not re-read REALM/NONCE and retry would have lost the allocation.
+            if ! grep -q 'error 438: Stale nonce' <<< "$coturn_log"; then
+                fail_scenario "$name" "the session survived but coturn never issued a 438 Stale Nonce — the nonce did not age out inside this lane, so the stale-challenge path was NOT exercised"; return
+            fi
+            # 2. A real allocation Refresh was GRANTED **mid-session**. `lifetime=[1-9]` is load-bearing:
+            #    TurnAllocation.close() deallocates with a Refresh of LIFETIME=0, which coturn logs with
+            #    the same `refreshed,` word — so a bare grep would be satisfied by the teardown of a lane
+            #    whose keep-alive never ran at all, which is exactly the vacuity this lane exists to avoid.
+            if ! grep -qE 'refreshed, realm=.*lifetime=[1-9]' <<< "$coturn_log"; then
+                fail_scenario "$name" "the session survived but coturn granted no allocation Refresh — the relay outlived its LIFETIME without being renewed, which cannot happen (was max-allocate-lifetime applied?)"; return
+            fi
+            echo "[turn] ✅ [$name] coturn issued $(grep -c 'error 438: Stale nonce' <<< "$coturn_log") stale-nonce challenge(s) and granted $(grep -cE 'refreshed, realm=.*lifetime=[1-9]' <<< "$coturn_log") mid-session allocation refresh(es) under a ${PEER_IDLE_MS}ms hold"
+        fi
+        if [ "$name" = "turn-quota" ]; then
+            if ! grep -q 'lifecycle:.*user-quota=1' <<< "$coturn_log"; then
+                fail_scenario "$name" "coturn never reported the lane's user-quota directive — the config was not applied, so nothing below proves anything"; return
+            fi
+            # The server's half: it actually refused an allocation for quota, rather than the peers simply
+            # never asking for two.
+            if ! grep -q 'error 486' <<< "$coturn_log"; then
+                fail_scenario "$name" "coturn never refused an allocation 486 — with user-quota=1 and both peers on the same username, one of them must have been refused"; return
+            fi
+            # OUR half, and the reason the peer prints its relay outcome at all: the refusal has to arrive
+            # as the allocation's own TYPED cause, not as an absent candidate. Asserted across BOTH logs
+            # because which peer allocates first is a race, and the property is not about which one lost.
+            if ! grep -qE 'relay .*: unavailable .*486' <<< "$a_log$b_log"; then
+                fail_scenario "$name" "coturn refused an allocation 486 but neither peer reported it as a typed relay refusal ('relay …: unavailable … 486') — a quota refusal is presenting as a missing candidate"; return
+            fi
+            if ! grep -qE 'relay .*: gathered' <<< "$a_log$b_log"; then
+                fail_scenario "$name" "neither peer gathered a relay — with a quota of 1 exactly one should have, so this lane is measuring something else"; return
+            fi
+            echo "[turn] ✅ [$name] one peer's relay was refused 486 Allocation Quota Reached and the session established anyway"
         fi
         # s8's far half: the ANSWERER's own report that it re-answered our ICE-restart offer. The offerer's
         # phase already asserts what that answer CONTAINED (RFC 8842 §5.5 — both ICE credentials replaced,
@@ -962,6 +1062,9 @@ run_mdns_scenario() {
     # Per-lane semantics gate — see run_scenario.
     export PEER_SEMANTICS_REQUIRED
     PEER_SEMANTICS_REQUIRED=$(semantics_gate_for "$name")
+    # Reset any TURN lifecycle directives a previous lane exported — this runner sets none of its own,
+    # and a leftover `user-quota` would refuse this lane's relay for reasons it knows nothing about.
+    turn_lifecycle_env "$name"
     # Distinct per-lane seeds (see run_scenario). The browser answerer ignores WEBRTC_SEED.
     export SEED_A SEED_B
     SEED_A=$(printf '%s' "${name}-${IP_FAMILY}-a" | cksum | cut -d' ' -f1)

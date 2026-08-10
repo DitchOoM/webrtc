@@ -244,7 +244,11 @@ public class TurnAllocation(
         }
         scope.launch(start = CoroutineStart.ATOMIC) {
             try {
-                requestWithChallengeRetry { refreshRequest(it, Duration.ZERO) }
+                // Nothing here reads the server's answer — the allocation is going away either way — but
+                // the exchange still arrived as a datagram plus the views decoded out of it, and this is
+                // its only reader. Discarding it left the last response of every relayed session pinning
+                // its receive chunk, on the one path no fixture watched because it has no return value.
+                requestWithChallengeRetry { refreshRequest(it, Duration.ZERO) }.release()
             } finally {
                 releaseTransport()
             }
@@ -475,15 +479,26 @@ public class TurnAllocation(
                         // this loop is still the last reader of it.
                         val waiter = pending.remove(message.transactionId)
                         val transferred = ReceivedStunMessage(message, datagram.payload)
-                        if (waiter == null || !waiter.complete(transferred)) datagram.payload.releaseReceived()
+                        if (waiter == null || !waiter.complete(transferred)) transferred.release()
                     }
                     // [enqueueData] copies the DATA attribute into a buffer of its own, so the datagram
                     // it was sliced from is finished with either way — including when the copy is refused.
+                    //
+                    // The message's own views are owed too, and this is the arm where forgetting them is
+                    // most expensive: on a relayed path EVERY inbound datagram arrives as a Data
+                    // indication, so a borrow left outstanding here pinned one receive chunk per packet
+                    // for the life of the session. `assertNoLeaks` cannot see it — the payload below is
+                    // released, and `freed` is set by the first free whatever the refcount does.
                     StunClass.Indication -> {
                         if (message.messageType.method == StunMethod.Data) enqueueData(message)
+                        message.release()
                         datagram.payload.releaseReceived()
                     }
-                    StunClass.Request -> datagram.payload.releaseReceived()
+                    // Nothing here answers a request, but decoding one still took a view per attribute.
+                    StunClass.Request -> {
+                        message.release()
+                        datagram.payload.releaseReceived()
+                    }
                 }
             }
         }
@@ -543,6 +558,8 @@ public class TurnAllocation(
         // rather than reporting the TURN server as silent. See [TurnExchange.NeverSent].
         var lastSendFailure: Throwable? = null
         var everSent = false
+        // Whether the settled response left here as a [TurnExchange] the caller now owes. See the `finally`.
+        var handedToCaller = false
         try {
             val response =
                 withTimeoutOrNull(budget) {
@@ -572,7 +589,10 @@ public class TurnAllocation(
                     @Suppress("UNREACHABLE_CODE")
                     null
                 }
-            response?.let { return it.classify() }
+            response?.let {
+                handedToCaller = true
+                return it.classify()
+            }
             val neverSent = lastSendFailure
             return if (!everSent && neverSent != null) TurnExchange.NeverSent(neverSent) else TurnExchange.Unanswered
         } finally {
@@ -580,14 +600,20 @@ public class TurnAllocation(
             // dead transaction's deferred in the map for the life of the allocation, and the loop above
             // outlives its caller often enough (close() cancels the maintenance job mid-Refresh) for
             // "only on the paths that return" to be a real difference.
-            // A response can land between the budget unwinding and this removal, which completes a
-            // deferred nobody will ever await. That transfer has no other reader, so it is released here.
-            // `getCompleted` is the only synchronous read of a settled Deferred; guarded by `isCompleted`
-            // on the line above, and this is a non-suspending `finally`, so awaiting is not an option.
-            pending.remove(transactionId)?.let { orphan ->
-                @OptIn(ExperimentalCoroutinesApi::class)
-                if (orphan.isCompleted) orphan.getCompleted().payload.releaseReceived()
-            }
+            //
+            // A response can settle the deferred without this call ever reading it — the budget unwinds,
+            // or close() cancels the maintenance job, between [startLoop] completing it and the await
+            // resuming. `pending` cannot answer for that transfer: startLoop took the entry out of the map
+            // *before* completing it, so the removal below finds nothing on exactly the path that leaks.
+            // Only the deferred itself knows, and that transfer has no other reader.
+            //
+            // Guarded by [handedToCaller] so a response actually returned above — whose payload and views
+            // the caller now owes through `consuming` — is not released out from under it.
+            // `getCompleted` is the only synchronous read of a settled Deferred; guarded by `isCompleted`,
+            // and this is a non-suspending `finally`, so awaiting is not an option.
+            pending.remove(transactionId)
+            @OptIn(ExperimentalCoroutinesApi::class)
+            if (!handedToCaller && deferred.isCompleted) deferred.getCompleted().release()
             encoded.freeNativeMemory()
         }
     }
@@ -600,7 +626,17 @@ public class TurnAllocation(
     private class ReceivedStunMessage(
         val message: StunMessage,
         val payload: ReadBuffer,
-    )
+    ) {
+        /**
+         * Give back the datagram **and the views decoded out of it** — the same two acts
+         * [TurnExchange.release] owes, for the transfers that never become a [TurnExchange]: a response
+         * whose waiter is already gone, and the orphan a settled deferred leaves behind.
+         */
+        fun release() {
+            message.release()
+            payload.releaseReceived()
+        }
+    }
 
     private fun ReceivedStunMessage.classify(): TurnExchange =
         when (message.messageType.stunClass) {

@@ -6,7 +6,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
-import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.webrtc.stun.IpAddress
@@ -52,7 +52,7 @@ internal fun vnetAddress(
 ): SocketAddress = SocketAddress.ofLiteral(ip, port)
 
 /** A read-ready buffer of [text]'s UTF-8 bytes — a STUN short-term-credential key or attribute value. */
-internal fun utf8Buffer(text: String): ReadBuffer {
+internal fun utf8Buffer(text: String): PlatformBuffer {
     val buffer = BufferFactory.Default.allocate(maxOf(1, text.encodeToByteArray().size), ByteOrder.BIG_ENDIAN)
     buffer.writeString(text, Charset.UTF8)
     buffer.resetForRead()

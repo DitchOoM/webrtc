@@ -151,6 +151,66 @@ class WebRtcHarnessTests {
             }
         }
 
+    /**
+     * **The invariant a consumer could not assert until now** (TESTING.md §4.1, directive #6): every
+     * buffer the scenario allocated came back. Run over the relay path deliberately — it is the longest
+     * one, so the census covers the vnet's delivery copies, both peers' ICE/SCTP, the TURN server's
+     * control and relay loops, and the harness's own echo responder in a single number.
+     */
+    @Test
+    fun aFinishedScenarioReturnsEveryBuffer() =
+        runTest {
+            withWebRtcHarness(scope = backgroundScope, clock = virtualClock()) {
+                natType(NatType.Symmetric)
+                relayOnly()
+                assertEquals("drain-me", roundTrip("drain-me"))
+                assertNoBufferLeaks("the relay-only symmetric-NAT scenario")
+            }
+        }
+
+    /** The same, over the impaired fabric — a delayed/duplicated datagram is owned by its own coroutine. */
+    @Test
+    fun anImpairedScenarioReturnsEveryBuffer() =
+        runTest {
+            withWebRtcHarness(scope = backgroundScope, clock = virtualClock()) {
+                impaired(loss = 0.1, delay = 20.milliseconds, jitter = 5.milliseconds, duplicate = 0.1)
+                assertEquals("lossy", roundTrip("lossy"))
+                assertNoBufferLeaks("the impaired scenario")
+            }
+        }
+
+    /**
+     * The census is a value, not just an assertion — and it is trustworthy or it says so. A saturated
+     * pool would make `outstandingChunks` under-report, so a consumer reading the numbers can tell a
+     * clean run from an unmeasurable one without knowing how a pool behaves at its cap.
+     */
+    @Test
+    fun theCensusReportsWhatItMeasured() =
+        runTest {
+            withWebRtcHarness(scope = backgroundScope, clock = virtualClock()) {
+                roundTrip("census")
+                val census = bufferCensus()
+                assertTrue(census.allocations > 0, "the scenario allocated through the tracked factory")
+                assertTrue(census.chunksCreated > 0, "the pool created chunks — a vacuous census proves nothing")
+                assertEquals(false, census.saturated, "the harness pool must not fill, or the measurement is worthless: $census")
+                assertEquals(0, census.outstandingChunks, "every chunk back in the pool: $census")
+                assertEquals(0, census.unreleasedBuffers, "every buffer released: $census")
+                assertTrue(census.isDrained, "isDrained is the conjunction of the three above: $census")
+            }
+        }
+
+    /** [WebRtcHarnessScope.close] is idempotent and leaves the scenario unusable rather than half-alive. */
+    @Test
+    fun closeIsIdempotentAndFinal() =
+        runTest {
+            withWebRtcHarness(scope = backgroundScope, clock = virtualClock()) {
+                establish()
+                close()
+                close()
+                assertFailsWith<IllegalStateException> { establish() }
+            }
+        }
+
     /** `establish()` is idempotent: repeated calls return the same live connection, not a fresh one. */
     @Test
     fun establishIsIdempotent() =

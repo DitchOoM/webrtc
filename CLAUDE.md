@@ -146,9 +146,29 @@ catch-all maps every exception to "mDNS is unavailable here" and would swallow t
 
 ### What is left
 
-- **Realm rotation and per-provider quota semantics** — the only TURN behaviours left that genuinely need
-  a commercial provider. The three that did not (438 Stale Nonce, an allocation refresh, 486 quota) are
-  now seen from real coturn: `turn-lifecycle` compresses the server's clock (`stale-nonce=10`,
+- **TURN is done.** The bullet that used to sit here — "realm rotation and per-provider quota semantics
+  genuinely need a commercial provider" — was **wrong on both halves**, and is the ninth instance of this
+  file's recurring failure mode. Neither needed a provider; one needed a fixture and the other needed
+  reading the code.
+  - *Realm rotation* was already implemented (`requestWithChallengeRetry` adopts the challenge's REALM and
+    re-derives the key through `asChallenge()`) and asserted **nowhere**, because every TURN fixture ran a
+    server whose realm was a `val` fixed for its life. A client that derived its key once and cached it
+    forever passed the entire corpus. Now pinned by `TurnAllocationRealmRotationTest` over
+    `RealmPolicy.RotateAfter`. The load-bearing part is the vnet server's `keyProvider`, which is keyed on
+    `(username, realm)` — a provider closing over one fixed realm agrees with a cached-key client and the
+    fixture proves nothing. A rotated REALM is strictly harder than a rotated NONCE: the nonce is opaque
+    and gets copied back, the realm is an *input to the key* (RFC 8489 §9.2.2), so the client must
+    re-derive. **No L2 lane, deliberately**: coturn reads `realm` at startup, so rotating it means
+    restarting the process, which drops every allocation and destroys the property under test.
+  - *Per-provider quota* needs nothing at all, and this is a claim about the code rather than a plan:
+    `TurnAllocation` **never branches on the error code**. A refusal becomes
+    `Unavailable.Rejected(settled.error)`, passing the server's own `StunErrorCode` through with no
+    allow-list. A provider answering 508 Insufficient Capacity instead of 486 therefore arrives typed and
+    non-fatal on exactly the path 486 already takes, which is proven at L1 (`TurnAllocationQuotaTest`) and
+    L2 (`turn-quota`). There is no per-code handling left to get wrong, so a provider could only teach us
+    *which* codes it emits — which changes nothing here.
+- The three behaviours coturn's defaults hid (438 Stale Nonce, an allocation refresh, 486 quota) are
+  seen from real coturn: `turn-lifecycle` compresses the server's clock (`stale-nonce=10`,
   `max-allocate-lifetime=20`) and holds a relay-pinned session past its granted LIFETIME, and `turn-quota`
   sets `user-quota=1` so one peer's relay is refused 486 and the session establishes anyway. Both assert
   from **coturn's own log** — the server saying what it did, not the session merely surviving — and both
@@ -168,7 +188,7 @@ catch-all maps every exception to "mDNS is unavailable here" and would swallow t
 
 Things that have cost real time here. Read before acting on a premise that sounds settled.
 
-- **Stale premises are this codebase's recurring failure mode** — eight instances so far, each costing
+- **Stale premises are this codebase's recurring failure mode** — nine instances so far, each costing
   between a wrong comment and ~1000 wrong lines. When a comment explains why something *cannot* be done,
   check whether it still can't before building around it. One instance was **this file**, which is the
   worst place for one; correct this document as soon as the state it describes changes, and keep the

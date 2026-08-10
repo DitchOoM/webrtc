@@ -85,6 +85,7 @@ that keeps it honest (§5).
 | `relay-only` | v4 | `VnetTurnRelayTest.symmetric_peers_relay_a_round_trip_through_turn` | TURN relay round-trip |
 | `turn-lifecycle` | v4/v6/dual | `TurnAllocationRefreshTest` (`a_stale_nonce_is_re_read_and_the_request_retried_once` + the refresh-cadence cases) | 438 Stale Nonce + allocation Refresh |
 | `turn-quota` | v4 | `TurnAllocationQuotaTest` | 486 Allocation Quota Reached, non-fatal to gathering |
+| *(none — see note)* | — | `TurnAllocationRealmRotationTest` | realm rotation ⇒ the long-term key is **re-derived** |
 | `impaired-loss-delay` | v4 | `IceRelayLossTest` · `IceConsent/Nomination/RestartLossTest` · `VnetImpairmentTest` | loss/delay/reorder (seeded) |
 | `full-cone` / `port-restricted` | **v6** | `IceV6TraversalTest.port_restricted_v6_peers_connect_directly_by_hole_punching` | routed-v6 direct hole-punch |
 | `firewall-relay6` | **v6** | `IceV6TraversalTest.firewall_forces_a_v6_relay_when_direct_is_blocked` + `VnetTurnRelayV6Test` (Allocate family) | v6 network-forced relay discovery |
@@ -98,6 +99,13 @@ router (`RoutedFilter`) or the `firewall-relay6` administrative firewall (`Route
 Harness-only failures (a peer's v6 signaling-bind, a browser CLAT shim, a log double-read) are **not**
 stack bugs and correctly have no fixture. cgnat / hairpin (v4-only carrier-NAT / NAT444) are a
 documented follow-up — they need NAT-*chaining* in the vnet fabric, tracked separately.
+
+**The realm-rotation row has no L2 lane by design, not by omission.** coturn reads `realm` at startup, so
+rotating it against a real server means restarting the process — which drops every allocation and thereby
+destroys the property under test, since the rotation has to *outlive* the allocation to mean anything.
+The vnet server rotates in place instead (`RealmPolicy.RotateAfter`), which is the only way to show the
+client a realm change on a live allocation. This is the one parity row where the L1 fixture is not the
+cheap mirror of an L2 lane but the only place the behaviour is reachable at all.
 
 ### L3 — Interop with foreign peers · tier Interop
 Borrow *other implementations* as the correctness oracle. Signaling is a seam, so the offer/answer

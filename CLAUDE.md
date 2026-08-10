@@ -26,12 +26,13 @@ Released on Maven Central; the data-channel stack is complete. It establishes an
 against Chrome, Firefox, WebKit, Pion and werift over real NAT kernels in CI across
 `{x64, arm64} × {v4, v6, dual}`, and every lane also gates on the data-channel *semantics* sequence
 (fragmentation, unordered, PR-SCTP, multiplexing, reverse-direction, per-channel close, graceful
-shutdown). Pinned at socket 4.1.0 + buffer 6.26.0. socket 4.1.0 + buffer 6.25.0 is the pair that carries
-`DatagramCapabilities.requiresNativeMemoryBuffers`, which is what the send-side buffer check consumes,
-and that seam is why the two normally move together (socket-udp 4.1.0's POM pins buffer 6.25.0). Buffer
-rides one ahead of it deliberately: 6.26.0 is the Apple AEAD ownership fix (below), a pure internal fix
+shutdown). Pinned at **socket 4.2.0 + buffer 6.26.0**, both the current Maven Central releases. socket
+4.1.0 + buffer 6.25.0 is the pair that introduced `DatagramCapabilities.requiresNativeMemoryBuffers`,
+which is what the send-side buffer check consumes, and that seam is why the two normally move together.
+Buffer rides one ahead deliberately: 6.26.0 is the Apple AEAD ownership fix (below), a pure internal fix
 to an Apple-only path with no API change, so resolving buffer up underneath a socket built against
-6.25.0 is safe. Re-align on a socket release that pins 6.26.0 or later.
+6.25.0 is safe. socket-udp 4.2.0's POM still declares buffer 6.25.0, so that skew is unchanged — re-align
+on a socket release that pins 6.26.0 or later.
 
 ### Capabilities that are easy to under-estimate
 
@@ -136,10 +137,27 @@ catch-all maps every exception to "mDNS is unavailable here" and would swallow t
 
 ### What is left
 
-- **TURN against a commercial provider** — unexercised. Realm/nonce rotation and quota behaviour under a
-  real provider is the exposure we have never seen.
-- **Platforms:** tvOS/watchOS publish but cannot establish, blocked upstream on `socket-udp` packaging
-  (#127); Node needs blocking raw-ECDH plus a shipped binder (#133).
+- **Three TURN server behaviours are modelled but never seen from a real server.** Do not read this as
+  "TURN is untested" — the opposite is true: coturn runs `lt-cred-mech`, so the relay lanes exercise a
+  genuine 401 → REALM/NONCE → MESSAGE-INTEGRITY exchange under `MD5(user:realm:pass)` across
+  `{v4,v6,dual}`, and `TurnAllocationRefreshTest` covers lifetimes, retransmission and deallocation with
+  anti-vacuity guards. What real coturn never does in a lane is (a) **438 Stale Nonce** — `turnserver.conf`
+  sets no `stale-nonce`, so coturn's 600s default outlives every lane; (b) **an allocation refresh**, for
+  the same reason (`max-allocate-lifetime` is untouched); (c) **486 quota**, which appears in
+  `TurnAllocation.kt`'s KDoc and in no test anywhere. All three are reachable with coturn directives in
+  the harness we already have — `stale-nonce`, a lowered `max-allocate-lifetime`, `user-quota` — so this
+  is NOT blocked on a commercial provider. Only realm rotation and per-provider quota semantics genuinely
+  need one.
+- **Platforms:** Node needs blocking raw-ECDH plus a shipped binder (#133). tvOS/watchOS establish as of
+  socket 4.2.0 (#127 closed); what remains there is `watchosArm64`, the 32-bit `arm64_32` *device*, which
+  `buffer-crypto` publishes no klib for — so every watchOS artifact we ship is a simulator one and no
+  watch app can link this yet. mDNS on tvOS/watchOS is also unproven: no test anywhere binds real
+  multicast, so the entitlement those platforms require has never been exercised.
+- **Consumers cannot assert the no-leak invariant.** `webrtc-testsuite` exposes only
+  `WebRtcHarnessScope.allocationCount` — allocations, no frees, no pool drain — while internally there
+  are ~118 `assertPoolDrained`/`assertNoLeaks` call sites. TESTING.md §4 still explains this gap by "the
+  receive side has no last-reader rule", which stopped being true with #155/#156. The rationale is spent;
+  the gap is not.
 - **Media** (RTP/SRTP), which remains out of scope.
 
 ## Traps

@@ -59,6 +59,13 @@ kotlin {
     }
     if (isMacOS) {
         macosArm64()
+        // tvOS too, because until webrtc#127 nothing in CI resolved a tvOS or watchOS variant AT ALL:
+        // this project declared jvm + linuxX64/macosArm64, and `validate-artifacts` checks the umbrella
+        // module plus the `-jvm` variant per module and nothing else. So the half of #127 that was
+        // supposedly already true — "they publish and compile" — was in fact ungated, and the half this
+        // release adds would have been ungated the same way. One Apple target outside the mac/iOS set is
+        // enough to prove the variant exists, its POM resolves, and it K/N-links for a real consumer.
+        tvosSimulatorArm64()
     }
 
     sourceSets {

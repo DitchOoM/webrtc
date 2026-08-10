@@ -119,7 +119,45 @@ buffer = "6.26.0"
 #   - 4.1.3 (socket PR #285) is a QUIC close reason and Android-emulator CI diagnostics: nothing we call.
 # This does NOT move the buffer pin. socket-udp 4.1.1/4.1.2/4.1.3 all still pin buffer 6.25.0, so the
 # deliberate resolve-up to buffer 6.26.0 recorded above is neither helped nor worsened by this bump.
-socket = "4.1.3"
+# 4.2.0 is four releases over 4.1.3, and exactly one of them is why this bump exists:
+#   - 4.1.4 / 4.1.5 (socket PRs #294, #295, #288) are socket-quic-quiche fixes (a JDK-21-preview FFM
+#     call, a missing Apple test-suite member) plus Android-emulator CI diagnostics. We consume no QUIC
+#     module. Inert here.
+#   - **4.1.6 (socket PR #297) publishes socket-udp's six tvOS/watchOS targets** — the upstream half of
+#     webrtc#127, which had been open on exactly this. socket-udp now matches root :socket and
+#     :network-monitor at eleven Apple targets. NOT purely additive, and that is the part to watch: #297
+#     also RELAYOUT the Apple sources we already ship on macOS/iOS — `AppleSocketAddress.kt`,
+#     `NwUdpDatagramChannel.kt`, `PosixUdpDatagramChannel.kt`, `MulticastPosixUdpDatagramChannel.kt` and
+#     `UdpSocket.apple.kt` moved from `appleMain` to a per-target `src/appleNativeImpl/kotlin` srcDir,
+#     leaving only `AppleUdpShared.kt` behind. The reason is arm64_32: an `appleMain` metadata
+#     compilation type-checks one source against every Apple target at once, and watchosArm64's 32-bit
+#     `size_t`/`ssize_t` make the memcpy lengths "numbers with different bit widths". Source-compatible
+#     for us — we reference none of the moved symbols, and `UdpSocket.bind`/`bindMulticast` stay `expect`
+#     in socket-udp's commonMain, so our cross-family `socketMain` still resolves them from metadata.
+#   - 4.2.0 (socket PRs #299, #300 + #286) is two commits over 4.1.6:
+#       · #299 is the ALPN-demultiplexed QUIC listener. It touches socket-quic, socket-quic-quiche,
+#         socket-http3 and socket-testsuite ONLY. Zero impact here. NOTE for anyone reading "ALPN /
+#         shared UDP port" and expecting the WebRTC-relevant seam: the RFC 9443 first-byte classifier
+#         that splits STUN/DTLS/TURN/RTP from QUIC on ONE port — `MultiplexedProtocol`,
+#         `classifyMultiplexedDatagram`, `AddressedDatagramChannel.demultiplex()`, `TurnRelays` — lives
+#         in **socket-udp** and is NOT in this release. It is socket commit 622f1660 on the unreleased
+#         branch `feat/rfc9443-shared-udp-port` (verified at the tree: `git show
+#         v4.2.0:socket-udp/src/commonMain/.../MultiplexedProtocol.kt` does not exist). That is the
+#         ARCHITECTURE §11.6 "share one demuxed socket with QUIC-P2P" seam; revisit when it ships.
+#       · #300/#286 add `NetworkMonitor.linkQuality` (a `LinkQuality.Rssi`/`Unavailable` StateFlow) and
+#         `observationCount` (callback density, an instability trend input), both interface members with
+#         defaults, and fold Android's per-UID `onBlockedStatusChanged` into `BlockReason.Suspended`.
+#         We consume NONE of it deliberately: no ICE decision keys off an RSSI trend today, and
+#         `linkTopology()` erases the whole `InternetAccess` field, so a per-UID block is invisible to us
+#         by construction. The one thing to know is a SHAPE change: `MonitorCapability` gained a third
+#         parameter (`linkQuality`, defaulted, appended last), so it is source-compatible but its
+#         `equals`/`hashCode`/`copy`/`componentN` all changed. Our single positional construction
+#         (LinkTopologyTest) still compiles precisely because the parameter is last; a future release
+#         inserting one mid-list would break it silently.
+# This does NOT move the buffer pin either. socket-udp 4.2.0's POM still declares buffer 6.25.0, so the
+# deliberate resolve-up to buffer 6.26.0 recorded above is unchanged — buffer 6.26.0 is still the latest
+# release, so there is nothing to re-align onto yet.
+socket = "4.2.0"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"

@@ -19,11 +19,13 @@ import com.ditchoom.socket.NetworkState
  * *preserves* behaviour across the bump. Everything else survives: a rung change means a route appeared
  * or vanished, and an `id` change means the link itself was replaced.
  *
- * Duplicated in `javaMain`, which reads the same type out of `com.ditchoom:network-monitor` rather than
- * `com.ditchoom:socket` (DitchOoM/socket#269) — the same split the `getifaddrs` walk lives under. The
- * two copies differ in exactly one line: `@JvmInline` is an `@OptionalExpectation`, usable only from
- * `commonMain` and the JVM family, so the native copy carries a bare `value class` (same semantics,
- * same flattening).
+ * Duplicated in `javaMain`. Both copies now read `NetworkState` out of the SAME artifact,
+ * `com.ditchoom:network-monitor` — the old split, where this native copy took it from
+ * `com.ditchoom:socket` core, closed with DitchOoM/socket#275, which gave `:network-monitor` its own
+ * netlink and Apple cinterops. The only surviving reason for two copies is one line: `@JvmInline` is an
+ * `@OptionalExpectation`, usable only from `commonMain` and the JVM family, so this copy carries a bare
+ * `value class` (same semantics, same flattening). If that ever stops being true, these two should
+ * become one file.
  */
 internal value class LinkTopology(
     private val key: NetworkState,

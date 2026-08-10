@@ -42,11 +42,12 @@ import com.ditchoom.socket.udp.UdpSocket
  * supplies its own [DatagramBinder] handing out demuxed views of the socket it already owns, and
  * everything above is unchanged.
  *
- * **Available only where `socket-udp` publishes an actual** — jvm, android, linux, macOS and iOS. It is
- * absent rather than throwing on the rest, which is the whole point: a browser has no raw UDP (there a
- * peer connection delegates to the platform's own `RTCPeerConnection` and never reaches this seam), and
- * on tvOS/watchOS `socket-udp` ships no artifact yet — so on those targets the absence is a compile
- * error at the call site rather than a runtime surprise on the wire.
+ * **Available only where `socket-udp` publishes an actual** — jvm, android, linux, and every Apple
+ * target: macOS, iOS, tvOS and watchOS. (tvOS and watchOS joined that list in `socket-udp` 4.1.6; this
+ * KDoc named them as the exception for several releases after it stopped being one.) It is absent rather
+ * than throwing on the remaining targets, which is the whole point: a browser has no raw UDP — there a
+ * peer connection delegates to the platform's own `RTCPeerConnection` and never reaches this seam — so
+ * the absence is a compile error at the call site rather than a runtime surprise on the wire.
  */
 public fun udpDatagramBinder(): DatagramBinder =
     DatagramBinder { address ->

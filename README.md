@@ -123,7 +123,8 @@ Both arms return the same `RtcPeerConnection`, so everything after this point is
 | macOS, iOS (x64, arm64, simulator) | **Full** |
 | Browser (js, wasmJs) | **Full**, by delegating to the platform `RTCPeerConnection` |
 | Node (js) | **Not usable.** There is no `RTCPeerConnection` to delegate to, and the native path's DTLS handshake fails with a typed `DtlsFailureReason.BackendUnavailable` — the raw-ECDH primitive it needs is async-only on that target |
-| tvOS, watchOS | Publishes and compiles; **cannot establish** — `socket-udp` ships no UDP actual for these targets yet, so there is no binder |
+| tvOS (arm64, x64, simulator) | **Full**, since `socket-udp` 4.1.6 published its UDP actual for these targets |
+| watchOS (simulator only) | **Full on the simulator**, same as tvOS. There is no watchOS *device* target in the matrix — `watchosArm64` (32-bit `arm64_32`) is omitted because `buffer-crypto` publishes no klib for it, so a real watch app cannot link this library yet |
 | Windows | Via the JVM. There is no Kotlin/Native Windows target |
 
 DTLS 1.2 and 1.3 are pure Kotlin in `commonMain` on every non-browser target, so there is no platform

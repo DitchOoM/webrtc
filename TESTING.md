@@ -83,6 +83,8 @@ that keeps it honest (§5).
 | `symmetric-relay` | v4 | `IceNatFixtureTest.dual_symmetric_nats_connect_only_via_relay` | forced relay (mapping) |
 | `mixed-sym-port` | v4 | `IceNatFixtureTest.mixed_symmetric_and_port_restricted_peers_fall_back_to_relay` | forced relay (mixed) |
 | `relay-only` | v4 | `VnetTurnRelayTest.symmetric_peers_relay_a_round_trip_through_turn` | TURN relay round-trip |
+| `turn-lifecycle` | v4/v6/dual | `TurnAllocationRefreshTest` (`a_stale_nonce_is_re_read_and_the_request_retried_once` + the refresh-cadence cases) | 438 Stale Nonce + allocation Refresh |
+| `turn-quota` | v4 | `TurnAllocationQuotaTest` | 486 Allocation Quota Reached, non-fatal to gathering |
 | `impaired-loss-delay` | v4 | `IceRelayLossTest` · `IceConsent/Nomination/RestartLossTest` · `VnetImpairmentTest` | loss/delay/reorder (seeded) |
 | `full-cone` / `port-restricted` | **v6** | `IceV6TraversalTest.port_restricted_v6_peers_connect_directly_by_hole_punching` | routed-v6 direct hole-punch |
 | `firewall-relay6` | **v6** | `IceV6TraversalTest.firewall_forces_a_v6_relay_when_direct_is_blocked` + `VnetTurnRelayV6Test` (Allocate family) | v6 network-forced relay discovery |
@@ -174,18 +176,32 @@ fuzz at the same rigor as the binary codecs).
 
 Every timeline replay and fuzz campaign asserts, not just crash-freedom:
 
-1. **No buffer leaks** — `LeakTrackingFactory.assertNoLeaks()`, which tracks frees as well as
-   allocations. Stated here as the standard, **not** as something asserted everywhere yet: it lives in
-   `webrtc-ice`'s vnet (`vnet/PoolLeakTracking.kt`, used by `BufferLifecycleTest` and
-   `MdnsEndpointTest`), while the `CountingBufferFactory` copies in `webrtc-sctp`, `webrtc-stun` and
-   `webrtc-dtls` count allocations only, and the published `webrtc-testsuite` harness exposes just
-   `WebRtcHarnessScope.allocationCount` — so a *consumer* cannot yet assert this invariant at all.
-   One thing bounds how far it can go, and it is named in `CLAUDE.md`: the receive side has no
-   last-reader rule, so nothing releases an inbound datagram. DitchOoM/socket#277 — socket's own JVM/NIO
-   and Node send paths dropping a `TrackedSlice` unreleased — used to be the second bound, and is
-   **fixed and released in socket 4.0.1**, so it no longer is. Worth keeping from it: `LeakTrackingFactory`
-   was blind to that whole class of bug, because `freeNativeMemory()` marks a buffer freed whichever way
-   the refcount went. Only `pool.stats().currentPoolSize` discriminates a pinned pool chunk.
+1. **No buffer leaks.** Two claims, and the weaker one is the one people reach for:
+   `assertNoLeaks()` proves `freeNativeMemory()` was *called* on each buffer and names *how many* were
+   not; **`assertPoolDrained()` is the gate**, because a `slice()` on a pooled buffer is an `addRef` and
+   an unreleased borrow leaves the freed flag set and the chunk pinned. Assert both, in that order — the
+   first says which, the second says whether. Measure at the pool's *backing* factory (`created −
+   currentPoolSize`); every formula derived from `PoolStats` has been wrong, in both directions.
+
+   Internally this lives in `webrtc-ice`'s vnet (`vnet/PoolLeakTracking.kt`) and at each module's seam;
+   `CLAUDE.md` carries the seam→fixture table, and every seam in it is gated at zero.
+
+   **A consumer can now assert it too**, which used to be the standing gap here:
+   `webrtc-testsuite` exposes `WebRtcHarnessScope.assertNoBufferLeaks()` and the `BufferCensus` behind
+   it, over a pool-backed tracking factory — the same shape a consumer is meant to run in production
+   (`BufferPool(factory = BufferFactory.deterministic())`). The census is taken after the harness closes
+   both peers, **joins** every coroutine it launched, and unbinds the vnet: a cancelled coroutine's
+   `finally` is where the last in-flight buffers go back, and measuring before those have run invents a
+   leak. The old rationale for the gap — *"the receive side has no last-reader rule"* — stopped being
+   true with the receive-ownership work, and the published vnet now carries that rule itself (its servers
+   consume every datagram and release the views decoded out of it; the impairment pipe owns its
+   snapshots; `unbind` drains what was never delivered).
+
+   Worth keeping from DitchOoM/socket#277 (socket's JVM/NIO and Node send paths dropping a
+   `TrackedSlice`, **fixed in socket 4.0.1**): `assertNoLeaks` was blind to that whole class of bug.
+   Building the consumer-facing gate immediately found three more of the same class in
+   `TurnAllocation` — every Data indication's views, `close()`'s deallocating Refresh, and a response
+   that settles after its awaiter is gone — none of which any free-counting check could see.
 2. **No illegal state transition** — ICE pair/checklist and `PeerConnectionState` never take an illegal edge.
 3. **Every native handle freed** — every DTLS wrapper freed, every TURN allocation released.
 4. **Errors are typed** — surface as sealed reasons, never strings.

@@ -6,6 +6,7 @@ import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.buffer.use
 import com.ditchoom.webrtc.stun.RawAttribute
 import com.ditchoom.webrtc.stun.StunClass
 import com.ditchoom.webrtc.stun.StunDecodeResult
@@ -39,19 +40,37 @@ internal class StunServer(
                         is DatagramReadResult.Received -> result
                         is DatagramReadResult.Closed -> return@launch
                     }
-                val message =
-                    when (val decoded = StunMessage.decode(received.datagram.payload)) {
-                        is StunDecodeResult.Success -> decoded.message
-                        is StunDecodeResult.Reject -> continue
+                // This loop is the LAST READER of every datagram it takes: a decoded attribute is a borrow
+                // that dies with the parse, and nothing downstream keeps a view. So it consumes it —
+                // scoped to `use`, which releases on every way out of the block, which is what lets a
+                // consumer's [com.ditchoom.webrtc.testsuite.harness.BufferCensus] read zero.
+                received.datagram.payload.use { payload ->
+                    val message =
+                        when (val decoded = StunMessage.decode(payload)) {
+                            is StunDecodeResult.Success -> decoded.message
+                            is StunDecodeResult.Reject -> return@use
+                        }
+                    // Decoding takes a REFERENCE per attribute — on a pooled payload each `RawAttribute` is
+                    // an `addRef`'d slice — so freeing the datagram is not enough: without this the chunk
+                    // stays pinned, invisible to every free-counting check and visible only to the pool.
+                    try {
+                        if (message.messageType.stunClass != StunClass.Request ||
+                            message.messageType.method != StunMethod.Binding
+                        ) {
+                            return@use
+                        }
+                        // The encoded response is scoped the same way: `send` has finished reading by the
+                        // time it returns — the vnet copies on the delivery path — so it is spent at the call.
+                        StunMessageBuilder
+                            .of(StunClass.SuccessResponse, StunMethod.Binding, message.transactionId)
+                            .add(RawAttribute.ofXorMappedAddress(received.datagram.peer.toTransportAddress(), message.transactionId))
+                            .addFingerprint()
+                            .encode()
+                            .use { channel.send(it, to = received.datagram.peer) }
+                    } finally {
+                        message.release()
                     }
-                if (message.messageType.stunClass != StunClass.Request || message.messageType.method != StunMethod.Binding) continue
-                val response =
-                    StunMessageBuilder
-                        .of(StunClass.SuccessResponse, StunMethod.Binding, message.transactionId)
-                        .add(RawAttribute.ofXorMappedAddress(received.datagram.peer.toTransportAddress(), message.transactionId))
-                        .addFingerprint()
-                        .encode()
-                channel.send(response, to = received.datagram.peer)
+                }
             }
         }
 }

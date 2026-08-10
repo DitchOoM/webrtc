@@ -16,6 +16,7 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.HopLimit
 import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.channels.Channel
 
@@ -62,9 +63,27 @@ internal class Vnet(
         return VnetChannel(local, inbound, this, capabilities)
     }
 
-    /** Tear down the endpoint at [local] (a link/interface going away). A later delivery is dropped. */
+    /**
+     * Tear down the endpoint at [local] (a link/interface going away). A later delivery is dropped.
+     *
+     * Whatever is still queued here is **undelivered**, so this endpoint is its last reader and the
+     * copies [deliver] made for it are released now. Closing the channel alone would strand them: the
+     * receiver is gone, nothing else holds a reference, and on a pooled factory that is a chunk that
+     * never returns — which is exactly what [com.ditchoom.webrtc.testsuite.harness.BufferCensus] exists
+     * to catch, so the harness's own scenery has to be right first.
+     */
     fun unbind(local: SocketAddress) {
-        endpoints.remove(local)?.close()
+        val inbound = endpoints.remove(local) ?: return
+        inbound.close()
+        while (true) {
+            val stranded = inbound.tryReceive().getOrNull() ?: break
+            stranded.payload.freeIfNeeded()
+        }
+    }
+
+    /** Unbind every endpoint — the whole virtual network going away at the end of a scenario. */
+    fun close() {
+        for (local in endpoints.keys.toList()) unbind(local)
     }
 
     /** True iff an endpoint is currently bound at [local]. */
@@ -95,26 +114,41 @@ internal class Vnet(
         // All five arguments explicitly, never by default: buffer 6.23.0's `localAddress` default goes
         // through a bridge that boxes the `LocalAddress` value class, and this is the per-delivery hot
         // path. HotSpot usually elides it; JS and Native make no such promise.
-        return inbound
-            .trySend(
-                Datagram(
-                    payload = copy,
-                    peer = observedSource,
-                    ecn = Ecn.Unknown,
-                    localAddress = LocalAddress.Unknown,
-                    hopLimit = HopLimit.Unknown,
-                ),
-            ).isSuccess
+        val queued =
+            inbound
+                .trySend(
+                    Datagram(
+                        payload = copy,
+                        peer = observedSource,
+                        ecn = Ecn.Unknown,
+                        localAddress = LocalAddress.Unknown,
+                        hopLimit = HopLimit.Unknown,
+                    ),
+                ).isSuccess
+        // A `trySend` that FAILS delivers nothing, so this is the copy's last reader. The window is real —
+        // an endpoint closing between the check above and the send here — and every datagram that lands in
+        // it would otherwise cost one chunk that nothing can ever release.
+        if (!queued) copy.freeIfNeeded()
+        return queued
     }
 
+    // The slice is a BORROW of the sender's buffer, taken so reading it here cannot move the sender's
+    // position. On a POOLED buffer `slice()` is also an `addRef`, so dropping it would pin the sender's
+    // chunk for the life of the process — invisible to a free-counting tracker and visible only to a pool
+    // census. Hand it back the moment the copy is made; the parent is untouched either way. The returned
+    // copy is deliberately NOT scoped — it is TRANSFERRED to the receiving endpoint, which owes it.
     private fun copyOf(payload: ReadBuffer): PlatformBuffer {
         val slice = payload.slice()
-        val len = slice.remaining()
-        val copy = bufferFactory.allocate(maxOf(1, len))
-        copy.write(slice)
-        copy.resetForRead()
-        copy.setLimit(len)
-        return copy
+        return try {
+            val len = slice.remaining()
+            val copy = bufferFactory.allocate(maxOf(1, len))
+            copy.write(slice)
+            copy.resetForRead()
+            copy.setLimit(len)
+            copy
+        } finally {
+            slice.freeIfNeeded()
+        }
     }
 }
 

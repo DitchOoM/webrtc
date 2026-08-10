@@ -2,11 +2,13 @@
 
 package com.ditchoom.webrtc.testsuite.vnet
 
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.buffer.use
 import com.ditchoom.webrtc.stun.RawAttribute
 import com.ditchoom.webrtc.stun.StunAttributeType
 import com.ditchoom.webrtc.stun.StunClass
@@ -78,12 +80,27 @@ internal class TurnServer(
                     is DatagramReadResult.Received -> result
                     is DatagramReadResult.Closed -> return
                 }
-            val message =
-                when (val decoded = StunMessage.decode(received.datagram.payload)) {
-                    is StunDecodeResult.Success -> decoded.message
-                    is StunDecodeResult.Reject -> continue // not STUN — a real server would 400; the vnet drops
+            // The control loop is the LAST READER of every datagram it takes. [handle] reads borrows of it
+            // (a decoded attribute is a slice of this payload) and, on the Send-indication path, hands the
+            // DATA borrow straight to `relayChannel.send`, which the vnet copies synchronously — so by the
+            // time `handle` returns nothing holds a view of it, and `use` releases it before the next
+            // iteration. Consuming here is what lets a consumer's
+            // [com.ditchoom.webrtc.testsuite.harness.BufferCensus] read zero.
+            received.datagram.payload.use { payload ->
+                val message =
+                    when (val decoded = StunMessage.decode(payload)) {
+                        is StunDecodeResult.Success -> decoded.message
+                        is StunDecodeResult.Reject -> return@use // not STUN — a real server would 400; the vnet drops
+                    }
+                // Decoding takes a REFERENCE per attribute — on a pooled payload each `RawAttribute` is an
+                // `addRef`'d slice — so freeing the datagram is not enough: without this the chunk stays
+                // pinned, invisible to every free-counting check and visible only to the pool.
+                try {
+                    handle(message, received.datagram.peer)
+                } finally {
+                    message.release()
                 }
-            handle(message, received.datagram.peer)
+            }
         }
     }
 
@@ -125,7 +142,7 @@ internal class TurnServer(
                 .add(RawAttribute.ofLifetime(lifetimeSeconds))
                 .addMessageIntegrity(keyFor(user))
                 .encode()
-        control.send(response, to = client)
+        reply(response, to = client)
     }
 
     private suspend fun onCreatePermission(
@@ -143,7 +160,7 @@ internal class TurnServer(
                 .of(StunClass.SuccessResponse, StunMethod.CreatePermission, request.transactionId)
                 .addMessageIntegrity(keyFor(user))
                 .encode()
-        control.send(response, to = client)
+        reply(response, to = client)
     }
 
     private suspend fun onRefresh(
@@ -157,7 +174,7 @@ internal class TurnServer(
                 .add(RawAttribute.ofLifetime(lifetimeSeconds))
                 .addMessageIntegrity(keyFor(user))
                 .encode()
-        control.send(response, to = client)
+        reply(response, to = client)
     }
 
     // Client → peer: a Send indication carries XOR-PEER-ADDRESS + DATA; the data leaves from the
@@ -185,19 +202,32 @@ internal class TurnServer(
                         is DatagramReadResult.Received -> result
                         is DatagramReadResult.Closed -> return@launch
                     }
-                val peer = received.datagram.peer
-                if (peer.ip !in allocation.permissions) continue
-                val txid = TransactionId.random(rng)
-                val indication =
+                // Last reader, like the control loop: `encode()` copies the DATA attribute's bytes into
+                // the indication, so this payload is spent once the encoding exists — and it is spent on
+                // the no-permission path too, which is why the release is the block's exit and not a
+                // statement someone can step around.
+                received.datagram.payload.use { payload ->
+                    val peer = received.datagram.peer
+                    if (peer.ip !in allocation.permissions) return@use
+                    val txid = TransactionId.random(rng)
                     StunMessageBuilder
                         .of(StunClass.Indication, StunMethod.Data, txid)
                         .add(RawAttribute.ofXorAddress(StunAttributeType.XorPeerAddress, peer.toTransportAddress(), txid))
-                        .add(RawAttribute.ofRaw(StunAttributeType.Data, received.datagram.payload))
+                        .add(RawAttribute.ofRaw(StunAttributeType.Data, payload))
                         .encode()
-                control.send(indication, to = allocation.client)
+                        .use { control.send(it, to = allocation.client) }
+                }
             }
         }
     }
+
+    // Send an encoded response and release it. `send` has finished reading by the time it returns — the
+    // vnet copies the payload synchronously on the delivery path — so the encoding is spent at the call
+    // and holding it any longer is just a chunk out of circulation.
+    private suspend fun reply(
+        response: PlatformBuffer,
+        to: SocketAddress,
+    ) = response.use { control.send(it, to = to) }
 
     // A fresh key buffer per use — HMAC reads the buffer, so verify and each response MI need their own.
     private fun keyFor(username: String): ReadBuffer = requireNotNull(keyProvider(username)) { "no key for $username" }
@@ -223,7 +253,7 @@ internal class TurnServer(
                 .add(RawAttribute.ofText(StunAttributeType.Realm, realm))
                 .add(RawAttribute.ofText(StunAttributeType.Nonce, nonce))
                 .encode()
-        control.send(challenge, to = client)
+        reply(challenge, to = client)
         return null
     }
 

@@ -36,6 +36,19 @@ public final class com/ditchoom/webrtc/testsuite/controller/L2ScenarioDescriptor
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/testsuite/harness/BufferCensus {
+	public final fun getAllocations ()I
+	public final fun getChunksCreated ()I
+	public final fun getChunksIdle ()I
+	public final fun getOutstandingChunks ()I
+	public final fun getPeakPoolSize ()I
+	public final fun getPoolCapacity ()I
+	public final fun getSaturated ()Z
+	public final fun getUnreleasedBuffers ()I
+	public final fun isDrained ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/testsuite/harness/HarnessEndpoint {
 	public fun <init> (Ljava/lang/String;I)V
 	public final fun component1 ()Ljava/lang/String;
@@ -147,6 +160,10 @@ public final class com/ditchoom/webrtc/testsuite/harness/WebRtcHarnessKt {
 }
 
 public final class com/ditchoom/webrtc/testsuite/harness/WebRtcHarnessScope {
+	public final fun assertNoBufferLeaks (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun assertNoBufferLeaks$default (Lcom/ditchoom/webrtc/testsuite/harness/WebRtcHarnessScope;Ljava/lang/String;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun bufferCensus (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun establish (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun getAllocationCount ()J
 	public final fun impaired (Lcom/ditchoom/webrtc/testsuite/harness/NetworkImpairment;)V

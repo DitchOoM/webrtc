@@ -96,6 +96,15 @@ never reached zero. **`assertPoolDrained` is the gate.**
 | DTLS record (both 1.2 and 1.3) | `DtlsRecordSeamOwnershipTest`, `DtlsSessionBufferOwnershipTest` |
 | mDNS responder, TURN relay | `MdnsTurnSeamOwnershipTest` |
 
+**Consumers can assert this too**, as of `WebRtcHarnessScope.assertNoBufferLeaks()` / `bufferCensus()` in
+`webrtc-testsuite` — a pool-backed tracking factory over the published vnet, measured after the harness
+closes both peers, **joins** every coroutine it launched, and unbinds the vnet. Building it is what found
+three production leaks of the class `assertNoLeaks` cannot see, all in `TurnAllocation`: every **Data
+indication**'s decoded views (i.e. one pinned receive chunk per inbound packet on any relayed session),
+`close()`'s deallocating Refresh, and a response that settles after its awaiter is gone. The shape they
+share is worth remembering — **a decode whose result nobody returns is where a release goes missing**,
+because there is no caller to notice and no `consuming {}` to structure it.
+
 **Every seam in that table is now gated at zero, with no exemptions.** The last one was upstream rather
 than ours: buffer-crypto's Apple AEAD `open` took two `absoluteView` slices of the ciphertext it was
 handed (`Aead.apple.kt` / `AeadBridge.apple.kt`) and released neither, so on Apple every opened DTLS
@@ -137,27 +146,22 @@ catch-all maps every exception to "mDNS is unavailable here" and would swallow t
 
 ### What is left
 
-- **Three TURN server behaviours are modelled but never seen from a real server.** Do not read this as
-  "TURN is untested" — the opposite is true: coturn runs `lt-cred-mech`, so the relay lanes exercise a
-  genuine 401 → REALM/NONCE → MESSAGE-INTEGRITY exchange under `MD5(user:realm:pass)` across
-  `{v4,v6,dual}`, and `TurnAllocationRefreshTest` covers lifetimes, retransmission and deallocation with
-  anti-vacuity guards. What real coturn never does in a lane is (a) **438 Stale Nonce** — `turnserver.conf`
-  sets no `stale-nonce`, so coturn's 600s default outlives every lane; (b) **an allocation refresh**, for
-  the same reason (`max-allocate-lifetime` is untouched); (c) **486 quota**, which appears in
-  `TurnAllocation.kt`'s KDoc and in no test anywhere. All three are reachable with coturn directives in
-  the harness we already have — `stale-nonce`, a lowered `max-allocate-lifetime`, `user-quota` — so this
-  is NOT blocked on a commercial provider. Only realm rotation and per-provider quota semantics genuinely
-  need one.
+- **Realm rotation and per-provider quota semantics** — the only TURN behaviours left that genuinely need
+  a commercial provider. The three that did not (438 Stale Nonce, an allocation refresh, 486 quota) are
+  now seen from real coturn: `turn-lifecycle` compresses the server's clock (`stale-nonce=10`,
+  `max-allocate-lifetime=20`) and holds a relay-pinned session past its granted LIFETIME, and `turn-quota`
+  sets `user-quota=1` so one peer's relay is refused 486 and the session establishes anyway. Both assert
+  from **coturn's own log** — the server saying what it did, not the session merely surviving — and both
+  first check that coturn echoed the directive at startup, because "the setting is in the file" has never
+  been evidence the process applied it. Measured, not assumed: against coturn 4.6.3 a real
+  `TurnAllocation` refreshes at t+15 s and that Refresh is answered 438 then granted. Read the *client's*
+  cadence rather than coturn's `new, lifetime=` line — that one prints 600 here, because coturn clamps a
+  **requested** lifetime and our Allocate sends no LIFETIME attribute, while the response still carries 20.
 - **Platforms:** Node needs blocking raw-ECDH plus a shipped binder (#133). tvOS/watchOS establish as of
   socket 4.2.0 (#127 closed); what remains there is `watchosArm64`, the 32-bit `arm64_32` *device*, which
   `buffer-crypto` publishes no klib for — so every watchOS artifact we ship is a simulator one and no
   watch app can link this yet. mDNS on tvOS/watchOS is also unproven: no test anywhere binds real
   multicast, so the entitlement those platforms require has never been exercised.
-- **Consumers cannot assert the no-leak invariant.** `webrtc-testsuite` exposes only
-  `WebRtcHarnessScope.allocationCount` — allocations, no frees, no pool drain — while internally there
-  are ~118 `assertPoolDrained`/`assertNoLeaks` call sites. TESTING.md §4 still explains this gap by "the
-  receive side has no last-reader rule", which stopped being true with #155/#156. The rationale is spent;
-  the gap is not.
 - **Media** (RTP/SRTP), which remains out of scope.
 
 ## Traps

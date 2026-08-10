@@ -6,9 +6,10 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.counting
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.buffer.use
 import com.ditchoom.webrtc.DtlsTransportFactory
 import com.ditchoom.webrtc.NativePeerConnection
 import com.ditchoom.webrtc.PeerConnectionConfig
@@ -25,9 +26,13 @@ import com.ditchoom.webrtc.ice.IceConfig
 import com.ditchoom.webrtc.sctp.association.SctpConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sdp.SdpType
+import com.ditchoom.webrtc.testsuite.vnet.Topology
 import com.ditchoom.webrtc.testsuite.vnet.Vnets
 import com.ditchoom.webrtc.testsuite.vnet.utf8Buffer
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
@@ -58,8 +63,9 @@ import kotlin.time.Instant
  *
  * **Seams are injected** (directive #2): [scope] owns every coroutine, [clock] every timer (a
  * `runTest` virtual clock), [seed] all entropy (each peer derives a `Random`), [bufferFactory] every
- * allocation (wrapped in a counting decorator — the `TrackingBufferFactory` invariant, exposed as
- * [WebRtcHarnessScope.allocationCount]), and [dtlsFactory] the DTLS backend. The default DTLS is
+ * allocation (backing a pooled tracker, so the scenario can answer for its buffers as well as count them
+ * — [WebRtcHarnessScope.allocationCount], [WebRtcHarnessScope.assertNoBufferLeaks] and [BufferCensus]),
+ * and [dtlsFactory] the DTLS backend. The default DTLS is
  * [PlaintextDtls]: a scenario about NAT traversal and data-channel semantics gets nothing from a real
  * handshake but the time it takes, and this is the one backend that exists on **every** platform the
  * harness runs on, browsers included. Pass `{ PureKotlinDtls(scope, clock) }` for the real thing on any
@@ -90,7 +96,15 @@ public suspend fun withWebRtcHarness(
             dtlsFactory = dtlsFactory,
             establishTimeout = establishTimeout,
         )
-    harnessScope.block()
+    try {
+        harnessScope.block()
+    } catch (t: Throwable) {
+        // The scenario's own failure is the one worth reporting; a teardown that also fails on the way
+        // out must not replace it.
+        runCatching { harnessScope.close() }
+        throw t
+    }
+    harnessScope.close()
 }
 
 /**
@@ -108,12 +122,22 @@ public class WebRtcHarnessScope internal constructor(
     private val dtlsFactory: () -> DtlsTransportFactory,
     private val establishTimeout: Duration,
 ) {
-    private val counting = bufferFactory.counting()
+    private val counting = TrackingBufferFactory(bufferFactory)
+
+    // Everything the harness itself launches — the two signaling forwarders, the echo responder, and the
+    // vnet's STUN/TURN servers — runs here rather than directly on the caller's [scope], so [close] can
+    // stop exactly the harness's coroutines and JOIN them. Joining is the load-bearing half: a cancelled
+    // coroutine's `finally` is where the last in-flight buffers go back, and a census taken before those
+    // have run reports a leak the scenario does not have.
+    private val harnessJob = SupervisorJob(scope.coroutineContext[Job])
+    private val harnessScope = CoroutineScope(scope.coroutineContext + harnessJob)
 
     private var natType: NatType = NatType.None
     private var relayOnly: Boolean = false
     private var impairment: NetworkImpairment? = null
     private var connection: WebRtcHarnessConnection? = null
+    private var topology: Topology? = null
+    private var closed = false
 
     /** Buffers allocated by the vnet + both peers' ICE/SCTP so far — the no-runaway-allocation invariant. */
     public val allocationCount: Long get() = counting.allocationCount
@@ -154,16 +178,17 @@ public class WebRtcHarnessScope internal constructor(
      * @throws WebRtcException if either peer reaches `Failed` (carrying the typed reason).
      */
     public suspend fun establish(): WebRtcHarnessConnection {
+        check(!closed) { "the harness scenario is closed" }
         connection?.let { return it }
 
-        val topology = Vnets.build(scope, natType.toProfileOrNull(), counting, impairment?.toConfig())
+        val topology = Vnets.build(harnessScope, natType.toProfileOrNull(), counting, impairment?.toConfig()).also { this.topology = it }
         val binder = DatagramBinder { topology.vnet.bind(it) }
         val config =
             PeerConnectionConfig(iceConfig = IceConfig(bufferFactory = counting), sctpConfig = SctpConfig(bufferFactory = counting))
 
         val offerer =
             NativePeerConnection(
-                scope = scope,
+                scope = harnessScope,
                 clock = clock,
                 random = Random(seed),
                 binder = binder,
@@ -173,7 +198,7 @@ public class WebRtcHarnessScope internal constructor(
             )
         val answerer =
             NativePeerConnection(
-                scope = scope,
+                scope = harnessScope,
                 clock = clock,
                 random = Random(seed + 1),
                 binder = binder,
@@ -183,14 +208,27 @@ public class WebRtcHarnessScope internal constructor(
             )
 
         // Signaling seam: forward each peer's trickled ICE candidates into the other.
-        scope.launch { offerer.localIceCandidates.collect { answerer.addIceCandidate(it) } }
-        scope.launch { answerer.localIceCandidates.collect { offerer.addIceCandidate(it) } }
+        harnessScope.launch { offerer.localIceCandidates.collect { answerer.addIceCandidate(it) } }
+        harnessScope.launch { answerer.localIceCandidates.collect { offerer.addIceCandidate(it) } }
 
         // Echo responder: the answerer bounces every data-channel message straight back, so a
         // consumer's roundTrip() sees its own payload return end-to-end through the whole stack.
-        scope.launch {
+        //
+        // An inbound message is TRANSFERRED to its collector (`DataChannelConnection.receive`), so this
+        // responder owes it a release once it has been echoed — `send` reads the message and never takes
+        // it. Skipping that would leak one reassembly buffer per echoed message, in the harness rather
+        // than in the stack, which is precisely the kind of accounting [BufferCensus] must not invent.
+        harnessScope.launch {
             answerer.incomingDataChannels.collect { incoming ->
-                scope.launch { incoming.receive().collect { incoming.send(it) } }
+                harnessScope.launch {
+                    incoming.receive().collect { message ->
+                        try {
+                            incoming.send(message)
+                        } finally {
+                            message.freeIfNeeded()
+                        }
+                    }
+                }
             }
         }
 
@@ -232,8 +270,83 @@ public class WebRtcHarnessScope internal constructor(
         val conn = establish()
         return withTimeout(establishTimeout) {
             val channel = conn.offerer.createDataChannel(DataChannelConfig(label = label))
-            channel.send(utf8Buffer(message))
-            channel.receive().first().decodeUtf8()
+            // Both buffers are ours to release: `send` reads the outgoing one and never takes it, and the
+            // echo arrives as a transfer the collector owes (see the responder in [establish]).
+            utf8Buffer(message).use { channel.send(it) }
+            val echoed = channel.receive().first()
+            try {
+                echoed.decodeUtf8()
+            } finally {
+                echoed.freeIfNeeded()
+            }
+        }
+    }
+
+    /**
+     * Tear the scenario down: close both peers (graceful SCTP shutdown included), stop and **join** every
+     * coroutine the harness launched, then unbind the vnet. Idempotent, and called for you when a
+     * [withWebRtcHarness] block ends — so a consumer only calls it to measure earlier than that.
+     *
+     * Joining rather than merely cancelling is what makes [bufferCensus] answerable: the last buffers of a
+     * torn-down session go back in a cancelled coroutine's `finally`, and a census taken before those have
+     * been dispatched reports a leak that is not there.
+     */
+    public suspend fun close() {
+        if (closed) return
+        closed = true
+        connection?.let { live ->
+            live.offerer.close()
+            live.answerer.close()
+        }
+        harnessJob.cancelAndJoin()
+        // Last: whatever is still queued at a vnet endpoint was never delivered, so the vnet is its last
+        // reader. Unbinding after the peers are gone is what makes that true rather than a race.
+        topology?.vnet?.close()
+    }
+
+    /**
+     * [close] the scenario and report what it did with its buffers — the standing no-leak invariant as a
+     * value. See [BufferCensus] for why `outstandingChunks` is the claim that matters and
+     * `unreleasedBuffers` is the one that names *which*.
+     */
+    public suspend fun bufferCensus(): BufferCensus {
+        close()
+        return counting.census()
+    }
+
+    /**
+     * [close] the scenario and fail unless **every buffer it allocated came back** — directive #6's
+     * invariant, which until now only this library's own fixtures could assert.
+     *
+     * [what] names the scenario in the failure, since a count alone says nothing about where. Throws
+     * [AssertionError], so it reads like any other assertion in a `kotlin.test` body without this
+     * published artifact having to depend on a test framework.
+     */
+    public suspend fun assertNoBufferLeaks(what: String = "the harness scenario") {
+        val census = bufferCensus()
+        if (census.unreleasedBuffers != 0) {
+            throw AssertionError(
+                "$what leaked ${census.unreleasedBuffers} of ${census.allocations} buffer(s): " +
+                    "they were never released back to the pool — $census",
+            )
+        }
+        // Not folded into isDrained's message: a saturated pool is a broken MEASUREMENT, not a leak, and
+        // saying so is the difference between fixing a fixture and hunting a bug that is not there.
+        if (census.saturated) {
+            throw AssertionError(
+                "$what filled the harness buffer pool (peak ${census.peakPoolSize} of ${census.poolCapacity}) — " +
+                    "a full pool drops returned chunks, so this measurement cannot be trusted — $census",
+            )
+        }
+        if (census.outstandingChunks != 0) {
+            throw AssertionError(
+                "$what did not return every chunk: the pool created ${census.chunksCreated} and only " +
+                    "${census.chunksIdle} are idle, so ${census.outstandingChunks} still has a reference nobody " +
+                    "released (a slice, not a missing free) — $census",
+            )
+        }
+        if (census.chunksCreated == 0) {
+            throw AssertionError("$what never allocated a chunk — it cannot have exercised anything — $census")
         }
     }
 
@@ -241,7 +354,7 @@ public class WebRtcHarnessScope internal constructor(
     // which is why it is always gathered as a fallback unless the topology is flat.
     private fun gatheringPolicy(
         host: SocketAddress,
-        topology: com.ditchoom.webrtc.testsuite.vnet.Topology,
+        topology: Topology,
     ): com.ditchoom.webrtc.IceGatheringPolicy {
         val hostIp = host.host
         val hostPort = host.port

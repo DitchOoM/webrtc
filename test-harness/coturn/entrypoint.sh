@@ -48,7 +48,27 @@ if [ "${COTURN_LAN0_ENABLED:-0}" = "1" ]; then
     listen="${listen:+$listen + }${COTURN_LAN0_IP}:${STUN_PORT}"
 fi
 
+# Per-lane TURN lifecycle directives (harness.env's TURN lifecycle block). Each is appended ONLY when the
+# lane set it, so every other lane runs coturn's defaults byte-unchanged — and each one that IS set is
+# echoed below, because "the setting is in the file" has never been evidence the server applied it (see the
+# `-n` account further down, which cost months of an open relay). The ECHO is the check: a lane asserting a
+# 438 or a 486 can read this line in `docker compose logs coturn` and know the directive was even offered.
+lifecycle=""
+if [ -n "${TURN_STALE_NONCE:-}" ]; then
+    echo "stale-nonce=${TURN_STALE_NONCE}" >> "$CONF"
+    lifecycle="${lifecycle} stale-nonce=${TURN_STALE_NONCE}"
+fi
+if [ -n "${TURN_MAX_ALLOCATE_LIFETIME:-}" ]; then
+    echo "max-allocate-lifetime=${TURN_MAX_ALLOCATE_LIFETIME}" >> "$CONF"
+    lifecycle="${lifecycle} max-allocate-lifetime=${TURN_MAX_ALLOCATE_LIFETIME}"
+fi
+if [ -n "${TURN_USER_QUOTA:-}" ]; then
+    echo "user-quota=${TURN_USER_QUOTA}" >> "$CONF"
+    lifecycle="${lifecycle} user-quota=${TURN_USER_QUOTA}"
+fi
+
 echo "[coturn] starting STUN/TURN on ${listen} realm=${TURN_REALM} user=${TURN_USER}"
+echo "[coturn] lifecycle:${lifecycle:- (coturn defaults: nonce 600s, allocation 3600s, no quota)}"
 
 # NO `-n`. In coturn `-n` means "do NOT use a configuration file" — with it, everything above (and every
 # directive in turnserver.conf: lt-cred-mech, user, realm, min-port/max-port) is silently inert and the

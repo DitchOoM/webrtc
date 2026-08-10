@@ -192,9 +192,14 @@ runTest {
         relayOnly()                     // force the TURN-relay path
         impaired(loss = 0.05)           // 5% packet loss
         assertEquals("ping", roundTrip("ping"))
+        assertNoBufferLeaks()           // every buffer the scenario allocated came back
     }
 }
 ```
+
+`assertNoBufferLeaks()` closes the scenario, joins everything it launched, and fails unless every chunk
+is back in the pool — the invariant this library holds itself to (directive #6), now assertable over your
+own code. `bufferCensus()` returns the numbers instead of asserting on them.
 
 ## Building
 

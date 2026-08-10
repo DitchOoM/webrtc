@@ -22,6 +22,7 @@ import com.ditchoom.webrtc.ice.MdnsResolver
 import com.ditchoom.webrtc.ice.MdnsResponse
 import com.ditchoom.webrtc.ice.MulticastMdnsEndpoint
 import com.ditchoom.webrtc.ice.MulticastMdnsResolver
+import com.ditchoom.webrtc.ice.RelayGatheringResult
 import com.ditchoom.webrtc.sctp.association.SctpConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sdp.SdpParseResult
@@ -239,7 +240,18 @@ private suspend fun runPeer(cfg: HarnessConfig): Int =
                         driver.gatherHost(b.localIp, cfg.localPort + portStep, stunServer = stun)
                     }
                     // Relay is always gathered — the fallback path, and the only path under relayOnly.
-                    driver.gatherRelay(turn, cfg.turnUser, cfg.turnPass, b.localIp, cfg.relayPort + portStep)
+                    //
+                    // The result was being computed, typed, and dropped, exactly as `pc.diagnostics` was
+                    // before it: `gatherRelay` answers a sealed `RelayGatheringResult` carrying the
+                    // allocation's own typed cause, and a lane that never prints it cannot tell a relay
+                    // the server REFUSED (486 quota, 401 credentials) from one that simply never answered
+                    // — both present as "no relay candidate". The `turn-quota` lane asserts on this line.
+                    when (val relay = driver.gatherRelay(turn, cfg.turnUser, cfg.turnPass, b.localIp, cfg.relayPort + portStep)) {
+                        is RelayGatheringResult.Gathered ->
+                            println("[harness] relay ${b.family}: gathered ${relay.candidate.address}")
+                        is RelayGatheringResult.Unavailable ->
+                            println("[harness] relay ${b.family}: unavailable ${relay.cause}")
+                    }
                 }
             }
 

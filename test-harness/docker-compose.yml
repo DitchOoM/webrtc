@@ -31,6 +31,13 @@ services:
   coturn:
     image: coturn/coturn:4.6
     env_file: ./harness.env
+    # Named explicitly, NOT left to env_file: these are the only coturn settings a lane overrides, and an
+    # `environment:` entry is what lets run-interop.sh's per-scenario `export` win over harness.env's
+    # (empty) default. See harness.env's TURN lifecycle block for what each one buys.
+    environment:
+      TURN_STALE_NONCE: "${TURN_STALE_NONCE:-}"
+      TURN_MAX_ALLOCATE_LIFETIME: "${TURN_MAX_ALLOCATE_LIFETIME:-}"
+      TURN_USER_QUOTA: "${TURN_USER_QUOTA:-}"
     entrypoint: ["/bin/sh", "/etc/coturn/entrypoint.sh"]
     volumes:
       - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro

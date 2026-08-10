@@ -6,6 +6,56 @@ metadata + PR-label bumps (`major` / `minor`, else patch).
 
 ## [Unreleased]
 
+### Fixed — three TURN receive-path leaks, and the gate that found them
+
+`TurnAllocation` released the datagram on three paths and not the **views decoded out of it**, which on a
+pooled receive factory pins the chunk however correctly the buffer itself was freed:
+
+- **Every Data indication.** On a relayed session that is *every inbound packet*, so a peer behind a
+  symmetric NAT — where the relay is the only path — pinned one receive chunk per packet for the life of
+  the session.
+- **`close()`'s deallocating Refresh.** Nothing reads its answer, so the exchange was dropped rather than
+  released. The one hand-off with no return value, and the only reason no fixture watched it.
+- **A response that settles after its awaiter is gone.** `close()` cancels the maintenance job
+  mid-Refresh; the demux had already taken the transaction out of `pending` by the time `request`'s
+  `finally` looked, so the map could not answer for that transfer and nobody released it.
+
+All three are invisible to `assertNoLeaks` — the datagram *is* freed on each — and all three were found by
+building the consumer-facing census below, then pinned by
+`ReceivedDatagramOwnershipTest.a_relayed_session_gives_back_every_data_indication_and_its_deallocation`
+(a relayed session, four round trips, then `close()`). The shape they share is worth carrying forward: **a
+decode whose result nobody returns is where a release goes missing.**
+
+### Added — consumers can assert the no-leak invariant
+
+`WebRtcHarnessScope.assertNoBufferLeaks()` and `bufferCensus(): BufferCensus`, over a **pool-backed**
+tracking factory — the shape a consumer is meant to run in production
+(`BufferPool(factory = BufferFactory.deterministic())`), and the only shape in which the free side is
+observable at all. `BufferCensus` reports both claims and keeps them apart: `unreleasedBuffers` names
+*how many* buffers were never freed, `outstandingChunks` is the gate that also sees an unreleased
+`slice()`, and `saturated` refuses to report a green it could not measure. `allocationCount` is unchanged.
+
+The census is taken after a new `close()` shuts both peers down, **joins** every coroutine the harness
+launched, and unbinds the vnet — a cancelled coroutine's `finally` is where the last in-flight buffers go
+back, and measuring before those have run invents a leak. `withWebRtcHarness { }` now closes its scenario
+on the way out.
+
+Making that answerable meant giving the *published* vnet the last-reader rule it never had: its STUN and
+TURN servers consume every datagram and release the views decoded out of it, the impairment pipe owns one
+snapshot per scheduled delivery (started `ATOMIC`, so a teardown mid-flight cannot lose it), `unbind`
+drains what was never delivered, and a failed `trySend` releases the copy it was going to deliver.
+
+### Added — the three TURN behaviours real coturn never showed us
+
+`test-harness` gains `turn-lifecycle` and `turn-quota`. coturn's defaults (nonce 600 s, allocation
+3600 s, no quota) outlive every lane, so **438 Stale Nonce**, an **allocation Refresh** and **486
+Allocation Quota Reached** were implemented, vnet-tested, and never once seen from a real server. The
+lanes compress the *server's* clock (`stale-nonce`, `max-allocate-lifetime`, `user-quota` — new,
+per-lane, empty by default so every other lane is byte-unchanged) and assert from **coturn's own log**,
+after first checking coturn echoed the directives at startup. `486` also gains its first fixture anywhere,
+`TurnAllocationQuotaTest`, and the harness peer now prints its typed `RelayGatheringResult` so a refused
+relay is distinguishable from one that never answered.
+
 ### Changed — the ICE send path reads socket's typed failure, closing #143
 
 Completes what #146 started, and **pins socket 4.0.2** to do it — 4.0.1 (what main pinned) does not carry

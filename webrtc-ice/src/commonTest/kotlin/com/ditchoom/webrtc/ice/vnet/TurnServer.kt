@@ -104,6 +104,19 @@ internal class TurnServer(
      * was working silently lapses. The 443 family rule below needs no seam — it is unconditional.
      */
     private val refusePermissionsAfter: Int = Int.MAX_VALUE,
+    /**
+     * Refuse an Allocate for a client this server is not already holding one for, once it holds this many
+     * — **486 Allocation Quota Reached** (RFC 8656 §7.2), the answer a real server gives when a username
+     * has used up its concurrent-allocation budget.
+     *
+     * Distinct from [refusePermissionsAfter] in the arm it reaches: a quota refusal lands on the very
+     * first exchange of the relay's life, before any relayed address exists, so it is the one refusal a
+     * client must survive by **gathering without a relay** rather than by losing one it already had.
+     * Modelled here because coturn's own default is *unlimited*, which is why this code path shipped with
+     * a KDoc and no test — the container harness's `turn-quota` lane sets `user-quota=1` to reach the
+     * same arm against real coturn.
+     */
+    private val allocationQuota: Int = Int.MAX_VALUE,
     private val relayIp: String = address.ip,
     firstRelayPort: Int = FIRST_RELAY_PORT,
 ) {
@@ -128,6 +141,10 @@ internal class TurnServer(
 
     /** How many requests this server rejected 438 because their NONCE had aged out (RFC 8656 §8). */
     var staleNonceChallenges: Int = 0
+        private set
+
+    /** How many Allocates this server refused 486 for exceeding [allocationQuota] (RFC 8656 §7.2). */
+    var quotaRefusals: Int = 0
         private set
 
     /** Allocations this server is currently holding — 0 again once a client deallocates (§8.2). */
@@ -195,6 +212,20 @@ internal class TurnServer(
                 StunMessageBuilder
                     .of(StunClass.ErrorResponse, StunMethod.Allocate, request.transactionId)
                     .add(RawAttribute.ofErrorCode(StunErrorCode(ADDRESS_FAMILY_NOT_SUPPORTED, "Address Family not Supported")))
+                    .addMessageIntegrity(keyFor(user))
+                    .encode()
+            control.send(refusal, to = client)
+            return
+        }
+        // Quota is checked only for a client we are not already holding an allocation for: a repeat
+        // Allocate on the same 5-tuple is that client's own allocation being re-requested, not a new one
+        // against the budget (RFC 8656 §7.2 — and coturn counts the same way).
+        if (client !in allocations && allocations.size >= allocationQuota) {
+            quotaRefusals++
+            val refusal =
+                StunMessageBuilder
+                    .of(StunClass.ErrorResponse, StunMethod.Allocate, request.transactionId)
+                    .add(RawAttribute.ofErrorCode(StunErrorCode(ALLOCATION_QUOTA_REACHED, "Allocation Quota Reached")))
                     .addMessageIntegrity(keyFor(user))
                     .encode()
             control.send(refusal, to = client)
@@ -437,6 +468,7 @@ internal class TurnServer(
         private const val DEFAULT_SEED = 0x7247_4E00L // "rGN\0"
         private const val UNAUTHORIZED = 401
         private const val STALE_NONCE = 438 // RFC 8656 §18 — good credentials, aged-out NONCE
+        private const val ALLOCATION_QUOTA_REACHED = 486 // RFC 8656 §18 — the username's budget is spent
         private const val ALLOCATION_MISMATCH = 437 // RFC 8656 §18 — no allocation for this 5-tuple
         private const val ADDRESS_FAMILY_NOT_SUPPORTED = 440 // RFC 8656 §18
         private const val PEER_ADDRESS_FAMILY_MISMATCH = 443 // RFC 6156 §10.2 — peer family ≠ relayed family

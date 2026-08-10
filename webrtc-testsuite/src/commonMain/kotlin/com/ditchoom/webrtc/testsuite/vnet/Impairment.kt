@@ -8,7 +8,10 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.buffer.use
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.random.Random
@@ -68,33 +71,53 @@ internal class Impairment(
 
         if (dropRoll < config.loss) return // dropped on the wire; the RNG has still advanced
 
-        val snapshot = snapshot(payload)
-        schedule(delayA) { base.forward(from, to, snapshot, net) }
+        // ONE snapshot per scheduled delivery, never one shared by both. A duplicate is a second datagram
+        // on the wire, and giving each its own copy keeps the rule this repo runs on — a buffer has exactly
+        // one owner — true here too, instead of needing a shared count to decide which coroutine frees it.
+        schedule(delayA, snapshot(payload), from, to, net)
         if (duplicateRoll < config.duplicate) {
-            schedule(delayB) { base.forward(from, to, snapshot, net) }
+            schedule(delayB, snapshot(payload), from, to, net)
         }
     }
 
     private fun delayFor(fraction: Double): Duration = config.minDelay + (config.maxDelay - config.minDelay) * fraction
 
+    // The launched coroutine OWNS [snapshot], and `use` is what releases it on every way out — including
+    // the cancellation path, where a scenario torn down mid-flight would otherwise strand every datagram
+    // still in the pipe.
     private fun schedule(
         after: Duration,
-        block: () -> Unit,
+        snapshot: PlatformBuffer,
+        from: SocketAddress,
+        to: SocketAddress,
+        net: Vnet,
     ) {
-        scope.launch {
-            if (after > Duration.ZERO) delay(after)
-            block()
+        // ATOMIC because the alternative silently loses the snapshot: a datagram forwarded while the
+        // scenario is being torn down launches into an already-cancelled scope, where a default-started
+        // coroutine never runs its body at all — so the `use` that owes the release never executes.
+        scope.launch(start = CoroutineStart.ATOMIC) {
+            snapshot.use {
+                if (after > Duration.ZERO) delay(after)
+                base.forward(from, to, it, net)
+            }
         }
     }
 
     // Copy the payload before send() returns so a deferred delivery still sees it (the caller may pool).
-    private fun snapshot(payload: ReadBuffer): ReadBuffer {
+    //
+    // The probe slice is a borrow — and an `addRef` on a pooled parent — so dropping it would pin the
+    // SENDER's chunk. See Vnet.copyOf, which pays for the same slice one layer down.
+    private fun snapshot(payload: ReadBuffer): PlatformBuffer {
         val slice = payload.slice()
-        val len = slice.remaining()
-        val copy: PlatformBuffer = bufferFactory.allocate(maxOf(1, len))
-        copy.write(slice)
-        copy.resetForRead()
-        copy.setLimit(len)
-        return copy
+        return try {
+            val len = slice.remaining()
+            val copy: PlatformBuffer = bufferFactory.allocate(maxOf(1, len))
+            copy.write(slice)
+            copy.resetForRead()
+            copy.setLimit(len)
+            copy
+        } finally {
+            slice.freeIfNeeded()
+        }
     }
 }

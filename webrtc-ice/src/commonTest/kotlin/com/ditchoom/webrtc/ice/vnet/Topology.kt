@@ -40,8 +40,8 @@ internal object Vnets {
      * lanes fail exactly when the derivation is wrong instead of agreeing with the client on a
      * simplification no real server would accept.
      */
-    fun turnKeyProvider(realm: String = TurnServer.DEFAULT_REALM): (String) -> ReadBuffer? =
-        { username ->
+    fun turnKeyProvider(): (String, String) -> ReadBuffer? =
+        { username, realm ->
             if (username == TURN_USERNAME) longTermCredentialKey(username, realm, TURN_PASSWORD) else null
         }
 
@@ -110,6 +110,9 @@ internal object Vnets {
         turnLifetimeSeconds: UInt = TurnServer.DEFAULT_LIFETIME_SECONDS,
         turnPermissionLifetimeSeconds: UInt = TurnServer.DEFAULT_PERMISSION_LIFETIME_SECONDS,
         turnNoncePolicy: NoncePolicy = NoncePolicy.Fixed,
+        // Fixed by default, which is coturn's own behaviour: a realm changes when an operator changes it,
+        // not on a schedule, so only a fixture that is *about* rotation asks for one.
+        turnRealmPolicy: RealmPolicy = RealmPolicy.Fixed,
         // Unlimited by default, which is coturn's own default and why 486 had no fixture until now.
         turnAllocationQuota: Int = Int.MAX_VALUE,
     ): Meetup {
@@ -126,6 +129,7 @@ internal object Vnets {
                 lifetimeSeconds = turnLifetimeSeconds,
                 permissionLifetimeSeconds = turnPermissionLifetimeSeconds,
                 noncePolicy = turnNoncePolicy,
+                realmPolicy = turnRealmPolicy,
                 allocationQuota = turnAllocationQuota,
             ).also { it.start() }
         return Meetup(

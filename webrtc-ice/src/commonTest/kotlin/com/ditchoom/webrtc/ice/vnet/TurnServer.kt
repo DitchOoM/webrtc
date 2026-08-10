@@ -53,6 +53,48 @@ internal sealed interface NoncePolicy {
 }
 
 /**
+ * How the [TurnServer] ages its REALM — the seam that distinguishes a client which **re-derives** its
+ * long-term key from one which merely re-reads the NONCE.
+ *
+ * A rotated realm is a strictly harder event than a rotated nonce, and the difference is the whole point
+ * of this policy. The NONCE is an opaque token the client copies back verbatim, so surviving a 438 needs
+ * no cryptography at all. The REALM is an *input to the key*: RFC 8489 §9.2.2 makes MESSAGE-INTEGRITY
+ * `HMAC(MD5(username:realm:password), …)`, so a server that answers with a new realm has invalidated
+ * every key the client holds. A client that copies the new realm into its attributes but keeps signing
+ * with the old key authenticates against nothing — and, because the realm it *presents* is now correct,
+ * it fails in the one way that looks like a wrong password rather than a stale challenge.
+ *
+ * Sealed rather than a nullable "newRealm", so "rotate" and "do not rotate" are different shapes rather
+ * than the same shape with a null in it.
+ */
+internal sealed interface RealmPolicy {
+    /** One REALM for the server's whole life: coturn's own behaviour, and what every other fixture wants. */
+    data object Fixed : RealmPolicy
+
+    /**
+     * Adopt [replacement] once [afterRequests] requests have been granted, so the next request — which
+     * still carries the old realm and is signed with the old key — is challenged **401 Unauthorized**
+     * carrying the new realm, exactly as a real server does when its realm changes underneath a
+     * long-lived allocation. 401 rather than 438 is deliberate and RFC-correct: the credentials really
+     * are invalid now, and conflating that with a stale nonce is precisely the client bug this catches.
+     */
+    data class RotateAfter(
+        val afterRequests: Int,
+        val replacement: String = ROTATED_REALM,
+    ) : RealmPolicy {
+        init {
+            require(afterRequests > 0) { "afterRequests must be positive, was $afterRequests" }
+            require(replacement.isNotEmpty()) { "replacement realm must not be empty" }
+        }
+    }
+
+    companion object {
+        /** Deliberately unlike [TurnServer.DEFAULT_REALM], so a key derived from the wrong one cannot verify. */
+        const val ROTATED_REALM = "vnet-rotated"
+    }
+}
+
+/**
  * A **virtual TURN server** (RFC 8656) — a faithful relay bound as an ordinary [Vnet] endpoint, not a
  * router hack: it speaks the same [AddressedDatagramChannel] seam as everything else, so a peer behind a
  * symmetric NAT reaches it exactly as it would reach real coturn. It is the load-bearing piece of the
@@ -86,14 +128,24 @@ internal class TurnServer(
     val address: SocketAddress,
     private val vnet: Vnet,
     private val scope: CoroutineScope,
-    /** MESSAGE-INTEGRITY key for a USERNAME, or null to reject it (RFC 8489 §9.2.2 long-term key). */
-    private val keyProvider: (username: String) -> ReadBuffer?,
+    /**
+     * MESSAGE-INTEGRITY key for a USERNAME **under a given realm**, or null to reject it (RFC 8489 §9.2.2
+     * long-term key).
+     *
+     * The realm is a parameter rather than something the provider closes over because the server's realm
+     * can change ([RealmPolicy]), and the key is a function of it. A provider that ignored the realm would
+     * happily verify a client still signing with the pre-rotation key, which is exactly the bug a rotation
+     * fixture exists to catch — the seam would agree with the client on a simplification no real server
+     * makes. coturn derives per (username, realm) from its user table for the same reason.
+     */
+    private val keyProvider: (username: String, realm: String) -> ReadBuffer?,
     seed: Long = DEFAULT_SEED,
     private val realm: String = DEFAULT_REALM,
     private val nonce: String = DEFAULT_NONCE,
     private val lifetimeSeconds: UInt = DEFAULT_LIFETIME_SECONDS,
     private val permissionLifetimeSeconds: UInt = DEFAULT_PERMISSION_LIFETIME_SECONDS,
     private val noncePolicy: NoncePolicy = NoncePolicy.Fixed,
+    private val realmPolicy: RealmPolicy = RealmPolicy.Fixed,
     /**
      * Refuse every CreatePermission **once this many have been granted** — 403 Forbidden, the answer a real
      * server gives when its policy or quota turns against a peer it was previously relaying to.
@@ -125,10 +177,28 @@ internal class TurnServer(
     private val control: AddressedDatagramChannel = vnet.bind(address)
     private var nextRelayPort = firstRelayPort
     private var currentNonce = nonce
+    private var currentRealm = realm
     private var grantedRequests = 0
 
     /** How many Refresh requests this server has granted — the client's keep-alive, counted. */
     var refreshes: Int = 0
+        private set
+
+    /**
+     * How many times this server has changed its REALM out from under the client. Counted so a rotation
+     * fixture can assert the rotation *happened* — "the session survived" is satisfied just as well by a
+     * server that never rotated, which is the vacuous pass this counter closes.
+     */
+    var realmRotations: Int = 0
+        private set
+
+    /**
+     * How many requests were refused **401 Unauthorized while presenting a realm this server has since
+     * replaced** — i.e. the client signed with a key derived from a dead realm. Distinct from the ordinary
+     * unauthorized count because it is the one refusal a correct client answers by *re-deriving* rather
+     * than by retrying, and a fixture wants to know it reached that arm specifically.
+     */
+    var staleRealmChallenges: Int = 0
         private set
 
     /** How many CreatePermission requests this server has granted (the first install and every renewal). */
@@ -403,7 +473,8 @@ internal class TurnServer(
     }
 
     // A fresh key buffer per use — HMAC reads the buffer, so verify and each response MI need their own.
-    private fun keyFor(username: String): ReadBuffer = requireNotNull(keyProvider(username)) { "no key for $username" }
+    private fun keyFor(username: String): ReadBuffer =
+        requireNotNull(keyProvider(username, currentRealm)) { "no key for $username in realm $currentRealm" }
 
     /**
      * Returns the authenticated USERNAME if the request carries a valid MESSAGE-INTEGRITY AND echoes the
@@ -421,12 +492,14 @@ internal class TurnServer(
         client: SocketAddress,
     ): String? {
         val username = request.firstOrNull(StunAttributeType.Username)?.asText()
-        val key = username?.let(keyProvider)
+        // Keyed against the realm the server holds NOW, so a client still signing under a replaced realm
+        // fails verification here exactly as it would against coturn's user table.
+        val key = username?.let { keyProvider(it, currentRealm) }
         val presentedRealm = request.firstOrNull(StunAttributeType.Realm)?.asText()
         val presentedNonce = request.firstOrNull(StunAttributeType.Nonce)?.asText()
-        val credentialsValid = username != null && key != null && presentedRealm == realm && request.verifyMessageIntegrity(key)
+        val credentialsValid = username != null && key != null && presentedRealm == currentRealm && request.verifyMessageIntegrity(key)
         if (credentialsValid && presentedNonce == currentNonce) {
-            rotateNonceIfDue()
+            onRequestGranted()
             return username
         }
         val error =
@@ -434,26 +507,44 @@ internal class TurnServer(
                 staleNonceChallenges++
                 StunErrorCode(STALE_NONCE, "Stale Nonce")
             } else {
+                // A realm this server has replaced is the specific failure a rotation manufactures: the
+                // credentials are not merely unrecognised, they are correctly derived from a dead realm.
+                if (presentedRealm != null && presentedRealm != currentRealm) staleRealmChallenges++
                 StunErrorCode(UNAUTHORIZED, "Unauthorized")
             }
         val challenge =
             StunMessageBuilder
                 .of(StunClass.ErrorResponse, request.messageType.method, request.transactionId)
                 .add(RawAttribute.ofErrorCode(error))
-                .add(RawAttribute.ofText(StunAttributeType.Realm, realm))
+                .add(RawAttribute.ofText(StunAttributeType.Realm, currentRealm))
                 .add(RawAttribute.ofText(StunAttributeType.Nonce, currentNonce))
                 .encode()
         control.send(challenge, to = client)
         return null
     }
 
-    private fun rotateNonceIfDue() {
+    /**
+     * Age the challenge material one granted request onward. [grantedRequests] counts unconditionally so
+     * the two policies read the same clock; when both are [NoncePolicy.Fixed] / [RealmPolicy.Fixed] this
+     * is a counter nobody reads, and every existing fixture keeps the behaviour it had.
+     */
+    private fun onRequestGranted() {
+        grantedRequests++
         when (val policy = noncePolicy) {
             NoncePolicy.Fixed -> Unit
-            is NoncePolicy.RotateEvery -> {
-                grantedRequests++
+            is NoncePolicy.RotateEvery ->
                 if (grantedRequests % policy.afterRequests == 0) currentNonce = "$nonce-$grantedRequests"
-            }
+        }
+        when (val policy = realmPolicy) {
+            RealmPolicy.Fixed -> Unit
+            is RealmPolicy.RotateAfter ->
+                // Once, not every N: a realm that changed on a cadence would let a client that re-derives
+                // only sometimes still look correct, and the property under test is that it re-derives on
+                // the transition it is shown.
+                if (grantedRequests == policy.afterRequests) {
+                    currentRealm = policy.replacement
+                    realmRotations++
+                }
         }
     }
 

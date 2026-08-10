@@ -52,7 +52,12 @@ kotlin {
             dependsOn(commonTest.get())
             dependencies { implementation(libs.socket.udp) }
         }
-        val socketTestLeaves = mutableListOf("jvmTest", "linuxTest")
+        // `androidDeviceTest`, NOT `androidHostTest`, and that distinction is the whole reason Android
+        // was missing from this list. An Android *unit* test is a host-JVM test: it would exercise the
+        // JVM's NIO path a second time and prove nothing about the device. The instrumented compilation
+        // runs on ART against the real network stack, which is the only place `udpDatagramBinder()` and
+        // `systemIceGathering()` are exercised as an Android app would reach them.
+        val socketTestLeaves = mutableListOf("jvmTest", "linuxTest", "androidDeviceTest")
         if (org.jetbrains.kotlin.konan.target.HostManager.hostIsMac) {
             socketTestLeaves += listOf("macosTest", "iosTest", "tvosTest", "watchosTest")
         }

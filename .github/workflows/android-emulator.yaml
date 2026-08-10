@@ -1,0 +1,177 @@
+name: "Build & Test (Android emulator)"
+
+# Reusable lane: the common suite executed on a real ART runtime.
+#
+# WHY THIS EXISTS. Every Android test in this repo before now was a *host* test — our bytecode on the
+# developer's JDK, with Robolectric standing in for the framework. `socketTest` excludes Android for
+# exactly that reason ("an Android unit test is a host JVM"). So nothing here had ever run on ART, on
+# any lane, while Linux/JVM/macOS/iOS/tvOS all execute the full suite. That inversion is the same one
+# webrtc#104 called out for reactivity: the platform most exposed to interface churn, NAT rewriting and
+# multicast filtering was the one proven least.
+#
+# The part that is genuinely un-simulable is memory. buffer's ANDROID_ART_ALLOCATOR.md documents that
+# `ByteBuffer.allocateDirect` on ART counts against the Large Object Space and fragments there in a way
+# no other target reproduces — and this library's hot paths are pooled direct buffers by construction
+# (standing directive 6). A host JVM cannot fail that way, so a green `testAndroidHostTest` was never
+# evidence about it.
+#
+# WHAT IT DOES NOT PROVE. An emulator has no Wi-Fi driver, so it cannot demonstrate that inbound
+# multicast is filtered without a `WifiManager.MulticastLock` — that is Android platform behaviour we
+# cite, not something CI reproduces. What it does prove is that the lock is acquired and released around
+# the right lifetime, and that mDNS resolves over a real socket on ART.
+
+on:
+  workflow_call:
+    inputs:
+      gradle-args:
+        description: "Extra Gradle arguments"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: "Android emulator (API ${{ matrix.api-level }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Force-kill the emulator after 1s rather than waiting out the 20s graceful shutdown.
+      ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 1
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both ends of the supported range, and nothing in between — a mid level only re-tests the
+        # combination of branches the two ends already cover independently.
+        #   21 -> our declared minSdk (the convention plugin sets it for every module), and the
+        #         worst-case ART: the pre-Mainline allocator whose LOS fragmentation behaviour is the
+        #         one buffer's ANDROID_ART_ALLOCATOR.md measured as *not* self-healing.
+        #   35 -> a current ART that receives Mainline updates, where that same allocation self-heals.
+        # target/arch are explicit because the runner action otherwise defaults to `default;x86`, which
+        # does not exist for API 35 (google_apis;x86_64 only).
+        include:
+          - api-level: 21
+            target: default
+            arch: x86_64
+          - api-level: 35
+            target: google_apis
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v7
+
+      # temurin, not zulu — see the note in build-linux.yaml (tool-cache hit, no CDN fetch).
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6.3.0
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # The runner otherwise generates a fresh ~/.android/debug.keystore per run. Combined with the
+      # cached AVD — whose userdata retains a previously installed, differently-signed test APK — a
+      # cache hit then fails to install with INSTALL_PARSE_FAILED_INCONSISTENT_CERTIFICATES before a
+      # single test runs. A committed debug key makes the APK signature deterministic, so a stale
+      # cached install always matches and installing is idempotent. (Standard Android debug
+      # credentials, `android`/`android` — a published convention, not a secret.)
+      - name: Pin the Android debug keystore
+        run: |
+          mkdir -p ~/.android
+          cp .ci/debug.keystore ~/.android/debug.keystore
+
+      # restore/save are deliberately SPLIT rather than the unified actions/cache: the unified action
+      # saves at job END, i.e. after the tests have run — capturing AVD userdata with the test APKs
+      # installed, possibly torn mid-write by emulator teardown. Every cache-miss run would then poison
+      # the next: the stale install can neither be uninstalled nor reinstalled over. Saving explicitly
+      # right after the create step caches the PRISTINE disk, and the post-test state is never cached.
+      #
+      # The cached AVD is also SNAPSHOT-FREE (`-no-snapshot` on both create and run). A quickboot
+      # snapshot saved on one GitHub runner host and reloaded on another intermittently deadlocks the
+      # emulator ("A snapshot operation for 'test' is pending and timeout has expired") and never
+      # recovers. A cold boot from the cached disk is ~30-60s and reproducible across hosts.
+      - name: AVD cache (restore)
+        uses: actions/cache/restore@v6
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ matrix.api-level }}-${{ matrix.target }}-${{ matrix.arch }}-${{ hashFiles('.ci/debug.keystore') }}
+
+      - name: Create AVD for caching (no snapshot)
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          target: ${{ matrix.target }}
+          arch: ${{ matrix.arch }}
+          force-avd-creation: false
+          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "Primed pristine AVD disk for caching."
+
+      - name: AVD cache (save pristine disk)
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ matrix.api-level }}-${{ matrix.target }}-${{ matrix.arch }}-${{ hashFiles('.ci/debug.keystore') }}
+
+      - name: Run the common suite on ART
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          target: ${{ matrix.target }}
+          arch: ${{ matrix.arch }}
+          force-avd-creation: false
+          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: |
+            # The cached AVD's userdata retains test APKs from the run that populated it. If any was
+            # signed with a different debug key than this build, reinstalling over it fails with
+            # INSTALL_PARSE_FAILED_INCONSISTENT_CERTIFICATES before any test runs. Uninstalling every
+            # pre-existing ditchoom package first makes the install clean regardless of what signature
+            # the cached copy carried.
+            adb shell pm list packages -3 | sed 's/^package://' | grep -i '\.ditchoom\.' | xargs -r -n1 adb uninstall || true
+            # No minSdk-compatibility filter, unlike buffer's `connectedAndroidTestCompatible`: the
+            # convention plugin sets minSdk 21 for EVERY module here, so no module can exceed the
+            # API-21 leg's device level and AGP has nothing to fail over. Revisit only if a module ever
+            # declares a higher minSdk.
+            ./gradlew connectedAndroidTest ${{ inputs.gradle-args }} --no-configuration-cache
+
+      # `!cancelled()`, not `failure()`. A lane whose whole purpose is to be the FIRST runtime proof for
+      # a platform must publish its test COUNT on a green run: an APK that silently ran zero tests is
+      # otherwise indistinguishable from one that passed, and the count lives only in this XML. That is
+      # not hypothetical — it is exactly how the tvOS lane was validated (611 tests, byte-identical to
+      # macOS and iOS), and the same reasoning applies with more force here, because `sourceSetTreeName`
+      # is what grafts commonTest onto this compilation and a silent regression there empties the run.
+      # Cancellation is excluded because a half-written report is noise.
+      - name: Upload instrumented test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports-android-api${{ matrix.api-level }}
+          path: |
+            **/build/outputs/androidTest-results/**
+            **/build/reports/androidTests/**
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Kill emulator processes
+        if: always()
+        run: |
+          pkill -SIGTERM crashpad_handler || true
+          sleep 2
+          pkill -SIGKILL crashpad_handler || true
+          adb emu kill || true

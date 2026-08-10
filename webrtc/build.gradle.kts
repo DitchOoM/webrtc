@@ -68,7 +68,9 @@ kotlin {
         // coverage is a different (and separately worthwhile) exercise. The `hostIsMac` guard is the same
         // one above, for the same reason: those leaves do not exist when the host cannot build them.
         val socketTest by creating { dependsOn(commonTest.get()) }
-        val socketTestLeaves = mutableListOf("jvmTest", "linuxTest")
+        // androidDeviceTest joins for the reason spelled out in webrtc-ice's copy: an Android host test
+        // is a host-JVM test, so only the instrumented compilation puts `RealUdpLoopbackTest` on ART.
+        val socketTestLeaves = mutableListOf("jvmTest", "linuxTest", "androidDeviceTest")
         if (org.jetbrains.kotlin.konan.target.HostManager.hostIsMac) {
             socketTestLeaves += listOf("macosTest", "iosTest", "tvosTest", "watchosTest")
         }

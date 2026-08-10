@@ -12,6 +12,7 @@ import com.ditchoom.webrtc.dtls.DtlsFailureReason
 import com.ditchoom.webrtc.dtls.DtlsRole
 import com.ditchoom.webrtc.dtls.DtlsState
 import com.ditchoom.webrtc.dtls.KeyExchangeGroup
+import com.ditchoom.webrtc.dtls.bothKeyExchangeGroupsAvailable
 import com.ditchoom.webrtc.dtls.crypto.SelfSignedCertificate
 import com.ditchoom.webrtc.dtls.engineCryptoAvailable
 import com.ditchoom.webrtc.dtls.wire.CipherSuiteId
@@ -76,6 +77,10 @@ class Dtls13HelloRetryRejectTest {
     @Test
     fun a_second_hello_retry_request_is_fatal() {
         if (!engineCryptoAvailable()) return // browsers delegate; the engine's blocking crypto isn't here
+        // The setup step is a LEGITIMATE first HRR into X25519, so this needs both groups usable. On a
+        // one-group runtime the client rightly refuses that first HRR (it never advertised X25519) and the
+        // fixture fails on its own premise rather than on the second-HRR rule it exists to pin.
+        if (!bothKeyExchangeGroupsAvailable()) return
         val clientCert = cert(31)
         // Client prefers (key-shares) P-256; it offers X25519 too, so a first HRR for X25519 is legitimate.
         val client = Dtls13Handshake(clientConfig(KeyExchangeGroup.Secp256r1), DtlsRole.Client, clientCert)
@@ -144,6 +149,10 @@ class Dtls13HelloRetryRejectTest {
     @Test
     fun a_second_client_hello_with_the_wrong_group_is_fatal() {
         if (!engineCryptoAvailable()) return
+        // Needs a server that genuinely prefers X25519, so both groups must be usable. With only P-256 the
+        // server's preference falls back to the group the ClientHello already key-shared, it sends no HRR
+        // at all, and there is no "second ClientHello with the wrong group" to reject.
+        if (!bothKeyExchangeGroupsAvailable()) return
         val serverCert = cert(34)
         // Server prefers X25519. A ClientHello that key-shares P-256 (but offers X25519) makes the server
         // answer with an HRR demanding X25519 — then a second ClientHello that key-shares P-256 again

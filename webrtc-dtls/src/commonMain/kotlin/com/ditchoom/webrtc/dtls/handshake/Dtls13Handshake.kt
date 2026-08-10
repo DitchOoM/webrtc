@@ -89,10 +89,23 @@ internal class Dtls13Handshake(
     private val reassembler = HandshakeReassembler(factory)
     private val transcript = TranscriptHash(factory, dtls13 = true)
 
-    // The (EC)DHE group is negotiated: a client uses its configured group; a server adopts whichever
-    // supported group the peer key-shared (set in handleAsServer). The ephemeral keypair is therefore
+    // The groups this RUNTIME can actually do, in our preference order. Curve support is a runtime
+    // property rather than a platform one — see [EcdheKeyExchange.isAvailable] for the Android case that
+    // made that concrete — so every decision below (what we advertise, what we key-share, what we accept,
+    // what we ask a peer to retry with) is taken over this list and never over the full enum.
+    private val availableGroups: List<KeyExchangeGroup> =
+        KeyExchangeGroup.entries.filter { EcdheKeyExchange.isAvailable(it.agreementCurve) }
+
+    // Our effective preference: the configured group when this runtime can do it, else the best one it
+    // can. `config.keyExchangeGroup` stays the *request*; this is what we can honour. Empty means no
+    // group at all, which every use site below turns into a typed BackendUnavailable rather than a throw.
+    private val preferredGroup: KeyExchangeGroup? =
+        config.keyExchangeGroup.takeIf { it in availableGroups } ?: availableGroups.firstOrNull()
+
+    // The (EC)DHE group is negotiated: a client uses its effective preferred group; a server adopts
+    // whichever supported group the peer key-shared (set in handleAsServer). The ephemeral keypair is
     // deferred to that point — its curve isn't known until the group is (client: at start; server: on CH).
-    private var negotiatedGroup: KeyExchangeGroup = config.keyExchangeGroup
+    private var negotiatedGroup: KeyExchangeGroup = preferredGroup ?: config.keyExchangeGroup
     private var ecdhe: EcdheKeyExchange? = null
 
     // HelloRetryRequest (RFC 8446 §4.1.4 / RFC 9147). A client offers every supported group in
@@ -203,7 +216,15 @@ internal class Dtls13Handshake(
             // EVERY supported group in supported_groups (sendClientHelloFlight), so a server that prefers a
             // different offered group MAY answer with a HelloRetryRequest — handled by handleHelloRetryRequest,
             // which regenerates this key for the requested curve.
-            ecdhe = EcdheKeyExchange.generate(negotiatedGroup.agreementCurve)
+            ecdhe =
+                EcdheKeyExchange.generateOrNull(negotiatedGroup.agreementCurve)
+                    ?: run {
+                        // No group this runtime can do — a typed terminal, not a throw. This is the line
+                        // an Android client used to die on with an IllegalStateException that unwound
+                        // into the pump loop and reached the consumer as Dtls(HandshakeTimeout).
+                        fail(DtlsFailureReason.BackendUnavailable)
+                        return step(emptyList(), emptyList())
+                    }
             val out = mutableListOf<ReadBuffer>()
             sendClientHelloFlight(out, now)
             return step(out, emptyList())
@@ -590,10 +611,18 @@ internal class Dtls13Handshake(
         emitFlight(listOf(queueHandshake(HandshakeType.ClientHello, ch, EPOCH_0)), out, now)
     }
 
-    /** Our offered `supported_groups`, preferred (key-shared) group first — the browser-matching order. */
+    /**
+     * Our offered `supported_groups`, preferred (key-shared) group first — the browser-matching order.
+     *
+     * Filtered to what this runtime can actually do. Advertising a group we cannot perform invites a
+     * HelloRetryRequest naming it, which we would then have to fail — turning a working handshake into a
+     * dead one for no reason. On a runtime without X25519 (every Android, so far as the probe can tell)
+     * this correctly offers P-256 alone.
+     */
     private fun offeredGroups(): List<NamedGroup> {
         val preferred = negotiatedGroup.namedGroup
-        val rest = ALL_GROUPS.filter { it.value != preferred.value }
+        val available = availableGroups.map { it.namedGroup }
+        val rest = available.filter { it.value != preferred.value }
         return listOf(preferred) + rest
     }
 
@@ -628,10 +657,16 @@ internal class Dtls13Handshake(
         // Transcript: message_hash(ClientHello1) ‖ HelloRetryRequest ‖ ClientHello2 ‖ … (RFC 8446 §4.4.1).
         transcript.collapseToMessageHash()
         transcript.append(message)
+        // A server may only retry us into a group we advertised, and `offeredGroups()` now advertises only
+        // what this runtime can do — so a request outside that set is the peer ignoring our offer, not a
+        // capability problem. Reject it as a protocol error rather than attempting a key we cannot make.
+        if (requested !in availableGroups) return fail(DtlsFailureReason.HandshakeFailure)
         // Adopt the requested group and regenerate the ephemeral key for its curve.
         ecdhe?.close()
         negotiatedGroup = requested
-        ecdhe = EcdheKeyExchange.generate(negotiatedGroup.agreementCurve)
+        ecdhe =
+            EcdheKeyExchange.generateOrNull(negotiatedGroup.agreementCurve)
+                ?: return fail(DtlsFailureReason.BackendUnavailable)
         sendClientHelloFlight(out, now)
     }
 
@@ -710,7 +745,10 @@ internal class Dtls13Handshake(
             // advertise our preferred one in supported_groups, ask it to retry with a HelloRetryRequest
             // (RFC 8446 §4.1.4). Only once — a second ClientHello is answered with a real ServerHello.
             if (!sentHrr) {
-                val preferred = config.keyExchangeGroup
+                // The group we can actually honour, not merely the configured one. A server that retried
+                // the client into `config.keyExchangeGroup` on a runtime lacking it would answer the retry
+                // by failing on its own request — the same assumption as the client bug, one role over.
+                val preferred = preferredGroup ?: return fail(DtlsFailureReason.BackendUnavailable)
                 val sgExt = ch.extensions.firstOrNull { it.type.value == ExtensionType.SupportedGroups.value }
                 val clientOffersPreferred = sgExt != null && Tls13Bodies.supportedGroupsContains(sgExt.body, preferred.namedGroup)
                 if (clientShare.group.value != preferred.namedGroup.value && clientOffersPreferred) {
@@ -727,12 +765,19 @@ internal class Dtls13Handshake(
                 if (clientShare.group.value != hrrRequestedGroup?.namedGroup?.value) return fail(DtlsFailureReason.HandshakeFailure)
             }
             // Adopt whichever supported group the client key-shared (X25519 or P-256) and match its curve.
-            negotiatedGroup = clientShare.group.toKeyExchangeGroupOrNull() ?: return fail(DtlsFailureReason.HandshakeFailure)
+            // `availableGroups` rather than the full enum: a group we recognise but cannot perform is not
+            // one we may adopt, and the HRR branch above has already had its chance to steer the client to
+            // one we can.
+            val shared = clientShare.group.toKeyExchangeGroupOrNull() ?: return fail(DtlsFailureReason.HandshakeFailure)
+            if (shared !in availableGroups) return fail(DtlsFailureReason.BackendUnavailable)
+            negotiatedGroup = shared
             peerPoint = copyOf(clientShare.point)
         } finally {
             clientShare.releaseViews()
         }
-        ecdhe = EcdheKeyExchange.generate(negotiatedGroup.agreementCurve)
+        ecdhe =
+            EcdheKeyExchange.generateOrNull(negotiatedGroup.agreementCurve)
+                ?: return fail(DtlsFailureReason.BackendUnavailable)
         transcript.append(message)
         sendServerFlight(out, now)
     }

@@ -21,6 +21,11 @@ jobs:
   build-apple:
     uses: ./.github/workflows/build-apple.yaml
 
+  # The common suite on a real ART runtime. Android was the last supported platform whose every test
+  # ran on a host JVM — see the lane's own header for why that is not the same proof.
+  build-android-emulator:
+    uses: ./.github/workflows/android-emulator.yaml
+
   # T0′ (ARCHITECTURE §7): time-boxed coverage-guided Jazzer fuzzing of the pure-Kotlin STUN decoder, warm-
   # started from the committed seed corpus. A crash-free run is the gate; findings are demoted to
   # committed regression fixtures + corpus seeds (the two Jazzer finds in W1 already were).

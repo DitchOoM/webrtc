@@ -87,13 +87,18 @@ allOpen {
 }
 
 // The convention has no `libs` accessor (it is not part of the main build), so reach the shared
-// catalog explicitly for the one dependency the benchmark source sets need.
-val benchmarkRuntime =
+// catalog explicitly for the dependencies the generated source sets need.
+private val sharedCatalog =
     extensions
         .getByType(org.gradle.api.artifacts.VersionCatalogsExtension::class.java)
         .named("libs")
-        .findLibrary("kotlinx-benchmark-runtime")
-        .get()
+
+val benchmarkRuntime = sharedCatalog.findLibrary("kotlinx-benchmark-runtime").get()
+
+// The instrumentation runner named by `withDeviceTestBuilder` below has to be ON the device-test
+// classpath, or the APK builds and the run fails at launch with "Unable to find instrumentation
+// info" — a failure that reads as an emulator problem rather than a missing dependency.
+val androidTestRunner = sharedCatalog.findLibrary("androidx-test-runner").get()
 
 repositories {
     google()
@@ -117,6 +122,21 @@ kotlin {
         // pay only the resource-merge tasks, which are trivially incremental — measurably so: a full
         // `allTests` sweep across all seven host lanes is unchanged.
         withHostTest { isIncludeAndroidResources = true }
+        // ── The instrumented (on-device/emulator) compilation ────────────────────────────────
+        // An Android *host* test is a host-JVM test: it runs our bytecode on the developer's JDK, not
+        // on ART, and `socketTest` excludes Android for exactly that reason. So until this existed,
+        // NOTHING in this repo had ever executed on an Android runtime — the pooled buffer hot paths
+        // least of all, which is the part with a documented ART-specific hazard (buffer's
+        // ANDROID_ART_ALLOCATOR.md: `allocateDirect` counts against the Large Object Space and
+        // fragments there in a way no other target reproduces).
+        //
+        // `sourceSetTreeName = "test"` is the load-bearing line: it grafts the device-test compilation
+        // onto the **commonTest** tree, so the whole common suite runs on the emulator rather than only
+        // whatever lives in `androidDeviceTest/`. Without it this lane would compile an empty APK and
+        // pass, which is the failure mode the tvOS lane taught us to design against — a suite that
+        // silently ran zero tests is indistinguishable from one that passed.
+        withDeviceTestBuilder { sourceSetTreeName = "test" }
+            .configure { instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     }
     jvm {
         compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
@@ -164,6 +184,11 @@ kotlin {
     sourceSets {
         commonTest.dependencies {
             implementation(kotlin("test"))
+        }
+        // Created by `withDeviceTestBuilder` above. Named rather than `getting` because the set only
+        // exists once that builder has run, and `named` defers the lookup until it has.
+        named("androidDeviceTest") {
+            dependencies { implementation(androidTestRunner) }
         }
         // Shared benchmark sources compiled into both the JVM and Linux-K/N benchmark compilations.
         val jvmBenchmark by getting {

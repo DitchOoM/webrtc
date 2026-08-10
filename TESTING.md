@@ -72,8 +72,8 @@ L2 (Docker) is Linux-only by nature — it drives real coturn / Pion / browsers 
 network. Every L2 *network* scenario (NAT topology × IP family × policy — the peer-implementation axis
 `native/jvm/pion/chrome/firefox/webkit` is an interop concern, not a network one) has a deterministic
 L1 vnet fixture that reproduces the **same traversal outcome** under `runTest` virtual time, so
-**macOS / iOS-sim / Node / wasm / Android inherit the full NAT-traversal + TURN(v4/v6) + dual-stack
-story** that only Linux can prove on the real wire. The vnet is the source of truth; L2 is the oracle
+**macOS / iOS-sim / tvOS-sim / watchOS-sim / Node / wasm / Android inherit the full NAT-traversal +
+TURN(v4/v6) + dual-stack story** that only Linux can prove on the real wire. The vnet is the source of truth; L2 is the oracle
 that keeps it honest (§5).
 
 | L2 scenario | family | L1 vnet fixture | Traversal proven |

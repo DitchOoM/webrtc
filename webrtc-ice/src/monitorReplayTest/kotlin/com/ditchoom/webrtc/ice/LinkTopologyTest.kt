@@ -1,5 +1,6 @@
 package com.ditchoom.webrtc.ice
 
+import com.ditchoom.socket.BlockReason
 import com.ditchoom.socket.InternetAccess
 import com.ditchoom.socket.MonitorCapability
 import com.ditchoom.socket.MonitorMechanism
@@ -63,9 +64,38 @@ class LinkTopologyTest {
                 InternetAccess.Observed.Confirmed,
                 InternetAccess.Observed.Pending,
                 InternetAccess.Observed.Limited,
+                InternetAccess.Observed.Blocked(BlockReason.CaptivePortal),
+                InternetAccess.Observed.Blocked(BlockReason.Suspended),
             ).map { NetworkState.Routable(wifi, it).linkTopology() }.toSet()
 
         assertEquals(1, keys.size, "the verdict must not survive into the key at all: $keys")
+    }
+
+    /**
+     * `Blocked` is the verdict most likely to be mistaken for a network change, and socket 4.2.0
+     * (DitchOoM/socket#286) widened what reaches it: Android's **per-UID**
+     * `NetworkCallback.onBlockedStatusChanged` — Data Saver, background restriction — now folds into
+     * [BlockReason.Suspended] alongside the network-wide `!NET_CAPABILITY_NOT_SUSPENDED`. The link stays
+     * `INTERNET|VALIDATED` and its addresses do not move; only *this app's* traffic stops.
+     *
+     * Restarting ICE on that would be doubly wrong: the restart cannot succeed (the app is the thing
+     * being blocked) and the addresses it would re-gather are the ones it already has. What prevents it
+     * is not a transience predicate — this repo reads neither `isTransient` nor [BlockReason] anywhere —
+     * but [linkTopology]'s blanket erasure of the whole `InternetAccess` field, which makes the per-UID
+     * verdict structurally invisible. That is a *stronger* guarantee than a predicate, and this pins it
+     * so a future narrowing of the erasure cannot quietly let a per-UID block through.
+     */
+    @Test
+    fun a_per_uid_block_is_not_a_network_change() {
+        val running = NetworkState.Routable(wifi, InternetAccess.Observed.Confirmed)
+        val blockedForThisApp = NetworkState.Routable(wifi, InternetAccess.Observed.Blocked(BlockReason.Suspended))
+
+        assertEquals(
+            running.linkTopology(),
+            blockedForThisApp.linkTopology(),
+            "Data Saver blocking this UID leaves the link and its addresses untouched. Treating it as a " +
+                "network change restarts ICE on a path that cannot come back until the app is unblocked.",
+        )
     }
 
     /** A different link is a different network, verdict notwithstanding — Wi-Fi→cellular must survive. */

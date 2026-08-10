@@ -96,8 +96,8 @@ load-bearing, because it is also what decides where the stack runs.
 | Wire codecs | `buffer-codec` | KSP-generated from `@ProtocolMessage` schemas for STUN and SCTP chunks; SDP is text, so it gets a hand parser held to the same rigor |
 | Crypto primitives | `buffer-crypto` | AEAD, HKDF (`extractInto`/`expandInto` separately — the TLS 1.3 key-schedule shape), X25519/P-256, ECDSA, streaming SHA-2, constant-time compare, `secureFixedPool` |
 | The datagram seam | `buffer-flow` `AddressedDatagramChannel` | The interface both the vnet and real UDP implement. The cores target **this**, never a socket |
-| Real UDP + multicast | `socket-udp` | Only at the platform edge — `udpDatagramBinder()`, `MulticastMdnsEndpoint`. Ships jvm/android/linux/apple; **not** wasm, and **not** tvOS/watchOS, which is why those two targets publish yet cannot establish |
-| Network reactivity | `com.ditchoom:network-monitor` (jvm/android), socket core (the K/N leaves) | *When* did the network change. We do not hand-roll it |
+| Real UDP + multicast | `socket-udp` | Only at the platform edge — `udpDatagramBinder()`, `MulticastMdnsEndpoint`. Ships jvm/android/linux and **all eleven** Apple targets since 4.1.6 (tvOS/watchOS included); **not** wasm, which is the browser delegation of §1.1 |
+| Network reactivity | `com.ditchoom:network-monitor` | *When* did the network change. We do not hand-roll it. One artifact on every leaf — jvm, android **and** the K/N ones: socket#275 gave `:network-monitor` its own netlink and Apple cinterops, so `com.ditchoom:socket` core is no longer a dependency of this repo at all |
 | Interface enumeration | ours (`java.net.NetworkInterface` / `getifaddrs(3)`) | *Which local addresses exist* — socket's monitor reports link identity and carries no addresses, while ICE compares the selected pair's local IP. The two answer different questions and both are needed |
 
 ## 5. Determinism architecture
@@ -212,15 +212,23 @@ derived from the module name.
 Sixteen targets publish. Not all of them can establish a session, and the reasons are structural rather
 than incidental — worth stating plainly, because "it compiles" is not the same claim as "it connects".
 
-- **jvm, android, linux ×2, macOS ×2, iOS ×3** — real UDP and a real handshake. The full thing.
+- **jvm, android, linux ×2, macOS ×2, iOS ×3, tvOS ×3, watchOS ×2** — real UDP and a real handshake.
+  The full thing.
 - **Browsers (js, wasmJs)** — the delegation path of §1.1. Nothing of ours runs on the wire there.
 - **Node (js)** — no `RTCPeerConnection` to delegate to, and the native path cannot handshake: DTLS
   needs a *blocking* raw-ECDH premaster, and `buffer-crypto`'s js key agreement is WebCrypto, which is
   async only. It fails with a typed `DtlsFailureReason.BackendUnavailable` rather than hanging. Node's
   own `crypto.createECDH()` **is** synchronous, so this is closable upstream, not a wall.
-- **tvOS, watchOS (5 targets)** — our code is fine; it is `appleMain`, one source set, Network.framework,
-  available on both. `socket-udp` simply publishes no artifact for them, so there is no binder to inject.
-  An upstream packaging gap, not a design one.
+- **watchOS, on a real watch** — not a target at all, and the one place the "publishes but cannot
+  establish" shape survives in weaker form. The five tvOS/watchOS targets used to sit here, blocked on
+  `socket-udp` publishing no artifact for them; **socket 4.1.6 published all six**, so they establish
+  like any other Apple target and moved to the first bullet. What did not close is `watchosArm64` — the
+  32-bit `arm64_32` *device*. `buffer-crypto` publishes no klib for it and our matrix omits it to match,
+  so both watchOS artifacts we ship are simulator ones. Simulator coverage is real coverage (the tvOS
+  simulator lane runs the whole suite on the same `appleMain` sources), but a watch app cannot link this
+  library until that klib exists upstream. Also unproven on tvOS/watchOS specifically: mDNS, because no
+  test anywhere binds real multicast — every mDNS fixture substitutes an in-memory binder, so the
+  multicast entitlement those platforms require has never been exercised.
 - **Windows** — through the JVM. There is no Kotlin/Native Windows target in the matrix.
 
 ## 10. Non-goals

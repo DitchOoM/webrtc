@@ -40,11 +40,13 @@ kotlin {
         //
         // Same shared-source-set shape (and the same Dokka constraint — one file, one owning source set)
         // as webrtc-ice's socketMain, and the same leaves for the same reason: js/wasm delegate to
-        // RTCPeerConnection, and watchOS/tvOS have no socket-udp actual to bind (issue #127).
+        // RTCPeerConnection. tvOS/watchOS were excluded here too until socket 4.1.6 (socket#297)
+        // published their socket-udp targets and closed webrtc#127; the leaf list tracks webrtc-ice's,
+        // which is where the full note lives.
         val socketMain by creating { dependsOn(commonMain.get()) }
         val socketLeaves = mutableListOf("jvmMain", "androidMain", "linuxMain")
         if (org.jetbrains.kotlin.konan.target.HostManager.hostIsMac) {
-            socketLeaves += listOf("macosMain", "iosMain")
+            socketLeaves += listOf("macosMain", "iosMain", "tvosMain", "watchosMain")
         }
         for (leaf in socketLeaves) {
             named(leaf) { dependsOn(socketMain) }
@@ -68,7 +70,7 @@ kotlin {
         val socketTest by creating { dependsOn(commonTest.get()) }
         val socketTestLeaves = mutableListOf("jvmTest", "linuxTest")
         if (org.jetbrains.kotlin.konan.target.HostManager.hostIsMac) {
-            socketTestLeaves += listOf("macosTest", "iosTest")
+            socketTestLeaves += listOf("macosTest", "iosTest", "tvosTest", "watchosTest")
         }
         for (leaf in socketTestLeaves) {
             named(leaf) { dependsOn(socketTest) }

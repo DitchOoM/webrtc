@@ -24,7 +24,12 @@ jobs:
   build:
     name: "macOS / Apple K/N"
     runs-on: macos-latest
-    timeout-minutes: 60
+    # A green run measured 16m48s before the tvOS/watchOS steps (run 31271245104, 2026-08-08), against a
+    # 60-minute budget. The link step plus one more full simulator suite lands around 25-30. The reason
+    # for headroom beyond that is the `Cache Konan` key below: it hashes `gradle/libs.versions.toml`, so
+    # every dependency bump — including the socket 4.2.0 one that added these steps — runs on a
+    # restore-keys partial hit and re-downloads. Budget for the cold path, not the warm one.
+    timeout-minutes: 75
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -58,11 +63,51 @@ jobs:
       - name: Build + test (host macOS + iOS simulator)
         run: ./gradlew macosArm64Test iosSimulatorArm64Test ${{ inputs.gradle-args }} --no-configuration-cache
 
-      # On failure, capture the Apple K/N test reports (JUnit XML with full stack + captured output;
-      # for seeded tests the failing seed is in the assertion message) — so an Apple-only flake that
-      # can't be reproduced on the Linux dev box is diagnosable from the exact failure, not guessed.
-      - name: Upload test reports (on failure)
-        if: ${{ failure() }}
+      # ── tvOS / watchOS (webrtc#127) ──────────────────────────────────────────────────────────────
+      # Deliberately THREE steps, not one appended task list, because they fail for different reasons
+      # and the first is the one most likely to go red.
+      #
+      # 1) LINK, before any test runs. `publishToMavenLocal` below compiles every Apple *main*
+      #    compilation and has done for a long time — so klib compilation is NOT the new surface. The
+      #    new surface is the final Mach-O link, and specifically buffer-crypto's per-target Swift shim
+      #    (`lib<konan>cryptokitshim.a`, autolinking -lswiftCore / -lswift_Concurrency / CryptoKit) plus
+      #    the CommonCrypto GCM SPI symbols its sibling cinterop forward-declares and resolves against
+      #    the SDK at LINK time. buffer's own CI runs only macosArm64Test + iosSimulatorArm64Test, so it
+      #    publishes tvOS/watchOS klibs it has never produced a Mach-O from. This step is the first one
+      #    anywhere that does. A failure here is upstream and not fixable in this repo — which is
+      #    exactly why it must be attributable to its own step rather than buried in a test task.
+      - name: Link tvOS + watchOS test binaries (first-ever Mach-O for these targets)
+        run: ./gradlew linkDebugTestTvosSimulatorArm64 linkDebugTestWatchosSimulatorArm64 ${{ inputs.gradle-args }} --no-configuration-cache
+
+      # 2) Pin the runner-image assumption in the log. KGP resolves the simulator device by shelling
+      #    `xcrun simctl devices available`; when a runtime is absent the failure is a bare
+      #    "Cannot query the value of ... property 'device'", which reads as a Gradle bug rather than a
+      #    missing runtime. Two seconds to make that diagnosable.
+      - name: Show available simulator runtimes
+        run: xcrun simctl list runtimes && xcrun simctl list devices available
+
+      # 3) RUNTIME proof, tvOS only for now. tvOS is the family with a genuine DEVICE target
+      #    (`tvosArm64()`), so a simulator run is indirect proof of something a real app can ship.
+      #    Both watchOS targets we declare are simulators (watchosArm64/arm64_32 is absent from the
+      #    matrix because buffer-crypto publishes no klib for it), so a watchOS runtime lane would prove
+      #    only the artifacts that no watch app can link anyway — it stays link-only above until that
+      #    upstream gap closes. This is the first execution of the common suite on tvOS: ~610 tests.
+      - name: Test (tvOS simulator) — webrtc#127
+        run: ./gradlew tvosSimulatorArm64Test ${{ inputs.gradle-args }} --no-configuration-cache
+
+      # Capture the Apple K/N test reports (JUnit XML with full stack + captured output; for seeded
+      # tests the failing seed is in the assertion message) — so an Apple-only flake that can't be
+      # reproduced on the Linux dev box is diagnosable from the exact failure, not guessed.
+      #
+      # `!cancelled()`, not `failure()`: this used to upload only on a red run, which meant a GREEN run
+      # produced no artifact at all and "did `RealUdpLoopbackTest` — or now the whole tvOS suite —
+      # actually EXECUTE?" was answerable only by inference (the leaf source set exists, therefore the
+      # task was created, therefore it ran). Sound, but inference, and it is the wrong property for a
+      # lane whose entire purpose is to be the first runtime proof for a target: a suite that silently
+      # ran zero tests is indistinguishable from one that passed. The XML carries the test COUNT, which
+      # settles it directly. Cancellation is excluded because a half-written report is noise.
+      - name: Upload test reports
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
           name: test-reports-apple

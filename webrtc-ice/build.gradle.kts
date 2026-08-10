@@ -44,15 +44,17 @@ kotlin {
         // Same shared-source-set shape as `monitorReplayTest` below, and for the same Dokka-adjacent
         // reason: one physical file, one owning source set, compiled per leaf.
         //
-        // linuxTest, not nativeTest: `nativeTest` also covers watchOS/tvOS, for which socket-udp publishes
-        // no artifact at all (which is the same reason `socketMain` names its leaves explicitly).
+        // linuxTest, not nativeTest: the leaves are named explicitly, exactly as `socketMain` names its
+        // own, because `nativeTest` is broader than the set of targets that ship a socket-udp actual.
+        // (It used to read "nativeTest also covers watchOS/tvOS, for which socket-udp publishes no
+        // artifact at all". That expired with socket 4.1.6 / socket#297 — see socketMain below.)
         val socketTest by creating {
             dependsOn(commonTest.get())
             dependencies { implementation(libs.socket.udp) }
         }
         val socketTestLeaves = mutableListOf("jvmTest", "linuxTest")
         if (org.jetbrains.kotlin.konan.target.HostManager.hostIsMac) {
-            socketTestLeaves += listOf("macosTest", "iosTest")
+            socketTestLeaves += listOf("macosTest", "iosTest", "tvosTest", "watchosTest")
         }
         for (leaf in socketTestLeaves) {
             named(leaf) { dependsOn(socketTest) }
@@ -60,7 +62,8 @@ kotlin {
 
         // ── The real-socket edge: udpDatagramBinder() + the mDNS multicast resolver ──────────────
         // Two things that bind a socket-udp channel, so they compile ONLY into the non-browser targets
-        // that ship a socket-udp actual: jvm, android, linux, and — on a macOS host — macOS + iOS.
+        // that ship a socket-udp actual: jvm, android, linux, and — on a macOS host — every Apple
+        // target we declare (macOS, iOS, tvOS, watchOS).
         //
         //  · `udpDatagramBinder()` — the production DatagramBinder every real session passes to
         //    NativePeerConnection. It is the ONE substitution between a vnet run and a real-kernel run,
@@ -78,9 +81,19 @@ kotlin {
         // ("every Kotlin source file belongs to only one source set") fails with `Source sets 'android' and
         // 'jvm' … have the common source roots: …/MulticastMdnsResolver.kt`, breaking
         // :webrtc-ice:dokkaGeneratePublicationHtml (build-linux). A shared source set is one module → one
-        // owner. EXCLUDED on purpose: js/wasm (both `browser()`, no raw UDP) and watchOS/tvOS (socket-udp
-        // publishes no artifact for them, so `appleMain`/`nativeMain` are too broad to hang the dependency
-        // on — which is also why those five targets publish yet cannot establish a session).
+        // owner. EXCLUDED on purpose: js/wasm, both `browser()`, no raw UDP.
+        //
+        // tvOS and watchOS used to be excluded here too, on the grounds that socket-udp published no
+        // artifact for them — which is why those five targets published yet could not establish a session
+        // (webrtc#127). **socket 4.1.6 / socket#297 published all six tvOS/watchOS socket-udp targets**,
+        // so the exclusion expired and the leaves are hung below. Do not re-derive it from an old comment;
+        // check the module metadata. Note `tvosMain`/`watchosMain` are the default-hierarchy GROUP source
+        // sets, so this covers tvosArm64 + both tvOS simulators, and both watchOS simulators.
+        //
+        // watchosArm64 (the 32-bit arm64_32 device) is NOT in our target matrix at all — buffer-crypto
+        // publishes no klib for it and the convention plugin omits it to match. So every watchOS artifact
+        // we ship is a SIMULATOR one, and socket#297's arm64_32/ILP32 hazard has zero exposure here.
+        // Real watch-app support is a separate, upstream-blocked question.
         val socketMain by creating {
             dependsOn(commonMain.get())
             dependencies {
@@ -89,7 +102,7 @@ kotlin {
         }
         val socketLeaves = mutableListOf("jvmMain", "androidMain", "linuxMain")
         if (org.jetbrains.kotlin.konan.target.HostManager.hostIsMac) {
-            socketLeaves += listOf("macosMain", "iosMain")
+            socketLeaves += listOf("macosMain", "iosMain", "tvosMain", "watchosMain")
         }
         for (leaf in socketLeaves) {
             named(leaf) { dependsOn(socketMain) }

@@ -29,19 +29,23 @@ against Chrome, Firefox, WebKit, Pion and werift over real NAT kernels in CI acr
 shutdown). Every interop lane runs a **Linux or JVM** peer, which is why Android being non-functional
 (Traps, below) went unseen for so long: no lane anywhere executed on ART until the emulator lane landed,
 and the full common suite — 611 tests — now runs there per PR. Pinned at **socket 4.2.0 + buffer
-6.27.1**. socket
+6.28.1**. socket
 4.1.0 + buffer 6.25.0 is the pair that introduced `DatagramCapabilities.requiresNativeMemoryBuffers`,
 which is what the send-side buffer check consumes, and that seam is why the two normally move together.
-Buffer rides ahead deliberately: 6.26.0 is the Apple AEAD ownership fix and 6.27.1 the Android X25519
+Buffer rides ahead deliberately: 6.26.0 is the Apple AEAD ownership fix and #343 the Android X25519
 fix (both below), pure internal fixes with no API change, so resolving buffer up underneath a socket
 built against 6.25.0 is safe. socket-udp 4.2.0's POM still declares buffer 6.25.0, so that skew is
-unchanged — re-align on a socket release that pins 6.26.0 or later.
+unchanged — re-align on a socket release that pins 6.26.0 or later. socket itself has since moved to
+4.3.1, which this pin has not yet taken; `socket-udp-watchosdevicearm64` is still absent there, so the
+watchOS row below is unchanged by it.
 
-**buffer 6.27.1 is newer than 6.28.0**, which is not a typo and is the one thing to know before touching
-that pin. 6.28.0 was tagged from #342 *before* #343 merged; 6.27.1 was cut afterwards from a commit whose
-parent is #342's, so 6.27.1 strictly contains 6.28.0. Gradle resolves conflicts **up**, so anything
-dragging in 6.28.0 silently reverts the X25519 fix and drops Android 14+ back to P-256 — a capability
-regression that fails no build. The long note lives at the pin in `libs.versions.toml`; check the
+**6.28.0 is the one buffer version in this line to never resolve to**, and the reason is worth keeping
+even though the pin no longer depends on it. For one night the highest number was not the newest
+content: 6.28.0 was tagged from #342 *before* #343 merged, while #343 shipped as 6.27.1 afterwards from
+a commit whose parent is #342's — so 6.27.1 strictly contained 6.28.0, and pinning it meant Gradle
+(which resolves conflicts **up**) would silently revert the X25519 fix for anything naming 6.28.0.
+**6.28.1 closes this**: it is both the highest number and content-complete, so resolving up is safe
+again. The long note lives at the pin in `libs.versions.toml`; the durable habit is to check the
 published `-sources.jar` rather than the version order.
 
 ### Capabilities that are easy to under-estimate
@@ -197,11 +201,11 @@ catch-all maps every exception to "mDNS is unavailable here" and would swallow t
     `size_t`-typed CommonCrypto/Security function across a width-mixed target set (112 errors over 17
     files). `.convert()` cannot help — the reference offends, not the argument. Admitting it means
     splitting `buffer-crypto`'s `appleMain` by pointer width. `buffer-crypto-watchosarm64` is still a 404
-    on Central at 6.27.1; `socket-udp-watchosarm64` publishes fine, so socket is not the blocker here.
+    on Central at 6.28.1; `socket-udp-watchosarm64` publishes fine, so socket is not the blocker here.
   - `watchosDeviceArm64` (64-bit device — Series 9 / Ultra) — blocked in **socket**, and our own matrix
     omits the target entirely. buffer #342 added it everywhere including `buffer-crypto`, but
-    `socket-udp-watchosdevicearm64` is a 404 at 4.2.0, so this one needs a socket PR plus a target
-    registration here.
+    `socket-udp-watchosdevicearm64` is a 404 at 4.2.0 **and still at 4.3.1**, so this one needs a socket
+    PR plus a target registration here — a plain socket bump will not deliver it.
   - **Do not read #342 as "arm64_32 is unblocked"** — an earlier revision of this file did, from the PR
     title alone. It adds the 64-bit device and states in a comment why the 32-bit one stays out.
 - **Android's floor is API 28, and it is measured rather than chosen.** Two floors stack, and the
@@ -254,7 +258,7 @@ Things that have cost real time here. Read before acting on a premise that sound
   `AlgorithmParameterSpec`). So every Android peer threw inside `DtlsEngine.start`, the throw unwound
   into the session pump, and the consumer saw `Dtls(HandshakeTimeout)` — **no data channel could
   establish on any Android device.** P-256 was available the whole time and already advertised. Fixed by
-  choosing every group over `availableGroups`. Upstream buffer#343 (pinned as of 6.27.1) restores X25519
+  choosing every group over `availableGroups`. Upstream buffer#343 (pinned via 6.28.1) restores X25519
   on **Android 14+ only** — API 28–33 genuinely lack it, so our half is load-bearing at every level the
   minSdk admits, and the two are complementary rather than one superseding the other.
 - **A test that SKIPS an unavailable capability is blind to that capability being wrongly reported.**

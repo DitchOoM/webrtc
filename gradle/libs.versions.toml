@@ -61,7 +61,8 @@ kotlinxCoroutines = "1.11.0"
 # `requiresNativeMemoryBuffers` seam the pair exists to carry is untouched); revisit if the two halves
 # ever diverge on API rather than on a bug fix.
 #
-# 6.27.1 (buffer PR #343) restores X25519 on Android 14+ (API 34+), where Conscrypt implements it fully
+# buffer PR #343 (first released as 6.27.1, carried unchanged in the 6.28.1 pinned below) restores
+# X25519 on Android 14+ (API 34+), where Conscrypt implements it fully
 # and buffer-crypto reported it `Unavailable` anyway — two provider disagreements written to the JDK's
 # shape, both silent: the probe called `initialize(NamedParameterSpec.X25519)`, which Conscrypt's
 # X25519-only generator refuses outright, and `rawX25519` cast to `XECPublicKey`, which
@@ -69,15 +70,20 @@ kotlinxCoroutines = "1.11.0"
 # group from, so this is the upstream half of the Android establishment defect. Our half stays: API
 # 28–33 genuinely have no X25519, so every group decision still runs over `availableGroups`.
 #
-# !! DO NOT "UPGRADE" TO 6.28.0 — IT IS OLDER CONTENT AT A HIGHER NUMBER. !!
-# 6.28.0 was tagged from #342 at 23:42 UTC; #343 merged at 23:06 but was released as 6.27.1 at 00:40,
-# i.e. AFTER 6.28.0 and from a commit whose parent is #342's. So 6.27.1 ⊃ 6.28.0: it carries #342's
-# `watchosDeviceArm64` too, and 6.28.0 is the only version between 6.26.0 and 6.27.1 without the X25519
-# fix. Verified in the published `-sources.jar`, not inferred from the tag. Because Gradle resolves
-# version conflicts UP, any dependency dragging in 6.28.0 silently reverts #343 and takes Android 14+
-# back to P-256 — a quiet capability regression, not a build failure. Re-check this note before the
-# next bump; it stops applying at 6.29.0+, which is genuinely newer than both.
-buffer = "6.27.1"
+# 6.28.1 is where we pin, and it *closes* a hazard 6.27.1 could only work around. For one night the
+# highest version number was not the newest content: 6.28.0 was tagged from #342 at 23:42 UTC, while
+# #343 merged at 23:06 and shipped as 6.27.1 at 00:40 — later, and from a commit whose parent is #342's.
+# So 6.27.1 ⊃ 6.28.0, and 6.28.0 is the only version in this range missing the X25519 fix. Because
+# Gradle resolves version conflicts UP, pinning 6.27.1 meant any dependency naming 6.28.0 silently
+# reverted #343 and took Android 14+ back to P-256 — a capability regression that fails no build and no
+# test. 6.28.1 ends that: it is both the highest number and content-complete, so resolving up is safe
+# again and the pin no longer has to win an argument with the version ordering.
+#
+# Verified in the published `-sources.jar`, not inferred from the tag (the standing trap: a fix reaches
+# a release as *content*, not as a commit). buffer-crypto's android sources at 6.28.1 are byte-identical
+# to 6.27.1's, and the sole file separating 6.28.1 from 6.28.0 is `KeyAgreement.jvmCommon.kt` — the #343
+# fix itself. 6.28.0 stays the one version in this line to never resolve to.
+buffer = "6.28.1"
 # DitchOoM socket sibling — the UDP `DatagramChannel` **actuals** webrtc's transport track binds to for
 # real-network candidate gathering (host/srflx/relay). The seam itself is buffer-flow's
 # `DatagramChannel` (on Central, above); `socket-udp` is only the platform real-socket implementation

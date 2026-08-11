@@ -64,16 +64,53 @@ internal class EcdheKeyExchange private constructor(
 
     companion object {
         /**
-         * Generates a fresh ephemeral keypair on [curve] (buffer-crypto's CSPRNG — the Tier-B unseeded
-         * residue). Defaults to P-256 for the DTLS 1.2 caller; the 1.3 caller passes its negotiated group.
+         * Whether [curve] has a **blocking** key agreement on this runtime — i.e. whether [generateOrNull]
+         * can succeed for it.
+         *
+         * Exists because curve support is a **runtime** property, not a platform one, and this stack used
+         * to assume otherwise. Android is the case that proved it: Conscrypt registers `XDH` but its
+         * `KeyPairGenerator` rejects every `AlgorithmParameterSpec`, so buffer-crypto's probe
+         * (`KeyPairGenerator.getInstance("XDH").initialize(NamedParameterSpec.X25519)`) reports X25519
+         * `Unavailable` on **every** Android API level — including those whose release notes say it is
+         * present. P-256 is available there and always has been. A client that hard-assumes X25519
+         * therefore cannot open a data channel on any Android device, which is exactly what shipped until
+         * the ART lane ran.
+         *
+         * Ask this before *advertising* a group, not only before using one: offering a group we cannot do
+         * invites a HelloRetryRequest we would then have to fail.
          */
-        fun generate(curve: KeyAgreementCurve = KeyAgreementCurve.P256): EcdheKeyExchange {
+        fun isAvailable(curve: KeyAgreementCurve): Boolean = CryptoCapabilities.keyAgreement(curve) is KeyAgreementSupport.Blocking
+
+        /**
+         * A fresh ephemeral keypair on [curve] (buffer-crypto's CSPRNG — the Tier-B unseeded residue), or
+         * `null` when this runtime has no blocking agreement for it.
+         *
+         * Null rather than a throw so the caller maps the miss onto its own typed terminal
+         * ([DtlsFailureReason.BackendUnavailable][com.ditchoom.webrtc.dtls.DtlsFailureReason.BackendUnavailable])
+         * — per standing directive 3, an unsupported curve is a typed reason, never an exception escaping
+         * the sans-io core. The predecessor of this function `check()`ed instead, and that
+         * `IllegalStateException` unwound through `DtlsEngine.start` into the session's pump loop, where it
+         * surfaced to the consumer as an unexplained `Dtls(HandshakeTimeout)`.
+         */
+        fun generateOrNull(curve: KeyAgreementCurve): EcdheKeyExchange? {
             val support = CryptoCapabilities.keyAgreement(curve)
-            check(support is KeyAgreementSupport.Blocking) {
-                "${curve.curveName} blocking key agreement unavailable on this target (browsers delegate; the engine never runs here)"
-            }
+            if (support !is KeyAgreementSupport.Blocking) return null
             return EcdheKeyExchange(curve, support.ops, support.ops.generateKeyPairBlocking())
         }
+
+        /**
+         * Generates a fresh ephemeral keypair on [curve], defaulting to P-256 — the DTLS **1.2** entry
+         * point, whose cipher suite (`TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256`) fixes the curve at
+         * `secp256r1` with nothing to negotiate. The 1.3 caller has a choice of group and must use
+         * [generateOrNull] so it can fall back.
+         *
+         * Still a `check()`, and deliberately: P-256 ECDH is available on every target that runs this
+         * engine, so a miss here is not a negotiable condition but a broken crypto provider.
+         */
+        fun generate(curve: KeyAgreementCurve = KeyAgreementCurve.P256): EcdheKeyExchange =
+            checkNotNull(generateOrNull(curve)) {
+                "${curve.curveName} blocking key agreement unavailable on this runtime"
+            }
     }
 }
 

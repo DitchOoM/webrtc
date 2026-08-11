@@ -26,7 +26,10 @@ Released on Maven Central; the data-channel stack is complete. It establishes an
 against Chrome, Firefox, WebKit, Pion and werift over real NAT kernels in CI across
 `{x64, arm64} × {v4, v6, dual}`, and every lane also gates on the data-channel *semantics* sequence
 (fragmentation, unordered, PR-SCTP, multiplexing, reverse-direction, per-channel close, graceful
-shutdown). Pinned at **socket 4.2.0 + buffer 6.26.0**, both the current Maven Central releases. socket
+shutdown). Every interop lane runs a **Linux or JVM** peer, which is why Android being non-functional
+(Traps, below) went unseen for so long: no lane anywhere executed on ART until the emulator lane landed,
+and the full common suite — 611 tests — now runs there per PR. Pinned at **socket 4.2.0 + buffer
+6.26.0**, both the current Maven Central releases. socket
 4.1.0 + buffer 6.25.0 is the pair that introduced `DatagramCapabilities.requiresNativeMemoryBuffers`,
 which is what the send-side buffer check consumes, and that seam is why the two normally move together.
 Buffer rides one ahead deliberately: 6.26.0 is the Apple AEAD ownership fix (below), a pure internal fix
@@ -180,19 +183,74 @@ catch-all maps every exception to "mDNS is unavailable here" and would swallow t
 - **Platforms:** Node needs blocking raw-ECDH plus a shipped binder (#133). tvOS/watchOS establish as of
   socket 4.2.0 (#127 closed); what remains there is `watchosArm64`, the 32-bit `arm64_32` *device*, which
   `buffer-crypto` publishes no klib for — so every watchOS artifact we ship is a simulator one and no
-  watch app can link this yet. mDNS on tvOS/watchOS is also unproven: no test anywhere binds real
-  multicast, so the entitlement those platforms require has never been exercised.
+  watch app can link this yet. **buffer PR #342 closes exactly that**, and also adds
+  `watchosDeviceArm64` (the 64-bit device, which our matrix omits entirely); socket already publishes
+  `socket-udp-watchosarm64` but *not* `watchosDeviceArm64`, so arm64_32 unblocks on that buffer release
+  alone while the 64-bit device additionally needs a socket PR. Check Central before re-deriving either.
+- **Android's floor is API 28, and it is measured rather than chosen.** Two floors stack, and the
+  declared minSdk of 21 satisfied neither.
+  - *Runtime floor, 24.* The emulator lane ran at 21 and reported that 21 cannot host this stack at
+    all: ART's `sun.misc.Unsafe` has no `allocateMemory` before 24 (a dexdump of the API-21 class lists
+    only the CAS / field-offset / park set — `copyMemory`, `addressSize` and `getByte(long)` are absent
+    too), which is what `BufferFactory.secure()` allocates every key schedule through; and
+    `DatagramChannel.bind(SocketAddress)` does not exist before 24 either, which is what
+    `UdpSocket.bind` calls. Both arrived with Android 7.0's OpenJDK-derived `core-oj`, and both land as
+    `NoSuchMethodError` — nothing on our side routes around either. The two upstream defects behind
+    them: buffer's `UnsafeAllocator.isSupported` probes only that the `theUnsafe` **field** is
+    reachable, never that the **methods** exist (and its `catch (_: Exception)` could not have seen a
+    `NoSuchMethodError` regardless), and socket's `UdpSocket.jvm.kt` uses the API-24 `bind` where
+    `channel.socket().bind(...)` works everywhere.
+  - *Dependency floor, 28 — the binding one.* `buffer-crypto-android` has declared
+    `minSdkVersion="28"` in its published manifest since at least 6.22.0, and `webrtc-dtls` takes it as
+    `api`. An Android app below 28 fails the manifest merge on it whatever we declare. **AGP does not
+    propagate a dependency's floor into our modules**, which is precisely why this went unseen: on the
+    API-21 leg `:webrtc-dtls:connectedAndroidDeviceTest` ran instead of being skipped, so nothing in
+    our CI ever saw the merge that a consumer would perform. `consumer-smoke` cannot catch it either —
+    it resolves K/N and JVM, never an Android app.
+  - The emulator leg and minSdk move in lockstep: above the floor the leg stops proving it, below the
+    floor it certifies a configuration no consumer can build.
+- **mDNS silently receives nothing on Android**, and nothing here or in socket acquires a
+  `WifiManager.MulticastLock` — without one the Wi-Fi driver filters inbound multicast not addressed to
+  the device's own MAC, so queries go out and no response ever arrives. mDNS defaults *on* in
+  `nativePeerConnection()`. Belongs in socket beside `bindMulticast` (`socket-udp`'s androidMain manifest
+  already declares INTERNET, and `CHANGE_WIFI_MULTICAST_STATE` is `protectionLevel="normal"` — no user
+  prompt). Note `socket-udp` does **not** depend on `network-monitor`, so the application `Context` is
+  not reachable there either; that PR needs its own androidx.startup capture. An emulator cannot prove
+  this half — it has no Wi-Fi driver. mDNS on tvOS/watchOS is unproven for a different reason: no test
+  anywhere binds real multicast, so the entitlement those platforms require has never been exercised.
 - **Media** (RTP/SRTP), which remains out of scope.
 
 ## Traps
 
 Things that have cost real time here. Read before acting on a premise that sounds settled.
 
-- **Stale premises are this codebase's recurring failure mode** — nine instances so far, each costing
+- **Stale premises are this codebase's recurring failure mode** — ten instances so far, each costing
   between a wrong comment and ~1000 wrong lines. When a comment explains why something *cannot* be done,
   check whether it still can't before building around it. One instance was **this file**, which is the
   worst place for one; correct this document as soon as the state it describes changes, and keep the
   correction itself in git history rather than here.
+- **A capability is a property of the RUNTIME, not of the platform** — and the tenth instance above is
+  this one, which shipped a non-functional platform. `EcdheKeyExchange.generate` `check()`ed that the
+  *configured* curve was available, under a comment reading "browsers delegate; the engine never runs
+  here". Android is a `Native` target where the engine is the whole story, and buffer-crypto reports
+  X25519 `Unavailable` there at every API level (Conscrypt's `XDH` `KeyPairGenerator` refuses every
+  `AlgorithmParameterSpec`). So every Android peer threw inside `DtlsEngine.start`, the throw unwound
+  into the session pump, and the consumer saw `Dtls(HandshakeTimeout)` — **no data channel could
+  establish on any Android device.** P-256 was available the whole time and already advertised. Fixed by
+  choosing every group over `availableGroups`; upstream buffer#343 restores X25519 on Android 14+.
+- **A test that SKIPS an unavailable capability is blind to that capability being wrongly reported.**
+  This is why the above shipped: buffer-crypto's `KeyAgreementTest` skips curves the target calls
+  unavailable, so its entire X25519 suite passed on Android by never running. Assert the *agreement
+  between the probe and the provider*, not just the happy path.
+- **Gating a fixture on a capability is the safe half; silent degeneration is the dangerous half.**
+  `Dtls13HelloRetryRequestTest` did not fail on a one-group runtime — the server fell back to the
+  client's group, no HelloRetryRequest was ever sent, both peers established, and every assertion still
+  passed. A green test named for a path it no longer exercises is worse than a red one.
+- **An Android *unit* test is a host-JVM test.** Nothing ran on ART until the emulator lane existed, and
+  it found the above on its first run. `withDeviceTestBuilder { sourceSetTreeName = "test" }` is the
+  load-bearing line — it grafts the device compilation onto `commonTest`; without it the lane builds an
+  empty APK and passes. `androidDeviceTest` is also a `socketTest` leaf, which is the only way real UDP
+  is exercised on Android.
 - **A fix reaches a release as *content*, not as a commit.** Rebases, squashes and merge commits all
   detach a subject line from the sha that shipped it, so `git tag --contains <sha>` answers "was this
   object released", which is a different question. **Check the tree at the tag** (`git show v<x>:<file>`)

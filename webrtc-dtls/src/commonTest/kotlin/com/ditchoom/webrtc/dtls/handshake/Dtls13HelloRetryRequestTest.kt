@@ -11,6 +11,7 @@ import com.ditchoom.webrtc.dtls.DtlsRole
 import com.ditchoom.webrtc.dtls.DtlsState
 import com.ditchoom.webrtc.dtls.DtlsVersion
 import com.ditchoom.webrtc.dtls.KeyExchangeGroup
+import com.ditchoom.webrtc.dtls.bothKeyExchangeGroupsAvailable
 import com.ditchoom.webrtc.dtls.crypto.SelfSignedCertificate
 import com.ditchoom.webrtc.dtls.engineCryptoAvailable
 import kotlin.random.Random
@@ -51,6 +52,11 @@ class Dtls13HelloRetryRequestTest {
     @Test
     fun a_hello_retry_request_completes_the_handshake() {
         if (!engineCryptoAvailable()) return // browsers delegate; the engine's blocking crypto isn't here
+        // An HRR needs two usable groups to retry BETWEEN. Without the gate this test does not fail on a
+        // one-group runtime — it silently stops testing an HRR: the server falls back to the client's
+        // group, no retry is sent, both establish, and the assertions below still pass. See
+        // [bothKeyExchangeGroupsAvailable].
+        if (!bothKeyExchangeGroupsAvailable()) return
         val clientCert = cert(21)
         val serverCert = cert(22)
         val client = Dtls13Handshake(clientConfig(), DtlsRole.Client, clientCert)
@@ -75,6 +81,7 @@ class Dtls13HelloRetryRequestTest {
     @Test
     fun application_data_flows_after_a_hello_retry_request() {
         if (!engineCryptoAvailable()) return
+        if (!bothKeyExchangeGroupsAvailable()) return // as above: one group means no retry to flow after
         val clientCert = cert(23)
         val serverCert = cert(24)
         val client = Dtls13Handshake(clientConfig(), DtlsRole.Client, clientCert)

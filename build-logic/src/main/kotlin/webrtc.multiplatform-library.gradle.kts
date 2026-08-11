@@ -87,13 +87,18 @@ allOpen {
 }
 
 // The convention has no `libs` accessor (it is not part of the main build), so reach the shared
-// catalog explicitly for the one dependency the benchmark source sets need.
-val benchmarkRuntime =
+// catalog explicitly for the dependencies the generated source sets need.
+private val sharedCatalog =
     extensions
         .getByType(org.gradle.api.artifacts.VersionCatalogsExtension::class.java)
         .named("libs")
-        .findLibrary("kotlinx-benchmark-runtime")
-        .get()
+
+val benchmarkRuntime = sharedCatalog.findLibrary("kotlinx-benchmark-runtime").get()
+
+// The instrumentation runner named by `withDeviceTestBuilder` below has to be ON the device-test
+// classpath, or the APK builds and the run fails at launch with "Unable to find instrumentation
+// info" — a failure that reads as an emulator problem rather than a missing dependency.
+val androidTestRunner = sharedCatalog.findLibrary("androidx-test-runner").get()
 
 repositories {
     google()
@@ -109,7 +114,33 @@ kotlin {
     android {
         namespace = androidNamespace
         compileSdk = 36
-        minSdk = 21
+        // 28, and every level below it is excluded by evidence rather than by preference. Two separate
+        // floors stack here; 28 is the higher, but both are real and removing either one alone changes
+        // nothing.
+        //
+        // RUNTIME floor — 24. Android 7.0 is where libcore became OpenJDK-derived (`core-oj`), and both
+        // primitives this library is built on arrived with it:
+        //   * `sun.misc.Unsafe.allocateMemory` — absent from ART's Unsafe until 24 (a dexdump of the
+        //     API-21 class lists only the CAS / field-offset / park set; `copyMemory`, `addressSize`
+        //     and `getByte(long)` are missing too). buffer's `BufferFactory.secure()` allocates
+        //     through it for every key schedule, so DTLS could not generate a keypair at all.
+        //   * `java.nio.channels.DatagramChannel.bind(SocketAddress)` — added in 24; before that only
+        //     `channel.socket().bind(...)` exists. socket's `UdpSocket.bind` calls the former, so no
+        //     UDP socket could be opened.
+        // Both surfaced as `NoSuchMethodError` on the API-21 emulator leg — measured, not assumed.
+        //
+        // DEPENDENCY floor — 28, and this is the binding one. `buffer-crypto-android` has declared
+        // `minSdkVersion="28"` in its published manifest since at least 6.22.0, and `webrtc-dtls`
+        // takes it as `api`, so it is in every consumer's graph. An app below 28 fails the manifest
+        // merge on it no matter what we declare. Note AGP does NOT propagate that into our own
+        // modules: on the API-21 leg `:webrtc-dtls:connectedAndroidDeviceTest` ran rather than being
+        // skipped, which is exactly how we shipped a floor our own dependency graph could not honour —
+        // the merge error lands on the consumer, where our CI cannot see it.
+        //
+        // So this can only drop to 24 if buffer-crypto lowers its own floor, and below 24 only if the
+        // two upstream defects above are fixed as well. Raise the leg in `android-emulator.yaml` in
+        // lockstep with this.
+        minSdk = 28
         // Robolectric resolves the Android framework through the merged manifest + resources, so the
         // host-test compilation has to package them; without this it fails at startup rather than
         // skipping. Set here rather than in one module's build file because this convention is the
@@ -117,6 +148,21 @@ kotlin {
         // pay only the resource-merge tasks, which are trivially incremental — measurably so: a full
         // `allTests` sweep across all seven host lanes is unchanged.
         withHostTest { isIncludeAndroidResources = true }
+        // ── The instrumented (on-device/emulator) compilation ────────────────────────────────
+        // An Android *host* test is a host-JVM test: it runs our bytecode on the developer's JDK, not
+        // on ART, and `socketTest` excludes Android for exactly that reason. So until this existed,
+        // NOTHING in this repo had ever executed on an Android runtime — the pooled buffer hot paths
+        // least of all, which is the part with a documented ART-specific hazard (buffer's
+        // ANDROID_ART_ALLOCATOR.md: `allocateDirect` counts against the Large Object Space and
+        // fragments there in a way no other target reproduces).
+        //
+        // `sourceSetTreeName = "test"` is the load-bearing line: it grafts the device-test compilation
+        // onto the **commonTest** tree, so the whole common suite runs on the emulator rather than only
+        // whatever lives in `androidDeviceTest/`. Without it this lane would compile an empty APK and
+        // pass, which is the failure mode the tvOS lane taught us to design against — a suite that
+        // silently ran zero tests is indistinguishable from one that passed.
+        withDeviceTestBuilder { sourceSetTreeName = "test" }
+            .configure { instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     }
     jvm {
         compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
@@ -164,6 +210,11 @@ kotlin {
     sourceSets {
         commonTest.dependencies {
             implementation(kotlin("test"))
+        }
+        // Created by `withDeviceTestBuilder` above. Named rather than `getting` because the set only
+        // exists once that builder has run, and `named` defers the lookup until it has.
+        named("androidDeviceTest") {
+            dependencies { implementation(androidTestRunner) }
         }
         // Shared benchmark sources compiled into both the JVM and Linux-K/N benchmark compilations.
         val jvmBenchmark by getting {

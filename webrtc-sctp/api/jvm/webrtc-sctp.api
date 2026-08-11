@@ -1459,8 +1459,31 @@ public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelConnection : 
 	public final fun getConfig ()Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;
 	public fun getId ()J
 	public fun receive ()Lkotlinx/coroutines/flow/Flow;
-	public fun send (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun send (Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelPayload;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public synthetic fun send (Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/datachannel/DataChannelPayload {
+	public abstract fun release ()V
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelPayload$Binary : com/ditchoom/webrtc/sctp/datachannel/DataChannelPayload {
+	public fun <init> (Lcom/ditchoom/buffer/ReadBuffer;)V
+	public final fun getBytes ()Lcom/ditchoom/buffer/ReadBuffer;
+	public fun release ()V
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelPayload$Text : com/ditchoom/webrtc/sctp/datachannel/DataChannelPayload {
+	public fun <init> (Ljava/lang/CharSequence;)V
+	public final fun getText ()Ljava/lang/CharSequence;
+	public fun release ()V
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelPayloadKt {
+	public static final fun send (Lcom/ditchoom/buffer/flow/Connection;Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun send (Lcom/ditchoom/buffer/flow/Connection;Ljava/lang/CharSequence;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
 public final class com/ditchoom/webrtc/sctp/datachannel/SctpClosedException : java/lang/Exception {

@@ -30,6 +30,7 @@ import com.ditchoom.webrtc.sctp.association.SctpAssociationState
 import com.ditchoom.webrtc.sctp.association.SctpConfig
 import com.ditchoom.webrtc.sctp.association.SctpFailureReason
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
+import com.ditchoom.webrtc.sctp.datachannel.DataChannelPayload
 import com.ditchoom.webrtc.sctp.datachannel.SctpClosedException
 import com.ditchoom.webrtc.sctp.datachannel.SctpDataChannelStack
 import com.ditchoom.webrtc.sctp.datachannel.SctpDatagramTransport
@@ -317,7 +318,7 @@ public interface RtcPeerConnection {
     public val localIceCandidates: Flow<String>
 
     /** Data channels the peer opened (W3C `ondatachannel`). */
-    public val incomingDataChannels: Flow<Connection<ReadBuffer>>
+    public val incomingDataChannels: Flow<Connection<DataChannelPayload>>
 
     /**
      * Fires when the session needs the app to run a new offer/answer round (W3C `negotiationneeded`).
@@ -354,7 +355,7 @@ public interface RtcPeerConnection {
     public val diagnostics: Flow<SessionDiagnostic> get() = emptyFlow()
 
     /** Open a data channel (RFC 8832). Returns immediately; the channel becomes live once SCTP is up. */
-    public suspend fun createDataChannel(config: DataChannelConfig = DataChannelConfig()): Connection<ReadBuffer>
+    public suspend fun createDataChannel(config: DataChannelConfig = DataChannelConfig()): Connection<DataChannelPayload>
 
     /** Generate an SDP offer (RFC 8829). Does not apply it — pass it to [setLocalDescription]. */
     public suspend fun createOffer(): String
@@ -496,8 +497,8 @@ public class NativePeerConnection(
     @Suppress("UnseamedEntropy") // derived from the injected [random]; not an ambient default
     private val privacyRandom: Random by lazy { Random(random.nextLong()) }
 
-    private val incomingChannels = Channel<Connection<ReadBuffer>>(Channel.UNLIMITED)
-    override val incomingDataChannels: Flow<Connection<ReadBuffer>> get() = incomingChannels.receiveAsFlow()
+    private val incomingChannels = Channel<Connection<DataChannelPayload>>(Channel.UNLIMITED)
+    override val incomingDataChannels: Flow<Connection<DataChannelPayload>> get() = incomingChannels.receiveAsFlow()
 
     private val renegotiationChannel = Channel<Unit>(Channel.CONFLATED)
     override val renegotiationNeeded: Flow<Unit> get() = renegotiationChannel.receiveAsFlow()
@@ -930,7 +931,7 @@ public class NativePeerConnection(
             TrickleGenerationPolicy.Untagged -> CandidateGeneration.Untagged
         }
 
-    override suspend fun createDataChannel(config: DataChannelConfig): Connection<ReadBuffer> =
+    override suspend fun createDataChannel(config: DataChannelConfig): Connection<DataChannelPayload> =
         negotiationLock.withLock {
             if (closed) throw SctpClosedException(null)
             when (val channels = dataChannels) {
@@ -1578,14 +1579,14 @@ public class NativePeerConnection(
     // A data channel handed back before SCTP is up: proxies to the real channel once [bind] completes.
     private inner class PendingChannel(
         val config: DataChannelConfig,
-    ) : Connection<ReadBuffer> {
-        private val real = CompletableDeferred<Connection<ReadBuffer>>()
+    ) : Connection<DataChannelPayload> {
+        private val real = CompletableDeferred<Connection<DataChannelPayload>>()
 
         override val id: Long get() = if (real.isCompleted && !real.isCancelled) real.getCompleted().id else -1L
 
-        override suspend fun send(message: ReadBuffer) = real.await().send(message)
+        override suspend fun send(message: DataChannelPayload) = real.await().send(message)
 
-        override fun receive(): Flow<ReadBuffer> = flow { emitAll(real.await().receive()) }
+        override fun receive(): Flow<DataChannelPayload> = flow { emitAll(real.await().receive()) }
 
         override suspend fun close() {
             if (real.isCompleted && !real.isCancelled) {

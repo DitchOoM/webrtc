@@ -3,6 +3,7 @@
 package com.ditchoom.webrtc.sctp.datachannel
 
 import com.ditchoom.buffer.ByteOrder
+import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.Connection
 import com.ditchoom.buffer.flow.Receiver
@@ -69,7 +70,7 @@ public class SctpDataChannelStack(
     private val role: SctpRole,
     config: SctpConfig = SctpConfig(),
     @Suppress("UnseamedEntropy") random: Random = Random.Default,
-) : StreamMux<ReadBuffer> {
+) : StreamMux<DataChannelPayload> {
     private val association = SctpAssociation(config, random)
     private val bufferFactory = config.bufferFactory
 
@@ -138,6 +139,14 @@ public class SctpDataChannelStack(
     /** True once the stack has torn down (transport close / abort) — test-visible, not public API. */
     internal val isTornDown: Boolean get() = closed
 
+    /**
+     * Inbound messages dropped without delivery because they could not be parsed into a typed payload —
+     * today only a `WebRTC String` whose bytes are not valid UTF-8 (RFC 8831 §6.6). Test-visible; the
+     * session layer surfaces this as a diagnostic.
+     */
+    internal var discardedInbound: Int = 0
+        private set
+
     /** Queued-but-unsent user bytes, and how many senders are parked on backpressure — test-visible only. */
     internal val bufferedBytes: Int get() = association.bufferedBytes
     internal val parkedSenders: Int get() = awaitingDrain.size
@@ -157,12 +166,12 @@ public class SctpDataChannelStack(
         scope.launch { driveLoop() }
     }
 
-    // ── StreamMux<ReadBuffer> ──
+    // ── StreamMux<DataChannelPayload> ──
 
-    override suspend fun openBidirectional(): Connection<ReadBuffer> = open(DataChannelConfig())
+    override suspend fun openBidirectional(): Connection<DataChannelPayload> = open(DataChannelConfig())
 
     /** Open a data channel with explicit [config] (label / ordering / reliability) — RFC 8832 §5.1. */
-    public suspend fun open(config: DataChannelConfig): Connection<ReadBuffer> {
+    public suspend fun open(config: DataChannelConfig): Connection<DataChannelPayload> {
         val deferred = CompletableDeferred<DataChannelConnection>()
         post(OpenCommand(config, deferred))
         return deferred.await()
@@ -180,13 +189,13 @@ public class SctpDataChannelStack(
         }
     }
 
-    override suspend fun acceptBidirectional(): Connection<ReadBuffer> = accepted.receive()
+    override suspend fun acceptBidirectional(): Connection<DataChannelPayload> = accepted.receive()
 
     // WebRTC data channels are always bidirectional; a unidirectional view is a bidirectional channel
     // used in one direction (RFC 8831 has no half-open channel type).
-    override suspend fun openUnidirectional(): Sender<ReadBuffer> = open(DataChannelConfig())
+    override suspend fun openUnidirectional(): Sender<DataChannelPayload> = open(DataChannelConfig())
 
-    override suspend fun acceptUnidirectional(): Receiver<ReadBuffer> = accepted.receive()
+    override suspend fun acceptUnidirectional(): Receiver<DataChannelPayload> = accepted.receive()
 
     /** Begin a graceful association shutdown (RFC 4960 §9.2). No-op once the stack has closed. */
     public suspend fun shutdown() {
@@ -361,7 +370,7 @@ public class SctpDataChannelStack(
     private fun forgetStream(streamId: StreamId) {
         unconfirmedOutbound -= streamId
         // Held data for a stream that is going away reaches no channel now, so this is its last reader.
-        pendingInbound.remove(streamId)?.forEach { it.payload.freeIfNeeded() }
+        pendingInbound.remove(streamId)?.forEach { it.payload.release() }
     }
 
     private fun resetOutgoing(streams: Set<StreamId>) {
@@ -524,9 +533,17 @@ public class SctpDataChannelStack(
         // RFC 8831 §6.6's empty-message marker: the wire carries one 0x00 that is stripped back to nothing
         // here. That byte is still a reassembly buffer, and substituting EMPTY_BUFFER for it drops the only
         // reference to it — so it is released rather than merely replaced.
-        val empty = isEmptyPpid(message.payloadProtocolId)
-        if (empty) message.payload.freeIfNeeded()
-        val payload = if (empty) ReadBuffer.EMPTY_BUFFER else message.payload
+        val payload =
+            when (val inbound = payloadFor(message.payloadProtocolId, message.payload)) {
+                is InboundMessage.Discarded -> {
+                    // The buffer is already released by payloadFor; a discarded message is never delivered,
+                    // and never fabricated into an empty one either. Counted so a fixture — and, once the
+                    // session layer carries it, a SessionDiagnostic — can see that it happened.
+                    discardedInbound += 1
+                    return
+                }
+                is InboundMessage.Deliver -> inbound.payload
+            }
         val connection = channels[message.streamId]
         if (connection != null) {
             connection.deliver(payload)
@@ -536,9 +553,9 @@ public class SctpDataChannelStack(
             // never OPENs). Dropping means releasing: past the cap this is the message's last reader.
             val queue = pendingInbound.getOrPut(message.streamId) { ArrayDeque() }
             if (queue.size < MAX_PENDING_INBOUND) {
-                queue.addLast(PendingInbound(message.payloadProtocolId, payload))
+                queue.addLast(PendingInbound(payload))
             } else {
-                payload.freeIfNeeded()
+                payload.release()
             }
         }
     }
@@ -583,7 +600,7 @@ public class SctpDataChannelStack(
         channels[streamId] = connection
         // Flush any user data that arrived before this OPEN, in arrival order.
         pendingInbound.remove(streamId)?.forEach { held ->
-            connection.deliver(if (isEmptyPpid(held.ppid)) ReadBuffer.EMPTY_BUFFER else held.payload)
+            connection.deliver(held.payload)
         }
         if (incoming) accepted.trySend(connection)
         return connection
@@ -593,23 +610,101 @@ public class SctpDataChannelStack(
     internal suspend fun sendMessage(
         streamId: StreamId,
         config: DataChannelConfig,
-        message: ReadBuffer,
+        message: DataChannelPayload,
     ) {
-        val empty = message.remaining() == 0
-        val ppid = if (empty) PayloadProtocolId.WebRtcBinaryEmpty else PayloadProtocolId.WebRtcBinary
+        // The wire form of the message, and whether WE allocated it (and therefore owe it a release).
+        // A Text is always encoded here — one UTF-8 encode per send, with the stack's injected factory,
+        // so no caller has to allocate to send a string. A Binary is the application's own buffer and is
+        // borrowed, never freed here.
+        val encoded: ReadBuffer
+        val encodedIsOurs: Boolean
+        when (message) {
+            is DataChannelPayload.Binary -> {
+                encoded = message.bytes
+                encodedIsOurs = false
+            }
+            is DataChannelPayload.Text -> {
+                encoded = encodeUtf8(message.text)
+                encodedIsOurs = true
+            }
+        }
+
+        val empty = encoded.remaining() == 0
+        val ppid =
+            when (message) {
+                is DataChannelPayload.Binary ->
+                    if (empty) PayloadProtocolId.WebRtcBinaryEmpty else PayloadProtocolId.WebRtcBinary
+                is DataChannelPayload.Text ->
+                    if (empty) PayloadProtocolId.WebRtcStringEmpty else PayloadProtocolId.WebRtcString
+            }
         // SCTP DATA must carry ≥ 1 byte; an empty application message rides a single 0x00 with an
         // empty-marker PPID (RFC 8831 §6.6), stripped back to empty on delivery.
-        val payload = if (empty) singleZeroByte() else message
+        val payload = if (empty) singleZeroByte() else encoded
         val deferred = CompletableDeferred<Unit>()
         val options = SctpSendOptions(streamId, ppid, delivery = config.delivery, reliability = config.reliability)
         try {
             post(SendCommand(options, payload, deferred))
             deferred.await()
         } finally {
-            // The marker byte is ours; [message] is the application's and is never freed here. By the time
-            // the deferred settles — completed or failed — the association has either encoded the payload
-            // into its wire packets or never accepted it, and holds no view of it either way.
+            // By the time the deferred settles — completed or failed — the association has either encoded
+            // the payload into its wire packets or never accepted it, and holds no view of it either way.
+            // Release only what this function allocated: the marker byte, and a Text's encoding. A Binary's
+            // buffer belongs to the application.
             if (empty) payload.freeIfNeeded()
+            if (encodedIsOurs && !empty) encoded.freeIfNeeded()
+        }
+    }
+
+    // UTF-8 encode a text message with the stack's injected factory (directive #6 — no ambient allocator).
+    private fun encodeUtf8(text: CharSequence): ReadBuffer {
+        if (text.isEmpty()) return ReadBuffer.EMPTY_BUFFER
+        val scratch = bufferFactory.allocate((text.length * Charset.UTF8.maxBytesPerChar).toInt(), ByteOrder.BIG_ENDIAN)
+        scratch.writeString(text, Charset.UTF8)
+        val written = scratch.position()
+        scratch.resetForRead()
+        scratch.setLimit(written)
+        return scratch
+    }
+
+    /**
+     * The typed message a received PPID denotes (RFC 8831 §6.6), taking ownership of [buffer].
+     *
+     * The deprecated "partial" PPIDs 54/55 map to their complete counterparts: they exist only for
+     * pre-RFC-8831 implementations that fragmented above SCTP, and our reassembly has already delivered a
+     * whole message by the time this is reached, so treating them as a final fragment is what they mean
+     * here. An unrecognised PPID is delivered as [DataChannelPayload.Binary] rather than dropped — a peer
+     * using a PPID we do not model still sent bytes the application may understand.
+     */
+    private fun payloadFor(
+        ppid: PayloadProtocolId,
+        buffer: ReadBuffer,
+    ): InboundMessage {
+        // The empty markers carry one 0x00 that is stripped back to nothing. That byte is still a
+        // reassembly buffer, so it is released here rather than merely dropped on the floor.
+        if (isEmptyPpid(ppid)) {
+            buffer.freeIfNeeded()
+            val emptyPayload =
+                if (ppid == PayloadProtocolId.WebRtcStringEmpty) {
+                    DataChannelPayload.Text("")
+                } else {
+                    DataChannelPayload.Binary(ReadBuffer.EMPTY_BUFFER)
+                }
+            return InboundMessage.Deliver(emptyPayload)
+        }
+        val isText = ppid == PayloadProtocolId.WebRtcString || ppid == PayloadProtocolId.WebRtcStringPartial
+        if (!isText) return InboundMessage.Deliver(DataChannelPayload.Binary(buffer))
+
+        // RFC 8831 §6.6 requires a string message to be UTF-8, but a peer is not obliged to be correct.
+        // Decoding is the only place this stack parses attacker-supplied bytes into a higher type, so a
+        // failure is contained here and reported as a typed discard — never a throw into the drive loop
+        // (T0 discipline), which would take the whole association down with it.
+        return try {
+            val text = buffer.readString(buffer.remaining(), Charset.UTF8)
+            buffer.freeIfNeeded()
+            InboundMessage.Deliver(DataChannelPayload.Text(text))
+        } catch (_: Throwable) {
+            buffer.freeIfNeeded()
+            InboundMessage.Discarded(InboundDiscardReason.MalformedUtf8)
         }
     }
 
@@ -657,7 +752,7 @@ public class SctpDataChannelStack(
         // touched: closing a channel's flow still emits what is buffered in it, so those messages are the
         // application's (see DataChannelConnection.receive), and draining them here would steal them.
         for (queue in pendingInbound.values) {
-            for (held in queue) held.payload.freeIfNeeded()
+            for (held in queue) held.payload.release()
         }
         pendingInbound.clear()
         unconfirmedOutbound.clear()
@@ -833,10 +928,32 @@ internal enum class ResetHalf {
     Peers,
 }
 
+/**
+ * What one received DATA message decoded to: a payload to deliver, or a typed refusal.
+ *
+ * Decoding a `WebRTC String` is the only place this stack turns attacker-supplied bytes into a higher
+ * type, so it is the only place that can fail — and it must fail as a value, not as a throw into the
+ * serialized drive loop, which would take the association down with it (T0 discipline).
+ */
+internal sealed interface InboundMessage {
+    data class Deliver(
+        val payload: DataChannelPayload,
+    ) : InboundMessage
+
+    data class Discarded(
+        val reason: InboundDiscardReason,
+    ) : InboundMessage
+}
+
+/** Why a received message could not be delivered. */
+internal sealed interface InboundDiscardReason {
+    /** PPID said `WebRTC String`, but the bytes are not valid UTF-8 (RFC 8831 §6.6 requires they are). */
+    data object MalformedUtf8 : InboundDiscardReason
+}
+
 // One inbound user message held until its channel's DCEP OPEN registers the stream (see pendingInbound).
 internal class PendingInbound(
-    val ppid: PayloadProtocolId,
-    val payload: ReadBuffer,
+    val payload: DataChannelPayload,
 )
 
 /**
@@ -875,13 +992,13 @@ public class DataChannelConnection internal constructor(
     internal val streamId: StreamId,
     public val config: DataChannelConfig,
     private val stack: SctpDataChannelStack,
-) : Connection<ReadBuffer> {
-    private val inbound = Channel<ReadBuffer>(Channel.UNLIMITED)
+) : Connection<DataChannelPayload> {
+    private val inbound = Channel<DataChannelPayload>(Channel.UNLIMITED)
     private var open = true
 
     override val id: Long = streamId.value.toLong()
 
-    override suspend fun send(message: ReadBuffer) {
+    override suspend fun send(message: DataChannelPayload) {
         check(open) { "data channel ${streamId.value} is closed" }
         stack.sendMessage(streamId, config, message)
     }
@@ -896,7 +1013,7 @@ public class DataChannelConnection internal constructor(
      * it, so releasing those here would be taking messages the application can still legitimately read.
      * The corollary is that abandoning a channel with unread messages abandons their buffers too.
      */
-    override fun receive(): Flow<ReadBuffer> = inbound.receiveAsFlow()
+    override fun receive(): Flow<DataChannelPayload> = inbound.receiveAsFlow()
 
     /**
      * Close this data channel: stop delivering inbound messages, and reset the outgoing SCTP stream so
@@ -909,7 +1026,7 @@ public class DataChannelConnection internal constructor(
         stack.closeChannel(streamId)
     }
 
-    internal fun deliver(payload: ReadBuffer) {
+    internal fun deliver(payload: DataChannelPayload) {
         inbound.trySend(payload)
     }
 

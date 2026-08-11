@@ -15,6 +15,7 @@ import com.ditchoom.buffer.flow.Ecn
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.webrtc.sctp.datachannel.DataChannelPayload
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.channels.Channel
 import kotlin.random.Random
@@ -165,3 +166,27 @@ internal class TestNet(
             )
     }
 }
+
+/**
+ * Receive-side helpers for fixtures that assert on a data-channel message.
+ *
+ * They assert the **variant** first rather than quietly coercing: a `Text` read as bytes (or the reverse)
+ * would let a fixture named for one message kind pass while exercising the other — the class of green
+ * test this repo has been bitten by before.
+ */
+internal fun DataChannelPayload.expectBytes(): ReadBuffer =
+    when (this) {
+        is DataChannelPayload.Binary -> bytes
+        is DataChannelPayload.Text -> kotlin.test.fail("expected a Binary message, got Text(\"$text\")")
+    }
+
+/** The message content as a string, whichever kind it arrived as — for round-trip content assertions. */
+internal fun DataChannelPayload.contentAsString(): String =
+    when (this) {
+        is DataChannelPayload.Text -> text.toString()
+        is DataChannelPayload.Binary -> {
+            val out = StringBuilder()
+            for (i in bytes.position() until bytes.limit()) out.append((bytes.get(i).toInt() and 0xFF).toChar())
+            out.toString()
+        }
+    }

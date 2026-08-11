@@ -41,6 +41,10 @@ private fun ReadBuffer.text(): String {
     return out.toString()
 }
 
+// These fixtures ship readable bytes as BINARY messages, so `text()` on a payload asserts that variant
+// first — a Text message reaching here means the PPID mapping changed and the fixture should say so.
+private fun DataChannelPayload.text(): String = expectBinary().text()
+
 /**
  * Per-channel close over a real association pair (RFC 8831 §6.7 on RFC 6525): closing one data channel
  * closes it at the peer without touching the others, both directions are reset, and only then is the

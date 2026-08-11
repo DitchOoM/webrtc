@@ -252,7 +252,7 @@ class DataChannelBackpressureTest {
             settle()
 
             val received = mutableListOf<Int>()
-            backgroundScope.launch { incoming.receive().collect { received.add(it.remaining()) } }
+            backgroundScope.launch { incoming.receive().collect { received.add(it.expectBinary().remaining()) } }
             settle()
 
             var completed = 0

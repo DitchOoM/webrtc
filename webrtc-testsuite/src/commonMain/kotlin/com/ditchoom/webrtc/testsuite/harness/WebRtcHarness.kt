@@ -8,8 +8,6 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
-import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.buffer.use
 import com.ditchoom.webrtc.DtlsTransportFactory
 import com.ditchoom.webrtc.NativePeerConnection
 import com.ditchoom.webrtc.PeerConnectionConfig
@@ -25,10 +23,10 @@ import com.ditchoom.webrtc.ice.IceAgentDriver
 import com.ditchoom.webrtc.ice.IceConfig
 import com.ditchoom.webrtc.sctp.association.SctpConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
+import com.ditchoom.webrtc.sctp.datachannel.DataChannelPayload
 import com.ditchoom.webrtc.sdp.SdpType
 import com.ditchoom.webrtc.testsuite.vnet.Topology
 import com.ditchoom.webrtc.testsuite.vnet.Vnets
-import com.ditchoom.webrtc.testsuite.vnet.utf8Buffer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -223,9 +221,11 @@ public class WebRtcHarnessScope internal constructor(
                 harnessScope.launch {
                     incoming.receive().collect { message ->
                         try {
+                            // Echoed whole: a Text round-trips as Text, so a harness user asserting the
+                            // message KIND survives the wire gets a truthful answer.
                             incoming.send(message)
                         } finally {
-                            message.freeIfNeeded()
+                            message.release()
                         }
                     }
                 }
@@ -272,12 +272,18 @@ public class WebRtcHarnessScope internal constructor(
             val channel = conn.offerer.createDataChannel(DataChannelConfig(label = label))
             // Both buffers are ours to release: `send` reads the outgoing one and never takes it, and the
             // echo arrives as a transfer the collector owes (see the responder in [establish]).
-            utf8Buffer(message).use { channel.send(it) }
+            // Sent as TEXT: this helper's contract is "send a string, get the string back", and a text
+            // message is what a browser peer would send for it. The bytes path is exercised by the
+            // buffer-census fixtures, which need a Binary to have anything to account for.
+            channel.send(DataChannelPayload.Text(message))
             val echoed = channel.receive().first()
             try {
-                echoed.decodeUtf8()
+                when (echoed) {
+                    is DataChannelPayload.Text -> echoed.text.toString()
+                    is DataChannelPayload.Binary -> echoed.bytes.decodeUtf8()
+                }
             } finally {
-                echoed.freeIfNeeded()
+                echoed.release()
             }
         }
     }

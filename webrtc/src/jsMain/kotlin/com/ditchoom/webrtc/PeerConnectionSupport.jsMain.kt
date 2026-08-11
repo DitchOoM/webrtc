@@ -12,6 +12,7 @@ import com.ditchoom.webrtc.ice.IceServerCredentials
 import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.association.SctpReliability
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
+import com.ditchoom.webrtc.sctp.datachannel.DataChannelPayload
 import com.ditchoom.webrtc.sdp.SdpType
 import com.ditchoom.webrtc.sdp.SignalingState
 import kotlinx.coroutines.CompletableDeferred
@@ -172,8 +173,8 @@ private class BrowserPeerConnection(
     private val candidateChannel = Channel<String>(Channel.UNLIMITED)
     override val localIceCandidates: Flow<String> get() = candidateChannel.receiveAsFlow()
 
-    private val dataChannelChannel = Channel<Connection<ReadBuffer>>(Channel.UNLIMITED)
-    override val incomingDataChannels: Flow<Connection<ReadBuffer>> get() = dataChannelChannel.receiveAsFlow()
+    private val dataChannelChannel = Channel<Connection<DataChannelPayload>>(Channel.UNLIMITED)
+    override val incomingDataChannels: Flow<Connection<DataChannelPayload>> get() = dataChannelChannel.receiveAsFlow()
 
     private val renegotiationChannel = Channel<Unit>(Channel.CONFLATED)
     override val renegotiationNeeded: Flow<Unit> get() = renegotiationChannel.receiveAsFlow()
@@ -190,7 +191,7 @@ private class BrowserPeerConnection(
             { _: dynamic -> mapSignalingState(pc.signalingState.unsafeCast<String>())?.let { _signalingState.value = it } }
     }
 
-    override suspend fun createDataChannel(config: DataChannelConfig): Connection<ReadBuffer> =
+    override suspend fun createDataChannel(config: DataChannelConfig): Connection<DataChannelPayload> =
         BrowserDataChannel(pc.createDataChannel(config.label, dataChannelInit(config)))
 
     override suspend fun createOffer(): String =
@@ -247,8 +248,8 @@ private class BrowserPeerConnection(
 
 private class BrowserDataChannel(
     private val dc: dynamic,
-) : Connection<ReadBuffer> {
-    private val inbound = Channel<ReadBuffer>(Channel.UNLIMITED)
+) : Connection<DataChannelPayload> {
+    private val inbound = Channel<DataChannelPayload>(Channel.UNLIMITED)
     private val opened = CompletableDeferred<Unit>()
 
     override val id: Long get() = (dc.id.unsafeCast<Int?>())?.toLong() ?: -1L
@@ -259,25 +260,31 @@ private class BrowserDataChannel(
         dc.onopen = { _: dynamic -> opened.complete(Unit) }
         dc.onmessage = { event: dynamic ->
             val data = event.data
-            // A peer may send a text-mode message even with binaryType=arraybuffer — decode it rather than
-            // reinterpret a JS string as an ArrayBuffer (which would corrupt the ReadBuffer).
-            val buffer =
+            // The browser already tells us which kind of message this is, and now the type can carry it:
+            // a text-mode message is delivered AS text instead of being re-encoded to bytes so it could
+            // fit a buffer-only API. `binaryType = "arraybuffer"` still governs the binary half.
+            val payload =
                 if (jsTypeof(data) == "string") {
-                    arrayBufferToReadBuffer(encodeUtf8(data.unsafeCast<String>()).buffer)
+                    DataChannelPayload.Text(data.unsafeCast<String>())
                 } else {
-                    arrayBufferToReadBuffer(data.unsafeCast<ArrayBuffer>())
+                    DataChannelPayload.Binary(arrayBufferToReadBuffer(data.unsafeCast<ArrayBuffer>()))
                 }
-            inbound.trySend(buffer)
+            inbound.trySend(payload)
         }
         dc.onclose = { _: dynamic -> inbound.close() }
     }
 
-    override suspend fun send(message: ReadBuffer) {
+    override suspend fun send(message: DataChannelPayload) {
         opened.await()
-        dc.send(readBufferToArrayBuffer(message))
+        when (message) {
+            // A JS string, not an encoded buffer: this is what makes the peer's `event.data` a String.
+            // The old path sent every message as an ArrayBuffer, so no browser peer ever saw text from us.
+            is DataChannelPayload.Text -> dc.send(message.text.toString())
+            is DataChannelPayload.Binary -> dc.send(readBufferToArrayBuffer(message.bytes))
+        }
     }
 
-    override fun receive(): Flow<ReadBuffer> = inbound.receiveAsFlow()
+    override fun receive(): Flow<DataChannelPayload> = inbound.receiveAsFlow()
 
     override suspend fun close() {
         dc.close()

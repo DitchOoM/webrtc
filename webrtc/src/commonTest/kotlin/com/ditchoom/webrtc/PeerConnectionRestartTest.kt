@@ -28,6 +28,8 @@ import com.ditchoom.webrtc.ice.ReactivityDegradation
 import com.ditchoom.webrtc.ice.SystemNetworkMonitor
 import com.ditchoom.webrtc.ice.Ufrag
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
+import com.ditchoom.webrtc.sctp.datachannel.DataChannelPayload
+import com.ditchoom.webrtc.sctp.datachannel.send
 import com.ditchoom.webrtc.sdp.SdpType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -1116,11 +1118,11 @@ class PeerConnectionRestartTest {
             .substringAfter(':')
 
     private suspend fun echo(
-        channel: Connection<ReadBuffer>,
+        channel: Connection<DataChannelPayload>,
         text: String,
     ): String? {
         channel.send(textBuffer(text))
-        return withTimeoutOrNull(timeout) { channel.receive().first().text() }
+        return withTimeoutOrNull(timeout) { channel.receive().first().contentAsString() }
     }
 
     private fun trickle(

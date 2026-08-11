@@ -11,6 +11,8 @@ import com.ditchoom.buffer.flow.Connection
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.webrtc.ice.udpDatagramBinder
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
+import com.ditchoom.webrtc.sctp.datachannel.DataChannelPayload
+import com.ditchoom.webrtc.sctp.datachannel.send
 import com.ditchoom.webrtc.sdp.SdpType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -90,11 +92,11 @@ class ReadmeQuickstartTest {
                 awaitConnected(offerer, "offerer")
                 awaitConnected(answerer, "answerer")
 
-                // ── README: "A data channel is a buffer-flow Connection<ReadBuffer>"
-                val incoming: Connection<ReadBuffer> = answerer.incomingDataChannels.first()
-                chat.send(utf8("ping"))
+                // ── README: "A data channel is a buffer-flow Connection<DataChannelPayload>"
+                val incoming: Connection<DataChannelPayload> = answerer.incomingDataChannels.first()
+                chat.send(DataChannelPayload.Text("ping"))
                 assertEquals("ping", incoming.receive().first().utf8(), "the answerer read the offerer's message")
-                incoming.send(utf8("pong"))
+                incoming.send(DataChannelPayload.Text("pong"))
                 assertEquals("pong", chat.receive().first().utf8(), "the offerer read the reply")
 
                 scope.cancel()
@@ -164,7 +166,11 @@ class ReadmeQuickstartTest {
         return buffer
     }
 
-    private fun ReadBuffer.utf8(): String = readString(remaining(), Charset.UTF8)
+    private fun DataChannelPayload.utf8(): String =
+        when (this) {
+            is DataChannelPayload.Text -> text.toString()
+            is DataChannelPayload.Binary -> bytes.readString(bytes.remaining(), Charset.UTF8)
+        }
 
     private companion object {
         private val WATCHDOG = 60.seconds

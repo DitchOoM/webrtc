@@ -9,6 +9,7 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.managed
 import com.ditchoom.webrtc.ice.DatagramBinder
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
+import com.ditchoom.webrtc.sctp.datachannel.send
 import com.ditchoom.webrtc.sdp.SdpType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -103,7 +104,7 @@ class PooledReceiveChunkTest {
             val incoming = withTimeoutOrNull(timeout) { bob.incomingDataChannels.first() }
             assertNotNull(incoming, "bob received the data channel")
             channel.send(textBuffer("ping"))
-            assertEquals("ping", withTimeoutOrNull(timeout) { incoming.receive().first().text() })
+            assertEquals("ping", withTimeoutOrNull(timeout) { incoming.receive().first().contentAsString() })
 
             alice.close()
             bob.close()

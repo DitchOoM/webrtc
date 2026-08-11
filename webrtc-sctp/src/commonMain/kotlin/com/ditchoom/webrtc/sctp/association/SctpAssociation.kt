@@ -785,7 +785,7 @@ public class SctpAssociation(
                     bytes = fragmentPayload.remaining(),
                     packet = encodePacket(listOf(chunk), peerVerificationTag),
                     reliability = options.reliability,
-                    firstSentAt = now,
+                    enqueuedAt = now,
                 )
             pendingSend.addLast(data)
             pendingSendBytes += data.bytes
@@ -814,7 +814,7 @@ public class SctpAssociation(
         // stays NeedsRetransmit and goes out on the next SACK/timer as cwnd re-opens.
         for (data in rq.retransmittable()) {
             if (rq.outstandingBytes > 0 && rq.outstandingBytes + data.bytes > cc.cwnd) break
-            rq.markRetransmitted(data, now)
+            rq.markRetransmitted(data)
             out += SctpOutput.Transmit.Retained(data.wirePacket())
         }
 
@@ -827,8 +827,7 @@ public class SctpAssociation(
             if (!cwndOk || !rwndOk) break
             pendingSend.removeFirst()
             pendingSendBytes -= next.bytes
-            next.lastSentAt = now
-            rq.onSent(next)
+            rq.onSent(next, now)
             out += SctpOutput.Transmit.Retained(next.wirePacket())
         }
 

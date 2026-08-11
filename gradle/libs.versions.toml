@@ -7,7 +7,7 @@ ktlint = "14.2.0"
 # Plugin id moved to `dev.detekt` in 2.0. Run non-blocking with a committed baseline —
 # detekt is the only static analyzer that sees the Native/JS/WASM actuals (CodeQL only
 # traces JVM bytecode), so it is the multiplatform-coverage tool here.
-detekt = "2.0.0-alpha.5"
+detekt = "2.0.0-alpha.6"
 mavenPublish = "0.37.0"
 dokka = "2.2.0"
 kover = "0.9.9"

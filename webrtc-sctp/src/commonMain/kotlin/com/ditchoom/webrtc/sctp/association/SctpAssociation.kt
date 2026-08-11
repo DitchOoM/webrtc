@@ -228,13 +228,9 @@ public class SctpAssociation(
     }
 
     // ── Timers as absolute deadlines (ARCHITECTURE §5.1: nextDeadline is the whole clock contract) ──
-    private var handshakeDeadline: Instant? = null
+    private var deadlines = AssociationDeadlines()
     private var handshakeRetransmits = 0
-    private var t3Deadline: Instant? = null
-    private var sackDeadline: Instant? = null
-    private var shutdownDeadline: Instant? = null
     private var shutdownRetransmits = 0
-    private var reConfigDeadline: Instant? = null
     private var reConfigRetransmits = 0
     private var consecutiveRtxErrors = 0
     private var packetsSinceSack = 0
@@ -244,7 +240,10 @@ public class SctpAssociation(
      * until here, then feeds [SctpEvent.TimerFired]; every due timer fires in that one call.
      */
     public fun nextDeadline(now: Instant): Instant? =
-        listOfNotNull(handshakeDeadline, t3Deadline, sackDeadline, shutdownDeadline, reConfigDeadline).minOrNull()
+        when (val earliest = deadlines.earliest()) {
+            Deadline.Unarmed -> null
+            is Deadline.At -> earliest.instant
+        }
 
     /** Feed one event; returns the side effects for the driver to apply (ARCHITECTURE §5.1). Never throws. */
     public fun handle(
@@ -723,9 +722,9 @@ public class SctpAssociation(
         if (outcome.cumulativeAdvanced) consecutiveRtxErrors = 0
 
         if (outcome.allDataAcknowledged) {
-            t3Deadline = null
+            deadlines = deadlines.copy(t3 = Deadline.Unarmed)
         } else if (outcome.cumulativeAdvanced) {
-            t3Deadline = now + rtt.rto
+            deadlines = deadlines.copy(t3 = Deadline.At(now + rtt.rto))
         }
         // RFC 3758: expiry is also checked here, not only on T3 — a partially-reliable message can spend
         // its retransmit/lifetime budget while OTHER data keeps advancing the cum ack (so T3 is
@@ -836,7 +835,7 @@ public class SctpAssociation(
             out += SctpOutput.Transmit.Retained(next.wirePacket())
         }
 
-        if (rq.outstandingBytes > 0 && t3Deadline == null) t3Deadline = now + rtt.rto
+        if (rq.outstandingBytes > 0 && deadlines.t3 is Deadline.Unarmed) deadlines = deadlines.copy(t3 = Deadline.At(now + rtt.rto))
     }
 
     // ─────────────────── stream reconfiguration (RFC 6525) — the requester half ───────────────────
@@ -1093,7 +1092,7 @@ public class SctpAssociation(
     ) {
         val inFlight =
             outgoingReset as? OutgoingReset.InFlight ?: run {
-                reConfigDeadline = null
+                deadlines = deadlines.copy(reConfig = Deadline.Unarmed)
                 return
             }
         reConfigRetransmits += 1
@@ -1110,11 +1109,11 @@ public class SctpAssociation(
     }
 
     private fun armReConfig(now: Instant) {
-        reConfigDeadline = now + rtt.rto
+        deadlines = deadlines.copy(reConfig = Deadline.At(now + rtt.rto))
     }
 
     private fun cancelReConfig() {
-        reConfigDeadline = null
+        deadlines = deadlines.copy(reConfig = Deadline.Unarmed)
         reConfigRetransmits = 0
     }
 
@@ -1140,8 +1139,8 @@ public class SctpAssociation(
         // RFC 4960 §6.2: SACK on every second packet, or immediately on out-of-order / duplicate data.
         if (reassembly.sackImmediatelyRequested || packetsSinceSack >= SACK_EVERY) {
             emitSack(out)
-        } else if (sackDeadline == null) {
-            sackDeadline = now + config.sackDelay
+        } else if (deadlines.sack is Deadline.Unarmed) {
+            deadlines = deadlines.copy(sack = Deadline.At(now + config.sackDelay))
         }
     }
 
@@ -1149,7 +1148,7 @@ public class SctpAssociation(
         val reassembly = reassemblyQueue ?: return
         emitPacket(listOf(reassembly.buildSack()), peerVerificationTag, out)
         packetsSinceSack = 0
-        sackDeadline = null
+        deadlines = deadlines.copy(sack = Deadline.Unarmed)
     }
 
     // ────────────────────────────────── shutdown ──────────────────────────────────
@@ -1231,11 +1230,11 @@ public class SctpAssociation(
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        handshakeDeadline?.let { if (now >= it) onHandshakeTimeout(now, out) }
-        t3Deadline?.let { if (now >= it) onT3Timeout(now, out) }
-        sackDeadline?.let { if (now >= it) emitSack(out) }
-        shutdownDeadline?.let { if (now >= it) onShutdownTimeout(now, out) }
-        reConfigDeadline?.let { if (now >= it) onReConfigTimeout(now, out) }
+        if (deadlines.handshake.dueAt(now)) onHandshakeTimeout(now, out)
+        if (deadlines.t3.dueAt(now)) onT3Timeout(now, out)
+        if (deadlines.sack.dueAt(now)) emitSack(out)
+        if (deadlines.shutdown.dueAt(now)) onShutdownTimeout(now, out)
+        if (deadlines.reConfig.dueAt(now)) onReConfigTimeout(now, out)
     }
 
     private fun onHandshakeTimeout(
@@ -1262,17 +1261,17 @@ public class SctpAssociation(
     ) {
         val rq =
             retransmissionQueue ?: run {
-                t3Deadline = null
+                deadlines = deadlines.copy(t3 = Deadline.Unarmed)
                 return
             }
         val cc =
             congestion ?: run {
-                t3Deadline = null
+                deadlines = deadlines.copy(t3 = Deadline.Unarmed)
                 return
             }
         val hadOutstanding = rq.onT3Timeout()
         if (!hadOutstanding) {
-            t3Deadline = null
+            deadlines = deadlines.copy(t3 = Deadline.Unarmed)
             return
         }
         cc.onTimeout()
@@ -1285,7 +1284,7 @@ public class SctpAssociation(
         // RFC 3758: abandon partially-reliable chunks past their budget before retransmitting.
         abandonExpired(now, out)
         trySend(now, out)
-        t3Deadline = now + rtt.rto
+        deadlines = deadlines.copy(t3 = Deadline.At(now + rtt.rto))
     }
 
     private fun onShutdownTimeout(
@@ -1336,11 +1335,11 @@ public class SctpAssociation(
     }
 
     private fun armHandshake(now: Instant) {
-        handshakeDeadline = now + rtt.rto
+        deadlines = deadlines.copy(handshake = Deadline.At(now + rtt.rto))
     }
 
     private fun cancelHandshake() {
-        handshakeDeadline = null
+        deadlines = deadlines.copy(handshake = Deadline.Unarmed)
         localInit = null
     }
 
@@ -1356,15 +1355,14 @@ public class SctpAssociation(
     }
 
     private fun armShutdown(now: Instant) {
-        shutdownDeadline = now + rtt.rto
+        deadlines = deadlines.copy(shutdown = Deadline.At(now + rtt.rto))
     }
 
+    // Total by construction: a timer added to AssociationDeadlines is cancelled here without this
+    // function being edited, which is the whole reason the five fields became one value.
     private fun cancelAllTimers() {
-        handshakeDeadline = null
-        t3Deadline = null
-        sackDeadline = null
-        shutdownDeadline = null
-        cancelReConfig()
+        deadlines = deadlines.cancelAll()
+        reConfigRetransmits = 0
     }
 
     // ────────────────────────────────── helpers ──────────────────────────────────

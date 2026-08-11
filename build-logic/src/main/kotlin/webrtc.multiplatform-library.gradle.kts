@@ -114,7 +114,33 @@ kotlin {
     android {
         namespace = androidNamespace
         compileSdk = 36
-        minSdk = 21
+        // 28, and every level below it is excluded by evidence rather than by preference. Two separate
+        // floors stack here; 28 is the higher, but both are real and removing either one alone changes
+        // nothing.
+        //
+        // RUNTIME floor — 24. Android 7.0 is where libcore became OpenJDK-derived (`core-oj`), and both
+        // primitives this library is built on arrived with it:
+        //   * `sun.misc.Unsafe.allocateMemory` — absent from ART's Unsafe until 24 (a dexdump of the
+        //     API-21 class lists only the CAS / field-offset / park set; `copyMemory`, `addressSize`
+        //     and `getByte(long)` are missing too). buffer's `BufferFactory.secure()` allocates
+        //     through it for every key schedule, so DTLS could not generate a keypair at all.
+        //   * `java.nio.channels.DatagramChannel.bind(SocketAddress)` — added in 24; before that only
+        //     `channel.socket().bind(...)` exists. socket's `UdpSocket.bind` calls the former, so no
+        //     UDP socket could be opened.
+        // Both surfaced as `NoSuchMethodError` on the API-21 emulator leg — measured, not assumed.
+        //
+        // DEPENDENCY floor — 28, and this is the binding one. `buffer-crypto-android` has declared
+        // `minSdkVersion="28"` in its published manifest since at least 6.22.0, and `webrtc-dtls`
+        // takes it as `api`, so it is in every consumer's graph. An app below 28 fails the manifest
+        // merge on it no matter what we declare. Note AGP does NOT propagate that into our own
+        // modules: on the API-21 leg `:webrtc-dtls:connectedAndroidDeviceTest` ran rather than being
+        // skipped, which is exactly how we shipped a floor our own dependency graph could not honour —
+        // the merge error lands on the consumer, where our CI cannot see it.
+        //
+        // So this can only drop to 24 if buffer-crypto lowers its own floor, and below 24 only if the
+        // two upstream defects above are fixed as well. Raise the leg in `android-emulator.yaml` in
+        // lockstep with this.
+        minSdk = 28
         // Robolectric resolves the Android framework through the merged manifest + resources, so the
         // host-test compilation has to package them; without this it fails at startup rather than
         // skipping. Set here rather than in one module's build file because this convention is the

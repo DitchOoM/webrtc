@@ -45,14 +45,20 @@ jobs:
       matrix:
         # Both ends of the supported range, and nothing in between — a mid level only re-tests the
         # combination of branches the two ends already cover independently.
-        #   21 -> our declared minSdk (the convention plugin sets it for every module), and the
+        #   28 -> our declared minSdk (the convention plugin sets it for every module), and the
         #         worst-case ART: the pre-Mainline allocator whose LOS fragmentation behaviour is the
         #         one buffer's ANDROID_ART_ALLOCATOR.md measured as *not* self-healing.
         #   35 -> a current ART that receives Mainline updates, where that same allocation self-heals.
+        # This leg was 21 until that run reported what 21 actually is: ART's `sun.misc.Unsafe` has no
+        # `allocateMemory` and `DatagramChannel` has no `bind(SocketAddress)` before 24, so neither a
+        # key schedule nor a UDP socket can be created — both `NoSuchMethodError`, neither reachable
+        # from our code. `buffer-crypto` then puts the binding floor at 28 (see the convention plugin).
+        # Keep this leg EQUAL to that minSdk: above it the leg stops proving the floor, and below it the
+        # leg would certify a configuration no consumer can actually build.
         # target/arch are explicit because the runner action otherwise defaults to `default;x86`, which
         # does not exist for API 35 (google_apis;x86_64 only).
         include:
-          - api-level: 21
+          - api-level: 28
             target: default
             arch: x86_64
           - api-level: 35
@@ -145,8 +151,8 @@ jobs:
             # the cached copy carried.
             adb shell pm list packages -3 | sed 's/^package://' | grep -i '\.ditchoom\.' | xargs -r -n1 adb uninstall || true
             # No minSdk-compatibility filter, unlike buffer's `connectedAndroidTestCompatible`: the
-            # convention plugin sets minSdk 21 for EVERY module here, so no module can exceed the
-            # API-21 leg's device level and AGP has nothing to fail over. Revisit only if a module ever
+            # convention plugin sets minSdk 28 for EVERY module here, so no module can exceed the
+            # API-28 leg's device level and AGP has nothing to fail over. Revisit only if a module ever
             # declares a higher minSdk.
             ./gradlew connectedAndroidTest ${{ inputs.gradle-args }} --no-configuration-cache
 

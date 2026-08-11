@@ -187,6 +187,28 @@ catch-all maps every exception to "mDNS is unavailable here" and would swallow t
   `watchosDeviceArm64` (the 64-bit device, which our matrix omits entirely); socket already publishes
   `socket-udp-watchosarm64` but *not* `watchosDeviceArm64`, so arm64_32 unblocks on that buffer release
   alone while the 64-bit device additionally needs a socket PR. Check Central before re-deriving either.
+- **Android's floor is API 28, and it is measured rather than chosen.** Two floors stack, and the
+  declared minSdk of 21 satisfied neither.
+  - *Runtime floor, 24.* The emulator lane ran at 21 and reported that 21 cannot host this stack at
+    all: ART's `sun.misc.Unsafe` has no `allocateMemory` before 24 (a dexdump of the API-21 class lists
+    only the CAS / field-offset / park set — `copyMemory`, `addressSize` and `getByte(long)` are absent
+    too), which is what `BufferFactory.secure()` allocates every key schedule through; and
+    `DatagramChannel.bind(SocketAddress)` does not exist before 24 either, which is what
+    `UdpSocket.bind` calls. Both arrived with Android 7.0's OpenJDK-derived `core-oj`, and both land as
+    `NoSuchMethodError` — nothing on our side routes around either. The two upstream defects behind
+    them: buffer's `UnsafeAllocator.isSupported` probes only that the `theUnsafe` **field** is
+    reachable, never that the **methods** exist (and its `catch (_: Exception)` could not have seen a
+    `NoSuchMethodError` regardless), and socket's `UdpSocket.jvm.kt` uses the API-24 `bind` where
+    `channel.socket().bind(...)` works everywhere.
+  - *Dependency floor, 28 — the binding one.* `buffer-crypto-android` has declared
+    `minSdkVersion="28"` in its published manifest since at least 6.22.0, and `webrtc-dtls` takes it as
+    `api`. An Android app below 28 fails the manifest merge on it whatever we declare. **AGP does not
+    propagate a dependency's floor into our modules**, which is precisely why this went unseen: on the
+    API-21 leg `:webrtc-dtls:connectedAndroidDeviceTest` ran instead of being skipped, so nothing in
+    our CI ever saw the merge that a consumer would perform. `consumer-smoke` cannot catch it either —
+    it resolves K/N and JVM, never an Android app.
+  - The emulator leg and minSdk move in lockstep: above the floor the leg stops proving it, below the
+    floor it certifies a configuration no consumer can build.
 - **mDNS silently receives nothing on Android**, and nothing here or in socket acquires a
   `WifiManager.MulticastLock` — without one the Wi-Fi driver filters inbound multicast not addressed to
   the device's own MAC, so queries go out and no response ever arrives. mDNS defaults *on* in

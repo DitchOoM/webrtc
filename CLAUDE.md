@@ -397,8 +397,15 @@ above) and a `gradle.properties`, and `include(":…")` it in `settings.gradle.k
   published 0.33.2 — so `validate-artifacts`, handed the first derivation, reported "missing umbrella
   artifact" for all seven modules against a repo where all seven were present under the other number. On
   the release path the same skew is worse and quieter, because the tag, the GitHub release and the
-  Central upload name all came from the FIRST derivation while the bundle carried a LATER one. Costs
-  nothing in wall clock: the ~2m13s query moved out of both build jobs into a prefix job.
+  Central upload name all came from the FIRST derivation while the bundle carried a LATER one. It costs
+  about **+3 minutes** end-to-end, and the reason is worth knowing before trying to optimize it away:
+  the old `Compute version` step (133s Linux / 192s Apple) was not pure overhead — it was also the
+  Gradle **warm-up**, compiling `build-logic`, configuring every project and starting the daemon that
+  the next step then reused. Measured across the two runs, deleting it grew the following step by about
+  as much as the step itself had cost (Linux 957s → 1105s, Apple 281s → 690s), so the prefix job's
+  ~2m25s is genuinely additional rather than relocated. Cheaper is possible — a root-only task under
+  `--configure-on-demand`, or re-implementing the bump in shell — but the shell route would recreate the
+  two-derivations-disagree family of bug it exists to remove.
 - **PR** (`review.yaml`): `standing-directives` greps + `compute-version` → `build-linux` + `build-apple` →
   `validate-artifacts` → `consumer-smoke` (`.ci/consumer-smoke`, a standalone build resolving
   `com.ditchoom:webrtc` + `webrtc-testsuite` by coordinate; compiles, K/N-links, and runs

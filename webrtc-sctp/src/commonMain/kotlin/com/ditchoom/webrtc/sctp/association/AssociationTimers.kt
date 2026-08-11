@@ -6,6 +6,43 @@ import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
 /**
+ * The association control block (RFC 4960 §1.4 TCB): either there is an established association, with
+ * every structure it needs, or there is none.
+ *
+ * Held as three independently-nullable fields (`retransmissionQueue`, `reassemblyQueue`, `congestion`),
+ * a **partly** populated control block was constructible — and the code said so: `establishControlBlocks`
+ * assigned the three in sequence and then reached for `retransmissionQueue!!`, a bang that is only safe
+ * because of an assignment three lines above it. Every consumer then re-asked the same question
+ * separately, so `onT3Timeout` unwrapped two of them and duplicated its disarm-and-return in both arms
+ * for a state that cannot happen.
+ *
+ * The three are created together, in one place, and die together in `clearControlBlocks`. [Live] says so:
+ * one unwrap answers for all three, and there is no bang anywhere.
+ */
+internal sealed interface Tcb {
+    /** No association — before the handshake completes, and after any teardown. */
+    data object NoAssociation : Tcb
+
+    /** An established association: all three structures exist for exactly as long as it does. */
+    class Live(
+        val retransmission: RetransmissionQueue,
+        val reassembly: ReassemblyQueue,
+        val congestion: CongestionControl,
+    ) : Tcb
+}
+
+/**
+ * Unwrap to the established control block, or run [onNone] — which must not return (typically `return`,
+ * sometimes after disarming a timer). Inline, so the non-local return reads exactly like the `?: return`
+ * it replaces while the state itself stays sealed rather than nullable.
+ */
+internal inline fun Tcb.liveOrElse(onNone: () -> Nothing): Tcb.Live =
+    when (this) {
+        Tcb.NoAssociation -> onNone()
+        is Tcb.Live -> this
+    }
+
+/**
  * One timer of the association: armed to fire at an instant, or not armed at all (ARCHITECTURE §5.1 —
  * the association owns no clock, so a timer *is* an absolute deadline and nothing else).
  *

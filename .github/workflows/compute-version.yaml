@@ -1,0 +1,97 @@
+name: "Compute version"
+
+# Derive the version this RUN publishes — once, in one place, before any lane that bakes it into an
+# artifact.
+#
+# WHY THIS IS A JOB OF ITS OWN. `computeNextVersion` (build-logic) reads Maven Central's <latest> and
+# bumps it, at Gradle CONFIGURATION time. That makes the version a property of the *moment a Gradle
+# invocation starts*, not of the run — and a run makes many. build-linux alone made four
+# (`:webrtc:properties`, `build allTests`, `apiCheck`, `publishToMavenLocal`) and build-apple another
+# four, each re-deriving independently, with build-apple's set racing build-linux's on a different
+# runner. Every one of them agrees only for as long as Central does not move underneath them.
+#
+# It moved. In run 31504316359 build-linux derived 0.33.1 at 14:59:14; the release for #172 published
+# 0.33.1 to Central ten seconds later; `publishToMavenLocal` in that same job then derived 0.33.2 and
+# published THAT. `validate-artifacts`, handed the job's first derivation, reported "missing umbrella
+# artifact" for all seven modules against a maven-local repo that contained only 0.33.2.
+#
+# On a PR that is a red check. On the release path it is worse and quieter: merged.yaml fed the FIRST
+# derivation into the Central upload name, the git tag and the GitHub release, while the artifacts in
+# the bundle came from a LATER one. A release landing mid-run could ship artifacts whose internal
+# version disagrees with the tag naming them.
+#
+# So: derive here, once, and hand the value down. Every downstream Gradle invocation is pinned with
+# `-Pversion=`, which Gradle applies to `project.version` — the convention plugin's derivation is
+# guarded on `version == "unspecified"` and is therefore skipped entirely in CI. It remains the path
+# for local/dev builds, which get `-SNAPSHOT`.
+#
+# The bump segment still comes from the PR labels, via `gradle-args` (`-PincrementMajor` /
+# `-PincrementMinor`); it is consumed HERE and nowhere else, because after this job the version is a
+# literal.
+
+on:
+  workflow_call:
+    inputs:
+      gradle-args:
+        description: "Bump selection for the derivation (e.g. -PincrementMinor=true). Consumed only here."
+        required: false
+        default: ""
+        type: string
+    outputs:
+      version:
+        description: "The version every lane in this run builds, publishes, validates and tags"
+        value: ${{ jobs.compute.outputs.version }}
+
+jobs:
+  compute:
+    name: "Derive the run's version"
+    # ubuntu-24.04, not ubuntu-latest: this runs the exact query build-linux used to run, so it runs on
+    # the exact image that ran it (Android SDK included — `:webrtc:properties` configures the Android
+    # KMP plugin).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # temurin, not zulu — see the note in build-linux.yaml (tool-cache hit, no CDN fetch).
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6.3.0
+
+      # RESTORE-only, deliberately, and this is the reason: `actions/cache` also SAVES at post-job, and a
+      # configuration-only job would write a ~/.konan that has never compiled anything under the key
+      # build-linux and build-apple restore from — handing the lanes that do the real work a partial
+      # distribution. Reading is free; writing this key is theirs alone.
+      - name: Restore Konan cache (configuration may resolve the K/N distribution)
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-${{ runner.os }}-
+
+      # Gradle stays the single source of truth for the bump rules — re-implementing them in shell here
+      # would be a second implementation to keep in step with build-logic, which is the same class of
+      # divergence this job exists to remove. `:webrtc:properties` is the same query build-linux used to
+      # make; the difference is that now it is the ONLY one.
+      - name: Compute version
+        id: version
+        run: |
+          set -o pipefail
+          version=$(./gradlew -q :webrtc:properties ${{ inputs.gradle-args }} --no-configuration-cache \
+            | awk -F': ' '/^version:/{print $2}')
+          if [ -z "$version" ]; then echo "::error::could not compute version"; exit 1; fi
+          # A -SNAPSHOT here would mean GITHUB_REPOSITORY was unset, i.e. the plugin thinks this is a
+          # local build — publishing that to Central is not something to discover at the upload step.
+          case "$version" in
+            *-SNAPSHOT) echo "::error::derived a snapshot version ($version) on CI"; exit 1 ;;
+          esac
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Version for this run: ${version}"
+          echo "### Version for this run: \`${version}\`" >> "$GITHUB_STEP_SUMMARY"

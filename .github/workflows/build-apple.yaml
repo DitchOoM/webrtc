@@ -6,19 +6,20 @@ name: "Build & Test (Apple)"
 #
 # Per the V6_MAC_VALIDATION convention: Apple lanes are compile-faithful on the Linux dev box and
 # runtime-validated here on the macOS runner. The PR description states which lanes ran where.
+#
+# The version is an INPUT, derived once per run by compute-version.yaml (see its header). This lane used
+# to derive its own, on a different runner and at a different moment from build-linux's — so the two
+# maven-local halves that `validate-artifacts` merges into one repo could disagree with each other, not
+# merely with their caller. Every Gradle invocation below carries `-Pversion=`; "Stage published
+# artifacts" is the backstop that catches one that does not.
 
 on:
   workflow_call:
     inputs:
-      gradle-args:
-        description: "Extra Gradle arguments"
-        required: false
-        default: ""
-        type: string
-    outputs:
       version:
-        description: "Computed next version"
-        value: ${{ jobs.build.outputs.version }}
+        description: "The run's version, from compute-version.yaml. Pinned into every Gradle invocation."
+        required: true
+        type: string
 
 jobs:
   build:
@@ -30,8 +31,6 @@ jobs:
     # every dependency bump — including the socket 4.2.0 one that added these steps — runs on a
     # restore-keys partial hit and re-downloads. Budget for the cold path, not the warm one.
     timeout-minutes: 75
-    outputs:
-      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
 
@@ -53,15 +52,8 @@ jobs:
           key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-${{ runner.os }}-
 
-      - name: Compute version
-        id: version
-        run: |
-          version=$(./gradlew -q :webrtc:properties ${{ inputs.gradle-args }} --no-configuration-cache \
-            | awk -F': ' '/^version:/{print $2}')
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-
       - name: Build + test (host macOS + iOS simulator)
-        run: ./gradlew macosArm64Test iosSimulatorArm64Test ${{ inputs.gradle-args }} --no-configuration-cache
+        run: ./gradlew macosArm64Test iosSimulatorArm64Test -Pversion="${{ inputs.version }}" --no-configuration-cache
 
       # ── tvOS / watchOS (webrtc#127) ──────────────────────────────────────────────────────────────
       # Deliberately THREE steps, not one appended task list, because they fail for different reasons
@@ -77,7 +69,7 @@ jobs:
       #    anywhere that does. A failure here is upstream and not fixable in this repo — which is
       #    exactly why it must be attributable to its own step rather than buried in a test task.
       - name: Link tvOS + watchOS test binaries (first-ever Mach-O for these targets)
-        run: ./gradlew linkDebugTestTvosSimulatorArm64 linkDebugTestWatchosSimulatorArm64 ${{ inputs.gradle-args }} --no-configuration-cache
+        run: ./gradlew linkDebugTestTvosSimulatorArm64 linkDebugTestWatchosSimulatorArm64 -Pversion="${{ inputs.version }}" --no-configuration-cache
 
       # 2) Pin the runner-image assumption in the log. KGP resolves the simulator device by shelling
       #    `xcrun simctl devices available`; when a runtime is absent the failure is a bare
@@ -93,7 +85,7 @@ jobs:
       #    only the artifacts that no watch app can link anyway — it stays link-only above until that
       #    upstream gap closes. This is the first execution of the common suite on tvOS: ~610 tests.
       - name: Test (tvOS simulator) — webrtc#127
-        run: ./gradlew tvosSimulatorArm64Test ${{ inputs.gradle-args }} --no-configuration-cache
+        run: ./gradlew tvosSimulatorArm64Test -Pversion="${{ inputs.version }}" --no-configuration-cache
 
       # Capture the Apple K/N test reports (JUnit XML with full stack + captured output; for seeded
       # tests the failing seed is in the assertion message) — so an Apple-only flake that can't be
@@ -120,10 +112,20 @@ jobs:
       - name: Publish Apple klibs to local Maven repo
         # -PskipPrePublishCheck: the macOS lane has no Chrome/JS-browser toolchain for the full gate;
         # its Apple tests ran above, the cross-platform tests run on the Linux lane.
-        run: ./gradlew publishToMavenLocal -PskipPrePublishCheck=true ${{ inputs.gradle-args }} --no-configuration-cache
+        run: ./gradlew publishToMavenLocal -PskipPrePublishCheck=true -Pversion="${{ inputs.version }}" --no-configuration-cache
 
+      # See the identical guard in build-linux.yaml: assert the tree about to be uploaded carries the
+      # caller's version, in the lane that produced it rather than in the merge two jobs later.
       - name: Stage published artifacts
         run: |
+          set -euo pipefail
+          published="$HOME/.m2/repository/com/ditchoom/webrtc"
+          if [ ! -d "$published/${{ inputs.version }}" ]; then
+            found=""
+            for d in "$published"/*/; do [ -d "$d" ] && found+="$(basename "$d") "; done
+            echo "::error::this job published [${found% }] but the run's version is [${{ inputs.version }}] — a Gradle step here is missing -Pversion."
+            exit 1
+          fi
           mkdir -p /tmp/maven-local-apple/com/ditchoom
           cp -r ~/.m2/repository/com/ditchoom/. /tmp/maven-local-apple/com/ditchoom/
 

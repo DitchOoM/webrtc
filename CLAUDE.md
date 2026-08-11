@@ -410,13 +410,34 @@ above) and a `gradle.properties`, and `include(":…")` it in `settings.gradle.k
 
 ## CI/CD
 
-- **PR** (`review.yaml`): `standing-directives` greps → `build-linux` + `build-apple` →
+- **The version is derived exactly ONCE per run**, by `compute-version.yaml`, and threaded into every
+  lane as `-Pversion=` (the convention plugin's `computeNextVersion` is guarded on
+  `version == "unspecified"`, so it never runs in CI; it remains the local/dev `-SNAPSHOT` path). It used
+  to be derived per Gradle *invocation* — `computeNextVersion` reads Central's `<latest>` at
+  configuration time, and build-linux made four invocations, build-apple another four on a different
+  runner. **A value derived twice is two values**: in run 31504316359 build-linux computed 0.33.1, #172's
+  release published 0.33.1 to Central ten seconds later, and that job's own `publishToMavenLocal` then
+  published 0.33.2 — so `validate-artifacts`, handed the first derivation, reported "missing umbrella
+  artifact" for all seven modules against a repo where all seven were present under the other number. On
+  the release path the same skew is worse and quieter, because the tag, the GitHub release and the
+  Central upload name all came from the FIRST derivation while the bundle carried a LATER one. It costs
+  about **+3 minutes** end-to-end, and the reason is worth knowing before trying to optimize it away:
+  the old `Compute version` step (133s Linux / 192s Apple) was not pure overhead — it was also the
+  Gradle **warm-up**, compiling `build-logic`, configuring every project and starting the daemon that
+  the next step then reused. Measured across the two runs, deleting it grew the following step by about
+  as much as the step itself had cost (Linux 957s → 1105s, Apple 281s → 690s), so the prefix job's
+  ~2m25s is genuinely additional rather than relocated. Cheaper is possible — a root-only task under
+  `--configure-on-demand`, or re-implementing the bump in shell — but the shell route would recreate the
+  two-derivations-disagree family of bug it exists to remove.
+- **PR** (`review.yaml`): `standing-directives` greps + `compute-version` → `build-linux` + `build-apple` →
   `validate-artifacts` → `consumer-smoke` (`.ci/consumer-smoke`, a standalone build resolving
   `com.ditchoom:webrtc` + `webrtc-testsuite` by coordinate; compiles, K/N-links, and runs
   `withWebRtcHarness { natType(); relayOnly(); impaired() }` against a **cold** resolve — throwaway
   `GRADLE_USER_HOME`, no build cache).
 - **Release** (`merged.yaml`): version bump controlled by PR labels (`major` / `minor`, else patch;
-  `skip-release` / `draft-release` change the flow) → build → validate → `consumer-smoke` (maven-local,
+  `skip-release` / `draft-release` change the flow) → `compute-version` (the label's bump is consumed
+  *here* and nowhere after: from this job on, the version is a literal) → build → validate →
+  `consumer-smoke` (maven-local,
   both hosts — `publish` needs it, so a consumer-breaking release never reaches Central) →
   `publish-to-central` → finalize (tag + GitHub release). `release.yaml` completes/cancels a draft.
 - **What proves the publish is `consumer-smoke-central`, a job inside `merged.yaml`** — it resolves the

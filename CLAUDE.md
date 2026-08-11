@@ -29,13 +29,20 @@ against Chrome, Firefox, WebKit, Pion and werift over real NAT kernels in CI acr
 shutdown). Every interop lane runs a **Linux or JVM** peer, which is why Android being non-functional
 (Traps, below) went unseen for so long: no lane anywhere executed on ART until the emulator lane landed,
 and the full common suite — 611 tests — now runs there per PR. Pinned at **socket 4.2.0 + buffer
-6.26.0**, both the current Maven Central releases. socket
+6.27.1**. socket
 4.1.0 + buffer 6.25.0 is the pair that introduced `DatagramCapabilities.requiresNativeMemoryBuffers`,
 which is what the send-side buffer check consumes, and that seam is why the two normally move together.
-Buffer rides one ahead deliberately: 6.26.0 is the Apple AEAD ownership fix (below), a pure internal fix
-to an Apple-only path with no API change, so resolving buffer up underneath a socket built against
-6.25.0 is safe. socket-udp 4.2.0's POM still declares buffer 6.25.0, so that skew is unchanged — re-align
-on a socket release that pins 6.26.0 or later.
+Buffer rides ahead deliberately: 6.26.0 is the Apple AEAD ownership fix and 6.27.1 the Android X25519
+fix (both below), pure internal fixes with no API change, so resolving buffer up underneath a socket
+built against 6.25.0 is safe. socket-udp 4.2.0's POM still declares buffer 6.25.0, so that skew is
+unchanged — re-align on a socket release that pins 6.26.0 or later.
+
+**buffer 6.27.1 is newer than 6.28.0**, which is not a typo and is the one thing to know before touching
+that pin. 6.28.0 was tagged from #342 *before* #343 merged; 6.27.1 was cut afterwards from a commit whose
+parent is #342's, so 6.27.1 strictly contains 6.28.0. Gradle resolves conflicts **up**, so anything
+dragging in 6.28.0 silently reverts the X25519 fix and drops Android 14+ back to P-256 — a capability
+regression that fails no build. The long note lives at the pin in `libs.versions.toml`; check the
+published `-sources.jar` rather than the version order.
 
 ### Capabilities that are easy to under-estimate
 
@@ -181,12 +188,22 @@ catch-all maps every exception to "mDNS is unavailable here" and would swallow t
   cadence rather than coturn's `new, lifetime=` line — that one prints 600 here, because coturn clamps a
   **requested** lifetime and our Allocate sends no LIFETIME attribute, while the response still carries 20.
 - **Platforms:** Node needs blocking raw-ECDH plus a shipped binder (#133). tvOS/watchOS establish as of
-  socket 4.2.0 (#127 closed); what remains there is `watchosArm64`, the 32-bit `arm64_32` *device*, which
-  `buffer-crypto` publishes no klib for — so every watchOS artifact we ship is a simulator one and no
-  watch app can link this yet. **buffer PR #342 closes exactly that**, and also adds
-  `watchosDeviceArm64` (the 64-bit device, which our matrix omits entirely); socket already publishes
-  `socket-udp-watchosarm64` but *not* `watchosDeviceArm64`, so arm64_32 unblocks on that buffer release
-  alone while the 64-bit device additionally needs a socket PR. Check Central before re-deriving either.
+  socket 4.2.0 (#127 closed), but **no watchOS *device* target is linkable end-to-end**, on either ABI —
+  every watchOS artifact we ship is a simulator one and no watch app can link this yet. The two ABIs are
+  blocked in opposite repos, which is why one release cannot clear both:
+  - `watchosArm64` (**arm64_32**, 32-bit pointers) — blocked in **buffer**. buffer PR #342 **declined**
+    it deliberately rather than closing it: arm64_32 is the only Apple target with a 32-bit `size_t`, and
+    while each target compiles individually, `compileAppleMainKotlinMetadata` rejects merely *naming* a
+    `size_t`-typed CommonCrypto/Security function across a width-mixed target set (112 errors over 17
+    files). `.convert()` cannot help — the reference offends, not the argument. Admitting it means
+    splitting `buffer-crypto`'s `appleMain` by pointer width. `buffer-crypto-watchosarm64` is still a 404
+    on Central at 6.27.1; `socket-udp-watchosarm64` publishes fine, so socket is not the blocker here.
+  - `watchosDeviceArm64` (64-bit device — Series 9 / Ultra) — blocked in **socket**, and our own matrix
+    omits the target entirely. buffer #342 added it everywhere including `buffer-crypto`, but
+    `socket-udp-watchosdevicearm64` is a 404 at 4.2.0, so this one needs a socket PR plus a target
+    registration here.
+  - **Do not read #342 as "arm64_32 is unblocked"** — an earlier revision of this file did, from the PR
+    title alone. It adds the 64-bit device and states in a comment why the 32-bit one stays out.
 - **Android's floor is API 28, and it is measured rather than chosen.** Two floors stack, and the
   declared minSdk of 21 satisfied neither.
   - *Runtime floor, 24.* The emulator lane ran at 21 and reported that 21 cannot host this stack at
@@ -232,12 +249,14 @@ Things that have cost real time here. Read before acting on a premise that sound
 - **A capability is a property of the RUNTIME, not of the platform** — and the tenth instance above is
   this one, which shipped a non-functional platform. `EcdheKeyExchange.generate` `check()`ed that the
   *configured* curve was available, under a comment reading "browsers delegate; the engine never runs
-  here". Android is a `Native` target where the engine is the whole story, and buffer-crypto reports
+  here". Android is a `Native` target where the engine is the whole story, and buffer-crypto reported
   X25519 `Unavailable` there at every API level (Conscrypt's `XDH` `KeyPairGenerator` refuses every
   `AlgorithmParameterSpec`). So every Android peer threw inside `DtlsEngine.start`, the throw unwound
   into the session pump, and the consumer saw `Dtls(HandshakeTimeout)` — **no data channel could
   establish on any Android device.** P-256 was available the whole time and already advertised. Fixed by
-  choosing every group over `availableGroups`; upstream buffer#343 restores X25519 on Android 14+.
+  choosing every group over `availableGroups`. Upstream buffer#343 (pinned as of 6.27.1) restores X25519
+  on **Android 14+ only** — API 28–33 genuinely lack it, so our half is load-bearing at every level the
+  minSdk admits, and the two are complementary rather than one superseding the other.
 - **A test that SKIPS an unavailable capability is blind to that capability being wrongly reported.**
   This is why the above shipped: buffer-crypto's `KeyAgreementTest` skips curves the target calls
   unavailable, so its entire X25519 suite passed on Android by never running. Assert the *agreement

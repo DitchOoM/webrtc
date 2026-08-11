@@ -60,7 +60,24 @@ kotlinxCoroutines = "1.11.0"
 # here because #335 is a pure internal fix to an Apple-only code path with no API change (the 6.25.0
 # `requiresNativeMemoryBuffers` seam the pair exists to carry is untouched); revisit if the two halves
 # ever diverge on API rather than on a bug fix.
-buffer = "6.26.0"
+#
+# 6.27.1 (buffer PR #343) restores X25519 on Android 14+ (API 34+), where Conscrypt implements it fully
+# and buffer-crypto reported it `Unavailable` anyway — two provider disagreements written to the JDK's
+# shape, both silent: the probe called `initialize(NamedParameterSpec.X25519)`, which Conscrypt's
+# X25519-only generator refuses outright, and `rawX25519` cast to `XECPublicKey`, which
+# `OpenSSLX25519PublicKey` does not implement. That flag is what `Dtls13Handshake` picks its key_share
+# group from, so this is the upstream half of the Android establishment defect. Our half stays: API
+# 28–33 genuinely have no X25519, so every group decision still runs over `availableGroups`.
+#
+# !! DO NOT "UPGRADE" TO 6.28.0 — IT IS OLDER CONTENT AT A HIGHER NUMBER. !!
+# 6.28.0 was tagged from #342 at 23:42 UTC; #343 merged at 23:06 but was released as 6.27.1 at 00:40,
+# i.e. AFTER 6.28.0 and from a commit whose parent is #342's. So 6.27.1 ⊃ 6.28.0: it carries #342's
+# `watchosDeviceArm64` too, and 6.28.0 is the only version between 6.26.0 and 6.27.1 without the X25519
+# fix. Verified in the published `-sources.jar`, not inferred from the tag. Because Gradle resolves
+# version conflicts UP, any dependency dragging in 6.28.0 silently reverts #343 and takes Android 14+
+# back to P-256 — a quiet capability regression, not a build failure. Re-check this note before the
+# next bump; it stops applying at 6.29.0+, which is genuinely newer than both.
+buffer = "6.27.1"
 # DitchOoM socket sibling — the UDP `DatagramChannel` **actuals** webrtc's transport track binds to for
 # real-network candidate gathering (host/srflx/relay). The seam itself is buffer-flow's
 # `DatagramChannel` (on Central, above); `socket-udp` is only the platform real-socket implementation

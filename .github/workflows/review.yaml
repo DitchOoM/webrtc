@@ -15,11 +15,23 @@ jobs:
   standing-directives:
     uses: ./.github/workflows/standing-directives.yaml
 
+  # Derived once, here, and threaded into every lane that builds, publishes or validates an artifact —
+  # so a release landing on Central mid-run cannot make two jobs in this run disagree about what they
+  # are building. See compute-version.yaml for the run where exactly that happened.
+  version:
+    uses: ./.github/workflows/compute-version.yaml
+
   build-linux:
+    needs: version
     uses: ./.github/workflows/build-linux.yaml
+    with:
+      version: ${{ needs.version.outputs.version }}
 
   build-apple:
+    needs: version
     uses: ./.github/workflows/build-apple.yaml
+    with:
+      version: ${{ needs.version.outputs.version }}
 
   # The common suite on a real ART runtime. Android was the last supported platform whose every test
   # ran on a host JVM — see the lane's own header for why that is not the same proof.
@@ -114,10 +126,10 @@ jobs:
           if-no-files-found: ignore
 
   validate:
-    needs: [build-linux, build-apple]
+    needs: [version, build-linux, build-apple]
     uses: ./.github/workflows/validate-artifacts.yaml
     with:
-      version: ${{ needs.build-linux.outputs.version }}
+      version: ${{ needs.version.outputs.version }}
 
   # A real downstream consumer resolves the artifacts this PR would publish, compiles
   # against them on every target, links them into a K/N binary, and RUNS the harness scenarios. Needs
@@ -130,9 +142,9 @@ jobs:
   # never really the gate. `build-apple` already puts a macOS runner in every PR's budget, and the two
   # jobs run in parallel.
   consumer-smoke:
-    needs: [build-linux, validate]
+    needs: [version, build-linux, validate]
     uses: ./.github/workflows/consumer-smoke.yaml
     with:
-      version: ${{ needs.build-linux.outputs.version }}
+      version: ${{ needs.version.outputs.version }}
       source: maven-local
       include-macos: true

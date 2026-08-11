@@ -37,6 +37,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       flow: ${{ steps.check.outputs.flow }}
+      # The bump segment only. Consumed by the `version` job below and by nothing else — after that job
+      # the version is a literal that every lane is pinned to.
       gradle-args: ${{ steps.check.outputs.gradle-args }}
     steps:
       - uses: actions/checkout@v7
@@ -95,46 +97,57 @@ jobs:
           echo "Only non-code files changed, skipping"
           echo "flow=skip" >> $GITHUB_OUTPUT
 
-  build-linux:
+  # ONE derivation for the whole release. This is the value that names the Central upload, the git tag
+  # and the GitHub release, AND the value baked into the artifacts inside the bundle — which were, until
+  # this job existed, two different derivations taken minutes apart on two runners. A release landing on
+  # Central between them shipped a bundle whose contents disagreed with the tag naming it.
+  version:
     needs: check-release
+    if: needs.check-release.outputs.flow != 'skip'
+    uses: ./.github/workflows/compute-version.yaml
+    with:
+      gradle-args: ${{ needs.check-release.outputs.gradle-args }}
+
+  build-linux:
+    needs: [check-release, version]
     if: needs.check-release.outputs.flow != 'skip'
     uses: ./.github/workflows/build-linux.yaml
     with:
-      gradle-args: ${{ needs.check-release.outputs.gradle-args }}
+      version: ${{ needs.version.outputs.version }}
 
   build-apple:
-    needs: check-release
+    needs: [check-release, version]
     if: needs.check-release.outputs.flow != 'skip'
     uses: ./.github/workflows/build-apple.yaml
     with:
-      gradle-args: ${{ needs.check-release.outputs.gradle-args }}
+      version: ${{ needs.version.outputs.version }}
 
   validate:
-    needs: [check-release, build-linux, build-apple]
+    needs: [check-release, version, build-linux, build-apple]
     if: needs.check-release.outputs.flow != 'skip'
     uses: ./.github/workflows/validate-artifacts.yaml
     with:
-      version: ${{ needs.build-linux.outputs.version }}
+      version: ${{ needs.version.outputs.version }}
 
   # The pre-publish consumer gate: a real downstream project resolves the merged maven-local repo,
   # compiles + links + runs the harness scenarios against it. `publish` needs this, so a release that
   # would break a consumer never reaches Central in the first place.
   consumer-smoke:
-    needs: [check-release, build-linux, validate]
+    needs: [check-release, version, build-linux, validate]
     if: needs.check-release.outputs.flow != 'skip'
     uses: ./.github/workflows/consumer-smoke.yaml
     with:
-      version: ${{ needs.build-linux.outputs.version }}
+      version: ${{ needs.version.outputs.version }}
       source: maven-local
       include-macos: true
 
   publish:
-    needs: [check-release, build-linux, validate, consumer-smoke]
+    needs: [check-release, version, build-linux, validate, consumer-smoke]
     if: needs.check-release.outputs.flow == 'draft' || needs.check-release.outputs.flow == 'release'
     uses: ./.github/workflows/publish-to-central.yaml
     with:
       publishing-type: ${{ needs.check-release.outputs.flow == 'draft' && 'USER_MANAGED' || 'AUTOMATIC' }}
-      version: ${{ needs.build-linux.outputs.version }}
+      version: ${{ needs.version.outputs.version }}
     secrets:
       GPG_KEY_CONTENTS: ${{ secrets.GPG_KEY_CONTENTS }}
       SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
@@ -157,17 +170,17 @@ jobs:
   # so this does not race the publish, and it runs alongside `finalize` rather than gating it — the
   # artifacts are on Central by then, so a red lane here is a report, not a reason to withhold the tag.
   consumer-smoke-central:
-    needs: [check-release, build-linux, publish]
+    needs: [check-release, version, publish]
     if: needs.check-release.outputs.flow == 'release'
     uses: ./.github/workflows/consumer-smoke.yaml
     with:
-      version: ${{ needs.build-linux.outputs.version }}
+      version: ${{ needs.version.outputs.version }}
       source: central
       include-macos: true
 
   finalize:
     name: Finalize Release
-    needs: [check-release, build-linux, publish]
+    needs: [check-release, version, publish]
     if: always() && needs.check-release.outputs.flow != 'skip' && needs.check-release.outputs.flow != 'dry-run'
     runs-on: ubuntu-latest
     steps:
@@ -184,7 +197,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title || 'Manual release' }}
           PR_URL: ${{ github.event.pull_request.html_url || format('{0}/{1}', github.server_url, github.repository) }}
         run: |
-          version="${{ needs.build-linux.outputs.version }}"
+          version="${{ needs.version.outputs.version }}"
           deployment_id="${{ needs.publish.outputs.deployment-id }}"
           staging_url="https://central.sonatype.com/publishing/deployments"
           gh release create "v${version}" \
@@ -210,7 +223,7 @@ jobs:
           TARGET_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
         run: |
           set -euo pipefail
-          version="${{ needs.build-linux.outputs.version }}"
+          version="${{ needs.version.outputs.version }}"
           tag="v${version}"
 
           # Ask the API whether the tag exists, not the work tree. `actions/checkout` fetches no tags at

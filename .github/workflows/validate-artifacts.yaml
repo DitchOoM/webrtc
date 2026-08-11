@@ -43,12 +43,38 @@ jobs:
           version="${{ inputs.version }}"
           root="/tmp/maven-local-merged/com/ditchoom"
           modules="webrtc webrtc-sdp webrtc-stun webrtc-ice webrtc-dtls webrtc-sctp webrtc-testsuite"
+
+          # Say what the tree ACTUALLY holds before judging it against `version`. The two disagreeing is
+          # the failure this job is most likely to see and was, until run 31504316359, the one it
+          # reported worst: every module read as "missing umbrella artifact" when in fact every module
+          # was present, under a different number (the build lane re-derived the version mid-run and
+          # published 0.33.2 while this job was handed 0.33.1). "Missing" sent the investigation looking
+          # for a publishing bug; the tree had the answer the whole time.
+          if [ ! -d "$root" ]; then
+            echo "::error::the merged maven-local artifact has no com/ditchoom tree at all — nothing was published"
+            exit 1
+          fi
+          echo "=== versions present in the merged repo ==="
+          present=$(find "$root" -mindepth 2 -maxdepth 2 -type d -exec basename {} \; | sort -u | tr '\n' ' ')
+          echo "  ${present:-<empty>}"
+          echo "=== expected: $version ==="
+
           fail=0
           for m in $modules; do
             # KMP publishes an umbrella module plus per-target modules (e.g. webrtc-stun-jvm).
             umbrella="$root/$m/$version"
             if [ ! -d "$umbrella" ]; then
-              echo "::error::missing umbrella artifact for $m@$version"; fail=1; continue
+              # No nullglob: an unmatched glob stays literal and fails `-d`, which leaves `found` empty.
+              # Turning nullglob on would also empty the `ls "$umbrella"/*.pom` globs below, where an
+              # argument-less `ls` lists the CWD and the check passes on nothing.
+              found=""
+              for d in "$root/$m"/*/; do [ -d "$d" ] && found+="$(basename "$d") "; done
+              if [ -z "$found" ]; then
+                echo "::error::$m: nothing published at all under $root/$m (expected $version)"
+              else
+                echo "::error::$m: published [${found% }], expected [$version]. The build lane and this job disagree on the version; both must come from the run's single \`version\` job."
+              fi
+              fail=1; continue
             fi
             pom=$(ls "$umbrella"/*.pom 2>/dev/null | head -1 || true)
             module=$(ls "$umbrella"/*.module 2>/dev/null | head -1 || true)

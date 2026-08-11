@@ -25,6 +25,7 @@ import com.ditchoom.webrtc.ice.MulticastMdnsResolver
 import com.ditchoom.webrtc.ice.RelayGatheringResult
 import com.ditchoom.webrtc.sctp.association.SctpConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
+import com.ditchoom.webrtc.sctp.datachannel.send
 import com.ditchoom.webrtc.sdp.SdpParseResult
 import com.ditchoom.webrtc.sdp.SdpType
 import com.ditchoom.webrtc.sdp.SessionDescription

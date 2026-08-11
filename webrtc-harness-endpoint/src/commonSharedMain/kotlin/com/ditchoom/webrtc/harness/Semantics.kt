@@ -16,6 +16,8 @@ import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.association.SctpReliability
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConnection
+import com.ditchoom.webrtc.sctp.datachannel.DataChannelPayload
+import com.ditchoom.webrtc.sctp.datachannel.send
 import com.ditchoom.webrtc.sdp.DataChannelParameters
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
@@ -250,7 +252,7 @@ internal class Reflector(
     }
 
     /** Attach an echo pump to [channel]; it lives until the channel's inbound flow completes. */
-    fun attach(channel: Connection<ReadBuffer>) {
+    fun attach(channel: Connection<DataChannelPayload>) {
         val label = channel.channelLabel()
         println("[harness] reflect: incoming data channel \"$label\" id=${channel.id}")
         scope.launch {
@@ -262,14 +264,17 @@ internal class Reflector(
             // failure that actually happened.
             try {
                 channel.receive().collect { message ->
-                    val size = message.remaining()
+                    val size = message.wireSize()
                     count++
                     bytes += size
                     val text = message.peekText()
                     val rendered = if (text != null) "data=\"$text\"" else "data=<${size}B binary>"
                     println("[harness] reflect \"$label\": size=$size msg#$count rxBytes=$bytes $rendered")
-                    // Verbatim echo — the whole reflector contract. `ping`→`pong` is the one historical
-                    // exception (phase 0), kept so the establishment ritual is unchanged on every lane.
+                    // Verbatim echo — the whole reflector contract, and now verbatim in KIND as well as in
+                    // bytes: echoing the payload itself sends a peer's `WebRTC String` back as a string
+                    // rather than flattening it to binary, which is what makes a browser lane able to assert
+                    // `typeof event.data`. `ping`→`pong` is the one historical exception (phase 0), kept so
+                    // the establishment ritual is unchanged on every lane.
                     if (text == "ping") channel.send(textBuffer("pong")) else channel.send(message)
                     _events.trySend(Event(label, text, size))
                 }
@@ -308,7 +313,7 @@ internal class Reflector(
  * agreement that the run is over.
  */
 internal class ControlChannel(
-    private val channel: Connection<ReadBuffer>,
+    private val channel: Connection<DataChannelPayload>,
 ) {
     private val inbox = Channel<String>(Channel.UNLIMITED)
 
@@ -323,7 +328,7 @@ internal class ControlChannel(
             // exactly the failure the phase should report.
             try {
                 channel.receive().collect { message ->
-                    inbox.trySend(message.peekText() ?: "<${message.remaining()}B binary>")
+                    inbox.trySend(message.peekText() ?: "<${message.wireSize()}B binary>")
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -589,15 +594,20 @@ private fun negotiatedMaxMessageSize(remote: Long?): Int {
 
 /** Send a [size]-byte deterministic pattern and require the echo to be byte-identical. */
 private suspend fun echoIsIdentical(
-    channel: Connection<ReadBuffer>,
+    channel: Connection<DataChannelPayload>,
     size: Int,
     seed: Int,
     wait: Duration = ECHO_WAIT,
 ): Verdict {
     channel.send(patternBuffer(size, seed))
-    val echo =
+    val message =
         withTimeoutOrNull(wait) { channel.receive().firstOrNull() }
             ?: return Verdict(false, "no echo of the ${size}B message within $wait")
+    // A pattern goes out as `WebRTC Binary`; a peer that echoed `WebRTC String` did not echo it verbatim,
+    // and decoding its characters into bytes here would compare equal and hide the PPID it changed.
+    val echo =
+        message.binaryOrNull()
+            ?: return Verdict(false, "the ${size}B binary message was echoed as a TEXT message — the peer did not echo it in kind")
     if (echo.remaining() != size) {
         return Verdict(false, "echo is ${echo.remaining()}B but ${size}B was sent — reassembly truncated or split the message")
     }
@@ -818,7 +828,7 @@ private suspend fun phaseCloseOneChannel(pc: NativePeerConnection): Verdict {
 
     // (2) The peer reset its half — i.e. its channel closed — which is what frees the id for reuse.
     var probes = 0
-    var reopened: Connection<ReadBuffer>? = null
+    var reopened: Connection<DataChannelPayload>? = null
     while (reopened == null && probes < RECYCLE_PROBES) {
         probes++
         val candidate = pc.createDataChannel(DataChannelConfig(label = CLOSE_ONE_REOPEN_LABEL))
@@ -1260,7 +1270,7 @@ private fun describe(pair: CandidatePair): String =
 
 /** Send [text] on [channel] and require exactly [text] back — the smallest proof a channel is live. */
 private suspend fun echoesBack(
-    channel: Connection<ReadBuffer>,
+    channel: Connection<DataChannelPayload>,
     text: String,
     wait: Duration = ECHO_WAIT,
 ): Boolean {
@@ -1276,7 +1286,7 @@ private suspend fun echoesBack(
  * partial-reliable burst legitimately never reaches [want].
  */
 private suspend fun collectTagged(
-    channel: Connection<ReadBuffer>,
+    channel: Connection<DataChannelPayload>,
     prefix: String,
     want: Int,
     timeout: Duration,
@@ -1306,6 +1316,36 @@ internal fun ReadBuffer.peekText(): String? {
     position(start)
     return text
 }
+
+/**
+ * The tag a phase reads off an echo. A `WebRTC String` message is already characters, so there is nothing
+ * to decode and no size bound to apply; a `WebRTC Binary` one goes through the bounded peek above.
+ *
+ * Every message this harness originates today is binary — [textBuffer] and [patternBuffer] both go out
+ * through the `ReadBuffer` send overload — so a [DataChannelPayload.Text] arrival can only come from a peer
+ * that sent one. Reading it here is what lets the reflector echo it back in kind.
+ */
+internal fun DataChannelPayload.peekText(): String? =
+    when (this) {
+        is DataChannelPayload.Text -> text.toString()
+        is DataChannelPayload.Binary -> bytes.peekText()
+    }
+
+/** The message's size on the wire: a binary message's remaining bytes, a text message's UTF-8 length. */
+internal fun DataChannelPayload.wireSize(): Int =
+    when (this) {
+        is DataChannelPayload.Binary -> bytes.remaining()
+        is DataChannelPayload.Text -> utf8Len(text.toString())
+    }
+
+/**
+ * The buffer behind a **binary** message, or null when a text message arrived instead.
+ *
+ * Callers report that null rather than coercing it away: the phases that reach for bytes sent a
+ * [patternBuffer], so a text arrival means the wrong PPID crossed the wire (RFC 8831 §6.6) — and rendering
+ * its characters as bytes would compare equal and hide precisely that.
+ */
+internal fun DataChannelPayload.binaryOrNull(): ReadBuffer? = (this as? DataChannelPayload.Binary)?.bytes
 
 /**
  * A [size]-byte deterministic pattern, array-free (standing directive #1: no `ByteArray` in a `*Main/`
@@ -1351,4 +1391,4 @@ private const val LCG_INCREMENT = 12345
  * harness reads it off the concrete [DataChannelConnection] the SCTP stack hands back. (Exposing the label
  * on the consumer-facing channel type is a reasonable library follow-up.)
  */
-internal fun Connection<ReadBuffer>.channelLabel(): String = (this as? DataChannelConnection)?.config?.label ?: "<unlabelled>"
+internal fun Connection<DataChannelPayload>.channelLabel(): String = (this as? DataChannelConnection)?.config?.label ?: "<unlabelled>"

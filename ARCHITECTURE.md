@@ -73,8 +73,12 @@ change-trigger halves of `systemNetworkMonitor()`.
 - `RtcPeerConnection` is a **Layer-2 session**: `establish` is signaling-shaped, not host:port-shaped,
   so WebRTC is only ever a session type and never pretends to be a `Transport.connect(host, port)` —
   that would lie about addressing.
-- A data channel **is** a buffer-flow `Connection<ReadBuffer>`. Anything written against
-  `StreamMux`-style mux code runs over WebRTC unchanged.
+- A data channel **is** a buffer-flow `Connection<DataChannelPayload>`. Anything written against
+  `StreamMux`-style mux code runs over WebRTC unchanged, once it names the message kind: a payload is
+  `Text` or `Binary`, which is the distinction RFC 8831 §6.6 draws on the wire (PPID 51 vs 53) and the
+  one a browser peer sees as `String` vs `ArrayBuffer` on `event.data`. `Binary` carries the buffer
+  itself and is never copied; `Text` carries characters, so a message claiming to be a string cannot
+  hold bytes that are not valid UTF-8.
 - Capability by type, no stubs: `peerConnectionSupport()` is sealed, so the browser/native branch is
   exhaustive at compile time and there is no runtime "unsupported operation" for a statically
   impossible call.

@@ -70,8 +70,11 @@ public class SctpAssociation(
         private set
     private var localInitialTsn: Tsn = Tsn(0u)
     private var nextTsn: Tsn = Tsn(0u)
-    private var peerSupportsForwardTsn: Boolean = false
-    private var peerSupportsReConfig: Boolean = false
+
+    // Internal-readable for the same reason the verification tags above are: a fixture has to be able to
+    // see that a teardown cleared the peer's advertised capabilities, and no output carries that fact.
+    internal var peerExtensions: PeerExtensions = PeerExtensions.None
+        private set
 
     private val orderedSendSsn = HashMap<StreamId, Int>()
     private val pendingSend = ArrayDeque<OutstandingData>()
@@ -427,8 +430,11 @@ public class SctpAssociation(
             return
         }
         peerVerificationTag = initAck.initiateTag
-        peerSupportsForwardTsn = initAck.parameters.any { it.type == com.ditchoom.webrtc.sctp.ParameterType.ForwardTsnSupported }
-        peerSupportsReConfig = initAck.parameters.advertiseReConfig()
+        peerExtensions =
+            PeerExtensions(
+                forwardTsn = initAck.parameters.any { it.type == com.ditchoom.webrtc.sctp.ParameterType.ForwardTsnSupported },
+                reConfig = initAck.parameters.advertiseReConfig(),
+            )
         establishControlBlocks(peerInitialTsn = initAck.initialTsn, peerRwnd = initAck.advertisedReceiverWindow)
         val echo = SctpChunk.CookieEcho(copyOf(cookieParam.value))
         cookieEcho = echo
@@ -574,8 +580,7 @@ public class SctpAssociation(
         localInitialTsn = cookie.ourInitialTsn
         nextTsn = cookie.ourInitialTsn
         peerVerificationTag = cookie.peerTag
-        peerSupportsForwardTsn = cookie.peerForwardTsn
-        peerSupportsReConfig = cookie.peerReConfig
+        peerExtensions = PeerExtensions(forwardTsn = cookie.peerForwardTsn, reConfig = cookie.peerReConfig)
         establishControlBlocks(peerInitialTsn = cookie.peerInitialTsn, peerRwnd = cookie.peerRwnd)
         emitPacket(listOf(SctpChunk.CookieAck), peerVerificationTag, out)
         transition(SctpAssociationState.Established, out)
@@ -864,7 +869,7 @@ public class SctpAssociation(
         val scope = pending.scope
         // A peer that never advertised RE-CONFIG cannot be sent one (RFC 6525 §5.1). Answer the caller
         // rather than dropping the request: a channel close that is unanswerable still has to complete.
-        if (!peerSupportsReConfig) {
+        if (!peerExtensions.reConfig) {
             outgoingReset = OutgoingReset.Ready(PendingReset.Nothing)
             out += SctpOutput.OutgoingStreamsReset(scope, StreamResetOutcome.Unsupported)
             return
@@ -1307,7 +1312,7 @@ public class SctpAssociation(
         out: MutableList<SctpOutput>,
     ) {
         val rq = retransmissionQueue ?: return
-        if (!peerSupportsForwardTsn) return
+        if (!peerExtensions.forwardTsn) return
         val skips = rq.abandonExpired(now)
         val advanced = rq.advancedPeerAckPoint
         if (skips.isNotEmpty() || rq.cumulativeAckPoint.sackPrecedes(advanced)) {
@@ -1406,7 +1411,9 @@ public class SctpAssociation(
         // (§5.2.4 action A) re-seeds both sequence spaces in establishControlBlocks.
         outgoingReset = OutgoingReset.Ready(PendingReset.Nothing)
         peerRequests = PeerRequests.NoneYet(ReConfigRequestSequenceNumber(0u))
-        peerSupportsReConfig = false
+        // Both extension facts belong to the association going away — cleared as one value, so neither
+        // can survive into the next peer's association (a half-cleared pair was invisible at the read).
+        peerExtensions = PeerExtensions.None
     }
 
     private fun transition(

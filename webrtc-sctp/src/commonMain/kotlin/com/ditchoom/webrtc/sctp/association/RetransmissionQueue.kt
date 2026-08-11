@@ -23,6 +23,29 @@ internal enum class TxState {
 }
 
 /**
+ * Which optional SCTP extensions the peer advertised for **this** association (RFC 3758 FORWARD-TSN,
+ * RFC 6525 stream reconfiguration), learned from its INIT/INIT-ACK or recovered from the state cookie.
+ *
+ * One value rather than two free-floating `var`s, because the two are established together and belong to
+ * the association that learned them — so they must die together. Held separately, a teardown that clears
+ * one and forgets the other leaves a stale capability believed of the *next* peer, and that asymmetry is
+ * invisible at the point it matters (it reads as a plain field access). Replacing a single value at
+ * establish and at teardown makes the half-cleared state unconstructible.
+ *
+ * Booleans here are the legitimate kind: each is a standalone advertised-or-not fact carrying no
+ * correlated data, and nothing about one constrains the other.
+ */
+internal data class PeerExtensions(
+    val forwardTsn: Boolean,
+    val reConfig: Boolean,
+) {
+    companion object {
+        /** No association, or one whose peer advertised nothing — the only safe default. */
+        val None: PeerExtensions = PeerExtensions(forwardTsn = false, reConfig = false)
+    }
+}
+
+/**
  * Whether an acknowledged chunk may yield an RTT sample, and from which instant (RFC 4960 §6.3.1 C4,
  * and Karn's algorithm at C5: a retransmitted chunk's ack is ambiguous, because which copy it answers is
  * unknowable).

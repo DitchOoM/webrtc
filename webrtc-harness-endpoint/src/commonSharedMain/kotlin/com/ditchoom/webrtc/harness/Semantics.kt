@@ -1354,12 +1354,15 @@ internal fun DataChannelPayload.peekText(): String? =
         is DataChannelPayload.Binary -> bytes.peekText()
     }
 
-/** The message's size on the wire: a binary message's remaining bytes, a text message's UTF-8 length. */
-internal fun DataChannelPayload.wireSize(): Int =
-    when (this) {
-        is DataChannelPayload.Binary -> bytes.remaining()
-        is DataChannelPayload.Text -> utf8Len(text.toString())
-    }
+/**
+ * The message's size on the wire — the library's own answer, not a second implementation of it.
+ *
+ * `DataChannelPayload.wireByteCount` is the number the send gate refuses against (RFC 8841 §6), so a
+ * harness that reported its own count could disagree with the stack about what it just sent and keep
+ * passing. The local [utf8Len] survives for [textBuffer], which sizes a raw `String` and has no payload
+ * to ask.
+ */
+internal fun DataChannelPayload.wireSize(): Int = wireByteCount.toInt()
 
 /**
  * The buffer behind a **binary** message, or null when a text message arrived instead.

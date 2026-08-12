@@ -1265,7 +1265,13 @@ public class NativePeerConnection(
         val secured = dtls.secure(d.appDataTransport(), dtlsRole, peerFingerprint)
         val sctpRole = if (dtlsRole == DtlsRole.Client) SctpRole.Client else SctpRole.Server
         val liveStack =
-            SctpDataChannelStack(secured, scope, clock, sctpRole, config.sctpConfig, sctpRandom).also { it.start() }
+            SctpDataChannelStack(secured, scope, clock, sctpRole, config.sctpConfig, sctpRandom).also {
+                // The peer's ceiling was read from a description applied before this stack existed — every
+                // first negotiation, since DTLS has to finish first. Handed over BEFORE `start()`, so the
+                // gate is armed ahead of the first message the app can possibly send on it.
+                it.setPeerMessageLimit(_peerMessageLimit.value)
+                it.start()
+            }
 
         negotiationLock.withLock {
             if (closed) {
@@ -1451,8 +1457,14 @@ public class NativePeerConnection(
     private fun honorPeerMessageLimit(description: SessionDescription) {
         when (val section = description.dataChannelSection()) {
             DataChannelSection.Absent -> Unit
-            is DataChannelSection.Present ->
-                _peerMessageLimit.value = section.media.maxMessageSizeAttribute().asPeerMessageLimit()
+            is DataChannelSection.Present -> {
+                val limit = section.media.maxMessageSizeAttribute().asPeerMessageLimit()
+                _peerMessageLimit.value = limit
+                // Also to the association, where the send gate lives (RFC 8831 §6.6). A stack that comes
+                // up later takes it from the flow at construction, so a description applied before DTLS
+                // finished — which is every first negotiation — is not lost.
+                (dataChannels as? DataChannelStack.Up)?.stack?.setPeerMessageLimit(limit)
+            }
         }
     }
 

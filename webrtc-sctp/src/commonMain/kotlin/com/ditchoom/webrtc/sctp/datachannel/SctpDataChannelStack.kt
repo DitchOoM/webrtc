@@ -99,6 +99,11 @@ public class SctpDataChannelStack(
     private var nextStreamId: Int = if (role == SctpRole.Client) 0 else 1
     private var closed = false
 
+    // The peer's `a=max-message-size` (RFC 8841 §6). Read and written ONLY on the drive loop — the send
+    // gate consults it there, and [setPeerMessageLimit] posts rather than assigns — so it needs no
+    // synchronization and cannot be observed half-updated by a caller's coroutine.
+    private var peerMessageLimit: PeerMessageLimit = PeerMessageLimit.NotYetNegotiated
+
     // Stream ids mid-close: RFC 8831 §6.7 closes a data channel by resetting BOTH directions, and the two
     // resets are independent RFC 6525 exchanges that complete in either order. An id sits here holding
     // whichever half has landed; when the other one arrives the entry is dropped and the id recycled.
@@ -230,6 +235,26 @@ public class SctpDataChannelStack(
         }
     }
 
+    /**
+     * Tell this stack what the peer's `a=max-message-size` (RFC 8841 §6) said, so a `send` that would
+     * overrun it is refused here rather than discovered by the peer (RFC 8831 §6.6 makes exceeding it a
+     * MUST NOT). Until told, the stack assumes [PeerMessageLimit.NotYetNegotiated] and applies §6.6's
+     * 64 KiB — the only ceiling defensible in the absence of a statement.
+     *
+     * Non-suspending and posted rather than assigned: the limit is read on the drive loop beside the
+     * send it gates, so it is delivered as an ordered item like every other command. Best-effort on a
+     * torn-down stack, where nothing will be sent anyway.
+     *
+     * A session layer that reads SDP (`NativePeerConnection` does) calls this for its consumer. A caller
+     * driving this module directly — it is published on its own — is the reason it is public: a peer's
+     * ceiling can be known by means other than SDP, and the alternative to saying so is being capped at
+     * 64 KiB with no way to raise it.
+     */
+    public fun setPeerMessageLimit(limit: PeerMessageLimit) {
+        if (closed) return
+        inbox.trySend(DriveItem.Command(PeerMessageLimitCommand(limit)))
+    }
+
     /** Begin a graceful association shutdown (RFC 4960 §9.2). No-op once the stack has closed. */
     public suspend fun shutdown() {
         if (closed) return
@@ -353,6 +378,16 @@ public class SctpDataChannelStack(
                     pendingOpens.addLast(command)
                 }
             is SendCommand -> {
+                // RFC 8841 §6 / RFC 8831 §6.6: a message larger than the peer will accept never reaches
+                // the association. Gated HERE, before the ordering override and before `handle`, for the
+                // same reason the override is resolved here — the peer's ceiling is drive-loop state.
+                // A refusal fails only this send: nothing is queued, no TSN is assigned, the channel
+                // stays open, and `sendMessage`'s `finally` frees whatever it allocated.
+                val refusal = refuse(command.wireByteCount)
+                if (refusal != null) {
+                    command.deferred.completeExceptionally(MessageRefusedException(refusal))
+                    return
+                }
                 // RFC 8832 §6: user data on a channel we opened is sent ORDERED until that channel is
                 // confirmed, whatever ordering the channel was configured with. Ordered delivery is the
                 // stronger guarantee, so an unordered channel is never violated by it — and it is what
@@ -377,7 +412,36 @@ public class SctpDataChannelStack(
             }
             is CloseChannelCommand -> onCloseChannel(command.streamId)
             is PathChangedCommand -> apply(association.handle(SctpEvent.PathChanged(command.profile), now()))
+            is PeerMessageLimitCommand -> peerMessageLimit = command.limit
             ShutdownCommand -> apply(association.handle(SctpEvent.Shutdown, now()))
+        }
+    }
+
+    /**
+     * Why a message of [wireByteCount] bytes may not be sent, or null when it may (RFC 8841 §6).
+     *
+     * The `when` is the whole gate. Each arm names a ceiling **and** the reason it is that ceiling, so
+     * two of them enforce the same 64 KiB and report different things — which is the point: "the peer
+     * said nothing" and "the peer has not been heard from" are different situations with different fixes,
+     * and a lone "too large" would make them indistinguishable.
+     *
+     * DCEP control messages do not come through here (see [sendOnStream], which reaches `handle`
+     * directly): RFC 8832's OPEN/ACK are protocol, not user data, and are bounded by their own grammar.
+     */
+    private fun refuse(wireByteCount: Long): MessageRefusedReason? {
+        val assumed = PeerMessageLimit.ASSUMED_DEFAULT_BYTES
+        return when (val limit = peerMessageLimit) {
+            PeerMessageLimit.Unlimited -> null
+            is PeerMessageLimit.Advertised ->
+                if (wireByteCount > limit.bytes) {
+                    MessageRefusedReason.ExceedsAdvertisedLimit(wireByteCount, limit.bytes)
+                } else {
+                    null
+                }
+            PeerMessageLimit.AssumedDefault ->
+                if (wireByteCount > assumed) MessageRefusedReason.ExceedsAssumedDefault(wireByteCount) else null
+            PeerMessageLimit.NotYetNegotiated ->
+                if (wireByteCount > assumed) MessageRefusedReason.PeerLimitUnknown(wireByteCount) else null
         }
     }
 
@@ -672,6 +736,11 @@ public class SctpDataChannelStack(
             }
         }
 
+        // The size the RFC 8841 §6 gate measures, taken from the MESSAGE rather than from its encoding:
+        // an empty one rides a marker byte the peer's ceiling does not count, and this is the same number
+        // a caller can pre-check with `DataChannelPayload.wireByteCount`. That it equals what the encoder
+        // actually wrote for a Text is asserted, not assumed — see Utf8ByteCountTest.
+        val wireByteCount = message.wireByteCount
         val empty = encoded.remaining() == 0
         val ppid =
             when (message) {
@@ -686,7 +755,7 @@ public class SctpDataChannelStack(
         val deferred = CompletableDeferred<Unit>()
         val options = SctpSendOptions(streamId, ppid, delivery = config.delivery, reliability = config.reliability)
         try {
-            post(SendCommand(options, payload, deferred))
+            post(SendCommand(options, payload, wireByteCount, deferred))
             deferred.await()
         } finally {
             // By the time the deferred settles — completed or failed — the association has either encoded
@@ -717,7 +786,10 @@ public class SctpDataChannelStack(
     ) {
         val options = SctpSendOptions(streamId, ppid, delivery = config.delivery, reliability = config.reliability)
         val deferred = CompletableDeferred<Unit>()
-        post(SendCommand(options, payload, deferred))
+        // No `DataChannelPayload` to ask, so the buffer IS the message here — which is exact, since this
+        // seam never carries the empty-message marker. It is still gated: a fixture standing in for a
+        // non-conforming peer must not be able to walk around the peer's ceiling either.
+        post(SendCommand(options, payload, payload.remaining().toLong(), deferred))
         deferred.await()
     }
 
@@ -865,7 +937,7 @@ public class SctpDataChannelStack(
         when (command) {
             is OpenCommand -> command.deferred.completeExceptionally(cause)
             is SendCommand -> command.deferred.completeExceptionally(cause)
-            is CloseChannelCommand, ShutdownCommand, is PathChangedCommand -> Unit
+            is CloseChannelCommand, is PeerMessageLimitCommand, ShutdownCommand, is PathChangedCommand -> Unit
         }
     }
 
@@ -972,9 +1044,18 @@ internal class OpenCommand(
     val deferred: CompletableDeferred<DataChannelConnection>,
 ) : Command
 
+/**
+ * One user message on its way to the association.
+ *
+ * [wireByteCount] rides along rather than being re-derived on the drive loop, and it is deliberately not
+ * `payload.remaining()`: an EMPTY message travels as RFC 8831 §6.6's single `0x00` marker byte, so the
+ * buffer's own length would say one where the message is zero. It is the *message's* size — what
+ * `a=max-message-size` bounds — measured once, by the caller, from the payload it was handed.
+ */
 internal class SendCommand(
     val options: SctpSendOptions,
     val payload: ReadBuffer,
+    val wireByteCount: Long,
     val deferred: CompletableDeferred<Unit>,
 ) : Command
 
@@ -985,6 +1066,11 @@ internal class CloseChannelCommand(
 /** The lower layer named the path, or moved it — RFC 8261 §6.1; see [SctpDataChannelStack.pathChanged]. */
 internal class PathChangedCommand(
     val profile: SctpPathProfile.Assessed,
+) : Command
+
+/** The peer's `a=max-message-size` (RFC 8841 §6), delivered to the drive loop that gates sends on it. */
+internal class PeerMessageLimitCommand(
+    val limit: PeerMessageLimit,
 ) : Command
 
 internal data object ShutdownCommand : Command

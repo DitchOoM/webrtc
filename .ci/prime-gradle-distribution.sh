@@ -32,14 +32,26 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
-guh_args=()
-if [ "$#" -gt 0 ] && [ -n "$1" ]; then
-    guh_args=(-g "$1")
-fi
+guh="${1:-}"
+
+# Two literal branches rather than an array of optional args, because the macOS runners are still on
+# **bash 3.2** (Apple has shipped that since 2007 for licensing reasons) and there, under `set -u`,
+# expanding an EMPTY array is an unbound-variable error rather than nothing: `guh_args[@]: unbound
+# variable`. bash 4.4+ made it expand to zero words, so an array reads fine locally and on every Linux
+# lane and then fails only on Apple — which is exactly how this script failed its first CI run. The
+# `${arr[@]+"${arr[@]}"}` idiom also works; this is plainer, and it is the kind of line someone
+# simplifies back into an array without knowing why it was not one.
+try_fetch() {
+    if [ -n "$guh" ]; then
+        ./gradlew -g "$guh" --version
+    else
+        ./gradlew --version
+    fi
+}
 
 attempts=5
 for i in $(seq 1 "$attempts"); do
-    if ./gradlew "${guh_args[@]}" --version; then
+    if try_fetch; then
         exit 0
     fi
     if [ "$i" -lt "$attempts" ]; then

@@ -359,6 +359,35 @@ public class SctpAssociation(
         ) : RequestAdmission
     }
 
+    /**
+     * Whether the data currently outstanding is an RFC 4960 §6.1 rule A **window probe**, and whether the
+     * peer has been heard from since the last T3 expiry that was excused because of it.
+     *
+     * Three states rather than two Booleans, because the pair `probing`/`sackedSinceLastExpiry` can spell
+     * "not probing, but the excuse is available", which is the combination that would silently disarm the
+     * RFC 4960 §8.1 error budget for an ordinary retransmission — i.e. the opposite failure from the one
+     * this whole mechanism fixes, and a much worse one. Here the excuse only exists in a state that says
+     * a probe is what is outstanding.
+     */
+    private sealed interface WindowProbe {
+        /** Not probing: the peer's window admitted what was sent, so a T3 expiry is an ordinary failure. */
+        data object None : WindowProbe
+
+        /**
+         * A probe is outstanding and nothing has been heard from the peer since probing began, or since the
+         * last expiry that was excused. RFC 8540 §3.20 keys the excuse on the sender *continuing* to
+         * receive SACKs, so this state is charged: a peer that goes quiet the moment it shuts its window is
+         * indistinguishable from a peer that died with its window shut, and the association must still give
+         * up on it.
+         */
+        data object Silent : WindowProbe
+
+        /** A probe is outstanding and the peer has SACKed since the last expiry — the next one is excused. */
+        data object Answered : WindowProbe
+    }
+
+    private var windowProbe: WindowProbe = WindowProbe.None
+
     // ── Timers as absolute deadlines (ARCHITECTURE §5.1: nextDeadline is the whole clock contract) ──
     private var deadlines = AssociationDeadlines()
     private var handshakeRetransmits = 0
@@ -984,6 +1013,12 @@ public class SctpAssociation(
                 Tsn(sack.cumulativeTsnAck.value + block.start.toUInt()) to Tsn(sack.cumulativeTsnAck.value + block.end.toUInt())
             }
         val outcome = rq.onSack(sack.cumulativeTsnAck, sack.advertisedReceiverWindow, gapsAbsolute, now, ride.epoch)
+        // RFC 8540 §3.20's clarification of RFC 4960 §6.1 rule A: *"If the sender continues to receive SACKs
+        // from the peer while doing zero window probing, the unacknowledged window probes SHOULD NOT
+        // increment the error counter for the association or any destination transport address."* This is
+        // where "continues to receive SACKs" is observed. `trySend` below resets it to None if the window
+        // has reopened enough to admit an ordinary chunk.
+        if (windowProbe != WindowProbe.None) windowProbe = WindowProbe.Answered
         reclaim(outcome.reclaimed, out)
         if (outcome.rttSample != null) ride.rtt.observe(outcome.rttSample)
         cc.onDataAcked(outcome.bytesNewlyAcked, wasCwndLimited)
@@ -1070,8 +1105,29 @@ public class SctpAssociation(
         trySend(now, out)
     }
 
-    // The RFC 4960 §6.1 send routine: flush retransmits first, then new data while cwnd and the peer
-    // receive window allow, arming the T3-rtx timer whenever data is outstanding.
+    /**
+     * The RFC 4960 §6.1 send routine: flush retransmits first, then new data while cwnd and the peer
+     * receive window allow, arming the T3-rtx timer whenever data is outstanding.
+     *
+     * ## Rule A's window probe, generalized past zero
+     *
+     * *"Regardless of the value of rwnd (including if it is 0), the data sender can always have one DATA
+     * chunk in flight to the receiver"*, and *"a zero window probe SHOULD only be sent when all outstanding
+     * DATA chunks have been cumulatively acknowledged and no DATA chunks are in flight."*
+     *
+     * This used to test `peerReceiveWindow == 0u`, which is rule A read as though only an exactly-zero
+     * window blocks a sender. It does not: a peer advertising 100 bytes blocks a 1200-byte fragment just as
+     * completely, and nothing was outstanding to keep T3 armed — so the association went **silent with data
+     * queued and no timer running anywhere**, permanently. Unreachable before receive-side flow control,
+     * because nothing ever advertised less than a full window; reachable now, because a receiver near its
+     * ceiling advertises exactly that. The test is therefore what rule A actually says: the window will not
+     * admit the head of the queue, and nothing is in flight.
+     *
+     * The probe is paced by [AssociationDeadlines.zeroWindowProbe] rather than sent on every call. Without
+     * the gate, each SACK acknowledging the previous probe would immediately release the next one, which
+     * walks the whole send queue through a shut window one chunk per round trip — RFC 1122 §4.2.3.4's silly
+     * window syndrome, arrived at by trying to avoid a stall.
+     */
     private fun trySend(
         now: Instant,
         out: MutableList<SctpOutput>,
@@ -1093,13 +1149,24 @@ public class SctpAssociation(
             val next = pendingSend.first()
             val projected = rq.outstandingBytes + next.bytes
             val cwndOk = projected <= cc.cwnd
-            val zeroWindowProbe = rq.peerReceiveWindow == 0u && rq.outstandingBytes == 0
-            val rwndOk = projected.toUInt() <= rq.peerReceiveWindow || zeroWindowProbe
-            if (!cwndOk || !rwndOk) break
+            val windowAdmits = projected.toUInt() <= rq.peerReceiveWindow
+            // Rule A's one-chunk exemption: nothing in flight, and the persist timer has not already spent
+            // this interval's probe. cwnd still binds — a probe is DATA and RFC 4960 §7.2 governs it.
+            val probing = !windowAdmits && rq.outstandingBytes == 0 && deadlines.zeroWindowProbe is Deadline.Unarmed
+            if (!cwndOk || !(windowAdmits || probing)) break
             pendingSend.removeFirst()
             pendingSendBytes -= next.bytes
             rq.onSent(next, now, ride.epoch)
             out += SctpOutput.Transmit.Retained(next.wirePacket())
+            if (probing) {
+                // No SACK has arrived *since probing began*, so the first expiry is charged (RFC 8540
+                // §3.20 excuses only a sender that keeps hearing from its peer). `onSack` promotes it.
+                windowProbe = WindowProbe.Silent
+                deadlines = deadlines.copy(zeroWindowProbe = Deadline.At(now + ride.rtt.rto))
+            } else {
+                // The window admitted this chunk, so whatever it was doing before, it is not probing now.
+                windowProbe = WindowProbe.None
+            }
         }
 
         if (rq.outstandingBytes > 0 && deadlines.t3 is Deadline.Unarmed) deadlines = deadlines.copy(t3 = Deadline.At(now + ride.rtt.rto))
@@ -1672,6 +1739,14 @@ public class SctpAssociation(
         if (deadlines.sack.dueAt(now)) emitSack(out)
         if (deadlines.shutdown.dueAt(now)) onShutdownTimeout(now, out)
         if (deadlines.reConfig.dueAt(now)) onReConfigTimeout(now, out)
+        // The persist timer (RFC 4960 §6.1 rule A): disarm, then let `trySend` decide whether the window is
+        // still shut and another probe is owed. Deliberately not "re-send the probe" — the previous one may
+        // have been acknowledged, in which case the next chunk in the queue is the probe, and asking
+        // `trySend` is what keeps that decision in the one place that knows both windows.
+        if (deadlines.zeroWindowProbe.dueAt(now)) {
+            deadlines = deadlines.copy(zeroWindowProbe = Deadline.Unarmed)
+            trySend(now, out)
+        }
         if (deadlines.probe.dueAt(now)) {
             // Read before the tracker runs: `fragmentCeiling` is derived from what the tracker has
             // measured, so evaluating it as an argument would read it *after* the call that changes it.
@@ -1751,15 +1826,48 @@ public class SctpAssociation(
         }
         cc.onTimeout()
         ride.rtt.backoff()
-        if (ride.retransmitFailed()) {
-            fail(SctpFailureReason.RetransmissionLimitReached, out)
-            return
+        if (!excuseWindowProbe()) {
+            if (ride.retransmitFailed()) {
+                fail(SctpFailureReason.RetransmissionLimitReached, out)
+                return
+            }
         }
         // RFC 3758: abandon partially-reliable chunks past their budget before retransmitting.
         abandonExpired(now, out)
         trySend(now, out)
         deadlines = deadlines.copy(t3 = Deadline.At(now + ride.rtt.rto))
     }
+
+    /**
+     * Whether this T3 expiry is a **window probe going unanswered by a peer that is otherwise talking**,
+     * and therefore must not be charged to the RFC 4960 §8.1 error budget. Consumes the excuse.
+     *
+     * RFC 4960 §6.1 rule A, as clarified by RFC 8540 §3.20: *"If the sender continues to receive SACKs from
+     * the peer while doing zero window probing, the unacknowledged window probes SHOULD NOT increment the
+     * error counter for the association or any destination transport address."* The reason the RFC gives is
+     * the whole argument — the receiver may keep its window closed for an indefinite time, and it is
+     * entitled to. An application that stops reading is not a network failure.
+     *
+     * **This is what made the excuse necessary rather than theoretical.** `consecutiveRtxErrors` was bumped
+     * unconditionally, so a peer whose application stalled for ~10 backed-off RTOs aborted us — every data
+     * channel on the association, with `RetransmissionLimitReached`, over a path that was working. It was
+     * unreachable webrtc↔webrtc only because neither side ever advertised a window below its configured
+     * maximum, which is precisely what receive-side flow control has just changed.
+     *
+     * The excuse is **consumed**, not standing, and that is the safety property. It is granted once per
+     * intervening SACK, so a peer that goes silent while its window is shut gets exactly one free expiry
+     * and every one after it is charged — the association still aborts a genuinely dead peer at the usual
+     * budget. Without the consumption, a stack that shut its window and then died would hold the far end
+     * open forever, which trades one hang for another.
+     */
+    private fun excuseWindowProbe(): Boolean =
+        when (windowProbe) {
+            WindowProbe.None, WindowProbe.Silent -> false
+            WindowProbe.Answered -> {
+                windowProbe = WindowProbe.Silent
+                true
+            }
+        }
 
     private fun onShutdownTimeout(
         now: Instant,
@@ -1896,6 +2004,9 @@ public class SctpAssociation(
             }
         }
         tcb = Tcb.NoAssociation
+        // Whatever was outstanding belonged to the association going away, so nothing is being probed now.
+        // A survivor here would carry the RFC 4960 §8.1 excuse into the next association's first T3.
+        windowProbe = WindowProbe.None
         // Every receipt still outstanding names a message of the association that is going away. Its buffer
         // is the driver's to release (it was transferred), and the space it was holding is not this
         // endpoint's to keep reserved — a peer that restarts gets the whole window back. Dropping the

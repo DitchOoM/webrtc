@@ -10,6 +10,7 @@ import com.ditchoom.buffer.managed
 import com.ditchoom.webrtc.ice.DatagramBinder
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sctp.datachannel.SctpClosedException
+import com.ditchoom.webrtc.sctp.datachannel.send
 import com.ditchoom.webrtc.sdp.SdpType
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first

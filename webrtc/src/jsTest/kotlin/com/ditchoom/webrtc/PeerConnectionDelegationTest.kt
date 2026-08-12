@@ -5,6 +5,7 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
+import com.ditchoom.webrtc.sctp.datachannel.send
 import com.ditchoom.webrtc.sdp.SdpType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
@@ -66,7 +67,7 @@ class PeerConnectionDelegationTest {
             withTimeout(20.seconds) {
                 val incoming = bob.incomingDataChannels.first()
                 channel.send(textBuffer("hi-over-rtcpeerconnection"))
-                assertEquals("hi-over-rtcpeerconnection", incoming.receive().first().text())
+                assertEquals("hi-over-rtcpeerconnection", incoming.receive().first().contentAsString())
             }
 
             alice.close()

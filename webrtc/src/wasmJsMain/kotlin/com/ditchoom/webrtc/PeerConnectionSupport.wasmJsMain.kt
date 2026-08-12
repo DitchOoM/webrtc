@@ -12,6 +12,7 @@ import com.ditchoom.webrtc.ice.IceServerCredentials
 import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.association.SctpReliability
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
+import com.ditchoom.webrtc.sctp.datachannel.DataChannelPayload
 import com.ditchoom.webrtc.sdp.SdpType
 import com.ditchoom.webrtc.sdp.SignalingState
 import kotlinx.coroutines.CompletableDeferred
@@ -75,8 +76,8 @@ private class WasmBrowserPeerConnection(
     private val candidateChannel = Channel<String>(Channel.UNLIMITED)
     override val localIceCandidates: Flow<String> get() = candidateChannel.receiveAsFlow()
 
-    private val dataChannelChannel = Channel<Connection<ReadBuffer>>(Channel.UNLIMITED)
-    override val incomingDataChannels: Flow<Connection<ReadBuffer>> get() = dataChannelChannel.receiveAsFlow()
+    private val dataChannelChannel = Channel<Connection<DataChannelPayload>>(Channel.UNLIMITED)
+    override val incomingDataChannels: Flow<Connection<DataChannelPayload>> get() = dataChannelChannel.receiveAsFlow()
 
     private val renegotiationChannel = Channel<Unit>(Channel.CONFLATED)
     override val renegotiationNeeded: Flow<Unit> get() = renegotiationChannel.receiveAsFlow()
@@ -89,7 +90,7 @@ private class WasmBrowserPeerConnection(
         jsOnSignalingStateChange(pc) { s -> mapSignalingState(s.toString())?.let { _signalingState.value = it } }
     }
 
-    override suspend fun createDataChannel(config: DataChannelConfig): Connection<ReadBuffer> =
+    override suspend fun createDataChannel(config: DataChannelConfig): Connection<DataChannelPayload> =
         WasmBrowserDataChannel(jsCreateDataChannel(pc, config.label.toJsString(), dataChannelInitJson(config).toJsString()))
 
     override suspend fun createOffer(): String = jsCreateOffer(pc).await<JsString>().toString()
@@ -143,8 +144,8 @@ private class WasmBrowserPeerConnection(
 
 private class WasmBrowserDataChannel(
     private val dc: JsRtcDataChannel,
-) : Connection<ReadBuffer> {
-    private val inbound = Channel<ReadBuffer>(Channel.UNLIMITED)
+) : Connection<DataChannelPayload> {
+    private val inbound = Channel<DataChannelPayload>(Channel.UNLIMITED)
     private val opened = CompletableDeferred<Unit>()
 
     override val id: Long get() = jsDataChannelId(dc).let { if (it < 0) -1L else it.toLong() }
@@ -153,18 +154,31 @@ private class WasmBrowserDataChannel(
         jsDataChannelSetArrayBuffer(dc)
         if (jsDataChannelReadyState(dc).toString() == "open") opened.complete(Unit)
         jsDataChannelOnOpen(dc) { opened.complete(Unit) }
-        // The bridge hands us the payload as hex (string messages TextEncoded, binary read straight),
-        // so a text-mode message is never reinterpreted as an ArrayBuffer and corrupted.
-        jsDataChannelOnMessageHex(dc) { hex -> inbound.trySend(hexToReadBuffer(hex.toString())) }
+        // The bridge reports WHICH kind of message arrived alongside the payload. It used to hand back
+        // hex for both, which kept a text message from being corrupted but threw away the very fact this
+        // type exists to carry — every browser message arrived here indistinguishable from binary.
+        jsDataChannelOnMessage(dc) { isText, body ->
+            val payload =
+                if (isText) {
+                    DataChannelPayload.Text(body.toString())
+                } else {
+                    DataChannelPayload.Binary(hexToReadBuffer(body.toString()))
+                }
+            inbound.trySend(payload)
+        }
         jsDataChannelOnClose(dc) { inbound.close() }
     }
 
-    override suspend fun send(message: ReadBuffer) {
+    override suspend fun send(message: DataChannelPayload) {
         opened.await()
-        jsDataChannelSend(dc, readBufferToHex(message).toJsString())
+        when (message) {
+            // A real JS string, so the peer's `event.data` is a String rather than an ArrayBuffer.
+            is DataChannelPayload.Text -> jsDataChannelSendText(dc, message.text.toString().toJsString())
+            is DataChannelPayload.Binary -> jsDataChannelSend(dc, readBufferToHex(message.bytes).toJsString())
+        }
     }
 
-    override fun receive(): Flow<ReadBuffer> = inbound.receiveAsFlow()
+    override fun receive(): Flow<DataChannelPayload> = inbound.receiveAsFlow()
 
     override suspend fun close() {
         jsDataChannelClose(dc)
@@ -391,21 +405,30 @@ private external fun jsDataChannelOnClose(
     cb: () -> Unit,
 )
 
-// Deliver every message as lowercase hex: a string message is UTF-8 encoded, an ArrayBuffer read straight.
+// Report the message KIND with the payload: a text message crosses as its own characters, a binary one
+// as lowercase hex. Passing text through as a string (rather than TextEncoding it to hex and decoding
+// again on this side) also removes a UTF-8 round trip that could not fail but did cost two copies.
 @JsFun(
     """(dc, cb) => {
         dc.onmessage = (e) => {
             const d = e.data;
-            const bytes = (typeof d === 'string') ? new TextEncoder().encode(d) : new Uint8Array(d);
+            if (typeof d === 'string') { cb(true, d); return; }
+            const bytes = new Uint8Array(d);
             let s = '';
             for (let i = 0; i < bytes.length; i++) s += bytes[i].toString(16).padStart(2, '0');
-            cb(s);
+            cb(false, s);
         };
     }""",
 )
-private external fun jsDataChannelOnMessageHex(
+private external fun jsDataChannelOnMessage(
     dc: JsRtcDataChannel,
-    cb: (JsString) -> Unit,
+    cb: (Boolean, JsString) -> Unit,
+)
+
+@JsFun("""(dc, text) => { dc.send(text); }""")
+private external fun jsDataChannelSendText(
+    dc: JsRtcDataChannel,
+    text: JsString,
 )
 
 @JsFun(

@@ -10,7 +10,8 @@ every other target runs our stack over an injected `AddressedDatagramChannel`.
 
 Start at `RtcPeerConnection` (the session API), `NativePeerConnection` (the native implementation and
 its injected seams), and `udpDatagramBinder()` in `webrtc-ice` (the real-UDP seam to hand it). A data
-channel is a buffer-flow `Connection<ReadBuffer>`.
+channel is a buffer-flow `Connection<DataChannelPayload>`, where a message is `Text` or `Binary` — the
+distinction RFC 8831 §6.6 draws on the wire, and the one a browser peer reads off `event.data`.
 
 Media (RTP/SRTP) is not implemented.
 

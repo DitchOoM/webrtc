@@ -10,6 +10,7 @@ import com.ditchoom.buffer.managed
 import com.ditchoom.webrtc.dtls.DtlsFailureReason
 import com.ditchoom.webrtc.ice.DatagramBinder
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
+import com.ditchoom.webrtc.sctp.datachannel.send
 import com.ditchoom.webrtc.sdp.SdpType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -110,10 +111,10 @@ class PeerConnectionDtlsEndToEndTest {
             assertNotNull(incoming, "bob received the data channel")
 
             channel.send(textBuffer("ping"))
-            assertEquals("ping", withTimeoutOrNull(timeout) { incoming.receive().first().text() })
+            assertEquals("ping", withTimeoutOrNull(timeout) { incoming.receive().first().contentAsString() })
 
             incoming.send(textBuffer("pong"))
-            assertEquals("pong", withTimeoutOrNull(timeout) { channel.receive().first().text() })
+            assertEquals("pong", withTimeoutOrNull(timeout) { channel.receive().first().contentAsString() })
         }
 
     /**

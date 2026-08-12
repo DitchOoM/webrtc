@@ -40,6 +40,10 @@ private fun ReadBuffer.text(): String {
     return out.toString()
 }
 
+// These fixtures ship readable bytes as BINARY messages, so `text()` on a payload asserts that variant
+// first — a Text message reaching here means the PPID mapping changed and the fixture should say so.
+private fun DataChannelPayload.text(): String = expectBinary().text()
+
 class DataChannelStackTest {
     private fun TestScope.clock(): () -> Instant = { EPOCH + testScheduler.currentTime.milliseconds }
 
@@ -198,7 +202,7 @@ class DataChannelStackTest {
             channel.send(textBuffer("after"))
 
             val received = incoming.receive().take(2).toList()
-            assertEquals(0, received[0].remaining(), "empty application message delivered as empty (RFC 8831 §6.6)")
+            assertEquals(0, received[0].expectBinary().remaining(), "empty application message delivered as empty (RFC 8831 §6.6)")
             assertEquals("after", received[1].text())
         }
 }

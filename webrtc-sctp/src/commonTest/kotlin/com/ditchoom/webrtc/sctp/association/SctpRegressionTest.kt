@@ -56,6 +56,33 @@ class SctpRegressionTest {
         assertEquals(SctpAssociationState.Closed, sim.a.state)
     }
 
+    /**
+     * A teardown must clear **every** capability the departing peer advertised, not just the one whose
+     * reset someone remembered to write. `clearControlBlocks` reset the RFC 6525 flag and left the RFC 3758
+     * one set, so a belief about the old peer survived into the association state — and because both were
+     * free-floating `var`s read as plain field accesses, the asymmetry was invisible at the point it
+     * mattered. They are now one [PeerExtensions] value replaced as a unit, which is what makes the
+     * half-cleared state unconstructible rather than merely unwritten.
+     */
+    @Test
+    fun a_teardown_clears_every_advertised_peer_extension() {
+        val sim = established()
+        assertTrue(sim.a.peerExtensions.forwardTsn, "the sim's peer advertises FORWARD-TSN")
+        assertTrue(sim.a.peerExtensions.reConfig, "the sim's peer advertises RE-CONFIG")
+
+        val reflected =
+            SctpPacketBuilder(
+                SctpAssociation.SCTP_DATA_CHANNEL_PORT,
+                SctpAssociation.SCTP_DATA_CHANNEL_PORT,
+                sim.a.peerVerificationTag,
+            ).add(SctpChunk.Abort(verificationTagReflected = true, causes = emptyList())).encode()
+        reflected.position(0)
+        sim.a.handle(SctpEvent.DatagramReceived(reflected.slice()), now)
+
+        assertEquals(SctpAssociationState.Closed, sim.a.state)
+        assertEquals(PeerExtensions.None, sim.a.peerExtensions, "no capability of the departed peer survives the teardown")
+    }
+
     // R2-F5 negative: a T-bit ABORT carrying neither of our tags is still rejected (no teardown).
     @Test
     fun abort_with_wrong_tag_is_ignored() {

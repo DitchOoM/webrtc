@@ -12,8 +12,10 @@ import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.association.SctpReliability
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConnection
+import com.ditchoom.webrtc.sctp.datachannel.DataChannelPayload
 import com.ditchoom.webrtc.sctp.datachannel.SctpDataChannelStack
 import com.ditchoom.webrtc.sctp.datachannel.SctpRole
+import com.ditchoom.webrtc.sctp.datachannel.send
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.take
@@ -24,6 +26,7 @@ import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 
@@ -41,6 +44,18 @@ private fun ReadBuffer.text(): String {
     for (i in position() until limit()) out.append((get(i).toInt() and 0xFF).toChar())
     return out.toString()
 }
+
+/**
+ * The content of a message these fixtures sent as **binary** — [textBuffer] goes out through the
+ * `ReadBuffer` send overload, which is `WebRTC Binary` (PPID 53). A [DataChannelPayload.Text] arrival
+ * means the wrong PPID crossed the wire, so it fails by name rather than being coerced into a string that
+ * would have compared equal and hidden it.
+ */
+private fun DataChannelPayload.text(): String =
+    when (this) {
+        is DataChannelPayload.Binary -> bytes.text()
+        is DataChannelPayload.Text -> fail("expected a Binary message, got Text(\"$text\")")
+    }
 
 /**
  * The **W5 composition proof**: the real sans-io [SctpDataChannelStack] runs over the actual W3

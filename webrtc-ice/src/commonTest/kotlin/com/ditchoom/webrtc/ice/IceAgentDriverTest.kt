@@ -10,9 +10,11 @@ import com.ditchoom.buffer.managed
 import com.ditchoom.webrtc.ice.vnet.Vnets
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConnection
+import com.ditchoom.webrtc.sctp.datachannel.DataChannelPayload
 import com.ditchoom.webrtc.sctp.datachannel.SctpDataChannelStack
 import com.ditchoom.webrtc.sctp.datachannel.SctpDatagramTransport
 import com.ditchoom.webrtc.sctp.datachannel.SctpRole
+import com.ditchoom.webrtc.sctp.datachannel.send
 import com.ditchoom.webrtc.stun.IpAddress
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -27,6 +29,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.test.fail
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
@@ -181,4 +184,16 @@ class IceAgentDriverTest {
         for (i in position() until limit()) out.append((get(i).toInt() and 0xFF).toChar())
         return out.toString()
     }
+
+    /**
+     * The content of a message this fixture sent as **binary** — [textBuffer] goes out through the
+     * `ReadBuffer` send overload, which is `WebRTC Binary` (PPID 53). A [DataChannelPayload.Text] arrival
+     * means the wrong PPID crossed the transport, so it fails by name rather than being coerced into a
+     * string that would have compared equal and hidden it.
+     */
+    private fun DataChannelPayload.text(): String =
+        when (this) {
+            is DataChannelPayload.Binary -> bytes.text()
+            is DataChannelPayload.Text -> fail("expected a Binary message, got Text(\"$text\")")
+        }
 }

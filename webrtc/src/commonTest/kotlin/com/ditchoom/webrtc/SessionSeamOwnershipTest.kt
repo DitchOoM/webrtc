@@ -6,12 +6,13 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
-import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.managed
 import com.ditchoom.webrtc.ice.DatagramBinder
 import com.ditchoom.webrtc.ice.IceConfig
 import com.ditchoom.webrtc.sctp.association.SctpConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
+import com.ditchoom.webrtc.sctp.datachannel.DataChannelPayload
+import com.ditchoom.webrtc.sctp.datachannel.send
 import com.ditchoom.webrtc.sdp.SdpType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -164,10 +165,13 @@ class SessionSeamOwnershipTest {
     // Read a delivered message and release it. What `receive()` hands a consumer is the consumer's — the
     // reassembly copy is allocated from `SctpConfig.bufferFactory` and transferred — so a fixture that
     // only read it would report a leak that was its own.
-    private fun ReadBuffer.consumeText(): String {
+    // Reads a received message and discharges its ownership together: `release()` is now what hands the
+    // reassembly buffer back, so this exercises the contract that actually changed.
+    private fun DataChannelPayload.consumeText(): String {
         val out = StringBuilder()
-        for (i in position() until limit()) out.append((get(i).toInt() and 0xFF).toChar())
-        freeIfNeeded()
+        val buffer = expectBytes()
+        for (i in buffer.position() until buffer.limit()) out.append((buffer.get(i).toInt() and 0xFF).toChar())
+        release()
         return out.toString()
     }
 }

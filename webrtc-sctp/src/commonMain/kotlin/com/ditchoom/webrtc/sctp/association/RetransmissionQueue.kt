@@ -23,6 +23,53 @@ internal enum class TxState {
 }
 
 /**
+ * Which optional SCTP extensions the peer advertised for **this** association (RFC 3758 FORWARD-TSN,
+ * RFC 6525 stream reconfiguration), learned from its INIT/INIT-ACK or recovered from the state cookie.
+ *
+ * One value rather than two free-floating `var`s, because the two are established together and belong to
+ * the association that learned them — so they must die together. Held separately, a teardown that clears
+ * one and forgets the other leaves a stale capability believed of the *next* peer, and that asymmetry is
+ * invisible at the point it matters (it reads as a plain field access). Replacing a single value at
+ * establish and at teardown makes the half-cleared state unconstructible.
+ *
+ * Booleans here are the legitimate kind: each is a standalone advertised-or-not fact carrying no
+ * correlated data, and nothing about one constrains the other.
+ */
+internal data class PeerExtensions(
+    val forwardTsn: Boolean,
+    val reConfig: Boolean,
+) {
+    companion object {
+        /** No association, or one whose peer advertised nothing — the only safe default. */
+        val None: PeerExtensions = PeerExtensions(forwardTsn = false, reConfig = false)
+    }
+}
+
+/**
+ * Whether an acknowledged chunk may yield an RTT sample, and from which instant (RFC 4960 §6.3.1 C4,
+ * and Karn's algorithm at C5: a retransmitted chunk's ack is ambiguous, because which copy it answers is
+ * unknowable).
+ *
+ * A sealed type rather than the obvious `lastSentAt: Instant` + `retransmitCount == 0` pair, because that
+ * pair admits two states the protocol does not have: a transmission instant on a chunk that has never
+ * been transmitted (the field has to be seeded with *something*, and seeding it with the enqueue instant
+ * is exactly the bug this replaces), and a "0 retransmits" flag drifting out of step with the instant
+ * beside it. Here the instant exists in precisely the one state that can produce a sample.
+ */
+internal sealed interface RttOrigin {
+    /** Queued, not yet on the wire. No transmission instant exists, so no sample can be derived. */
+    data object Untransmitted : RttOrigin
+
+    /** On the wire exactly once, at [transmittedAt] — the only state that may yield a sample. */
+    data class SingleTransmission(
+        val transmittedAt: Instant,
+    ) : RttOrigin
+
+    /** Retransmitted at least once: Karn's algorithm forbids a sample, so no instant is carried. */
+    data object Ambiguous : RttOrigin
+}
+
+/**
  * One DATA chunk the sender is tracking for reliability (RFC 4960 §6.1).
  *
  * What is retained is the **fully encoded wire packet** ([packet]: common header + this one DATA chunk,
@@ -37,7 +84,7 @@ internal enum class TxState {
  * The packet is owned here until the chunk is acked or abandoned and dropped from the queue, at which
  * point it is surfaced for release ([SctpOutput.ReclaimRetained]) rather than freed on the spot — the
  * driver may still be sending a view of it. [streamId], [ssn] and [flags] are kept because RFC 3758
- * abandonment reads them to build FORWARD-TSN; [reliability] and [firstSentAt] drive the abandonment
+ * abandonment reads them to build FORWARD-TSN; [reliability] and [enqueuedAt] drive the abandonment
  * decision itself.
  */
 internal class OutstandingData(
@@ -53,9 +100,22 @@ internal class OutstandingData(
      */
     val packet: PlatformBuffer,
     val reliability: SctpReliability,
-    val firstSentAt: Instant,
+    /**
+     * When the application handed this fragment over — **not** when it reached the wire. It is the right
+     * origin for [SctpReliability.MaxLifetime] (W3C `maxPacketLifeTime` is measured from `send()`, so a
+     * message that spent its whole budget queued behind cwnd is correctly abandoned) and the **wrong**
+     * origin for an RTT sample, which is what [rttOrigin] exists to keep separate.
+     */
+    val enqueuedAt: Instant,
 ) {
-    var lastSentAt: Instant = firstSentAt
+    /**
+     * Whether this chunk can yield an RTT sample, and from when. A chunk sits in `pendingSend` for as long
+     * as cwnd/rwnd say it must, so the gap between [enqueuedAt] and the first transmission is queueing
+     * delay — measuring from the former inflates SRTT under any bulk transfer, which inflates RTO, which
+     * makes loss recovery systematically slow.
+     */
+    var rttOrigin: RttOrigin = RttOrigin.Untransmitted
+
     var retransmitCount: Int = 0
     var missingReports: Int = 0
     var txState: TxState = TxState.InFlight
@@ -132,7 +192,12 @@ internal class RetransmissionQueue(
     }
 
     /** Register a freshly-sent chunk as outstanding (called after it is placed in a packet). */
-    fun onSent(data: OutstandingData) {
+    fun onSent(
+        data: OutstandingData,
+        now: Instant,
+    ) {
+        // The first (and so far only) transmission: this is the instant an RTT sample must measure from.
+        data.rttOrigin = RttOrigin.SingleTransmission(now)
         outstanding[data.tsn.value] = data
         outstandingBytes += data.bytes
     }
@@ -151,12 +216,11 @@ internal class RetransmissionQueue(
      * counter reset so a fresh set of three SACK gap reports is required before it is fast-retransmitted
      * again (else it would be re-fast-retransmitted on every subsequent gapped SACK, RFC 4960 §7.2.4).
      */
-    fun markRetransmitted(
-        data: OutstandingData,
-        now: Instant,
-    ) {
+    fun markRetransmitted(data: OutstandingData) {
         data.txState = TxState.InFlight
-        data.lastSentAt = now
+        // Karn's algorithm (RFC 4960 §6.3.1 C5): from here on, an ack for this TSN cannot be attributed to
+        // a particular transmission, so the chunk is permanently ineligible as an RTT sample.
+        data.rttOrigin = RttOrigin.Ambiguous
         data.retransmitCount += 1
         data.missingReports = 0
         outstandingBytes += data.bytes
@@ -187,8 +251,12 @@ internal class RetransmissionQueue(
                     bytesAcked += data.bytes
                     outstandingBytes -= data.bytes
                 }
-                // RTT from the highest non-retransmitted, cum-acked chunk (Karn's algorithm).
-                if (data.retransmitCount == 0) rttSample = now - data.firstSentAt
+                // RTT from the highest singly-transmitted, cum-acked chunk (Karn's algorithm) — measured
+                // from when it reached the wire, never from when it was queued.
+                when (val origin = data.rttOrigin) {
+                    is RttOrigin.SingleTransmission -> rttSample = now - origin.transmittedAt
+                    RttOrigin.Ambiguous, RttOrigin.Untransmitted -> Unit
+                }
                 cumIterator.remove()
                 reclaimed += data.packet
                 cumulativeAdvanced = true
@@ -274,7 +342,7 @@ internal class RetransmissionQueue(
                 when (val r = data.reliability) {
                     SctpReliability.Reliable -> false
                     is SctpReliability.MaxRetransmits -> data.retransmitCount > r.maxRetransmits
-                    is SctpReliability.MaxLifetime -> (now - data.firstSentAt) > r.maxLifetime
+                    is SctpReliability.MaxLifetime -> (now - data.enqueuedAt) > r.maxLifetime
                 }
             if (expired) {
                 if (data.txState == TxState.InFlight) outstandingBytes -= data.bytes

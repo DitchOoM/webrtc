@@ -9,6 +9,7 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.managed
 import com.ditchoom.webrtc.ice.DatagramBinder
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
+import com.ditchoom.webrtc.sctp.datachannel.send
 import com.ditchoom.webrtc.sdp.SdpType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -110,9 +111,9 @@ class SessionBufferOwnershipTest {
             // Traffic in BOTH directions: each peer must be a releasing *receiver*, and a one-way exchange
             // would leave one of the two receive paths unexercised while still reporting a clean number.
             channel.send(textBuffer("ping"))
-            assertEquals("ping", withTimeoutOrNull(timeout) { incoming.receive().first().text() })
+            assertEquals("ping", withTimeoutOrNull(timeout) { incoming.receive().first().contentAsString() })
             incoming.send(textBuffer("pong"))
-            assertEquals("pong", withTimeoutOrNull(timeout) { channel.receive().first().text() })
+            assertEquals("pong", withTimeoutOrNull(timeout) { channel.receive().first().contentAsString() })
 
             // Close BEFORE asserting: teardown is a release site of its own — a channel closed with
             // transfers still queued has readers that will never run, and closing does not free what is

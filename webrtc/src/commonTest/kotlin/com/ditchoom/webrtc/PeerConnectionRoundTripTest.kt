@@ -10,6 +10,8 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.managed
 import com.ditchoom.webrtc.ice.DatagramBinder
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
+import com.ditchoom.webrtc.sctp.datachannel.DataChannelPayload
+import com.ditchoom.webrtc.sctp.datachannel.send
 import com.ditchoom.webrtc.sdp.SdpType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -96,12 +98,12 @@ class PeerConnectionRoundTripTest {
                         .receive()
                         .take(2)
                         .toList()
-                        .map { it.text() }
+                        .map { it.contentAsString() }
                 }
             assertEquals(listOf("ping", "from-alice"), received)
 
             incoming.send(textBuffer("pong"))
-            assertEquals("pong", withTimeoutOrNull(timeout) { channel.receive().first().text() })
+            assertEquals("pong", withTimeoutOrNull(timeout) { channel.receive().first().contentAsString() })
 
             assertTrue(alice.signalingState.value is com.ditchoom.webrtc.sdp.SignalingState.Stable)
         }
@@ -150,11 +152,11 @@ class PeerConnectionRoundTripTest {
 
     /** Send [text] and return what came back on the same channel — the harness's `echoesBack`, asserted. */
     private suspend fun echo(
-        channel: Connection<ReadBuffer>,
+        channel: Connection<DataChannelPayload>,
         text: String,
     ): String? {
         channel.send(textBuffer(text))
-        return withTimeoutOrNull(timeout) { channel.receive().first().text() }
+        return withTimeoutOrNull(timeout) { channel.receive().first().contentAsString() }
     }
 
     /** Two peers, negotiated over scripted signaling and both [PeerConnectionState.Connected], on the vnet. */

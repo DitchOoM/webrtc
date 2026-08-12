@@ -8,8 +8,6 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
-import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.buffer.use
 import com.ditchoom.webrtc.DtlsTransportFactory
 import com.ditchoom.webrtc.NativePeerConnection
 import com.ditchoom.webrtc.PeerConnectionConfig
@@ -25,10 +23,10 @@ import com.ditchoom.webrtc.ice.IceAgentDriver
 import com.ditchoom.webrtc.ice.IceConfig
 import com.ditchoom.webrtc.sctp.association.SctpConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
+import com.ditchoom.webrtc.sctp.datachannel.DataChannelPayload
 import com.ditchoom.webrtc.sdp.SdpType
 import com.ditchoom.webrtc.testsuite.vnet.Topology
 import com.ditchoom.webrtc.testsuite.vnet.Vnets
-import com.ditchoom.webrtc.testsuite.vnet.utf8Buffer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -223,9 +221,11 @@ public class WebRtcHarnessScope internal constructor(
                 harnessScope.launch {
                     incoming.receive().collect { message ->
                         try {
+                            // Echoed whole: a Text round-trips as Text, so a harness user asserting the
+                            // message KIND survives the wire gets a truthful answer.
                             incoming.send(message)
                         } finally {
-                            message.freeIfNeeded()
+                            message.release()
                         }
                     }
                 }
@@ -270,14 +270,25 @@ public class WebRtcHarnessScope internal constructor(
         val conn = establish()
         return withTimeout(establishTimeout) {
             val channel = conn.offerer.createDataChannel(DataChannelConfig(label = label))
-            // Both buffers are ours to release: `send` reads the outgoing one and never takes it, and the
-            // echo arrives as a transfer the collector owes (see the responder in [establish]).
-            utf8Buffer(message).use { channel.send(it) }
+            // Sent as TEXT: this helper's contract is "send a string, get the string back", and text is
+            // what a browser peer sends for that. A Text owns no buffer, so only the echo is ours to
+            // release — it arrives as a transfer the collector owes (see the responder in [establish]).
+            //
+            // This does NOT weaken the buffer census, and the reason is worth stating because the obvious
+            // guess is wrong: the census counts chunks the POOL created across the whole relay path — every
+            // vnet delivery copy, both peers' ICE/DTLS/SCTP, the TURN control and relay loops — not the
+            // message payload. A Text send still allocates one, inside the stack, through the stack's own
+            // injected factory. `assertNoBufferLeaks` fails outright on `chunksCreated == 0`, so a census
+            // that stopped exercising anything reports that rather than passing.
+            channel.send(DataChannelPayload.Text(message))
             val echoed = channel.receive().first()
             try {
-                echoed.decodeUtf8()
+                when (echoed) {
+                    is DataChannelPayload.Text -> echoed.text.toString()
+                    is DataChannelPayload.Binary -> echoed.bytes.decodeUtf8()
+                }
             } finally {
-                echoed.freeIfNeeded()
+                echoed.release()
             }
         }
     }

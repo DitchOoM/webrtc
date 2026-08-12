@@ -14,6 +14,7 @@ import com.ditchoom.webrtc.dtls.DtlsConfig
 import com.ditchoom.webrtc.ice.IceConfig
 import com.ditchoom.webrtc.sctp.association.SctpConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
+import com.ditchoom.webrtc.sctp.datachannel.send
 import com.ditchoom.webrtc.sdp.SdpType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -97,10 +98,13 @@ class JvmRealUdpLoopbackTest {
                 assertConnected(answerer, "answerer")
 
                 val incoming = answerer.incomingDataChannels.first()
+                // Sent through the `ReadBuffer` overload, so both messages are `WebRTC Binary`; reading them
+                // back through `binaryOrNull` means a message that arrived as text fails this assertion
+                // rather than decoding to the same string and passing.
                 channel.send(textBuffer("ping"))
-                assertEquals("ping", incoming.receive().first().text(), "answerer received the ping over the encrypted channel")
+                assertEquals("ping", incoming.receive().first().binaryOrNull()?.text(), "answerer received the ping over the encrypted channel")
                 incoming.send(textBuffer("pong"))
-                assertEquals("pong", channel.receive().first().text(), "offerer received the echoed pong")
+                assertEquals("pong", channel.receive().first().binaryOrNull()?.text(), "offerer received the echoed pong")
 
                 scope.cancel()
                 offerer.close()

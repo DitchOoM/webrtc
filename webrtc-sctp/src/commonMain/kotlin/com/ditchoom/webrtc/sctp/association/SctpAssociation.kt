@@ -70,8 +70,11 @@ public class SctpAssociation(
         private set
     private var localInitialTsn: Tsn = Tsn(0u)
     private var nextTsn: Tsn = Tsn(0u)
-    private var peerSupportsForwardTsn: Boolean = false
-    private var peerSupportsReConfig: Boolean = false
+
+    // Internal-readable for the same reason the verification tags above are: a fixture has to be able to
+    // see that a teardown cleared the peer's advertised capabilities, and no output carries that fact.
+    internal var peerExtensions: PeerExtensions = PeerExtensions.None
+        private set
 
     private val orderedSendSsn = HashMap<StreamId, Int>()
     private val pendingSend = ArrayDeque<OutstandingData>()
@@ -88,9 +91,7 @@ public class SctpAssociation(
     /** Bytes queued for transmission but not yet sent — the driver's backpressure signal. */
     internal val bufferedBytes: Int get() = pendingSendBytes
 
-    private var retransmissionQueue: RetransmissionQueue? = null
-    private var reassemblyQueue: ReassemblyQueue? = null
-    private var congestion: CongestionControl? = null
+    private var tcb: Tcb = Tcb.NoAssociation
     private val rtt = RttEstimator(config)
 
     // Retained handshake artifacts (rebuilt-identical retransmits).
@@ -225,13 +226,9 @@ public class SctpAssociation(
     }
 
     // ── Timers as absolute deadlines (ARCHITECTURE §5.1: nextDeadline is the whole clock contract) ──
-    private var handshakeDeadline: Instant? = null
+    private var deadlines = AssociationDeadlines()
     private var handshakeRetransmits = 0
-    private var t3Deadline: Instant? = null
-    private var sackDeadline: Instant? = null
-    private var shutdownDeadline: Instant? = null
     private var shutdownRetransmits = 0
-    private var reConfigDeadline: Instant? = null
     private var reConfigRetransmits = 0
     private var consecutiveRtxErrors = 0
     private var packetsSinceSack = 0
@@ -241,7 +238,10 @@ public class SctpAssociation(
      * until here, then feeds [SctpEvent.TimerFired]; every due timer fires in that one call.
      */
     public fun nextDeadline(now: Instant): Instant? =
-        listOfNotNull(handshakeDeadline, t3Deadline, sackDeadline, shutdownDeadline, reConfigDeadline).minOrNull()
+        when (val earliest = deadlines.earliest()) {
+            Deadline.Unarmed -> null
+            is Deadline.At -> earliest.instant
+        }
 
     /** Feed one event; returns the side effects for the driver to apply (ARCHITECTURE §5.1). Never throws. */
     public fun handle(
@@ -427,8 +427,11 @@ public class SctpAssociation(
             return
         }
         peerVerificationTag = initAck.initiateTag
-        peerSupportsForwardTsn = initAck.parameters.any { it.type == com.ditchoom.webrtc.sctp.ParameterType.ForwardTsnSupported }
-        peerSupportsReConfig = initAck.parameters.advertiseReConfig()
+        peerExtensions =
+            PeerExtensions(
+                forwardTsn = initAck.parameters.any { it.type == com.ditchoom.webrtc.sctp.ParameterType.ForwardTsnSupported },
+                reConfig = initAck.parameters.advertiseReConfig(),
+            )
         establishControlBlocks(peerInitialTsn = initAck.initialTsn, peerRwnd = initAck.advertisedReceiverWindow)
         val echo = SctpChunk.CookieEcho(copyOf(cookieParam.value))
         cookieEcho = echo
@@ -574,8 +577,7 @@ public class SctpAssociation(
         localInitialTsn = cookie.ourInitialTsn
         nextTsn = cookie.ourInitialTsn
         peerVerificationTag = cookie.peerTag
-        peerSupportsForwardTsn = cookie.peerForwardTsn
-        peerSupportsReConfig = cookie.peerReConfig
+        peerExtensions = PeerExtensions(forwardTsn = cookie.peerForwardTsn, reConfig = cookie.peerReConfig)
         establishControlBlocks(peerInitialTsn = cookie.peerInitialTsn, peerRwnd = cookie.peerRwnd)
         emitPacket(listOf(SctpChunk.CookieAck), peerVerificationTag, out)
         transition(SctpAssociationState.Established, out)
@@ -601,10 +603,14 @@ public class SctpAssociation(
         peerInitialTsn: Tsn,
         peerRwnd: UInt,
     ) {
-        retransmissionQueue = RetransmissionQueue(config, localInitialTsn)
-        reassemblyQueue = ReassemblyQueue(peerInitialTsn, config)
-        congestion = CongestionControl(config, peerRwnd)
-        retransmissionQueue!!.setPeerReceiveWindow(peerRwnd)
+        val retransmission = RetransmissionQueue(config, localInitialTsn)
+        retransmission.setPeerReceiveWindow(peerRwnd)
+        tcb =
+            Tcb.Live(
+                retransmission = retransmission,
+                reassembly = ReassemblyQueue(peerInitialTsn, config),
+                congestion = CongestionControl(config, peerRwnd),
+            )
         // RFC 6525 §5.1.1: both endpoints seed their Re-configuration Request Sequence Number from their
         // own Initial TSN, so each side can predict where the other's numbering starts before a single
         // request has been exchanged — which is what lets §4.1's Response Sequence Number field be filled
@@ -692,7 +698,7 @@ public class SctpAssociation(
         chunk: SctpChunk.Data,
         out: MutableList<SctpOutput>,
     ) {
-        val reassembly = reassemblyQueue ?: return
+        val reassembly = tcb.liveOrElse { return }.reassembly
         for (message in reassembly.receive(chunk)) {
             out += SctpOutput.MessageReceived(message.streamId, message.ppid, message.unordered, message.payload)
         }
@@ -703,8 +709,9 @@ public class SctpAssociation(
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        val rq = retransmissionQueue ?: return
-        val cc = congestion ?: return
+        val live = tcb.liveOrElse { return }
+        val rq = live.retransmission
+        val cc = live.congestion
         val wasCwndLimited = rq.outstandingBytes >= cc.cwnd
         val gapsAbsolute =
             sack.gapAckBlocks.map { block ->
@@ -718,9 +725,9 @@ public class SctpAssociation(
         if (outcome.cumulativeAdvanced) consecutiveRtxErrors = 0
 
         if (outcome.allDataAcknowledged) {
-            t3Deadline = null
+            deadlines = deadlines.copy(t3 = Deadline.Unarmed)
         } else if (outcome.cumulativeAdvanced) {
-            t3Deadline = now + rtt.rto
+            deadlines = deadlines.copy(t3 = Deadline.At(now + rtt.rto))
         }
         // RFC 3758: expiry is also checked here, not only on T3 — a partially-reliable message can spend
         // its retransmit/lifetime budget while OTHER data keeps advancing the cum ack (so T3 is
@@ -735,7 +742,7 @@ public class SctpAssociation(
         chunk: SctpChunk.ForwardTsn,
         out: MutableList<SctpOutput>,
     ) {
-        val reassembly = reassemblyQueue ?: return
+        val reassembly = tcb.liveOrElse { return }.reassembly
         for (message in reassembly.onForwardTsn(chunk.newCumulativeTsn, chunk.streams)) {
             out += SctpOutput.MessageReceived(message.streamId, message.ppid, message.unordered, message.payload)
         }
@@ -785,7 +792,7 @@ public class SctpAssociation(
                     bytes = fragmentPayload.remaining(),
                     packet = encodePacket(listOf(chunk), peerVerificationTag),
                     reliability = options.reliability,
-                    firstSentAt = now,
+                    enqueuedAt = now,
                 )
             pendingSend.addLast(data)
             pendingSendBytes += data.bytes
@@ -805,8 +812,9 @@ public class SctpAssociation(
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        val rq = retransmissionQueue ?: return
-        val cc = congestion ?: return
+        val live = tcb.liveOrElse { return }
+        val rq = live.retransmission
+        val cc = live.congestion
 
         // Retransmit the lost flight, but PACED BY cwnd (RFC 4960 §6.3.3 E3): after a T3 collapse to one
         // MTU we must not dump 100 outstanding chunks back onto the wire at once. Always send at least the
@@ -814,7 +822,7 @@ public class SctpAssociation(
         // stays NeedsRetransmit and goes out on the next SACK/timer as cwnd re-opens.
         for (data in rq.retransmittable()) {
             if (rq.outstandingBytes > 0 && rq.outstandingBytes + data.bytes > cc.cwnd) break
-            rq.markRetransmitted(data, now)
+            rq.markRetransmitted(data)
             out += SctpOutput.Transmit.Retained(data.wirePacket())
         }
 
@@ -827,12 +835,11 @@ public class SctpAssociation(
             if (!cwndOk || !rwndOk) break
             pendingSend.removeFirst()
             pendingSendBytes -= next.bytes
-            next.lastSentAt = now
-            rq.onSent(next)
+            rq.onSent(next, now)
             out += SctpOutput.Transmit.Retained(next.wirePacket())
         }
 
-        if (rq.outstandingBytes > 0 && t3Deadline == null) t3Deadline = now + rtt.rto
+        if (rq.outstandingBytes > 0 && deadlines.t3 is Deadline.Unarmed) deadlines = deadlines.copy(t3 = Deadline.At(now + rtt.rto))
     }
 
     // ─────────────────── stream reconfiguration (RFC 6525) — the requester half ───────────────────
@@ -865,7 +872,7 @@ public class SctpAssociation(
         val scope = pending.scope
         // A peer that never advertised RE-CONFIG cannot be sent one (RFC 6525 §5.1). Answer the caller
         // rather than dropping the request: a channel close that is unanswerable still has to complete.
-        if (!peerSupportsReConfig) {
+        if (!peerExtensions.reConfig) {
             outgoingReset = OutgoingReset.Ready(PendingReset.Nothing)
             out += SctpOutput.OutgoingStreamsReset(scope, StreamResetOutcome.Unsupported)
             return
@@ -941,7 +948,7 @@ public class SctpAssociation(
     ) {
         // Before the TCB exists there is no SSN state to reset and no sequence space to check against, so
         // a RE-CONFIG arriving mid-handshake is dropped rather than answered on guessed state.
-        if (reassemblyQueue == null) return
+        tcb.liveOrElse { return }
         val responses = ArrayList<ReConfigParameter>()
         for (decoded in chunk.reConfigParameters()) {
             when (decoded) {
@@ -1012,7 +1019,7 @@ public class SctpAssociation(
             }
             RequestAdmission.Process -> Unit
         }
-        val reassembly = reassemblyQueue ?: return
+        val reassembly = tcb.liveOrElse { return }.reassembly
         val scope = request.scope()
         // RFC 6525 §5.2.2: a reset whose Sender's Last Assigned TSN is still above our cumulative point
         // would tear the SSN state out from under data that is in flight and about to be reassembled. Hold
@@ -1031,7 +1038,7 @@ public class SctpAssociation(
 
     private fun maybeCompleteDeferredReset(out: MutableList<SctpOutput>) {
         val deferred = peerRequests as? PeerRequests.Deferred ?: return
-        val reassembly = reassemblyQueue ?: return
+        val reassembly = tcb.liveOrElse { return }.reassembly
         if (reassembly.cumulativeTsn.sackPrecedes(deferred.senderLastAssignedTsn)) return
         performIncomingReset(deferred.scope, out)
         val response = ReConfigParameter.Response(deferred.last, ReConfigResult.SuccessPerformed)
@@ -1045,7 +1052,10 @@ public class SctpAssociation(
         scope: StreamResetScope,
         out: MutableList<SctpOutput>,
     ) {
-        reassemblyQueue?.resetStreams(scope)
+        when (val current = tcb) {
+            Tcb.NoAssociation -> Unit
+            is Tcb.Live -> current.reassembly.resetStreams(scope)
+        }
         out += SctpOutput.IncomingStreamsReset(scope)
     }
 
@@ -1089,7 +1099,7 @@ public class SctpAssociation(
     ) {
         val inFlight =
             outgoingReset as? OutgoingReset.InFlight ?: run {
-                reConfigDeadline = null
+                deadlines = deadlines.copy(reConfig = Deadline.Unarmed)
                 return
             }
         reConfigRetransmits += 1
@@ -1106,11 +1116,11 @@ public class SctpAssociation(
     }
 
     private fun armReConfig(now: Instant) {
-        reConfigDeadline = now + rtt.rto
+        deadlines = deadlines.copy(reConfig = Deadline.At(now + rtt.rto))
     }
 
     private fun cancelReConfig() {
-        reConfigDeadline = null
+        deadlines = deadlines.copy(reConfig = Deadline.Unarmed)
         reConfigRetransmits = 0
     }
 
@@ -1131,21 +1141,21 @@ public class SctpAssociation(
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        val reassembly = reassemblyQueue ?: return
+        val reassembly = tcb.liveOrElse { return }.reassembly
         packetsSinceSack += 1
         // RFC 4960 §6.2: SACK on every second packet, or immediately on out-of-order / duplicate data.
         if (reassembly.sackImmediatelyRequested || packetsSinceSack >= SACK_EVERY) {
             emitSack(out)
-        } else if (sackDeadline == null) {
-            sackDeadline = now + config.sackDelay
+        } else if (deadlines.sack is Deadline.Unarmed) {
+            deadlines = deadlines.copy(sack = Deadline.At(now + config.sackDelay))
         }
     }
 
     private fun emitSack(out: MutableList<SctpOutput>) {
-        val reassembly = reassemblyQueue ?: return
+        val reassembly = tcb.liveOrElse { return }.reassembly
         emitPacket(listOf(reassembly.buildSack()), peerVerificationTag, out)
         packetsSinceSack = 0
-        sackDeadline = null
+        deadlines = deadlines.copy(sack = Deadline.Unarmed)
     }
 
     // ────────────────────────────────── shutdown ──────────────────────────────────
@@ -1163,8 +1173,9 @@ public class SctpAssociation(
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        val rq = retransmissionQueue ?: return
-        val reassembly = reassemblyQueue ?: return
+        val live = tcb.liveOrElse { return }
+        val rq = live.retransmission
+        val reassembly = live.reassembly
         val drained = rq.isEmpty && pendingSend.isEmpty()
         when (_state) {
             SctpAssociationState.ShutdownPending ->
@@ -1188,7 +1199,7 @@ public class SctpAssociation(
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        val rq = retransmissionQueue ?: return
+        val rq = tcb.liveOrElse { return }.retransmission
         // The SHUTDOWN carries a cumulative TSN ack for our outbound data — process it like a SACK.
         reclaim(rq.onSack(shutdown.cumulativeTsnAck, rq.peerReceiveWindow, emptyList(), now).reclaimed, out)
         if (_state == SctpAssociationState.Established || _state == SctpAssociationState.ShutdownPending) {
@@ -1209,7 +1220,7 @@ public class SctpAssociation(
     }
 
     private fun onAbortRequested(out: MutableList<SctpOutput>) {
-        if (retransmissionQueue == null && _state == SctpAssociationState.Closed) return
+        if (tcb is Tcb.NoAssociation && _state == SctpAssociationState.Closed) return
         emitPacket(listOf(SctpChunk.Abort(verificationTagReflected = false, causes = emptyList())), peerVerificationTag, out)
         transition(SctpAssociationState.Closed, out)
         clearControlBlocks(out)
@@ -1227,11 +1238,11 @@ public class SctpAssociation(
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        handshakeDeadline?.let { if (now >= it) onHandshakeTimeout(now, out) }
-        t3Deadline?.let { if (now >= it) onT3Timeout(now, out) }
-        sackDeadline?.let { if (now >= it) emitSack(out) }
-        shutdownDeadline?.let { if (now >= it) onShutdownTimeout(now, out) }
-        reConfigDeadline?.let { if (now >= it) onReConfigTimeout(now, out) }
+        if (deadlines.handshake.dueAt(now)) onHandshakeTimeout(now, out)
+        if (deadlines.t3.dueAt(now)) onT3Timeout(now, out)
+        if (deadlines.sack.dueAt(now)) emitSack(out)
+        if (deadlines.shutdown.dueAt(now)) onShutdownTimeout(now, out)
+        if (deadlines.reConfig.dueAt(now)) onReConfigTimeout(now, out)
     }
 
     private fun onHandshakeTimeout(
@@ -1256,19 +1267,16 @@ public class SctpAssociation(
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        val rq =
-            retransmissionQueue ?: run {
-                t3Deadline = null
+        val live =
+            tcb.liveOrElse {
+                deadlines = deadlines.copy(t3 = Deadline.Unarmed)
                 return
             }
-        val cc =
-            congestion ?: run {
-                t3Deadline = null
-                return
-            }
+        val rq = live.retransmission
+        val cc = live.congestion
         val hadOutstanding = rq.onT3Timeout()
         if (!hadOutstanding) {
-            t3Deadline = null
+            deadlines = deadlines.copy(t3 = Deadline.Unarmed)
             return
         }
         cc.onTimeout()
@@ -1281,7 +1289,7 @@ public class SctpAssociation(
         // RFC 3758: abandon partially-reliable chunks past their budget before retransmitting.
         abandonExpired(now, out)
         trySend(now, out)
-        t3Deadline = now + rtt.rto
+        deadlines = deadlines.copy(t3 = Deadline.At(now + rtt.rto))
     }
 
     private fun onShutdownTimeout(
@@ -1293,10 +1301,14 @@ public class SctpAssociation(
             fail(SctpFailureReason.RetransmissionLimitReached, out)
             return
         }
-        val reassembly = reassemblyQueue
+        val current = tcb
         when (_state) {
             SctpAssociationState.ShutdownSent ->
-                if (reassembly != null) emitPacket(listOf(SctpChunk.Shutdown(reassembly.cumulativeTsn)), peerVerificationTag, out)
+                when (current) {
+                    Tcb.NoAssociation -> Unit
+                    is Tcb.Live ->
+                        emitPacket(listOf(SctpChunk.Shutdown(current.reassembly.cumulativeTsn)), peerVerificationTag, out)
+                }
             SctpAssociationState.ShutdownAckSent -> emitPacket(listOf(SctpChunk.ShutdownAck), peerVerificationTag, out)
             else -> return
         }
@@ -1307,8 +1319,8 @@ public class SctpAssociation(
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        val rq = retransmissionQueue ?: return
-        if (!peerSupportsForwardTsn) return
+        val rq = tcb.liveOrElse { return }.retransmission
+        if (!peerExtensions.forwardTsn) return
         val skips = rq.abandonExpired(now)
         val advanced = rq.advancedPeerAckPoint
         if (skips.isNotEmpty() || rq.cumulativeAckPoint.sackPrecedes(advanced)) {
@@ -1332,11 +1344,11 @@ public class SctpAssociation(
     }
 
     private fun armHandshake(now: Instant) {
-        handshakeDeadline = now + rtt.rto
+        deadlines = deadlines.copy(handshake = Deadline.At(now + rtt.rto))
     }
 
     private fun cancelHandshake() {
-        handshakeDeadline = null
+        deadlines = deadlines.copy(handshake = Deadline.Unarmed)
         localInit = null
     }
 
@@ -1352,15 +1364,14 @@ public class SctpAssociation(
     }
 
     private fun armShutdown(now: Instant) {
-        shutdownDeadline = now + rtt.rto
+        deadlines = deadlines.copy(shutdown = Deadline.At(now + rtt.rto))
     }
 
+    // Total by construction: a timer added to AssociationDeadlines is cancelled here without this
+    // function being edited, which is the whole reason the five fields became one value.
     private fun cancelAllTimers() {
-        handshakeDeadline = null
-        t3Deadline = null
-        sackDeadline = null
-        shutdownDeadline = null
-        cancelReConfig()
+        deadlines = deadlines.cancelAll()
+        reConfigRetransmits = 0
     }
 
     // ────────────────────────────────── helpers ──────────────────────────────────
@@ -1392,11 +1403,14 @@ public class SctpAssociation(
      * The receive side has no such hazard and releases itself (see [ReassemblyQueue.drain]).
      */
     private fun clearControlBlocks(out: MutableList<SctpOutput>) {
-        retransmissionQueue?.let { reclaim(it.drain(), out) }
-        reassemblyQueue?.drain()
-        retransmissionQueue = null
-        reassemblyQueue = null
-        congestion = null
+        when (val current = tcb) {
+            Tcb.NoAssociation -> Unit
+            is Tcb.Live -> {
+                reclaim(current.retransmission.drain(), out)
+                current.reassembly.drain()
+            }
+        }
+        tcb = Tcb.NoAssociation
         reclaim(pendingSend.map { it.packet }, out)
         pendingSend.clear()
         pendingSendBytes = 0
@@ -1407,7 +1421,9 @@ public class SctpAssociation(
         // (§5.2.4 action A) re-seeds both sequence spaces in establishControlBlocks.
         outgoingReset = OutgoingReset.Ready(PendingReset.Nothing)
         peerRequests = PeerRequests.NoneYet(ReConfigRequestSequenceNumber(0u))
-        peerSupportsReConfig = false
+        // Both extension facts belong to the association going away — cleared as one value, so neither
+        // can survive into the next peer's association (a half-cleared pair was invisible at the read).
+        peerExtensions = PeerExtensions.None
     }
 
     private fun transition(

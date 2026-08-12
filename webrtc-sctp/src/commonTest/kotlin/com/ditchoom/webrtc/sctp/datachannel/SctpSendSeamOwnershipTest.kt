@@ -6,7 +6,6 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.Connection
-import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.managed
 import com.ditchoom.webrtc.sctp.LeakTrackingFactory
 import com.ditchoom.webrtc.sctp.association.SctpAssociationState
@@ -243,7 +242,7 @@ class SctpSendSeamOwnershipTest {
     // A background collector rather than `first()`: the unreliable channel has no message count to wait
     // for, so anything that suspends per message would hang on the ones that were correctly abandoned.
     private fun TestScope.collectInto(
-        connection: Connection<ReadBuffer>,
+        connection: Connection<DataChannelPayload>,
         into: MutableList<String>,
     ) {
         backgroundScope.launch { connection.receive().collect { into += it.consumeText() } }
@@ -262,10 +261,14 @@ class SctpSendSeamOwnershipTest {
     // DataChannelConnection.receive) — including a fixture, which is the only reason these numbers can
     // reach zero. Reading and releasing in one helper is deliberate: a test that forgot the release would
     // report a leak that was its own.
-    private fun ReadBuffer.consumeText(): String {
+    // Reads a received message and discharges its ownership in one step — the payload's `release()` is
+    // now what hands the reassembly buffer back, so this fixture exercises that contract rather than
+    // freeing a buffer it reached around the type to obtain.
+    private fun DataChannelPayload.consumeText(): String {
         val out = StringBuilder()
-        for (i in position() until limit()) out.append((get(i).toInt() and 0xFF).toChar())
-        freeIfNeeded()
+        val buffer = expectBinary()
+        for (i in buffer.position() until buffer.limit()) out.append((buffer.get(i).toInt() and 0xFF).toChar())
+        release()
         return out.toString()
     }
 

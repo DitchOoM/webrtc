@@ -86,15 +86,28 @@ offer/answer machine testable without a network.
 
 ### Sending and receiving
 
-A data channel **is** a buffer-flow `Connection<ReadBuffer>`, so anything written against
-`StreamMux`-style code runs over WebRTC unchanged:
+A data channel **is** a buffer-flow `Connection<DataChannelPayload>`. A message is `Text` or `Binary` —
+the same distinction the wire draws (RFC 8831 §6.6 PPIDs) and that a browser peer sees as a `String` or
+an `ArrayBuffer` on `event.data`:
 
 ```kotlin
-chat.send(buffer)
-chat.receive().collect { incoming -> /* a ReadBuffer, not a copy */ }
+chat.send(buffer)                       // binary, zero-copy — the buffer is the message
+chat.send("hello")                      // text, UTF-8 encoded once inside the stack
+
+chat.receive().collect { message ->
+    when (message) {
+        is DataChannelPayload.Binary -> use(message.bytes)  // not a copy
+        is DataChannelPayload.Text -> use(message.text)
+    }
+    message.release()                   // a received Binary transfers its buffer to you
+}
 
 pc.incomingDataChannels.collect { channel -> /* the peer opened one (ondatachannel) */ }
 ```
+
+`Text` carries characters rather than bytes, so a message that claims to be a string cannot hold
+something that is not valid UTF-8 — the receiving browser would reject it, and by then it is already on
+the wire.
 
 Channels are ordered and reliable by default; `DataChannelConfig` selects `DeliveryOrder.Unordered` and
 the partial-reliability modes — `SctpReliability.MaxRetransmits(n)` or `.MaxLifetime(duration)`

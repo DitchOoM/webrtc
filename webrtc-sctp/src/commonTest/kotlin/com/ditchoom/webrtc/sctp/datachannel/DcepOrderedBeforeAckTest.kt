@@ -99,7 +99,7 @@ class DcepOrderedBeforeAckTest {
             channel.send(textBuffer("first"))
 
             val incoming = server.acceptBidirectional()
-            assertEquals("first", incoming.receive().first().let { buf -> buf.readString(buf.remaining()) })
+            assertEquals("first", incoming.receive().first().expectBinaryAsString())
 
             val onStream = tap.sent.filter { it.streamId == streamId }
             val dcep = onStream.filter { it.ppid == PayloadProtocolId.WebRtcDcep }
@@ -149,7 +149,7 @@ class DcepOrderedBeforeAckTest {
 
             tap.sent.clear()
             channel.send(textBuffer("now-unordered"))
-            assertEquals("now-unordered", incoming.receive().first().let { buf -> buf.readString(buf.remaining()) })
+            assertEquals("now-unordered", incoming.receive().first().expectBinaryAsString())
 
             val userData = tap.sent.filter { it.streamId == streamId && it.ppid != PayloadProtocolId.WebRtcDcep }
             assertTrue(userData.isNotEmpty(), "the user message must reach the wire")
@@ -175,7 +175,7 @@ class DcepOrderedBeforeAckTest {
             val channel = client.open(DataChannelConfig(label = "ordered"))
             channel.send(textBuffer("hello"))
             val incoming = server.acceptBidirectional()
-            assertEquals("hello", incoming.receive().first().let { buf -> buf.readString(buf.remaining()) })
+            assertEquals("hello", incoming.receive().first().expectBinaryAsString())
 
             assertTrue(
                 tap.sent.none { it.unordered },

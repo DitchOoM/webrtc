@@ -13,6 +13,8 @@ import com.ditchoom.webrtc.ice.DatagramBinder
 import com.ditchoom.webrtc.ice.IceAgentDriver
 import com.ditchoom.webrtc.ice.IceCandidate
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
+import com.ditchoom.webrtc.sctp.datachannel.DataChannelPayload
+import com.ditchoom.webrtc.sctp.datachannel.send
 import com.ditchoom.webrtc.sdp.SdpType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -296,11 +298,11 @@ class PeerConnectionTrickleGenerationTest {
             ?.substringAfter(':')
 
     private suspend fun echo(
-        channel: Connection<ReadBuffer>,
+        channel: Connection<DataChannelPayload>,
         text: String,
     ): String? {
         channel.send(textBuffer(text))
-        return withTimeoutOrNull(timeout) { channel.receive().first().text() }
+        return withTimeoutOrNull(timeout) { channel.receive().first().contentAsString() }
     }
 
     private fun textBuffer(s: String): ReadBuffer {

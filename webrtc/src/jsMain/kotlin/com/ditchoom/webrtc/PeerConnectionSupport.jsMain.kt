@@ -144,9 +144,6 @@ private fun mapConnectionState(state: String): PeerConnectionState =
 // The typeof of a JS value (Kotlin/JS js() inlines and can reference the parameter by name).
 private fun jsTypeof(o: dynamic): String = js("typeof o")
 
-// UTF-8 encode a JS string via TextEncoder → Uint8Array (no Kotlin ByteArray at the browser edge).
-private fun encodeUtf8(s: String): Uint8Array = js("new TextEncoder().encode(s)")
-
 private fun mapSignalingState(state: String): SignalingState? =
     when (state) {
         "stable" -> SignalingState.Stable

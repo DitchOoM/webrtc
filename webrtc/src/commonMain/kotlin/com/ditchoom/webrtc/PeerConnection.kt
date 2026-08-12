@@ -25,6 +25,7 @@ import com.ditchoom.webrtc.ice.MdnsResolution
 import com.ditchoom.webrtc.ice.MdnsResolver
 import com.ditchoom.webrtc.ice.NetworkMonitor
 import com.ditchoom.webrtc.ice.Ufrag
+import com.ditchoom.webrtc.ice.carrier
 import com.ditchoom.webrtc.ice.resolveHostCandidate
 import com.ditchoom.webrtc.sctp.association.SctpAssociationState
 import com.ditchoom.webrtc.sctp.association.SctpConfig
@@ -521,6 +522,11 @@ public class NativePeerConnection(
     private fun report(diagnostic: SessionDiagnostic) {
         diagnosticChannel.trySend(diagnostic)
     }
+
+    // Where application data rides, folded across the whole SESSION rather than per ICE generation — the
+    // association survives a restart (RFC 8842 §5.5) and so must the memory of the path it was on, or the
+    // one migration that matters reads as a first path. See [DataPathFold].
+    private val dataPath = DataPathFold()
 
     // Asks the establishment loop for another attempt, on an ICE generation that has just been restarted
     // — the session half of RFC 7675 §5.1's "a new session, or an ICE restart, is needed". CONFLATED
@@ -1297,6 +1303,19 @@ public class NativePeerConnection(
                     // resurrects a Failed or Closed session, so the terminals below still win.
                     launch {
                         d.path.collect { path ->
+                            // The data path is folded FIRST and unconditionally, ahead of the connection-state
+                            // projection's guards below. The two answer different questions: the association
+                            // needs to know which path it is riding whatever the public lifecycle says, and a
+                            // guard written for the lifecycle would silently swallow the RFC 8261 §6.1
+                            // notification (see DataPathFold).
+                            when (val observed = dataPath.observe(path.carrier)) {
+                                PathObservation.Unchanged -> Unit
+                                is PathObservation.Adopted -> liveStack.pathChanged(observed.profile)
+                                is PathObservation.Migrated -> {
+                                    report(SessionDiagnostic.DataPathMigrated(from = observed.from, to = observed.to))
+                                    liveStack.pathChanged(observed.profile)
+                                }
+                            }
                             val live = _connectionState.value
                             if (live !is PeerConnectionState.Connected && live !is PeerConnectionState.Restarting) return@collect
                             _connectionState.value =

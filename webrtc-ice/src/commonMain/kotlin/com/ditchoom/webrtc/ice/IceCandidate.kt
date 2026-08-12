@@ -183,6 +183,43 @@ public sealed interface IceCandidate {
 internal fun TransportAddress.ip(): String = ip.toString()
 
 /**
+ * The address of the **local socket** this candidate actually occupies — which is not always its [base].
+ * A relayed candidate's base is its address *on the TURN server*, so it never matches a local interface;
+ * the socket we hold is its `relatedAddress`, the local address the allocation was made from. Host,
+ * server-reflexive and peer-reflexive candidates all base on the local socket already.
+ *
+ * ## This is not [IceDataPath.fromBase], and the two must not be collapsed
+ *
+ * They answer different questions about the same nominated pair, and a refactor that noticed they agree
+ * for three of the four candidate types would break the fourth silently:
+ *
+ * - **[localSocket] — which local interface is this candidate standing on.** The question an interface
+ *   liveness check asks (`IceAgentDriver.pathRidesOneOf`, against a `NetworkMonitor`'s enumerated
+ *   addresses), and the question anything reasoning about the *local link* asks — its address family, and
+ *   through that the RFC 8200 §5 / RFC 1122 minimum MTU the path inherits. For a relayed candidate that
+ *   is the socket facing the TURN server, which is the interface the datagrams really leave on.
+ * - **[IceDataPath.fromBase] — which socket does the driver transmit from.** A key into
+ *   `IceAgentDriver.channels`, which is keyed by `candidate.base` for every kind, relayed included: there
+ *   the allocation itself is the channel bound under the relayed base, and sending "from" the relayed
+ *   address is what routes a packet into it.
+ *
+ * So on a relayed path the two genuinely differ, and each is right for its own question: the packet is
+ * addressed through the allocation under the relay's base, and the IP packet it becomes leaves the host
+ * on `relatedAddress`.
+ *
+ * **Ask this of a *local* candidate only.** It reads `relatedAddress`, and on a candidate that arrived
+ * from signaling that field is the *peer's* address — a place on their host, which this one has no socket
+ * on and no interface for. There is no type saying which side a candidate came from, so this is the
+ * caller's to know: it is `pair.local` that has a local socket, never `pair.remote`.
+ */
+public val IceCandidate.localSocket: TransportAddress
+    get() =
+        when (this) {
+            is IceCandidate.Relayed -> relatedAddress
+            is IceCandidate.Host, is IceCandidate.ServerReflexive, is IceCandidate.PeerReflexive -> base
+        }
+
+/**
  * The per-candidate `localPreference` policy (RFC 8445 §5.1.2.2) — the tie-break *within* a candidate
  * type. §5.1.2.2 says this SHOULD prefer IPv6 and be unique per same-type candidate, deferring the
  * family/scope ordering to RFC 8421 → RFC 6724's precedence table.

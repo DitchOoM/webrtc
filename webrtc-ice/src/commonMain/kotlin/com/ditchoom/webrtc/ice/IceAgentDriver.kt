@@ -221,21 +221,12 @@ public class IceAgentDriver(
         // TransportAddresses (whose equality includes the port) would never match, `pathRidesOneOf` would
         // answer false for every change, and the narrow policy would degrade into exactly the restart-on-
         // any-change churn it exists to prevent — silently, since a false answer looks like a real finding.
-        val socketIp = localSocketOf(local).ip
+        // [IceCandidate.localSocket], not the candidate's base and not [IceDataPath.fromBase]: this asks
+        // which local interface the pair stands on, which for a relayed candidate is the socket facing the
+        // TURN server. The base answers the other question — which socket the driver transmits from.
+        val socketIp = local.localSocket.ip
         return interfaces.any { it.address.toTransportAddressOrNull()?.ip == socketIp }
     }
-
-    /**
-     * The address of the **local socket** a candidate actually occupies — which is not always its `base`.
-     * A relayed candidate's base is its address *on the TURN server*, so it never matches a local
-     * interface; the socket we hold is its `relatedAddress`. Host, server-reflexive and peer-reflexive
-     * candidates all base on the local socket already.
-     */
-    private fun localSocketOf(candidate: IceCandidate): TransportAddress =
-        when (candidate) {
-            is IceCandidate.Relayed -> candidate.relatedAddress
-            is IceCandidate.Host, is IceCandidate.ServerReflexive, is IceCandidate.PeerReflexive -> candidate.base
-        }
 
     private val gathered = Channel<GatheredCandidate>(Channel.UNLIMITED)
 

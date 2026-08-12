@@ -83,7 +83,7 @@ kotlinxCoroutines = "1.11.0"
 # a release as *content*, not as a commit). buffer-crypto's android sources at 6.28.1 are byte-identical
 # to 6.27.1's, and the sole file separating 6.28.1 from 6.28.0 is `KeyAgreement.jvmCommon.kt` — the #343
 # fix itself. 6.28.0 stays the one version in this line to never resolve to.
-buffer = "6.28.1"
+buffer = "6.29.0"
 # DitchOoM socket sibling — the UDP `DatagramChannel` **actuals** webrtc's transport track binds to for
 # real-network candidate gathering (host/srflx/relay). The seam itself is buffer-flow's
 # `DatagramChannel` (on Central, above); `socket-udp` is only the platform real-socket implementation
@@ -180,7 +180,7 @@ buffer = "6.28.1"
 # This does NOT move the buffer pin either. socket-udp 4.2.0's POM still declares buffer 6.25.0, so the
 # deliberate resolve-up to buffer 6.26.0 recorded above is unchanged — buffer 6.26.0 is still the latest
 # release, so there is nothing to re-align onto yet.
-socket = "4.2.0"
+socket = "4.4.0"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"

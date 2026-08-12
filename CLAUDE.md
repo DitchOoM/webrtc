@@ -28,16 +28,18 @@ against Chrome, Firefox, WebKit, Pion and werift over real NAT kernels in CI acr
 (fragmentation, unordered, PR-SCTP, multiplexing, reverse-direction, per-channel close, graceful
 shutdown). Every interop lane runs a **Linux or JVM** peer, which is why Android being non-functional
 (Traps, below) went unseen for so long: no lane anywhere executed on ART until the emulator lane landed,
-and the full common suite — 611 tests — now runs there per PR. Pinned at **socket 4.2.0 + buffer
-6.28.1**. socket
+and the full common suite — 611 tests — now runs there per PR. Pinned at **socket 4.4.0 + buffer
+6.29.0**. socket
 4.1.0 + buffer 6.25.0 is the pair that introduced `DatagramCapabilities.requiresNativeMemoryBuffers`,
-which is what the send-side buffer check consumes, and that seam is why the two normally move together.
+which is what the send-side buffer check consumes, and that seam is why the two normally move together;
+it is unchanged between 4.2.0 and 4.4.0.
 Buffer rides ahead deliberately: 6.26.0 is the Apple AEAD ownership fix and #343 the Android X25519
 fix (both below), pure internal fixes with no API change, so resolving buffer up underneath a socket
-built against 6.25.0 is safe. socket-udp 4.2.0's POM still declares buffer 6.25.0, so that skew is
-unchanged — re-align on a socket release that pins 6.26.0 or later. socket itself has since moved to
-4.3.1, which this pin has not yet taken; `socket-udp-watchosdevicearm64` is still absent there, so the
-watchOS row below is unchanged by it.
+built against an older one is safe. **socket-udp 4.4.0's POM declares buffer 6.28.0** — the one version
+never to resolve to (below) — so the skew that used to name 6.25.0 is now a skew that names the poisoned
+number, and the only thing keeping it out of the graph is that our own pin is *higher* and Gradle
+resolves **up**. Verified rather than assumed: `:webrtc:dependencies` reports
+`com.ditchoom:buffer:6.28.0 -> 6.29.0`. Never let this repo's buffer pin fall to or below 6.28.0.
 
 **6.28.0 is the one buffer version in this line to never resolve to**, and the reason is worth keeping
 even though the pin no longer depends on it. For one night the highest number was not the newest
@@ -217,11 +219,13 @@ catch-all maps every exception to "mDNS is unavailable here" and would swallow t
     `size_t`-typed CommonCrypto/Security function across a width-mixed target set (112 errors over 17
     files). `.convert()` cannot help — the reference offends, not the argument. Admitting it means
     splitting `buffer-crypto`'s `appleMain` by pointer width. `buffer-crypto-watchosarm64` is still a 404
-    on Central at 6.28.1; `socket-udp-watchosarm64` publishes fine, so socket is not the blocker here.
+    on Central at 6.29.0; `socket-udp-watchosarm64` publishes fine at 4.4.0, so socket is not the blocker
+    here.
   - `watchosDeviceArm64` (64-bit device — Series 9 / Ultra) — blocked in **socket**, and our own matrix
     omits the target entirely. buffer #342 added it everywhere including `buffer-crypto`, but
-    `socket-udp-watchosdevicearm64` is a 404 at 4.2.0 **and still at 4.3.1**, so this one needs a socket
-    PR plus a target registration here — a plain socket bump will not deliver it.
+    `socket-udp-watchosdevicearm64` is a 404 at 4.2.0 **and still at 4.4.0** (re-checked against Central
+    when this repo took 4.4.0), so this one needs a socket PR plus a target registration here — a plain
+    socket bump will not deliver it, which taking 4.4.0 has now demonstrated rather than predicted.
   - **Do not read #342 as "arm64_32 is unblocked"** — an earlier revision of this file did, from the PR
     title alone. It adds the 64-bit device and states in a comment why the 32-bit one stays out.
 - **Android's floor is API 28, and it is measured rather than chosen.** Two floors stack, and the

@@ -655,6 +655,29 @@ public class SctpDataChannelStack(
         }
     }
 
+    /**
+     * Send [payload] on [streamId] under a caller-chosen [ppid], bypassing [DataChannelPayload] entirely.
+     * [payload] is borrowed for the call and remains the caller's, exactly as a [DataChannelPayload.Binary]
+     * buffer is.
+     *
+     * Exists for one reason, and is `internal` because of it: a `WebRTC String` carrying bytes that are
+     * **not** valid UTF-8 is unconstructible through the public API — that is precisely what
+     * [DataChannelPayload.Text] holding characters buys — so the receive-side reject path in [payloadFor]
+     * has no other way to be reached. A fixture standing in for a non-conforming peer is the only caller;
+     * nothing in production sends through here.
+     */
+    internal suspend fun sendUnencoded(
+        streamId: StreamId,
+        ppid: PayloadProtocolId,
+        config: DataChannelConfig,
+        payload: ReadBuffer,
+    ) {
+        val options = SctpSendOptions(streamId, ppid, delivery = config.delivery, reliability = config.reliability)
+        val deferred = CompletableDeferred<Unit>()
+        post(SendCommand(options, payload, deferred))
+        deferred.await()
+    }
+
     // UTF-8 encode a text message with the stack's injected factory (directive #6 — no ambient allocator).
     private fun encodeUtf8(text: CharSequence): ReadBuffer {
         if (text.isEmpty()) return ReadBuffer.EMPTY_BUFFER

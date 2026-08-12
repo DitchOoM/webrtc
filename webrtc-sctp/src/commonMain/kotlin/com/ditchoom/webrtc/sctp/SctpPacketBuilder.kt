@@ -25,7 +25,7 @@ public class SctpPacketBuilder(
     /** The finished packet (source-less; the checksum is filled in by [SctpPacket.encode]). */
     public fun build(): SctpPacket {
         val header = SctpCommonHeader(sourcePort, destinationPort, verificationTag, checksum = 0u)
-        return SctpPacket(header, chunks.toList(), source = null, sourceStart = 0, packetLength = 0)
+        return SctpPacket(header, chunks.toList(), PacketOrigin.Built)
     }
 
     /** Convenience: [build] then [SctpPacket.encode]. */

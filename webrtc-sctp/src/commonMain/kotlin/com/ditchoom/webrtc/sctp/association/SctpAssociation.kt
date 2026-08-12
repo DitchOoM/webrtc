@@ -8,6 +8,7 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.webrtc.sctp.ChecksumVerdict
 import com.ditchoom.webrtc.sctp.DataChunkFlags
 import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.ErrorCauseCode
@@ -662,7 +663,15 @@ public class SctpAssociation(
     ) {
         // Integrity: over DTLS the transport authenticates, but the SCTP CRC32c is still on the wire —
         // a mismatch is a corrupt datagram we drop (T0: never a throw).
-        if (!packet.verifyChecksum()) return
+        //
+        // Written as an exhaustive `when` rather than the Boolean projection so that RFC 9653's
+        // `AcceptedZero` cannot be introduced without this site being asked what to do about it. That is
+        // the one place in the receive path where getting it wrong is invisible: an accepted-but-
+        // unverifiable packet dropped here looks exactly like a peer that went quiet.
+        when (packet.validateChecksum()) {
+            ChecksumVerdict.Verified, ChecksumVerdict.AcceptedZero -> Unit
+            ChecksumVerdict.Mismatch, ChecksumVerdict.NotFromWire -> return
+        }
         if (!verificationTagOk(packet)) return
 
         // A SACK is owed for any chunk that advances the receiver's cumulative TSN — DATA *or* a

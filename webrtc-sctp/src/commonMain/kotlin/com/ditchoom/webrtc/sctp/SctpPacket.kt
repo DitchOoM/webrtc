@@ -20,15 +20,14 @@ import com.ditchoom.webrtc.sctp.SctpDecodeResult.Success
  * the nested TLVs are outside what the declarative codec expresses.
  *
  * Decoding is zero-copy: variable regions inside chunks (user data, cookies, parameter/cause values)
- * are slices over [source], so a decoded packet must not outlive that datagram's scope.
- * [verifyChecksum] reads those same bytes in place. Build outgoing packets with [SctpPacketBuilder].
+ * are slices over the datagram, so a decoded packet must not outlive that datagram's scope.
+ * [validateChecksum] reads those same bytes in place, via the span [PacketOrigin.Decoded] retains. Build
+ * outgoing packets with [SctpPacketBuilder].
  */
 public class SctpPacket internal constructor(
     public val header: SctpCommonHeader,
     public val chunks: List<SctpChunk>,
-    private val source: ReadBuffer?,
-    private val sourceStart: Int,
-    private val packetLength: Int,
+    private val origin: PacketOrigin,
     // The per-chunk spans `decode` sliced off the datagram. Held only so [release] can give them back:
     // each chunk's own fields are slices of these, but `TrackedSlice` re-parents to the ROOT chunk, so
     // these are independent references against the datagram rather than a chain, and dropping them
@@ -69,18 +68,35 @@ public class SctpPacket internal constructor(
 
     /**
      * Recomputes the CRC32c (RFC 4960 §6.8) over the decoded packet with the checksum field treated as
-     * zero, and compares it to the value on the wire. Returns false if this packet was not decoded from
-     * a buffer.
+     * zero, compares it to the value on the wire, and says **which** of the outcomes happened.
      *
      * SCTP stores the checksum as the **little-endian** encoding of the [Crc32c.of] value (RFC 4960
      * Appendix B), while [SctpCommonHeader.checksum] is the big-endian-read word — so the stored value
      * equals the byte-reversed CRC32c. The four checksum bytes (header offset 8..11) are skipped via a
      * two-slice feed so the datagram is never mutated.
      */
-    public fun verifyChecksum(): Boolean {
-        val src = source ?: return false
-        return computeChecksum(src, sourceStart, packetLength) == reverseBytes(header.checksum)
-    }
+    public fun validateChecksum(): ChecksumVerdict =
+        when (origin) {
+            PacketOrigin.Built -> ChecksumVerdict.NotFromWire
+            is PacketOrigin.Decoded ->
+                if (computeChecksum(origin.buffer, origin.start, origin.length) == reverseBytes(header.checksum)) {
+                    ChecksumVerdict.Verified
+                } else {
+                    ChecksumVerdict.Mismatch
+                }
+        }
+
+    /**
+     * [validateChecksum] projected to "may this packet be processed" — the question every current caller
+     * was asking, kept so none of them have to change and so the common case stays one word at the call
+     * site.
+     *
+     * It is [ChecksumVerdict.accepted] rather than `== Verified` on purpose. Once RFC 9653 lands, a peer
+     * that negotiated zero-checksum sends a legitimately unverifiable packet, and a Boolean written as an
+     * equality against one variant would start silently discarding exactly the traffic that feature
+     * exists to permit — while still looking correct.
+     */
+    public fun verifyChecksum(): Boolean = validateChecksum().accepted
 
     /**
      * Serializes this packet (common header + chunks, each chunk padded to a 4-byte boundary) into a
@@ -155,7 +171,7 @@ public class SctpPacket internal constructor(
 
             // The consumed extent from the packet start — what verify/re-encode cover.
             val consumed = pos.coerceAtMost(end) - start
-            return Success(SctpPacket(header, chunks, source, start, consumed, spans))
+            return Success(SctpPacket(header, chunks, PacketOrigin.Decoded(source, start, consumed), spans))
         }
 
         /** Writes [header] then each chunk (type, flags, length, value, zero-padding to a 4-byte boundary). */

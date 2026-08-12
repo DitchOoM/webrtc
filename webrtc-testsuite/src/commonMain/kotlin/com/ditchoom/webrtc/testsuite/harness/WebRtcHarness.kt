@@ -270,11 +270,16 @@ public class WebRtcHarnessScope internal constructor(
         val conn = establish()
         return withTimeout(establishTimeout) {
             val channel = conn.offerer.createDataChannel(DataChannelConfig(label = label))
-            // Both buffers are ours to release: `send` reads the outgoing one and never takes it, and the
-            // echo arrives as a transfer the collector owes (see the responder in [establish]).
-            // Sent as TEXT: this helper's contract is "send a string, get the string back", and a text
-            // message is what a browser peer would send for it. The bytes path is exercised by the
-            // buffer-census fixtures, which need a Binary to have anything to account for.
+            // Sent as TEXT: this helper's contract is "send a string, get the string back", and text is
+            // what a browser peer sends for that. A Text owns no buffer, so only the echo is ours to
+            // release — it arrives as a transfer the collector owes (see the responder in [establish]).
+            //
+            // This does NOT weaken the buffer census, and the reason is worth stating because the obvious
+            // guess is wrong: the census counts chunks the POOL created across the whole relay path — every
+            // vnet delivery copy, both peers' ICE/DTLS/SCTP, the TURN control and relay loops — not the
+            // message payload. A Text send still allocates one, inside the stack, through the stack's own
+            // injected factory. `assertNoBufferLeaks` fails outright on `chunksCreated == 0`, so a census
+            // that stopped exercising anything reports that rather than passing.
             channel.send(DataChannelPayload.Text(message))
             val echoed = channel.receive().first()
             try {

@@ -250,10 +250,31 @@ optional.
 
 ### 11.2 SCTP is the data-channel subset
 
-dcSCTP-shaped: one path, no multihoming, no RFC 8260 stream interleaving, no HEARTBEAT — **ICE consent
-freshness owns path liveness**, so a second liveness mechanism would be a second source of truth. Full
-RFC 9260 is not needed for `RTCDataChannel` semantics and is not a goal. RFC 6525's four non-originated
-reconfiguration request types are decoded and explicitly refused rather than silently ignored.
+dcSCTP-shaped: one path, no multihoming, no RFC 8260 stream interleaving. Full RFC 9260 is not needed for
+`RTCDataChannel` semantics and is not a goal. RFC 6525's four non-originated reconfiguration request types
+are decoded and explicitly refused rather than silently ignored; the two that *are* originated — reset and
+ADD STREAMS — share one request slot, because RFC 6525 §5.1.2 permits only one outstanding request at a
+time.
+
+**Multihoming is forbidden here, not merely skipped.** RFC 8831 §5 and RFC 8261 §6.1 permit exactly one
+address per association, so implementing it would be a conformance bug rather than a missing feature. What
+§6.1 *does* require is the other half: when the transport underneath moves the association to a different
+5-tuple, every quantity measured about the old path — cwnd, ssthresh, SRTT, the consecutive-error budget —
+is invalid at once. That reset is one object replacement (`PathRide.onNewPath`), so a quantity added later
+is reset by having been added rather than by someone remembering a fourth assignment.
+
+**HEARTBEAT is originated, scoped by purpose.** It is never used for liveness — **ICE consent freshness
+owns that**, and a second liveness mechanism would be a second source of truth. RFC 8899 path-MTU probing
+sends a HEARTBEAT carrying a nonce, padded by an RFC 4820 PAD chunk to a candidate datagram size, and
+reads the HEARTBEAT-ACK's echoed nonce as confirmation that the size fits. The distinction is worth
+keeping sharp in review: a probe answers "how big may a datagram be", never "is the peer still there", and
+nothing here arms a timer on the second question.
+
+Two extensions are implemented and **opt-in**, because each changes bytes on the wire against every peer
+and neither is something a consumer asked for by default: RFC 8899 discovery (`PathMtuPolicy.Discover`)
+and RFC 9653 zero checksum (`ZeroChecksumPolicy`). The latter is additionally gated on what the transport
+beneath guarantees — a policy alone never grants it, because the CRC32c is only redundant when something
+else is already detecting errors.
 
 ### 11.4 mDNS candidate privacy goes both ways
 

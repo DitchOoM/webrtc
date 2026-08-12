@@ -84,9 +84,26 @@ public class SessionDescription internal constructor(
         return sb.toString()
     }
 
-    /** Serializes [toText] into a freshly allocated read-ready buffer (UTF-8), sized exactly. */
+    /**
+     * Serializes [toText] into a freshly allocated read-ready buffer (UTF-8), sized exactly.
+     *
+     * **Never throws** — the contract `SdpCodecFuzzer` and `SdpMalformedCorpusTest` both assert. Holding
+     * it requires [wellFormed], because the line values reaching here are arbitrary application text
+     * ([SessionDescriptionBuilder.line] takes a raw `String`), and buffer's `writeString` answers invalid
+     * UTF-16 three different ways at 6.28.1 — **measured, not assumed** (`SdpEncodeLoneSurrogateTest`):
+     *
+     * | target | `writeString("\uD800€")` |
+     * |---|---|
+     * | JVM | throws `MalformedInputException` |
+     * | Apple, JS | writes 6 (substitutes U+FFFD) |
+     * | Linux K/N | writes 0, position unchanged (buffer's own `WriteStringLoneSurrogateTest`) |
+     *
+     * So a lone surrogate was an exception on one target, a 2-byte under-allocation on two (the counter
+     * charged 4 for the pair it assumed), and a silent truncation on the fourth. Substituting first makes
+     * every target write the same bytes, which is also what two of them already did.
+     */
     public fun encode(factory: BufferFactory = BufferFactory.Default): PlatformBuffer {
-        val text = toText()
+        val text = wellFormed(toText())
         val dest = factory.allocate(utf8ByteLength(text), ByteOrder.BIG_ENDIAN)
         dest.writeString(text, Charset.UTF8)
         dest.resetForRead()
@@ -177,7 +194,65 @@ public class SessionDescription internal constructor(
 
         private const val MIN_LINE_LENGTH = 2 // "<type>=" — value may be empty (e.g. "a=")
 
-        /** UTF-8 byte length of [text] without allocating (SDP lines are OpaqueString/token text). */
+        private const val ONE_BYTE_LIMIT = 0x80
+        private const val TWO_BYTE_LIMIT = 0x800
+        private const val HIGH_SURROGATE_FIRST = 0xD800
+        private const val HIGH_SURROGATE_LAST = 0xDBFF
+        private const val LOW_SURROGATE_FIRST = 0xDC00
+        private const val LOW_SURROGATE_LAST = 0xDFFF
+
+        /** U+FFFD REPLACEMENT CHARACTER — what a surrogate that is not part of a pair is encoded as. */
+        private const val REPLACEMENT = '�'
+
+        /** True when [text] holds a low surrogate at [i] — i.e. the char at [i] - 1 was a real pair's lead. */
+        private fun lowSurrogateAt(
+            text: String,
+            i: Int,
+        ): Boolean = i < text.length && text[i].code in LOW_SURROGATE_FIRST..LOW_SURROGATE_LAST
+
+        /**
+         * [text] with every surrogate that is not part of a well-formed pair replaced by [REPLACEMENT],
+         * or [text] itself when there is none — the overwhelmingly common case, since SDP line values are
+         * token/OpaqueString text. See [encode] for why this cannot be skipped.
+         *
+         * Kotlin has no common-source `String.isWellFormedUtf16`, and buffer's own `utf8Length()` carries
+         * the same unpaired-surrogate defect this replaced (DitchOoM/buffer — reported 2026-08-12), so
+         * neither is available to delegate to. Fold this into a shared helper if buffer grows one.
+         */
+        private fun wellFormed(text: String): String {
+            var out: StringBuilder? = null
+            var i = 0
+            while (i < text.length) {
+                val c = text[i]
+                val code = c.code
+                when {
+                    code in HIGH_SURROGATE_FIRST..HIGH_SURROGATE_LAST && lowSurrogateAt(text, i + 1) -> {
+                        out?.append(c)?.append(text[i + 1])
+                        i += 2
+                    }
+                    code in HIGH_SURROGATE_FIRST..LOW_SURROGATE_LAST -> {
+                        // A high surrogate with no low after it, or a low surrogate with no high before it.
+                        if (out == null) out = StringBuilder(text.length).append(text, 0, i)
+                        out.append(REPLACEMENT)
+                        i++
+                    }
+                    else -> {
+                        out?.append(c)
+                        i++
+                    }
+                }
+            }
+            return out?.toString() ?: text
+        }
+
+        /**
+         * UTF-8 byte length of [text] without allocating (SDP lines are OpaqueString/token text).
+         *
+         * Only ever called on [wellFormed] text, but correct standalone: a high surrogate is charged 4 —
+         * and its low half consumed — **only when one follows**. Charging 4 unconditionally, as this did,
+         * swallowed the next char without counting its bytes at all, so `"\uD800€"` measured 4 against the
+         * 6 that Apple and JS write.
+         */
         private fun utf8ByteLength(text: String): Int {
             var bytes = 0
             var i = 0
@@ -185,12 +260,12 @@ public class SessionDescription internal constructor(
                 val cp = text[i].code
                 bytes +=
                     when {
-                        cp < 0x80 -> 1
-                        cp < 0x800 -> 2
-                        cp in 0xD800..0xDBFF -> {
+                        cp < ONE_BYTE_LIMIT -> 1
+                        cp < TWO_BYTE_LIMIT -> 2
+                        cp in HIGH_SURROGATE_FIRST..HIGH_SURROGATE_LAST && lowSurrogateAt(text, i + 1) -> {
                             i++
                             4
-                        } // high surrogate → 4-byte code point, skip the low surrogate
+                        } // a real pair → one 4-byte code point; consume the low half
                         else -> 3
                     }
                 i++

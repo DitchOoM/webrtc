@@ -65,10 +65,16 @@ private const val BYTE_MASK = 0xFFu
  * Defaults to [TransportErrorDetection.CrcOnly], so an association built without it behaves exactly as it
  * did before RFC 9653 existed.
  *
- * **Path liveness** is intentionally delegated, not duplicated: this subset sends no SCTP HEARTBEATs, so
- * an association with no outstanding data does not itself detect a silently-dead peer. In WebRTC that is
- * covered a layer down by ICE consent freshness (RFC 7675), which tears down the transport on a dead
- * path and thereby closes the association — so a redundant SCTP heartbeat timer is deliberately omitted.
+ * **Path liveness** is intentionally delegated, not duplicated. An association with no outstanding data
+ * does not itself detect a silently-dead peer; in WebRTC that is covered a layer down by ICE consent
+ * freshness (RFC 7675), which tears down the transport on a dead path and thereby closes the association.
+ * So there is no SCTP heartbeat *timer* here, and no liveness use of HEARTBEAT at all.
+ *
+ * That is now a claim about **why** HEARTBEATs are sent rather than whether they are. RFC 8899 path-MTU
+ * probing (see [PathMtuTracker]) originates a HEARTBEAT carrying a nonce, padded to a candidate size, and
+ * reads the HEARTBEAT-ACK as confirmation that the size fits — so the chunk type is on the wire, scoped
+ * to that one purpose. The distinction is worth keeping sharp: a probe answers "how big may a datagram
+ * be", never "is the peer alive", and nothing here arms a timer on the second question.
  */
 public class SctpAssociation(
     private val config: SctpConfig = SctpConfig(),

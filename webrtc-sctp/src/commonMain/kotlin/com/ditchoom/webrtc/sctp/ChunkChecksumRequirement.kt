@@ -63,6 +63,11 @@ public val SctpChunk.checksumRequirement: ChunkChecksumRequirement
                 }
             is SctpChunk.Unrecognized -> ChunkChecksumRequirement.Crc32cRequired
             is SctpChunk.InitAck -> ChunkChecksumRequirement.EitherPermitted
+            // RFC 8899's probe padding. RFC 9653 §5.2 does not restrict it, and it could not sensibly:
+            // a PMTU probe rides an established association, which is exactly where a granted permission
+            // applies. Forcing a CRC32c here would also make the probe measure a different cost than the
+            // traffic it is sizing for, which defeats the measurement.
+            is SctpChunk.Pad -> ChunkChecksumRequirement.EitherPermitted
             is SctpChunk.Data -> ChunkChecksumRequirement.EitherPermitted
             is SctpChunk.Sack -> ChunkChecksumRequirement.EitherPermitted
             is SctpChunk.Heartbeat -> ChunkChecksumRequirement.EitherPermitted

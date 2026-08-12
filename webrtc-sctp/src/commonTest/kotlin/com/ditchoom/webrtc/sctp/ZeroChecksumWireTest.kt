@@ -85,6 +85,7 @@ class ZeroChecksumWireTest {
                 SctpChunk.ShutdownComplete(verificationTagReflected = false),
                 SctpChunk.ReConfig(listOf(SctpParameter.ofValue(ParameterType.ReConfigResponse, bufferOf(0, 0, 0, 1, 0, 0, 0, 0)))),
                 SctpChunk.ForwardTsn(Tsn(1u), emptyList()),
+                SctpChunk.Pad(PadBytes(4)),
             )
 
         for (chunk in required) {
@@ -102,11 +103,18 @@ class ZeroChecksumWireTest {
             )
         }
         // ABORT and SHUTDOWN COMPLETE appear in both lists, once per T-bit polarity — they are the two
-        // variants whose answer is not a property of the type alone. Counting distinct classes rather than
-        // entries is what makes this a coverage claim: every `SctpChunk` variant is named above, so a
-        // variant added later fails here as well as at the exhaustive `when` it must join.
+        // variants whose answer is not a property of the type alone, so distinct classes is the right
+        // count rather than entries.
+        //
+        // What this number is NOT is the thing enforcing coverage, and the distinction cost real time
+        // once: adding `SctpChunk.Pad` left this assertion green, because it counts the chunks named in
+        // the lists above rather than the variants of the sealed type, and a variant nobody adds to the
+        // list is a variant this cannot miss. Kotlin has no common-source enumeration of sealed subtypes
+        // to close that with. **The exhaustive `when` in `checksumRequirement` is the real gate** — it is
+        // a compile error the moment a variant is added — and this count is the value-level check that
+        // the arm chosen there is the one intended, which the `when` alone cannot say.
         assertEquals(
-            16,
+            17,
             (required + permitted).distinctBy { it::class }.size,
             "every SctpChunk variant must appear in this table",
         )

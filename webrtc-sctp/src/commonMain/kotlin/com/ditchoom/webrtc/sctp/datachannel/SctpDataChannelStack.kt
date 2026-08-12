@@ -167,6 +167,14 @@ public class SctpDataChannelStack(
     internal var discardedInbound: Int = 0
         private set
 
+    // Peer DCEP OPENs this stack would not register, counted by reason. Bounded — there are three reasons
+    // — and test-visible only: nothing above this layer surfaces them yet, and a decline is not an error
+    // (a duplicate OPEN is the ordinary retransmit case).
+    private val declinedOpens = HashMap<InboundOpenDecline, Int>()
+
+    /** How many peer DCEP OPENs were declined for [reason] — test-visible, see [admitInboundOpen]. */
+    internal fun declinedInboundOpens(reason: InboundOpenDecline): Int = declinedOpens[reason] ?: 0
+
     /**
      * The outgoing stream capacity the association settled (RFC 4960 §5.1.1) — test-visible only. It is
      * the ceiling on every stream id this side allocates, and nothing a consumer can otherwise observe.
@@ -342,12 +350,7 @@ public class SctpDataChannelStack(
 
     private fun onCommand(command: Command) {
         when (command) {
-            is OpenCommand ->
-                if (association.state == SctpAssociationState.Established) {
-                    dispatchOpen(command)
-                } else {
-                    pendingOpens.addLast(command)
-                }
+            is OpenCommand -> onOpenCommand(command)
             is SendCommand -> {
                 // RFC 8832 §6: user data on a channel we opened is sent ORDERED until that channel is
                 // confirmed, whatever ordering the channel was configured with. Ordered delivery is the
@@ -406,7 +409,62 @@ public class SctpDataChannelStack(
         apply(association.handle(SctpEvent.ResetStreams(StreamResetScope.Streams(streams)), now()))
     }
 
+    /**
+     * An open has reached the drive loop. A negotiated id (RFC 8832 §5) is **reserved here** — before the
+     * Established check can park the command — and that ordering is the point: the ledger entry exists
+     * from this moment, so no later automatic allocation and no peer DCEP OPEN can take the id, whatever
+     * order the dispatches happen in afterwards.
+     *
+     * Only collision refusals can be answered here. Whether the id fits the association's negotiated
+     * stream count cannot be: there may be no association yet, and therefore no count. That check runs at
+     * dispatch, which is also where the reservation is given back if it fails.
+     */
+    private fun onOpenCommand(command: OpenCommand) {
+        when (val identity = command.config.identity) {
+            ChannelIdentity.InBand -> Unit
+            is ChannelIdentity.Negotiated -> {
+                val refusal = streamIds.claim(identity.id, ChannelProvenance.OutOfBand)
+                if (refusal != null) {
+                    refuseOpen(command, refusal)
+                    return
+                }
+            }
+        }
+        if (association.state == SctpAssociationState.Established) {
+            dispatchOpen(command)
+        } else {
+            pendingOpens.addLast(command)
+        }
+    }
+
     private fun dispatchOpen(command: OpenCommand) {
+        when (val identity = command.config.identity) {
+            ChannelIdentity.InBand -> dispatchInBandOpen(command)
+            is ChannelIdentity.Negotiated -> dispatchNegotiatedOpen(command, identity.id)
+        }
+    }
+
+    /**
+     * A negotiated channel is usable the moment the association is: nothing is sent, nothing is awaited,
+     * and the peer's half was created independently (RFC 8832 §5). All that is left is the range check
+     * that [onOpenCommand] could not make.
+     */
+    private fun dispatchNegotiatedOpen(
+        command: OpenCommand,
+        id: StreamId,
+    ) {
+        val capacity = negotiatedStreams()
+        if (!capacity.admits(id)) {
+            // Give the reservation back, or the id is spent for the life of the association on an open
+            // that never happened — and `allocate` would step over it forever.
+            streamIds.relinquish(id)
+            refuseOpen(command, DataChannelOpenRefusal.StreamIdOutsideNegotiatedRange(id, capacity))
+            return
+        }
+        command.deferred.complete(registerChannel(id, command.config, ChannelProvenance.OutOfBand))
+    }
+
+    private fun dispatchInBandOpen(command: OpenCommand) {
         val streamId =
             when (val grant = streamIds.allocate(negotiatedStreams())) {
                 is StreamIdGrant.Granted -> grant.id
@@ -660,12 +718,12 @@ public class SctpDataChannelStack(
     private fun onDcep(message: SctpOutput.MessageReceived) {
         when (val decoded = (DataChannelMessage.decode(message.payload) as? DataChannelDecodeResult.Success)?.message) {
             is DataChannelMessage.Open -> {
-                // RFC 8832 §6: the peer owns the opposite stream-id parity. Reject an OPEN on our own
-                // parity (a misbehaving/duplicate peer OPEN would otherwise overwrite a local channel),
-                // and reject a duplicate OPEN on an already-registered stream.
-                if (streamIds.parityOf(message.streamId) == StreamParity.Peers && message.streamId !in channels) {
-                    val config = configOf(decoded)
-                    registerChannel(message.streamId, config, ChannelProvenance.PeerInBand)
+                when (val admission = admitInboundOpen(message.streamId)) {
+                    InboundOpenAdmission.Admit -> {
+                        streamIds.adoptPeerOpen(message.streamId)
+                        registerChannel(message.streamId, configOf(decoded), ChannelProvenance.PeerInBand)
+                    }
+                    is InboundOpenAdmission.Decline -> declinedOpens[admission.reason] = declinedInboundOpens(admission.reason) + 1
                 }
                 // Always ACK a (re-)OPEN so a peer whose ACK was lost converges.
                 sendOnStream(
@@ -682,6 +740,28 @@ public class SctpDataChannelStack(
     }
 
     /**
+     * Whether a peer's DCEP OPEN may register a channel on [streamId] (RFC 8832 §6).
+     *
+     * The third refusal is the one that could not be expressed before. `streamIsPeerParity(id) && id !in
+     * channels` is TRUE for an id the application reserved out of band but has not yet registered, so the
+     * peer's stray OPEN would take it, publish an in-band channel on `accept`, and the application's own
+     * negotiated open would then fail `StreamIdInUse` for a reason nothing reported. The ledger is what
+     * can see that reservation; the routing map cannot, because a reserved channel is not in it yet.
+     */
+    private fun admitInboundOpen(streamId: StreamId): InboundOpenAdmission =
+        when {
+            streamIds.parityOf(streamId) == StreamParity.Ours -> InboundOpenAdmission.Decline(InboundOpenDecline.OurParity)
+            // The ledger is asked BEFORE the routing map, because it is the only one that can see an id
+            // the application has reserved but whose channel has not been dispatched yet — and because
+            // "the application owns this id" is a sharper answer than "something is already here" even
+            // once it has been.
+            (streamIds.stateOf(streamId) as? StreamIdState.Claimed)?.origin == ChannelProvenance.OutOfBand ->
+                InboundOpenAdmission.Decline(InboundOpenDecline.ReservedOutOfBand)
+            streamId in channels -> InboundOpenAdmission.Decline(InboundOpenDecline.AlreadyOpen)
+            else -> InboundOpenAdmission.Admit
+        }
+
+    /**
      * Register a channel on [streamId]. [provenance] decides the two things that used to be independent
      * Booleans: whether the channel is published to `accept`, and whether user data on it is forced
      * ordered until the peer answers (RFC 8832 §6). Only a channel WE opened in band is both unpublished
@@ -695,7 +775,6 @@ public class SctpDataChannelStack(
     ): DataChannelConnection {
         val connection = DataChannelConnection(streamId, config, this)
         channels[streamId] = connection
-        streamIds.claim(streamId, provenance)
         if (provenance == ChannelProvenance.LocalInBand) unconfirmedOutbound += streamId
         // Flush any user data that arrived before this registration, in arrival order.
         pendingInbound.remove(streamId)?.forEach { held ->
@@ -1073,6 +1152,41 @@ internal sealed interface InboundMessage {
     data class Discarded(
         val reason: InboundDiscardReason,
     ) : InboundMessage
+}
+
+/**
+ * Whether a peer's DCEP OPEN may register a channel here (RFC 8832 §6). A sealed decision rather than the
+ * two-predicate `if` it replaces, because the third case — an id the application reserved out of band —
+ * is invisible to both of those predicates and was therefore silently admitted.
+ */
+internal sealed interface InboundOpenAdmission {
+    /** Register the channel and publish it on `accept`. */
+    data object Admit : InboundOpenAdmission
+
+    /** Do not register it; [reason] says why. The OPEN is still acknowledged, so a lost ACK converges. */
+    data class Decline(
+        val reason: InboundOpenDecline,
+    ) : InboundOpenAdmission
+}
+
+/** Why a peer's DCEP OPEN was not registered. */
+internal sealed interface InboundOpenDecline {
+    /**
+     * The id is of **our** parity (RFC 8832 §6), so it is not the peer's to open on. Admitting it would
+     * let a misbehaving or duplicated peer OPEN overwrite a local channel.
+     */
+    data object OurParity : InboundOpenDecline
+
+    /** A channel is already registered here — the ordinary retransmitted-OPEN case. */
+    data object AlreadyOpen : InboundOpenDecline
+
+    /**
+     * The application reserved this id for a negotiated channel (RFC 8832 §5) and has not registered it
+     * yet, so neither the parity test nor the routing map can see it. Admitting the OPEN would publish an
+     * in-band channel on `accept` for a stream the application already owns, and the application's own
+     * open would then fail as "in use" for a reason nothing reported.
+     */
+    data object ReservedOutOfBand : InboundOpenDecline
 }
 
 /** Why a received message could not be delivered. */

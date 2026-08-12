@@ -209,11 +209,7 @@ internal class StreamIdAllocator(
     ): DataChannelOpenRefusal? {
         when (val state = states[id]) {
             null -> Unit
-            // Re-claiming an id already held for the SAME purpose is a no-op, not a collision: `allocate`
-            // claims the id it hands out and the channel registration below it claims again through the one
-            // funnel every channel goes through. A DIFFERENT origin on a live id is a real collision — a
-            // peer's DCEP OPEN landing on an id the application reserved out of band, above all.
-            is StreamIdState.Claimed -> if (state.origin == origin) return null else return DataChannelOpenRefusal.StreamIdInUse(id)
+            is StreamIdState.Claimed -> return DataChannelOpenRefusal.StreamIdInUse(id)
             is StreamIdState.Closing -> return DataChannelOpenRefusal.StreamIdClosing(id)
             StreamIdState.Burned -> return DataChannelOpenRefusal.StreamIdBurned(id)
             // Released in both directions: the peer holds no sequencing state for it, so it may be
@@ -223,6 +219,19 @@ internal class StreamIdAllocator(
         states[id] = StreamIdState.Claimed(origin)
         skipClaimed()
         return null
+    }
+
+    /**
+     * Record a channel the peer opened on [id] with a DCEP OPEN. Unlike [claim] this always succeeds, and
+     * that asymmetry is deliberate: the peer's own cursor is the authority for the peer's half of the id
+     * space (RFC 8832 §6), so a half-landed close or a burn *of ours* cannot outrank an OPEN it has
+     * already sent. Whether the OPEN is admitted at all is decided one layer up, where the routing map and
+     * the reservations are both visible.
+     */
+    fun adoptPeerOpen(id: StreamId) {
+        states[id] = StreamIdState.Claimed(ChannelProvenance.PeerInBand)
+        reusable.remove(id)
+        skipClaimed()
     }
 
     /** Give [id] back without retiring it — the open that claimed it was refused after the claim landed. */

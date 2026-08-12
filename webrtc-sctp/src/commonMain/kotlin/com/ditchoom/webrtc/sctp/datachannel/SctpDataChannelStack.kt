@@ -157,6 +157,15 @@ public class SctpDataChannelStack(
     internal val parkedSenders: Int get() = awaitingDrain.size
 
     /**
+     * Every [SctpOutput.PathMtuChanged] this stack has seen, in order — test-visible only, and the only
+     * place the RFC 8899 search is observable from above the association. Bounded: a search converges in a
+     * handful of probes and a raise timer re-opens it at most once every raise interval, so an unbounded
+     * list here would still be a slow leak on a session that lives for days.
+     */
+    internal val pathMtuChanges: List<SctpOutput.PathMtuChanged> get() = pathMtuHistory.toList()
+    private val pathMtuHistory = ArrayDeque<SctpOutput.PathMtuChanged>()
+
+    /**
      * Stream ids whose channel closed in both directions and that a future open will reuse — test-visible
      * only. It is the one direct read of "the close finished on the wire": a channel id lands here exactly
      * when its second RFC 6525 reset completes, which no consumer-facing signal reports (the flow closing
@@ -458,6 +467,10 @@ public class SctpDataChannelStack(
                 SctpOutput.PeerRestarted -> tearDown(SctpFailureReason.PeerRestarted)
                 is SctpOutput.IncomingStreamsReset -> onIncomingStreamsReset(output.scope)
                 is SctpOutput.OutgoingStreamsReset -> onOutgoingStreamsReset(output.scope, output.outcome)
+                // An observation the association has already applied — nothing here has to act on it. It
+                // is recorded so a fixture and the session layer can see a black-holed MTU, which is
+                // otherwise indistinguishable from a peer that stopped acknowledging.
+                is SctpOutput.PathMtuChanged -> onPathMtuChanged(output)
             }
         }
         flushReciprocalResets()
@@ -529,6 +542,11 @@ public class SctpDataChannelStack(
             StreamResetScope.AllStreams -> channels.keys + resetHalves.keys
             is StreamResetScope.Streams -> ids
         }
+
+    private fun onPathMtuChanged(change: SctpOutput.PathMtuChanged) {
+        pathMtuHistory.addLast(change)
+        while (pathMtuHistory.size > MAX_PATH_MTU_HISTORY) pathMtuHistory.removeFirst()
+    }
 
     private fun onStateChanged(state: SctpAssociationState) {
         _state.value = state
@@ -939,6 +957,10 @@ public class SctpDataChannelStack(
         // Cap on user messages buffered per stream before its DCEP OPEN arrives — bounds a peer that
         // sends data on a stream it never OPENs (see pendingInbound / onMessage).
         private const val MAX_PENDING_INBOUND = 64
+
+        // How many RFC 8899 ceiling changes stay observable. A search converges in a handful of probes,
+        // so this holds several whole searches while staying bounded on a session that lives for days.
+        private const val MAX_PATH_MTU_HISTORY = 32
     }
 }
 

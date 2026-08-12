@@ -145,4 +145,34 @@ public sealed interface SctpOutput {
      * brings a new transport with it — which is exactly why it is surfaced rather than assumed away.
      */
     public data object PeerRestarted : SctpOutput
+
+    /**
+     * The fragmentation ceiling the **path** admits has changed — because the path was named, because a
+     * probe confirmed a size, or because the size already being emitted turned out not to be carried
+     * (RFC 8899 / RFC 8261 §6.1).
+     *
+     * [ceiling] is the path's answer, not necessarily the number the next message is fragmented at. While
+     * nothing has been *measured* the association fragments at `min(ceiling, SctpConfig.maxPayloadBytes)`,
+     * because an unprobed family-derived ceiling is an assumption and an assumption must not raise a size
+     * the caller configured; once a probe has confirmed a size, [ceiling] is the fragmentation point
+     * outright. Both rules are on `SctpConfig.pathMtu`.
+     *
+     * **Nothing is required of the driver.** This is an observation — the association has already applied
+     * it. It exists because the alternative is invisible: a session whose MTU was black-holed and a
+     * session whose peer went quiet look identical from outside, and a session that quietly halved its
+     * fragment size after a network change has no other way of saying so.
+     */
+    public data class PathMtuChanged(
+        /** What the path admits per DATA chunk of user data. */
+        public val ceiling: FragmentCeilingBytes,
+        /** Which of the three events this was — they call for different reactions; see the type. */
+        public val cause: PathMtuChangeCause,
+        /**
+         * DATA chunks already encoded above the new ceiling, if any. Classic SCTP assigns a TSN at enqueue
+         * and retains the encoded packet, so these cannot be re-fragmented: they are skipped via RFC 3758
+         * FORWARD-TSN where the peer supports it, and where it does not they cannot be skipped at all.
+         * Always [OversizedBacklog.None] when the ceiling went up.
+         */
+        public val backlog: OversizedBacklog,
+    ) : SctpOutput
 }

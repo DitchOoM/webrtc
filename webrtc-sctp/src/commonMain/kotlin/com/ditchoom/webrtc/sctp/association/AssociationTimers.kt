@@ -98,6 +98,13 @@ internal data class AssociationDeadlines(
     val shutdown: Deadline = Deadline.Unarmed,
     /** The RFC 6525 §5.1.2 reconfiguration-request retransmit timer. */
     val reConfig: Deadline = Deadline.Unarmed,
+    /**
+     * RFC 8899's PROBE_TIMER while a path-MTU probe is unanswered, and its PMTU_RAISE_TIMER while a
+     * completed search rests. One field for both because they are never armed at once — the search is
+     * either measuring or resting — and because [PathMtuTracker] owns which; this is where the
+     * association's single timer fold can see it.
+     */
+    val probe: Deadline = Deadline.Unarmed,
 ) {
     /**
      * The earliest armed deadline, or [Deadline.Unarmed] when nothing is armed. The single enumeration
@@ -105,7 +112,7 @@ internal data class AssociationDeadlines(
      */
     fun earliest(): Deadline {
         var soonest: Deadline = Deadline.Unarmed
-        for (candidate in listOf(handshake, t3, sack, shutdown, reConfig)) {
+        for (candidate in listOf(handshake, t3, sack, shutdown, reConfig, probe)) {
             val current = soonest
             soonest =
                 when {

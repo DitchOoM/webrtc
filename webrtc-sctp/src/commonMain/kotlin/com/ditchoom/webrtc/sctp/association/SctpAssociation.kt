@@ -41,6 +41,11 @@ import kotlin.random.Random
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
+// The RFC 8899 probe nonce carried in the Heartbeat Info parameter. File-private rather than a
+// `const val` in a private companion, which is still emitted as a public static field.
+private const val PROBE_NONCE_BYTES = 4
+private const val BYTE_MASK = 0xFFu
+
 /**
  * The **sans-io SCTP association** (RFC 4960 subset per RFC 8831 / ARCHITECTURE §11.2 — dcSCTP-style: one path,
  * no multihoming, no stream interleaving) — a pure `handle(event, now): List<Output>` plus
@@ -167,23 +172,32 @@ public class SctpAssociation(
     internal var pathProfile: SctpPathProfile = SctpPathProfile.Unassessed
         private set
 
+    /** RFC 8899 path MTU discovery for the current path — inert under [PathMtuPolicy.Fixed]. */
+    private val pathMtu = PathMtuTracker(config.pathMtu)
+
     /**
      * The largest user-data payload one DATA chunk may carry right now (RFC 4960 §6.9).
      *
-     * Two ceilings, and the **smaller always wins**. `SctpConfig.maxPayloadBytes` is what the caller asked
-     * for and is honoured to the byte — a fixture that configures 40-byte fragments gets them whatever the
-     * path could carry. The path's own ceiling is what physics permits, and a path assessment may only
-     * *lower* the configured value, never raise it: raising it would put a fragment size on the wire that
-     * nobody configured, on the strength of an unprobed assumption about the link.
+     * Three inputs, one rule: **a measurement beats configuration; an assumption does not.**
      *
-     * With no profile this is `config.maxPayloadBytes` exactly, which is the behaviour that shipped before
-     * path events existed.
+     * - No profile at all → `config.maxPayloadBytes` exactly, which is the behaviour that shipped before
+     *   path events existed. A driver that never sends [SctpEvent.PathChanged] is untouched by any of this.
+     * - A profile, nothing probed → the smaller of `config.maxPayloadBytes` and what the family admits
+     *   unprobed. The family ceiling may only *lower* the configured value: raising it would put a
+     *   fragment size on the wire that nobody asked for, on the strength of a guess about the link.
+     * - A probe-confirmed size → that size, whichever way it moves the configured value. It is a
+     *   measurement of the path this association is actually on, and measuring it is precisely what the
+     *   caller asked for by choosing [PathMtuPolicy.Discover].
      */
     internal val fragmentCeiling: Int
         get() =
-            when (val profile = pathProfile) {
-                SctpPathProfile.Unassessed -> config.maxPayloadBytes
-                is SctpPathProfile.Assessed -> minOf(config.maxPayloadBytes, profile.unprobedFragmentCeiling.value)
+            when (val measured = pathMtu.measured) {
+                is MeasuredCeiling.Confirmed -> measured.ceiling.value
+                MeasuredCeiling.NotMeasured ->
+                    when (val profile = pathProfile) {
+                        SctpPathProfile.Unassessed -> config.maxPayloadBytes
+                        is SctpPathProfile.Assessed -> minOf(config.maxPayloadBytes, profile.unprobedFragmentCeiling.value)
+                    }
             }
 
     // Retained handshake artifacts (rebuilt-identical retransmits).
@@ -808,7 +822,7 @@ public class SctpAssociation(
                     onForwardTsn(chunk, out)
                 }
                 is SctpChunk.Heartbeat -> emitPacket(listOf(SctpChunk.HeartbeatAck(chunk.info)), peerVerificationTag, out)
-                is SctpChunk.HeartbeatAck -> Unit
+                is SctpChunk.HeartbeatAck -> onHeartbeatAck(chunk, now, out)
                 is SctpChunk.Abort -> {
                     fail(SctpFailureReason.AbortReceived, out)
                     return
@@ -818,6 +832,11 @@ public class SctpAssociation(
                 is SctpChunk.ShutdownComplete -> onShutdownComplete(out)
                 is SctpChunk.Error -> Unit
                 is SctpChunk.ReConfig -> onReConfig(chunk, now, out)
+                // RFC 4820 §3: padding, by definition carrying nothing. This codec never decodes an
+                // inbound type 132 into this variant (it stays Unrecognized — see SctpChunk.Pad), so this
+                // arm is only reachable from a hand-built packet in a fixture. Either way the answer is
+                // the same one RFC 4960 §3.2 gives for a skippable chunk: ignore it, keep processing.
+                is SctpChunk.Pad -> Unit
                 is SctpChunk.Unrecognized -> Unit
             }
         }
@@ -1016,7 +1035,12 @@ public class SctpAssociation(
         out: MutableList<SctpOutput>,
     ) {
         val previous = pathProfile
+        val ceilingBefore = fragmentCeiling
         pathProfile = profile
+        // "Retest the path MTU" is the other half of §6.1's sentence, and it runs on a re-statement too:
+        // the overhead may have moved (the same route re-measured through a TURN relay) even when the
+        // identity has not, and every confirmed size was confirmed against the old arithmetic.
+        applyPathMtu(pathMtu.onPathAssessed(profile, now, ride.rtt.rto), ceilingBefore, now, out)
         val migrated =
             when (previous) {
                 SctpPathProfile.Unassessed -> false
@@ -1026,6 +1050,103 @@ public class SctpAssociation(
         ride = ride.onNewPath()
         deadlines = deadlines.copy(t3 = Deadline.Unarmed)
         trySend(now, out)
+    }
+
+    /**
+     * Apply what [PathMtuTracker] decided: put probes on the wire, publish a moved ceiling, and — when the
+     * ceiling *fell* — deal with the DATA chunks that were encoded above it.
+     *
+     * [ceilingBefore] is measured by the caller before the tracker runs, because "did the ceiling drop" is
+     * a question about the association's *effective* fragmentation point (which `SctpConfig.maxPayloadBytes`
+     * still bounds while nothing is measured) and not about the raw path ceiling the effect carries.
+     */
+    private fun applyPathMtu(
+        effects: List<PathMtuEffect>,
+        ceilingBefore: Int,
+        now: Instant,
+        out: MutableList<SctpOutput>,
+    ) {
+        deadlines = deadlines.copy(probe = pathMtu.deadline)
+        for (effect in effects) {
+            when (effect) {
+                is PathMtuEffect.Probe -> emitProbe(effect, out)
+                is PathMtuEffect.CeilingChanged -> {
+                    val backlog = if (fragmentCeiling < ceilingBefore) abandonOversized(now, out) else OversizedBacklog.None
+                    out += SctpOutput.PathMtuChanged(effect.ceiling, effect.cause, backlog)
+                }
+            }
+        }
+        // The tracker's deadline moves as effects are produced (a probe arms PROBE_TIMER, a completed
+        // search arms PMTU_RAISE_TIMER), so it is read again after the loop rather than only before it.
+        deadlines = deadlines.copy(probe = pathMtu.deadline)
+    }
+
+    /**
+     * An RFC 8899 probe: a HEARTBEAT carrying the probe nonce, followed by an RFC 4820 PAD chunk that
+     * brings the datagram to the candidate size.
+     *
+     * Emitted as an ordinary [SctpOutput.Transmit.Owned] and tracked nowhere else, which is what makes RFC
+     * 8899 §3's "a probe's loss is not a congestion signal" structural rather than remembered: it is not
+     * DATA, so it never enters the retransmission queue, never counts toward the flight size, and cannot
+     * reach cwnd or the RFC 4960 §8.1 error budget.
+     */
+    private fun emitProbe(
+        probe: PathMtuEffect.Probe,
+        out: MutableList<SctpOutput>,
+    ) {
+        val nonce = config.bufferFactory.allocate(PROBE_NONCE_BYTES, ByteOrder.BIG_ENDIAN)
+        val info =
+            try {
+                nonce.writeUInt(probe.nonce.value)
+                nonce.resetForRead()
+                nonce.setLimit(PROBE_NONCE_BYTES)
+                // `ofValue` copies into the parameter's own padded buffer, so the scratch buffer is dead
+                // the moment the parameter exists — the same contract the State Cookie relies on.
+                SctpParameter.ofValue(com.ditchoom.webrtc.sctp.ParameterType.HeartbeatInfo, nonce)
+            } finally {
+                nonce.freeIfNeeded()
+            }
+        emitPacket(listOf(SctpChunk.Heartbeat(info), SctpChunk.Pad(probe.padding)), peerVerificationTag, out)
+    }
+
+    /**
+     * The path MTU dropped under DATA chunks that are already encoded at the old size, so they can never be
+     * delivered (RFC 4960 §6.1 retains the encoded packet; there is no re-fragmentation without RFC 8260
+     * I-DATA, which this stack deliberately does not implement).
+     *
+     * Unsent fragments are **adopted into the retransmission queue as abandoned** rather than dropped: their
+     * TSNs were assigned at enqueue, so discarding them would leave a hole the peer's cumulative TSN can
+     * never advance past. Adopting them is what lets one FORWARD-TSN cover the whole stranded run.
+     *
+     * Where the peer never advertised RFC 3758 support there is nothing to be done — a TSN cannot be
+     * skipped, so the chunks stay and are reported. That is the honest answer rather than a silent drop:
+     * the association will spend its error budget on them, and the backlog is the only warning of it.
+     */
+    private fun abandonOversized(
+        now: Instant,
+        out: MutableList<SctpOutput>,
+    ): OversizedBacklog {
+        val rq = tcb.liveOrElse { return OversizedBacklog.None }.retransmission
+        val ceiling = fragmentCeiling
+        val queued = pendingSend.count { it.bytes > ceiling }
+        val stranded = rq.oversized(ceiling) + queued
+        if (stranded == 0) return OversizedBacklog.None
+        if (!peerExtensions.forwardTsn) return OversizedBacklog.Present(stranded)
+        // Adopt in TSN order: pendingSend is already in that order and every entry is above everything the
+        // queue tracks, which is the precondition adoptAbandoned states.
+        val remaining = ArrayDeque<OutstandingData>(pendingSend.size)
+        while (pendingSend.isNotEmpty()) {
+            val next = pendingSend.removeFirst()
+            if (next.bytes > ceiling) {
+                pendingSendBytes -= next.bytes
+                rq.adoptAbandoned(next)
+            } else {
+                remaining.addLast(next)
+            }
+        }
+        pendingSend.addAll(remaining)
+        flushAbandoned(rq.abandonOversized(ceiling), rq, out)
+        return OversizedBacklog.Present(stranded)
     }
 
     // ─────────────────── stream reconfiguration (RFC 6525) — the requester half ───────────────────
@@ -1429,6 +1550,47 @@ public class SctpAssociation(
         if (deadlines.sack.dueAt(now)) emitSack(out)
         if (deadlines.shutdown.dueAt(now)) onShutdownTimeout(now, out)
         if (deadlines.reConfig.dueAt(now)) onReConfigTimeout(now, out)
+        if (deadlines.probe.dueAt(now)) {
+            // Read before the tracker runs: `fragmentCeiling` is derived from what the tracker has
+            // measured, so evaluating it as an argument would read it *after* the call that changes it.
+            val ceilingBefore = fragmentCeiling
+            applyPathMtu(pathMtu.onTimer(now, ride.rtt.rto), ceilingBefore, now, out)
+        }
+    }
+
+    /**
+     * A HEARTBEAT-ACK came back. RFC 4960 §3.3.6 requires it echo the Heartbeat Info parameter verbatim,
+     * so the probe nonce inside it is what says *which size* the path just demonstrated it carries.
+     *
+     * An ACK that carries no nonce we minted is discarded silently — it is a peer answering a HEARTBEAT of
+     * its own devising, or a probe from a path we have since left. Matching on the nonce rather than
+     * merely on "a HEARTBEAT-ACK arrived" is what stops a late answer confirming a size the search has
+     * already refuted, which is the one outcome a PMTU search must never produce.
+     */
+    private fun onHeartbeatAck(
+        chunk: SctpChunk.HeartbeatAck,
+        now: Instant,
+        out: MutableList<SctpOutput>,
+    ) {
+        val nonce = chunk.info.probeNonce() ?: return
+        val ceilingBefore = fragmentCeiling
+        applyPathMtu(pathMtu.onProbeAcknowledged(nonce, now, ride.rtt.rto), ceilingBefore, now, out)
+    }
+
+    /**
+     * The probe nonce inside a Heartbeat Info parameter, or null when this is not one of ours.
+     *
+     * Null is the honest answer here rather than a typed reject: an unrecognised HEARTBEAT-ACK is not a
+     * protocol violation and produces no outcome at all — it is genuinely absent information, which is the
+     * one meaning a nullable is allowed to carry.
+     */
+    private fun SctpParameter.probeNonce(): ProbeNonce? {
+        if (type != com.ditchoom.webrtc.sctp.ParameterType.HeartbeatInfo || length < PROBE_NONCE_BYTES) return null
+        val view = paddedValue
+        val base = view.position()
+        var value = 0u
+        for (i in 0 until PROBE_NONCE_BYTES) value = (value shl Byte.SIZE_BITS) or (view[base + i].toUInt() and BYTE_MASK)
+        return ProbeNonce(value)
     }
 
     private fun onHandshakeTimeout(
@@ -1506,7 +1668,23 @@ public class SctpAssociation(
     ) {
         val rq = tcb.liveOrElse { return }.retransmission
         if (!peerExtensions.forwardTsn) return
-        val skips = rq.abandonExpired(now)
+        flushAbandoned(rq.abandonExpired(now), rq, out)
+    }
+
+    /**
+     * Tell the peer to stop waiting for whatever was just abandoned (RFC 3758 §3.5), and reclaim the
+     * encoded packets the FORWARD-TSN now covers.
+     *
+     * Shared by the two things that abandon chunks — a partial-reliability budget running out, and a path
+     * MTU that dropped underneath already-encoded bytes. They decide *which* chunks for entirely different
+     * reasons and the wire consequence is identical, which is exactly the line to draw: a second copy of
+     * this would be a second place to get the advanced-ack-point arithmetic wrong.
+     */
+    private fun flushAbandoned(
+        skips: List<Pair<StreamId, StreamSequenceNumber>>,
+        rq: RetransmissionQueue,
+        out: MutableList<SctpOutput>,
+    ) {
         val advanced = rq.advancedPeerAckPoint
         if (skips.isNotEmpty() || rq.cumulativeAckPoint.sackPrecedes(advanced)) {
             val streams = skips.map { (id, ssn) -> ForwardTsnStream(id, ssn) }

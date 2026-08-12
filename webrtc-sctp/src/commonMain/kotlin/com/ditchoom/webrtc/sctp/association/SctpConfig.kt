@@ -70,6 +70,16 @@ public data class SctpConfig(
      * the bytes we put on the wire against every peer is not one a consumer asked for.
      */
     public val zeroChecksum: ZeroChecksumPolicy = ZeroChecksumPolicy.Disabled,
+    /**
+     * Whether this association measures the MTU of the path it rides (RFC 8899), or takes the address
+     * family's word for it. [PathMtuPolicy.Fixed] by default — see that type for why probing is opt-in.
+     *
+     * Either way, [maxPayloadBytes] stops being the whole story the moment a path is assessed: an
+     * *unprobed* family ceiling may only lower it (an assumption must not raise a configured size), while
+     * a *probe-confirmed* one supersedes it in both directions, because that is the measurement the caller
+     * asked for by choosing [PathMtuPolicy.Discover].
+     */
+    public val pathMtu: PathMtuPolicy = PathMtuPolicy.Fixed,
 ) {
     /**
      * Two orderings this class only ever *documented*. Both are relations between two knobs, so neither

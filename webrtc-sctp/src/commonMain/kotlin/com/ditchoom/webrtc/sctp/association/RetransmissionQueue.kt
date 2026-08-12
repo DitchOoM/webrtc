@@ -377,6 +377,58 @@ internal class RetransmissionQueue(
         return abandonedStreams.entries.map { it.key to it.value }
     }
 
+    /** How many tracked chunks carry more user data than [maxUserBytes] — the RFC 8899 oversized backlog. */
+    fun oversized(maxUserBytes: Int): Int = outstanding.values.count { it.txState != TxState.Abandoned && it.bytes > maxUserBytes }
+
+    /**
+     * Abandon every chunk larger than [maxUserBytes] — the path MTU dropped underneath them and the bytes
+     * are already encoded, so they cannot be re-fragmented (RFC 4960 §6.1 retains the packet, and RFC 8260
+     * I-DATA, which would allow re-segmentation, is deliberately not implemented here).
+     *
+     * The same mechanism as [abandonExpired] and deliberately so — RFC 3758's FORWARD-TSN is what tells the
+     * peer to stop waiting for a TSN — but the **reason** is different in a way worth stating: an expired
+     * chunk was abandoned because the application said it could be, while these are abandoned because the
+     * path will not carry them at all. Retransmitting them instead is not a slower success, it is the
+     * association's RFC 4960 §8.1 error budget being spent on packets that are dropped by definition.
+     *
+     * Returns the per-stream highest abandoned ordered SSN, exactly as [abandonExpired] does, for the
+     * FORWARD-TSN the caller builds.
+     */
+    fun abandonOversized(maxUserBytes: Int): List<Pair<StreamId, StreamSequenceNumber>> {
+        val abandonedStreams = LinkedHashMap<StreamId, StreamSequenceNumber>()
+        var anyAbandoned = false
+        for (data in outstanding.values) {
+            if (data.txState == TxState.Abandoned || data.bytes <= maxUserBytes) continue
+            if (data.txState == TxState.InFlight) outstandingBytes -= data.bytes
+            data.txState = TxState.Abandoned
+            anyAbandoned = true
+            if (!data.flags.unordered) {
+                val prev = abandonedStreams[data.streamId]
+                if (prev == null || prev.value < data.ssn.value) abandonedStreams[data.streamId] = data.ssn
+            }
+        }
+        if (anyAbandoned) recomputeAdvancedAckPoint()
+        if (outstandingBytes < 0) outstandingBytes = 0
+        return abandonedStreams.entries.map { it.key to it.value }
+    }
+
+    /**
+     * Take an **unsent** chunk into the queue already abandoned.
+     *
+     * A fragment still in `pendingSend` has had its TSN assigned (RFC 4960 §6.1 assigns at enqueue), so
+     * simply dropping it would leave a hole the peer waits on forever — its cumulative TSN can never
+     * advance past a number nothing will ever explain. Adopting it here is what lets one FORWARD-TSN cover
+     * the whole stranded run, sent and unsent alike.
+     *
+     * Callers must adopt in TSN order and only for TSNs above everything already tracked, which is what
+     * `pendingSend`'s own ordering guarantees.
+     */
+    fun adoptAbandoned(data: OutstandingData) {
+        data.txState = TxState.Abandoned
+        outstanding[data.tsn.value] = data
+        recomputeAdvancedAckPoint()
+    }
+
     /**
      * Chunks that must be discarded after a completed FORWARD-TSN (abandoned and now covered). Returns
      * their encoded packets for the association to hand back to the driver — see [SackOutcome.reclaimed].

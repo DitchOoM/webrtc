@@ -55,6 +55,17 @@ internal class SctpSim(
      */
     var dropFilter: ((toA: Boolean) -> Boolean)? = null
 
+    /**
+     * A **constriction** in the modelled path: any datagram whose SCTP bytes exceed this is dropped
+     * silently, in both directions, before the [Impairment].
+     *
+     * This is what a link narrower than the assumed MTU does — and on IPv6 it is *all* it does, since RFC
+     * 8200 §5 forbids a router to fragment and the ICMPv6 Packet Too Big it would send back is not
+     * something a UDP-encapsulated flow behind a NAT can rely on receiving. Which is why RFC 8899 exists,
+     * and why a probe going unanswered is the only evidence the search ever gets.
+     */
+    var maxSctpDatagramBytes: Int = Int.MAX_VALUE
+
     /** Messages delivered up to each endpoint, in order (endpoint A's inbox, endpoint B's inbox). */
     val inboxA = ArrayList<SctpOutput.MessageReceived>()
     val inboxB = ArrayList<SctpOutput.MessageReceived>()
@@ -64,6 +75,10 @@ internal class SctpSim(
     val restartsB = ArrayList<Unit>()
     val abortsA = ArrayList<SctpFailureReason>()
     val abortsB = ArrayList<SctpFailureReason>()
+
+    /** RFC 8899 ceiling changes each endpoint published, in order. */
+    val pathMtuA = ArrayList<SctpOutput.PathMtuChanged>()
+    val pathMtuB = ArrayList<SctpOutput.PathMtuChanged>()
 
     /** RFC 6525 stream resets: the peer's resets each endpoint applied, and its own requests' outcomes. */
     val incomingResetsA = ArrayList<StreamResetScope>()
@@ -163,6 +178,7 @@ internal class SctpSim(
                 is SctpOutput.IncomingStreamsReset -> (if (fromA) incomingResetsA else incomingResetsB) += output.scope
                 is SctpOutput.OutgoingStreamsReset -> (if (fromA) outgoingResetsA else outgoingResetsB) += output
                 is SctpOutput.StateChanged -> Unit
+                is SctpOutput.PathMtuChanged -> (if (fromA) pathMtuA else pathMtuB) += output
                 // Deliberately NOT released here, and the reason is worth stating rather than eliding: a
                 // real driver frees these behind the sends it has queued, but this sim's in-flight queue
                 // holds views for a modelled *delay*, so a reclaim applied inline could outrun a datagram
@@ -180,6 +196,7 @@ internal class SctpSim(
     ) {
         // A datagram FROM A is bound for B and vice-versa; the targeted drop hook sees the destination.
         if (dropFilter?.invoke(!fromA) == true) return
+        if (payload.remaining() > maxSctpDatagramBytes) return
         val decision = impairment.decide(impairRandom)
         for (copyDelay in decision.deliveries) {
             queue += InFlight(toB = fromA, payload = payload, at = now + copyDelay)

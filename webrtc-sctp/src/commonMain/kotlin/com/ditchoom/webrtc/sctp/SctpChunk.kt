@@ -52,6 +52,28 @@ public value class DataChunkFlags(
     }
 }
 
+// What a 16-bit chunk length can express once the chunk's own 4-byte header is accounted for, rounded
+// down to the 4-byte boundary. File-private rather than a `const val` in a private companion, which is
+// still emitted as a public static field.
+private const val PAD_BYTES_MAX = 65528
+private const val PAD_ALIGNMENT = 4
+
+/**
+ * The length of an RFC 4820 PAD chunk's padding, in bytes.
+ *
+ * Four-byte aligned so the chunk needs no trailing pad of its own, and bounded above by what a 16-bit
+ * chunk length can express. Zero is legal and is a 4-byte chunk that says nothing — the degenerate probe.
+ */
+@JvmInline
+public value class PadBytes(
+    public val value: Int,
+) {
+    init {
+        require(value in 0..PAD_BYTES_MAX) { "pad length $value is outside 0..$PAD_BYTES_MAX bytes" }
+        require(value % PAD_ALIGNMENT == 0) { "pad length $value is not a multiple of $PAD_ALIGNMENT" }
+    }
+}
+
 /** One Gap Ack Block of a SACK (RFC 4960 §3.3.4): TSN offsets relative to the Cumulative TSN Ack. */
 public data class GapAckBlock(
     public val start: UShort,
@@ -315,6 +337,33 @@ public sealed interface SctpChunk {
         public companion object {
             /** Builds a RE-CONFIG from typed parameters (RFC 6525 §3.1 allows one or two). */
             public fun of(vararg parameters: ReConfigParameter): ReConfig = ReConfig(parameters.map { it.toParameter() })
+        }
+    }
+
+    /**
+     * PAD (type 132, RFC 4820 §3) — [padding] bytes of nothing, so a packet can be inflated to an exact
+     * size. This stack builds one only as part of an RFC 8899 path MTU probe, bundled behind a HEARTBEAT
+     * whose ACK is what confirms the size.
+     *
+     * **Send-only, and that is a decision rather than an omission.** An inbound type 132 is decoded as
+     * [Unrecognized] and discarded like any other chunk this codec does not model, which is exactly right:
+     * the chunk carries no information by definition, so parsing it into a typed variant would produce a
+     * value with nothing in it, and would then have to be handled in every `when` over inbound chunks for
+     * no purpose. Type 132's high bits are `10` (SkipAndContinue), so discarding it and continuing to
+     * process the rest of the packet is also what RFC 4960 §3.2 prescribes — which is precisely how a
+     * *peer* that has never heard of RFC 4820 still answers our probe.
+     */
+    public data class Pad(
+        public val padding: PadBytes,
+    ) : SctpChunk {
+        override val type: SctpChunkType get() = SctpChunkType.Pad
+        override val flagsByte: UByte get() = 0u
+        override val valueSize: Int get() = padding.value
+
+        override fun writeValue(dest: WriteBuffer) {
+            // A loop rather than a zero-filled array: standing directive #1 forbids a primitive array in
+            // production, and a probe is emitted a handful of times per path, not per packet.
+            repeat(padding.value) { dest.writeByte(0) }
         }
     }
 
@@ -621,7 +670,7 @@ internal fun SctpChunk.releaseViews() {
         is SctpChunk.Error -> causes.forEach { it.releaseViews() }
         // Value types only — nothing borrowed from the datagram.
         is SctpChunk.Sack, is SctpChunk.Shutdown, is SctpChunk.ShutdownComplete, is SctpChunk.ForwardTsn,
-        SctpChunk.ShutdownAck, SctpChunk.CookieAck,
+        is SctpChunk.Pad, SctpChunk.ShutdownAck, SctpChunk.CookieAck,
         -> Unit
     }
 }

@@ -406,6 +406,31 @@ internal class ReassemblyQueue(
     }
 
     /**
+     * Record [tsn] as received while storing nothing (RFC 4960 §3.3.10.1): the chunk named a stream
+     * outside the negotiated range, so its payload is refused and the association answers with an ERROR —
+     * but the TSN itself *did* arrive.
+     *
+     * Acknowledging it is not a nicety. A receiver that leaves its cumulative point below a refused TSN
+     * invites the peer to retransmit that chunk until its error counter aborts the whole association, so
+     * the refusal would cost every other data channel on it. This is the same shape as answering a
+     * RE-CONFIG request we will not perform instead of ignoring it.
+     */
+    fun discard(tsn: Tsn) {
+        val isDuplicate = !cumulativeTsn.sackPrecedes(tsn) || tsn.value in aboveCumulative
+        if (isDuplicate) {
+            duplicates += tsn
+            sackImmediatelyRequested = true
+            return
+        }
+        aboveCumulative += tsn.value
+        val cumBefore = cumulativeTsn.value
+        val advancedContiguously = tsn.value == cumulativeTsn.next().value
+        advanceCumulative()
+        val gapFilled = (cumulativeTsn.value - cumBefore) > 1u
+        if (!advancedContiguously || gapFilled) sackImmediatelyRequested = true
+    }
+
+    /**
      * FORWARD-TSN (RFC 3758 §3.6): the peer abandoned data up to [newCumulativeTsn]. Advance our
      * cumulative TSN, drop skipped fragments, bump each ordered stream's expected SSN past the abandoned
      * one, and drain any messages that became deliverable. A FORWARD-TSN always forces an immediate SACK.

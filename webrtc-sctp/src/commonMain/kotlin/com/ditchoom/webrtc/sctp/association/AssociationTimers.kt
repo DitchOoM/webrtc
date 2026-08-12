@@ -32,7 +32,36 @@ internal sealed interface Tcb {
     class Live(
         val retransmission: RetransmissionQueue,
         val reassembly: ReassemblyQueue,
+        /** What the handshake settled — a `var` because RFC 6525 §4.5 raises the stream counts in place. */
+        var negotiated: Negotiated,
     ) : Tcb
+}
+
+/**
+ * Everything the two endpoints agreed on while forming this association: which extensions the peer
+ * advertised, and how many streams exist in each direction (RFC 4960 §5.1.1).
+ *
+ * It lives **on [Tcb.Live]** rather than beside it, and that placement is the point. Every field here is
+ * a fact about one particular peer, learned during one particular handshake, and each was previously a
+ * free-standing field that a teardown had to remember to clear — the shape that let
+ * `clearControlBlocks` reset `peerSupportsReConfig` and forget `peerSupportsForwardTsn`, so a departed
+ * peer's advertised capability survived into the association state. Here the whole value dies with the
+ * control block it describes, so "partial reliability available with no association" is unconstructible
+ * rather than merely unwritten.
+ *
+ * [incomingStreams] is `min(our MIS, the peer's OS)` and [outgoingStreams] is `min(our OS, the peer's
+ * MIS)` — two different minima that a symmetric configuration makes equal, which is exactly why one
+ * value standing for both would pass every fixture this repo runs.
+ */
+internal data class Negotiated(
+    val extensions: PeerExtensions,
+    val outgoingStreams: StreamCount,
+    val incomingStreams: StreamCount,
+) {
+    companion object {
+        /** No association: nothing advertised, no streams in either direction. */
+        val None: Negotiated = Negotiated(PeerExtensions.None, StreamCount.None, StreamCount.None)
+    }
 }
 
 /**

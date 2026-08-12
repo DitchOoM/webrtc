@@ -21,10 +21,14 @@ internal class SctpSim(
     seedA: Long = 1L,
     seedB: Long = 2L,
     config: SctpConfig = SctpConfig(),
-    // The two endpoints share a config by default because almost every property under test is symmetric.
-    // RFC 9653 is the exception that made these seams necessary: its negotiation is per direction, so the
-    // interesting cases are precisely the ones where the two peers disagree about policy or about what
-    // the transport beneath each of them guarantees.
+    // Endpoint B's configuration, when it must differ from A's. Defaults to the same value, so every
+    // existing fixture is unchanged.
+    //
+    // A *symmetric* configuration is exactly what hides an asymmetric negotiation, and two separate pieces
+    // of work needed this seam for the same underlying reason. RFC 4960 §5.1.1's two stream minima coincide
+    // whenever OS equals MIS on both sides, so a symmetric fixture cannot see the outbound one at all; and
+    // RFC 9653's negotiation is per direction, so its interesting cases are precisely the ones where the
+    // peers disagree about policy or about what the transport beneath each of them guarantees.
     configB: SctpConfig = config,
     errorDetection: TransportErrorDetection = TransportErrorDetection.CrcOnly,
     errorDetectionB: TransportErrorDetection = errorDetection,
@@ -85,6 +89,14 @@ internal class SctpSim(
     val incomingResetsB = ArrayList<StreamResetScope>()
     val outgoingResetsA = ArrayList<SctpOutput.OutgoingStreamsReset>()
     val outgoingResetsB = ArrayList<SctpOutput.OutgoingStreamsReset>()
+
+    /** Every RFC 4960 §5.1.1 / RFC 6525 §4.5 outgoing-capacity settlement each endpoint announced. */
+    val capacitiesA = ArrayList<OutgoingStreamCapacity.Negotiated>()
+    val capacitiesB = ArrayList<OutgoingStreamCapacity.Negotiated>()
+
+    /** RFC 6525 §4.5 stream-count increases each endpoint originated, and how each was answered. */
+    val streamsAddedA = ArrayList<SctpOutput.OutgoingStreamsAdded>()
+    val streamsAddedB = ArrayList<SctpOutput.OutgoingStreamsAdded>()
 
     /**
      * Feed [event] to one endpoint and route its side effects. Returns those side effects as well, so a
@@ -179,6 +191,8 @@ internal class SctpSim(
                 is SctpOutput.OutgoingStreamsReset -> (if (fromA) outgoingResetsA else outgoingResetsB) += output
                 is SctpOutput.StateChanged -> Unit
                 is SctpOutput.PathMtuChanged -> (if (fromA) pathMtuA else pathMtuB) += output
+                is SctpOutput.OutgoingCapacityChanged -> (if (fromA) capacitiesA else capacitiesB) += output.capacity
+                is SctpOutput.OutgoingStreamsAdded -> (if (fromA) streamsAddedA else streamsAddedB) += output
                 // Deliberately NOT released here, and the reason is worth stating rather than eliding: a
                 // real driver frees these behind the sends it has queued, but this sim's in-flight queue
                 // holds views for a modelled *delay*, so a reclaim applied inline could outrun a datagram

@@ -70,6 +70,12 @@ public data class SctpConfig(
      */
     public val receiveMessageLimit: ReceiveMessageLimit = ReceiveMessageLimit.Default,
     /**
+     * What to do when a data channel needs a stream id past what RFC 4960 §5.1.1 negotiated — refuse the
+     * open, or ask the peer for more streams (RFC 6525 §4.5). See [StreamGrowthPolicy] for why the default
+     * is [StreamGrowthPolicy.Fixed].
+     */
+    public val streamGrowth: StreamGrowthPolicy = StreamGrowthPolicy.Fixed,
+    /**
      * RFC 9653 zero checksum — how far the upper layer permits this association to go.
      *
      * The policy is only ever half the answer: what the association actually advertises and emits is this

@@ -965,6 +965,13 @@ public class SctpDataChannelStack(
         // A Text is always encoded here — one UTF-8 encode per send, with the stack's injected factory,
         // so no caller has to allocate to send a string. A Binary is the application's own buffer and is
         // borrowed, never freed here.
+        // The size the RFC 8841 §6 gate measures, taken from the MESSAGE rather than from its encoding:
+        // an empty one rides a marker byte the peer's ceiling does not count, and this is the same number
+        // a caller can pre-check with `DataChannelPayload.wireByteCount`. That it equals what the encoder
+        // actually wrote for a Text is asserted, not assumed — see Utf8ByteCountTest. Read BEFORE the
+        // encode, because it is also what sizes the encode's buffer exactly.
+        val wireByteCount = message.wireByteCount
+
         val encoded: ReadBuffer
         val encodedIsOurs: Boolean
         when (message) {
@@ -973,16 +980,10 @@ public class SctpDataChannelStack(
                 encodedIsOurs = false
             }
             is DataChannelPayload.Text -> {
-                encoded = encodeUtf8(message.text)
+                encoded = encodeUtf8(message.text, wireByteCount)
                 encodedIsOurs = true
             }
         }
-
-        // The size the RFC 8841 §6 gate measures, taken from the MESSAGE rather than from its encoding:
-        // an empty one rides a marker byte the peer's ceiling does not count, and this is the same number
-        // a caller can pre-check with `DataChannelPayload.wireByteCount`. That it equals what the encoder
-        // actually wrote for a Text is asserted, not assumed — see Utf8ByteCountTest.
-        val wireByteCount = message.wireByteCount
         val empty = encoded.remaining() == 0
         val ppid =
             when (message) {
@@ -1035,10 +1036,25 @@ public class SctpDataChannelStack(
         deferred.await()
     }
 
-    // UTF-8 encode a text message with the stack's injected factory (directive #6 — no ambient allocator).
-    private fun encodeUtf8(text: CharSequence): ReadBuffer {
+    /**
+     * UTF-8 encode a text message with the stack's injected factory (directive #6 — no ambient allocator),
+     * sized to [sizeBytes] — the caller's already-computed `DataChannelPayload.wireByteCount`.
+     *
+     * Taking the size rather than deriving one is what makes this exact. It sized itself
+     * `text.length * maxBytesPerChar` — **four times** the char count — and then hid the excess behind
+     * `setLimit` rather than returning it, so a 64 KiB text message took a 256 KiB chunk to send 64 KiB.
+     * On a pooled factory that is the chunk size the pool actually hands out, held for the whole send.
+     *
+     * Safe because `wireByteCount` is asserted never to under-state what `writeString` writes, on every
+     * target, by `Utf8ByteCountTest` — the one direction that would overflow this buffer. That fixture is
+     * now load-bearing for the allocation and not only for the RFC 8841 §6 gate.
+     */
+    private fun encodeUtf8(
+        text: CharSequence,
+        sizeBytes: Long,
+    ): ReadBuffer {
         if (text.isEmpty()) return ReadBuffer.EMPTY_BUFFER
-        val scratch = bufferFactory.allocate((text.length * Charset.UTF8.maxBytesPerChar).toInt(), ByteOrder.BIG_ENDIAN)
+        val scratch = bufferFactory.allocate(sizeBytes.toInt(), ByteOrder.BIG_ENDIAN)
         scratch.writeString(text, Charset.UTF8)
         val written = scratch.position()
         scratch.resetForRead()

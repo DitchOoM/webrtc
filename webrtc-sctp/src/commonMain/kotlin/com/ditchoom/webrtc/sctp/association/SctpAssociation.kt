@@ -37,6 +37,7 @@ import com.ditchoom.webrtc.sctp.acceptanceOver
 import com.ditchoom.webrtc.sctp.asSupportedExtensions
 import com.ditchoom.webrtc.sctp.asZeroChecksumAcceptable
 import com.ditchoom.webrtc.sctp.emissionTo
+import com.ditchoom.webrtc.sctp.u32
 import kotlin.random.Random
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
@@ -44,12 +45,6 @@ import kotlin.time.Instant
 // The RFC 8899 probe nonce carried in the Heartbeat Info parameter. File-private rather than a
 // `const val` in a private companion, which is still emitted as a public static field.
 private const val PROBE_NONCE_BYTES = 4
-private const val BYTE_MASK = 0xFFu
-
-// RFC 4960 §3.3.10.1: an Invalid Stream Identifier cause value is the 2-byte offending id plus 2 reserved
-// bytes. File-private rather than a companion constant — a `const val` in a private companion is still
-// emitted as a public static field.
-private const val INVALID_STREAM_CAUSE_BYTES = 4
 
 /**
  * The **sans-io SCTP association** (RFC 4960 subset per RFC 8831 / ARCHITECTURE §11.2 — dcSCTP-style: one path,
@@ -1204,23 +1199,14 @@ public class SctpAssociation(
     /**
      * The RFC 4960 §3.3.10.1 Invalid Stream Identifier cause: the offending id, then two reserved bytes.
      *
-     * The declared value is allocated from the injected factory and released here — `SctpErrorCause.ofValue`
-     * copies it into its own padded buffer, so this function is its last reader (directive #6).
+     * That layout is one big-endian 32-bit word — the id in the high half, the reserved bytes zero — so
+     * it is written as one, from the injected factory, into the only buffer that survives. It used to
+     * allocate a scratch, write four bytes into it, hand it to `ofValue` to be copied into a *second*
+     * (ambient-factory) buffer, and release the first in a `finally` — three of those four steps existing
+     * only because the codec took a `ReadBuffer` and a `StreamId` is not one.
      */
-    private fun invalidStreamIdentifier(streamId: StreamId): SctpErrorCause {
-        val value = config.bufferFactory.allocate(INVALID_STREAM_CAUSE_BYTES, ByteOrder.BIG_ENDIAN)
-        return try {
-            value.writeByte(((streamId.value shr Byte.SIZE_BITS) and 0xFF).toByte())
-            value.writeByte((streamId.value and 0xFF).toByte())
-            value.writeByte(0)
-            value.writeByte(0)
-            value.resetForRead()
-            value.setLimit(INVALID_STREAM_CAUSE_BYTES)
-            SctpErrorCause.ofValue(ErrorCauseCode.InvalidStreamIdentifier, value)
-        } finally {
-            value.freeIfNeeded()
-        }
-    }
+    private fun invalidStreamIdentifier(streamId: StreamId): SctpErrorCause =
+        SctpErrorCause.ofU32(ErrorCauseCode.InvalidStreamIdentifier, streamId.value.toUInt() shl Short.SIZE_BITS)
 
     private fun onSack(
         sack: SctpChunk.Sack,
@@ -1527,18 +1513,10 @@ public class SctpAssociation(
         probe: PathMtuEffect.Probe,
         out: MutableList<SctpOutput>,
     ) {
-        val nonce = config.bufferFactory.allocate(PROBE_NONCE_BYTES, ByteOrder.BIG_ENDIAN)
+        // The nonce is already a 32-bit value class; `ofU32` keeps it one until the wire write, instead of
+        // flattening it into a scratch buffer for `ofValue` to copy (see `invalidStreamIdentifier`).
         val info =
-            try {
-                nonce.writeUInt(probe.nonce.value)
-                nonce.resetForRead()
-                nonce.setLimit(PROBE_NONCE_BYTES)
-                // `ofValue` copies into the parameter's own padded buffer, so the scratch buffer is dead
-                // the moment the parameter exists — the same contract the State Cookie relies on.
-                SctpParameter.ofValue(com.ditchoom.webrtc.sctp.ParameterType.HeartbeatInfo, nonce)
-            } finally {
-                nonce.freeIfNeeded()
-            }
+            SctpParameter.ofU32(com.ditchoom.webrtc.sctp.ParameterType.HeartbeatInfo, probe.nonce.value)
         emitPacket(listOf(SctpChunk.Heartbeat(info), SctpChunk.Pad(probe.padding)), peerVerificationTag, out)
     }
 
@@ -2210,10 +2188,9 @@ public class SctpAssociation(
     private fun SctpParameter.probeNonce(): ProbeNonce? {
         if (type != com.ditchoom.webrtc.sctp.ParameterType.HeartbeatInfo || length < PROBE_NONCE_BYTES) return null
         val view = paddedValue
-        val base = view.position()
-        var value = 0u
-        for (i in 0 until PROBE_NONCE_BYTES) value = (value shl Byte.SIZE_BITS) or (view[base + i].toUInt() and BYTE_MASK)
-        return ProbeNonce(value)
+        // The codec's own big-endian absolute read, not an open-coded shift loop — this is the exact
+        // inverse of the `ofU32` that wrote it, and the pair is now legible as one round trip.
+        return ProbeNonce(view.u32(view.position()))
     }
 
     private fun onHandshakeTimeout(

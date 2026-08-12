@@ -17,6 +17,7 @@ import com.ditchoom.webrtc.sctp.association.SctpReliability
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConnection
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelPayload
+import com.ditchoom.webrtc.sctp.datachannel.PeerMessageLimit
 import com.ditchoom.webrtc.sctp.datachannel.send
 import com.ditchoom.webrtc.sdp.DataChannelParameters
 import kotlinx.coroutines.CoroutineScope
@@ -178,8 +179,11 @@ private val PR_LIFETIME = 200.milliseconds
  * The `a=max-message-size` to assume when the peer advertises none. RFC 8841 §6 makes the attribute
  * optional and a receiver that omits it is only guaranteed to accept 64 KiB — so that is the conservative
  * floor. Sizing s1 above it would test our stack against a limit the peer never agreed to.
+ *
+ * Taken from the library rather than restated here: it is the same number the send gate refuses against,
+ * and a harness that clamped to its own copy would keep passing while the two drifted apart.
  */
-private const val ASSUMED_REMOTE_MAX_MESSAGE_SIZE = 65536L
+private const val ASSUMED_REMOTE_MAX_MESSAGE_SIZE = PeerMessageLimit.ASSUMED_DEFAULT_BYTES
 
 /** What s1 aims for when the negotiated ceiling allows it — ~167 SCTP fragments at a 1200-byte payload. */
 private const val TARGET_LARGE_BYTES = 200 * 1024
@@ -447,7 +451,7 @@ private class Verdict(
  * compiled in, not signalled: the reflector never needs to know which scenario is running, so there is
  * nothing to tell it. `WEBRTC_SCENARIOS` may SUBSET the list for debugging; by default all of it runs.
  *
- * [remoteMaxMessageSize] is the peer's advertised `a=max-message-size` (null when it advertised none).
+ * [remoteMaxMessageSize] is the peer's `a=max-message-size` as the limit it binds us to (RFC 8831 §6.6).
  */
 internal suspend fun runSemanticsPhases(
     bg: CoroutineScope,
@@ -457,7 +461,7 @@ internal suspend fun runSemanticsPhases(
     restart: RestartSignaling,
     cfg: HarnessConfig,
     clock: () -> Instant,
-    remoteMaxMessageSize: Long?,
+    remoteMaxMessageSize: PeerMessageLimit,
 ): SemanticsReport {
     val report = SemanticsReport()
     val phases =
@@ -548,7 +552,7 @@ internal suspend fun runSemanticsPhases(
  */
 private suspend fun phaseLarge(
     pc: NativePeerConnection,
-    remoteMaxMessageSize: Long?,
+    remoteMaxMessageSize: PeerMessageLimit,
 ): Verdict {
     val ceiling = negotiatedMaxMessageSize(remoteMaxMessageSize)
     // The fragmentation proof deliberately sits BELOW the ceiling (three quarters of it), so that "can this
@@ -563,7 +567,13 @@ private suspend fun phaseLarge(
 
     // A peer that advertised its ceiling promised to receive it, so wait the full echo window for it; an
     // ASSUMED ceiling gets a short window, because "no echo" there is an expected outcome, not a stall.
-    val advertised = remoteMaxMessageSize != null
+    // `Unlimited` is a promise too — the peer said it would take anything, so the clamp below leaves the
+    // probe at OUR ceiling and failing there is its defect, not our assumption's.
+    val advertised =
+        when (remoteMaxMessageSize) {
+            PeerMessageLimit.NotYetNegotiated, PeerMessageLimit.AssumedDefault -> false
+            PeerMessageLimit.Unlimited, is PeerMessageLimit.Advertised -> true
+        }
     val boundary = echoIsIdentical(channel, ceiling, seed = 0x0B0E, wait = if (advertised) ECHO_WAIT else ADVISORY_PROBE_WAIT)
     if (boundary.passed) {
         return Verdict(true, "${largeSize}B echoed byte-identical, and so did a boundary probe at exactly the ${ceiling}B ceiling")
@@ -584,11 +594,24 @@ private suspend fun phaseLarge(
     )
 }
 
-/** min(what we advertise, what the peer advertised) — the largest message the peer agreed to receive. */
-private fun negotiatedMaxMessageSize(remote: Long?): Int {
-    val theirs = remote ?: ASSUMED_REMOTE_MAX_MESSAGE_SIZE
+/**
+ * min(what we advertise, what the peer advertised) — the largest message the peer agreed to receive.
+ *
+ * The `when` is what keeps `a=max-message-size:0` from clamping the phase to zero bytes: RFC 8841 §6's
+ * `0` means *no* limit, so `Unlimited` leaves our own ceiling standing rather than becoming the minimum.
+ * As a `Long?` that case arrived as a literal 0 and read as the tightest ceiling there is.
+ */
+private fun negotiatedMaxMessageSize(remote: PeerMessageLimit): Int {
     val ours = DataChannelParameters.DEFAULT_MAX_MESSAGE_SIZE
-    println("[harness] max-message-size: ours=$ours theirs=${remote ?: "<unadvertised — assuming $theirs>"} → ceiling=${minOf(ours, theirs)}")
+    val theirs =
+        when (remote) {
+            // Nothing was read from the answer at all — the same conservative floor as silence, since a
+            // ceiling we never saw is not one we may assume away.
+            PeerMessageLimit.NotYetNegotiated, PeerMessageLimit.AssumedDefault -> ASSUMED_REMOTE_MAX_MESSAGE_SIZE
+            PeerMessageLimit.Unlimited -> ours
+            is PeerMessageLimit.Advertised -> remote.bytes
+        }
+    println("[harness] max-message-size: ours=$ours theirs=$theirs (from $remote) → ceiling=${minOf(ours, theirs)}")
     return minOf(ours, theirs).toInt()
 }
 

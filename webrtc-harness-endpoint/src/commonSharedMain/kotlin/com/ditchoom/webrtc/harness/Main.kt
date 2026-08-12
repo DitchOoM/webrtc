@@ -15,6 +15,7 @@ import com.ditchoom.webrtc.MdnsAdvertisePolicy
 import com.ditchoom.webrtc.NativePeerConnection
 import com.ditchoom.webrtc.PeerConnectionConfig
 import com.ditchoom.webrtc.PeerConnectionState
+import com.ditchoom.webrtc.asPeerMessageLimit
 import com.ditchoom.webrtc.dtls.DtlsConfig
 import com.ditchoom.webrtc.ice.IceConfig
 import com.ditchoom.webrtc.ice.MdnsResolution
@@ -25,10 +26,14 @@ import com.ditchoom.webrtc.ice.MulticastMdnsResolver
 import com.ditchoom.webrtc.ice.RelayGatheringResult
 import com.ditchoom.webrtc.sctp.association.SctpConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
+import com.ditchoom.webrtc.sctp.datachannel.PeerMessageLimit
 import com.ditchoom.webrtc.sctp.datachannel.send
+import com.ditchoom.webrtc.sdp.DataChannelSection
 import com.ditchoom.webrtc.sdp.SdpParseResult
 import com.ditchoom.webrtc.sdp.SdpType
 import com.ditchoom.webrtc.sdp.SessionDescription
+import com.ditchoom.webrtc.sdp.dataChannelSection
+import com.ditchoom.webrtc.sdp.maxMessageSizeAttribute
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -426,7 +431,7 @@ private suspend fun runOfferer(
     // universal reflector the far side runs, so neither side needs role-specific echo logic.
     val reflector = Reflector(bg)
     // The peer's `a=max-message-size` (RFC 8841 §6), read off its answer — s1 clamps its payload to it.
-    val remoteMaxMessageSize = CompletableDeferred<Long?>()
+    val remoteMaxMessageSize = CompletableDeferred<PeerMessageLimit>()
     val offer = pc.createOffer()
     forensics.recordSdp(Origin.Local, Sdp(offer))
     pc.setLocalDescription(SdpType.Offer, offer)
@@ -499,7 +504,7 @@ private suspend fun runOfferer(
                     forensics.recordSdp(Origin.Remote, Sdp(a.first()))
                     // The peer's ceiling is read off its FIRST answer only: a later round renegotiates ICE,
                     // not the SCTP association s1 already sized itself against.
-                    if (answers == INITIAL_ROUND) remoteMaxMessageSize.complete(maxMessageSizeOf(a.first()))
+                    if (answers == INITIAL_ROUND) remoteMaxMessageSize.complete(peerMessageLimitOf(a.first()))
                     when (answers) {
                         INITIAL_ROUND -> initialAnswerCredentials.complete(credentialsOf(a.first()))
                         RESTART_ROUND -> restartAnswerCredentials.complete(credentialsOf(a.first()))
@@ -665,11 +670,27 @@ private suspend fun runOfferer(
  */
 private fun connectionAddressOf(candidateLine: String): String? = candidateLine.split(' ').getOrNull(4)
 
-/** The peer's advertised `a=max-message-size` (RFC 8841 §6) from its answer, or null if it advertised none. */
-private fun maxMessageSizeOf(sdp: String): Long? =
+/**
+ * The peer's `a=max-message-size` (RFC 8841 §6), read off the **data-channel** section of its answer.
+ *
+ * Both halves of this used to be wrong in ways that produced a plausible number rather than a visible
+ * miss. It read `mediaDescriptions.firstOrNull()`, so a peer whose first `m=` is not the data channel
+ * handed it the wrong section — and this attribute has no session-level fallback to make that a near
+ * miss. And it read the answer into a `Long?`, in which the wire's `0` (RFC 8841 §6: *no* limit) is the
+ * tightest ceiling arithmetic can hold, so `s1` would have clamped its payload to zero bytes against
+ * exactly the peer willing to take anything.
+ *
+ * A description this endpoint cannot parse at all is [PeerMessageLimit.NotYetNegotiated] rather than a
+ * ceiling: nothing was read, which is different from a peer that read as silent.
+ */
+private fun peerMessageLimitOf(sdp: String): PeerMessageLimit =
     when (val parsed = SessionDescription.parseText(sdp)) {
-        is SdpParseResult.Success -> parsed.description.mediaDescriptions.firstOrNull()?.maxMessageSize()
-        is SdpParseResult.Reject -> null
+        is SdpParseResult.Success ->
+            when (val section = parsed.description.dataChannelSection()) {
+                DataChannelSection.Absent -> PeerMessageLimit.NotYetNegotiated
+                is DataChannelSection.Present -> section.media.maxMessageSizeAttribute().asPeerMessageLimit()
+            }
+        is SdpParseResult.Reject -> PeerMessageLimit.NotYetNegotiated
     }
 
 private suspend fun runAnswerer(

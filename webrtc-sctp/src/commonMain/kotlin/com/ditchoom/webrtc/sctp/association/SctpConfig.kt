@@ -61,6 +61,15 @@ public data class SctpConfig(
     /** The buffer allocator for encoded packets and reassembly copies — inject a tracking factory in tests. */
     public val bufferFactory: BufferFactory = BufferFactory.Default,
     /**
+     * The largest user message this endpoint will reassemble (RFC 8841 §6). One value with two jobs: the
+     * session layer advertises it as `a=max-message-size`, and the reassembly queue refuses a peer's
+     * message that crosses it (RFC 4960 §3.3.7 ABORT, Protocol Violation).
+     *
+     * They must be the same number — advertising one ceiling and enforcing another is either a promise
+     * broken or a receive buffer the peer paces — so it is one knob rather than two.
+     */
+    public val receiveMessageLimit: ReceiveMessageLimit = ReceiveMessageLimit.Default,
+    /**
      * RFC 9653 zero checksum — how far the upper layer permits this association to go.
      *
      * The policy is only ever half the answer: what the association actually advertises and emits is this

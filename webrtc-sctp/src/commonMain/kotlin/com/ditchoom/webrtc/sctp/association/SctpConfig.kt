@@ -4,6 +4,8 @@ package com.ditchoom.webrtc.sctp.association
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
+import com.ditchoom.webrtc.sctp.TransportErrorDetection
+import com.ditchoom.webrtc.sctp.ZeroChecksumPolicy
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -58,6 +60,16 @@ public data class SctpConfig(
     public val sendBufferLowWaterBytes: Int = 512 * 1024,
     /** The buffer allocator for encoded packets and reassembly copies — inject a tracking factory in tests. */
     public val bufferFactory: BufferFactory = BufferFactory.Default,
+    /**
+     * RFC 9653 zero checksum — how far the upper layer permits this association to go.
+     *
+     * The policy is only ever half the answer: what the association actually advertises and emits is this
+     * combined with what the transport underneath guarantees ([TransportErrorDetection]), and a transport
+     * that guarantees nothing collapses every setting here back to CRC32c. Defaults to
+     * [ZeroChecksumPolicy.Disabled] because the extension is an optimization, and a default that changes
+     * the bytes we put on the wire against every peer is not one a consumer asked for.
+     */
+    public val zeroChecksum: ZeroChecksumPolicy = ZeroChecksumPolicy.Disabled,
 ) {
     /**
      * Two orderings this class only ever *documented*. Both are relations between two knobs, so neither

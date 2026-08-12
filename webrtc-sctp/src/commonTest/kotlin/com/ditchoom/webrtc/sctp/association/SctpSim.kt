@@ -3,6 +3,7 @@
 package com.ditchoom.webrtc.sctp.association
 
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.webrtc.sctp.TransportErrorDetection
 import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -20,10 +21,17 @@ internal class SctpSim(
     seedA: Long = 1L,
     seedB: Long = 2L,
     config: SctpConfig = SctpConfig(),
+    // The two endpoints share a config by default because almost every property under test is symmetric.
+    // RFC 9653 is the exception that made these seams necessary: its negotiation is per direction, so the
+    // interesting cases are precisely the ones where the two peers disagree about policy or about what
+    // the transport beneath each of them guarantees.
+    configB: SctpConfig = config,
+    errorDetection: TransportErrorDetection = TransportErrorDetection.CrcOnly,
+    errorDetectionB: TransportErrorDetection = errorDetection,
     var impairment: Impairment = Impairment.PERFECT,
 ) {
-    val a: SctpAssociation = SctpAssociation(config, Random(seedA))
-    val b: SctpAssociation = SctpAssociation(config, Random(seedB))
+    val a: SctpAssociation = SctpAssociation(config, Random(seedA), errorDetection = errorDetection)
+    val b: SctpAssociation = SctpAssociation(configB, Random(seedB), errorDetection = errorDetectionB)
 
     private val epoch = Instant.fromEpochSeconds(0)
     var now: Instant = epoch

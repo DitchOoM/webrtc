@@ -54,6 +54,16 @@ public value class ParameterType(
         /** Add Incoming Streams Request (RFC 6525 §4.6) — grow the sender's incoming stream space. */
         public val AddIncomingStreamsRequest: ParameterType = ParameterType(0x0012u)
 
+        /**
+         * Zero Checksum Acceptable (RFC 9653 §4) — "I will accept packets from you whose checksum field
+         * is zero, provided error detection method EDMID is in use".
+         *
+         * Its two high bits are `10`, so a receiver that has never heard of RFC 9653 is REQUIRED to skip
+         * it and keep processing the rest of the chunk (RFC 9260 §3.2.1). That is what makes advertising
+         * it safe against every peer this library already interoperates with.
+         */
+        public val ZeroChecksumAcceptable: ParameterType = ParameterType(0x8001u)
+
         /** Supported Extensions (RFC 5061 §4.2.7) — the chunk types this endpoint understands. */
         public val SupportedExtensions: ParameterType = ParameterType(0x8008u)
 
@@ -128,6 +138,18 @@ public class SctpParameter internal constructor(
         /** Forward-TSN-Supported (RFC 3758 §3.1) — a zero-length parameter. */
         public fun forwardTsnSupported(): SctpParameter = SctpParameter(ParameterType.ForwardTsnSupported, 0, ReadBuffer.EMPTY_BUFFER)
 
+        /**
+         * Zero Checksum Acceptable (RFC 9653 §4) — a 4-byte value holding the [ErrorDetectionMethodId]
+         * this endpoint is willing to rely on for packets it receives, so the wire Length field is 8.
+         */
+        public fun zeroChecksumAcceptable(method: ErrorDetectionMethodId): SctpParameter {
+            val buf = BufferFactory.managed().allocate(EDMID_BYTES, ByteOrder.BIG_ENDIAN)
+            buf.writeUInt(method.value)
+            buf.resetForRead()
+            buf.setLimit(EDMID_BYTES)
+            return ofValue(ParameterType.ZeroChecksumAcceptable, buf)
+        }
+
         /** Supported Extensions (RFC 5061 §4.2.7) — one chunk-type byte per supported extension. */
         public fun supportedExtensions(types: List<SctpChunkType>): SctpParameter {
             val buf = BufferFactory.managed().allocate(maxOf(1, types.size), ByteOrder.BIG_ENDIAN)
@@ -151,3 +173,31 @@ public fun SctpParameter.asSupportedExtensions(): List<SctpChunkType>? {
     for (i in 0 until n) out += SctpChunkType(v.get(i).toUByte())
     return out
 }
+
+/**
+ * This parameter read as an RFC 9653 §4 Zero Checksum Acceptable parameter — the peer's declaration that
+ * it will accept a zero checksum from us, and under which error detection method.
+ *
+ * A total read over peer-controlled bytes: a wrong Length or a value view too short to hold the 32-bit
+ * EDMID is [ZeroChecksumParameterDecode.Malformed], never a throw and never a chunk-level reject. The
+ * type's two high bits (`10`) say a receiver that cannot make sense of this parameter must skip it and
+ * carry on, so an INIT that is otherwise perfectly good must still establish an association.
+ *
+ * An identifier this library has never heard of decodes cleanly as
+ * [ZeroChecksumParameterDecode.Advertised]. It is data to compare and decline, not an error: the registry
+ * is IANA's, and refusing to parse a conforming peer's advertisement would turn a missed optimization
+ * into a failed handshake.
+ */
+public fun SctpParameter.asZeroChecksumAcceptable(): ZeroChecksumParameterDecode {
+    if (type != ParameterType.ZeroChecksumAcceptable) return ZeroChecksumParameterDecode.NotZeroChecksum
+    val v = value
+    // RFC 9653 §4: "This field holds the length in bytes of the chunk parameter; the value MUST be 8."
+    // `length` here is the VALUE length, so the wire Length it reports is TLV header + value.
+    if (length != EDMID_BYTES || v.remaining() < EDMID_BYTES) {
+        return ZeroChecksumParameterDecode.Malformed(TLV_HEADER_BYTES + length)
+    }
+    return ZeroChecksumParameterDecode.Advertised(ErrorDetectionMethodId(v.u32(0)))
+}
+
+/** RFC 9653 §4: the EDMID is a 32-bit unsigned integer, so the parameter's value is always four bytes. */
+private const val EDMID_BYTES = 4

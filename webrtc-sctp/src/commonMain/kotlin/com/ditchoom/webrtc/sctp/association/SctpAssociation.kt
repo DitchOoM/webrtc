@@ -14,6 +14,7 @@ import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.ErrorCauseCode
 import com.ditchoom.webrtc.sctp.ErrorDetectionMethodId
 import com.ditchoom.webrtc.sctp.ForwardTsnStream
+import com.ditchoom.webrtc.sctp.OutboundChecksum
 import com.ditchoom.webrtc.sctp.ReConfigParameter
 import com.ditchoom.webrtc.sctp.ReConfigParameterDecode
 import com.ditchoom.webrtc.sctp.ReConfigRequestSequenceNumber
@@ -27,9 +28,15 @@ import com.ditchoom.webrtc.sctp.SctpPacketBuilder
 import com.ditchoom.webrtc.sctp.SctpParameter
 import com.ditchoom.webrtc.sctp.StreamId
 import com.ditchoom.webrtc.sctp.StreamSequenceNumber
+import com.ditchoom.webrtc.sctp.TransportErrorDetection
 import com.ditchoom.webrtc.sctp.Tsn
 import com.ditchoom.webrtc.sctp.VerificationTag
+import com.ditchoom.webrtc.sctp.ZeroChecksumAcceptance
+import com.ditchoom.webrtc.sctp.ZeroChecksumParameterDecode
+import com.ditchoom.webrtc.sctp.acceptanceOver
 import com.ditchoom.webrtc.sctp.asSupportedExtensions
+import com.ditchoom.webrtc.sctp.asZeroChecksumAcceptable
+import com.ditchoom.webrtc.sctp.emissionTo
 import kotlin.random.Random
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
@@ -47,6 +54,12 @@ import kotlin.time.Instant
  * Entropy is injected once ([random], directive #2): it seeds the Verification Tag and the initial TSN,
  * so a scenario replays bit-for-bit. Production wires `CryptoRandom`; tests wire a seeded [Random].
  *
+ * [errorDetection] is the one thing this machine has to be told about the layer beneath it, and it is
+ * told rather than asked because the association owns no transport (ARCHITECTURE §5.1). It is what RFC
+ * 9653 negotiation is *about*: a transport that detects errors itself is what makes the CRC32c redundant.
+ * Defaults to [TransportErrorDetection.CrcOnly], so an association built without it behaves exactly as it
+ * did before RFC 9653 existed.
+ *
  * **Path liveness** is intentionally delegated, not duplicated: this subset sends no SCTP HEARTBEATs, so
  * an association with no outstanding data does not itself detect a silently-dead peer. In WebRTC that is
  * covered a layer down by ICE consent freshness (RFC 7675), which tears down the transport on a dead
@@ -57,6 +70,7 @@ public class SctpAssociation(
     @Suppress("UnseamedEntropy") private val random: Random = Random.Default,
     private val localPort: UShort = SCTP_DATA_CHANNEL_PORT,
     private val remotePort: UShort = SCTP_DATA_CHANNEL_PORT,
+    private val errorDetection: TransportErrorDetection = TransportErrorDetection.CrcOnly,
 ) {
     private var _state: SctpAssociationState = SctpAssociationState.Closed
 
@@ -87,6 +101,34 @@ public class SctpAssociation(
      * that consumes it is Track C's, and this is the value it will read.
      */
     internal var negotiatedInboundStreams: UShort = 0u
+        private set
+
+    /**
+     * RFC 9653 §5.3, the **receive** direction: whether a packet arriving with a zero checksum may be
+     * processed on the transport's guarantee instead of the CRC32c.
+     *
+     * A `val`, and settled before a single byte is exchanged, because §5.3 keys the obligation on what we
+     * *sent* — and what we send is decided entirely by our own policy and our own transport, neither of
+     * which the peer can influence. Nothing in the handshake can widen it; a peer cannot talk us into
+     * accepting an unverifiable packet by advertising anything.
+     */
+    internal val zeroChecksumAcceptance: ZeroChecksumAcceptance = config.zeroChecksum.acceptanceOver(errorDetection)
+
+    /**
+     * RFC 9653 §5.2, the **send** direction: whether this endpoint may leave the checksum field at zero.
+     *
+     * A `var`, and [OutboundChecksum.Crc32c] until the peer's own advertisement is in hand — restriction 1
+     * of §5.2 makes that the only safe starting point, and it is also why this is a separate field from
+     * [zeroChecksumAcceptance] rather than a projection of it. Advertising says "I will accept one from
+     * you"; it grants nothing in this direction. Collapsing the two into one "zero checksum negotiated"
+     * flag is the failure this shape exists to make unrepresentable: read as permission to send, every
+     * packet we emit is dropped by a peer that never agreed to receive one, and the association dies
+     * looking exactly like a dead path.
+     *
+     * Internal-readable for the same reason [peerExtensions] is: no output carries it, so a fixture has no
+     * other way to see which direction was settled.
+     */
+    internal var outboundChecksum: OutboundChecksum = OutboundChecksum.Crc32c
         private set
 
     private val orderedSendSsn = HashMap<StreamId, Int>()
@@ -319,7 +361,7 @@ public class SctpAssociation(
                 outboundStreams = config.outboundStreams,
                 inboundStreams = config.inboundStreams,
                 initialTsn = localInitialTsn,
-                parameters = listOf(SctpParameter.forwardTsnSupported(), supportedExtensions()),
+                parameters = handshakeParameters(),
             )
         localInit = init
         emitPacket(listOf(init), VerificationTag(0u), out)
@@ -347,6 +389,9 @@ public class SctpAssociation(
                 }
                 is InitResponse.Advertise -> response
             }
+        // Read once and used twice: the cookie carries it across the handshake the responder holds no TCB
+        // through, and it also decides the checksum on the INIT ACK this call is about to emit.
+        val peerZeroChecksum = init.parameters.zeroChecksumAdvertised()
         val cookie =
             encodeCookie(
                 StateCookie(
@@ -363,10 +408,11 @@ public class SctpAssociation(
                             forwardTsn = init.supportsForwardTsn(),
                             reConfig = init.parameters.advertiseReConfig(),
                         ),
-                    // Track H reads the peer's advertisement off the INIT and populates this; until then
-                    // every cookie we mint says "none advertised", which is the correct conservative
-                    // answer rather than a placeholder.
-                    peerZeroChecksum = ErrorDetectionMethodId.Reserved,
+                    // RFC 9653 §5.2 restriction 1: permission to emit a zero checksum comes from the
+                    // peer's advertisement, which arrives in this INIT and is gone by the time the COOKIE
+                    // ECHO returns — the responder keeps no TCB in between. There is nothing to re-derive
+                    // it from either; the echo carries no parameters of its own.
+                    peerZeroChecksum = peerZeroChecksum,
                     ourTag = advertised.ourTag,
                     ourInitialTsn = advertised.ourInitialTsn,
                     localTieTag = advertised.localTieTag,
@@ -385,12 +431,7 @@ public class SctpAssociation(
                 outboundStreams = config.outboundStreams,
                 inboundStreams = config.inboundStreams,
                 initialTsn = advertised.ourInitialTsn,
-                parameters =
-                    listOf(
-                        cookieParameter,
-                        SctpParameter.forwardTsnSupported(),
-                        supportedExtensions(),
-                    ),
+                parameters = listOf(cookieParameter) + handshakeParameters(),
             )
         emitPacket(listOf(initAck), init.initiateTag, out)
         // "the existing association, including its current state, and the corresponding TCB MUST NOT be
@@ -466,6 +507,10 @@ public class SctpAssociation(
         // The initiator never mints a cookie, so it settles the same §5.1.1 minimum straight off the
         // INIT ACK. Both sides must reach the same number or they disagree about which stream ids exist.
         negotiatedInboundStreams = minOf(config.inboundStreams, initAck.outboundStreams)
+        // RFC 9653 §5.2 restriction 1: the INIT ACK is where the initiator learns whether the peer will
+        // accept a zero checksum. Settled here and nowhere else on this path — the COOKIE ECHO we are
+        // about to send must carry a real CRC32c regardless (§5.2 restriction 2).
+        outboundChecksum = config.zeroChecksum.emissionTo(initAck.parameters.zeroChecksumAdvertised(), errorDetection)
         establishControlBlocks(peerInitialTsn = initAck.initialTsn, peerRwnd = initAck.advertisedReceiverWindow)
         val echo = SctpChunk.CookieEcho(copyOf(cookieParam.value))
         cookieEcho = echo
@@ -617,6 +662,9 @@ public class SctpAssociation(
         peerExtensions =
             PeerExtensions(forwardTsn = cookie.capabilities.forwardTsn, reConfig = cookie.capabilities.reConfig)
         negotiatedInboundStreams = cookie.peerMaxInbound
+        // The responder's half of RFC 9653 §5.2 restriction 1: the peer's advertisement was read off an
+        // INIT this endpoint deliberately kept no state about, so the cookie is the only place it survives.
+        outboundChecksum = config.zeroChecksum.emissionTo(cookie.peerZeroChecksum, errorDetection)
         establishControlBlocks(peerInitialTsn = cookie.peerInitialTsn, peerRwnd = cookie.peerRwnd)
         emitPacket(listOf(SctpChunk.CookieAck), peerVerificationTag, out)
         transition(SctpAssociationState.Established, out)
@@ -1471,6 +1519,11 @@ public class SctpAssociation(
         // can survive into the next peer's association (a half-cleared pair was invisible at the read).
         peerExtensions = PeerExtensions.None
         negotiatedInboundStreams = 0u
+        // Permission to emit a zero checksum was granted by the peer that is going away, and RFC 9653
+        // §5.2 restriction 1 forbids carrying it into an association whose peer has not granted it again.
+        // A survivor here is the quietest failure in this file: every packet of the next association is
+        // discarded by a peer that never agreed, with nothing malformed anywhere to explain it.
+        outboundChecksum = OutboundChecksum.Crc32c
     }
 
     private fun transition(
@@ -1580,6 +1633,47 @@ public class SctpAssociation(
     // parameter is not required to be unique, and a peer that sends two must not have the second ignored.
     private fun List<SctpParameter>.advertiseReConfig(): Boolean =
         any { it.asSupportedExtensions()?.contains(SctpChunkType.ReConfig) == true }
+
+    /**
+     * The parameters both the INIT and the INIT ACK carry (RFC 9653 §4 allows Zero Checksum Acceptable in
+     * exactly those two chunks and nowhere else).
+     *
+     * One list for both, because advertising in only one of them is an asymmetry with no honest reading:
+     * whichever role this endpoint ends up playing, §5.3 binds it to accept what it advertised, and
+     * [zeroChecksumAcceptance] does not depend on the role.
+     */
+    private fun handshakeParameters(): List<SctpParameter> {
+        val parameters = mutableListOf(SctpParameter.forwardTsnSupported(), supportedExtensions())
+        when (val acceptance = zeroChecksumAcceptance) {
+            ZeroChecksumAcceptance.RequireCrc32c -> Unit
+            is ZeroChecksumAcceptance.Advertised -> parameters += SctpParameter.zeroChecksumAcceptable(acceptance.method)
+        }
+        return parameters
+    }
+
+    /**
+     * The error detection method a peer's INIT/INIT-ACK parameters advertise, or
+     * [ErrorDetectionMethodId.Reserved] when they advertise none (RFC 9653 §8 reserves 0 for exactly this
+     * — there is no "was it present" Boolean to carry).
+     *
+     * `first` rather than `any`, the opposite of [advertiseReConfig], because RFC 9653 §4 says the
+     * parameter "MUST NOT appear more than once in any chunk". A peer that sends two has contradicted
+     * itself and there is no join over method identifiers that would combine them, so the first one wins.
+     *
+     * A malformed parameter is skipped rather than propagated: type 0x8001's high bits mandate
+     * skip-and-continue, so it must not cost the peer its association, and a length we cannot trust is not
+     * evidence of a method we should rely on either.
+     */
+    private fun List<SctpParameter>.zeroChecksumAdvertised(): ErrorDetectionMethodId {
+        for (parameter in this) {
+            when (val decoded = parameter.asZeroChecksumAcceptable()) {
+                ZeroChecksumParameterDecode.NotZeroChecksum -> Unit
+                is ZeroChecksumParameterDecode.Malformed -> Unit
+                is ZeroChecksumParameterDecode.Advertised -> return decoded.method
+            }
+        }
+        return ErrorDetectionMethodId.Reserved
+    }
 
     private fun randomTag(): VerificationTag {
         val v = random.nextInt().toUInt()

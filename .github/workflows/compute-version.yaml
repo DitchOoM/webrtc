@@ -65,12 +65,6 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6.3.0
 
-      # This job is the one the CDN hurt most: every lane downstream consumes its output, so losing a
-      # coin flip against services.gradle.org here skips build-linux, build-apple, consumer-smoke and
-      # validate over a ~10-second configuration query. See the script for the incident.
-      - name: Prime the Gradle distribution (retry a flaky CDN)
-        run: .ci/prime-gradle-distribution.sh
-
       # RESTORE-only, deliberately, and this is the reason: `actions/cache` also SAVES at post-job, and a
       # configuration-only job would write a ~/.konan that has never compiled anything under the key
       # build-linux and build-apple restore from — handing the lanes that do the real work a partial

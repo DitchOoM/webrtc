@@ -55,8 +55,6 @@ jobs:
           java-version: '21'
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6.3.0
-      - name: Prime the Gradle distribution (retry a flaky CDN)
-        run: .ci/prime-gradle-distribution.sh
       - name: Fuzz the STUN decoder (time-boxed)
         run: ./gradlew :webrtc-stun:stunCodecFuzz -PstunFuzzSeconds=120 --no-configuration-cache
       # A Jazzer find writes the EXACT crashing input to build/fuzz/**/{crash,timeout,oom,slow-unit}-*.
@@ -88,8 +86,6 @@ jobs:
           java-version: '21'
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6.3.0
-      - name: Prime the Gradle distribution (retry a flaky CDN)
-        run: .ci/prime-gradle-distribution.sh
       - name: Fuzz the SDP parser (time-boxed)
         run: ./gradlew :webrtc-sdp:sdpCodecFuzz -PsdpFuzzSeconds=120 --no-configuration-cache
       - name: Upload Jazzer crash repros (on failure)
@@ -118,8 +114,6 @@ jobs:
           java-version: '21'
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6.3.0
-      - name: Prime the Gradle distribution (retry a flaky CDN)
-        run: .ci/prime-gradle-distribution.sh
       - name: Fuzz the SCTP + DCEP decoders (time-boxed)
         run: ./gradlew :webrtc-sctp:sctpCodecFuzz -PsctpFuzzSeconds=120 --no-configuration-cache
       - name: Upload Jazzer crash repros (on failure)

@@ -71,7 +71,11 @@ public class SctpDataChannelStack(
     config: SctpConfig = SctpConfig(),
     @Suppress("UnseamedEntropy") random: Random = Random.Default,
 ) : StreamMux<DataChannelPayload> {
-    private val association = SctpAssociation(config, random)
+    // The association is sans-io and owns no transport, so what the transport guarantees has to be handed
+    // to it (ARCHITECTURE §5.1). This is the only place both are in scope, which is why the wiring lives
+    // here rather than in SctpConfig: a transport's integrity guarantee is a fact about the transport, not
+    // a knob a caller sets beside its RTO bounds.
+    private val association = SctpAssociation(config, random, errorDetection = transport.errorDetection)
     private val bufferFactory = config.bufferFactory
 
     private val inbox = Channel<DriveItem>(Channel.UNLIMITED)

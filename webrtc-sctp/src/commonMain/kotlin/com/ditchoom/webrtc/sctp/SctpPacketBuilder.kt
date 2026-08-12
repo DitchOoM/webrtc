@@ -30,4 +30,10 @@ public class SctpPacketBuilder(
 
     /** Convenience: [build] then [SctpPacket.encode]. */
     public fun encode(factory: BufferFactory = BufferFactory.managed()): PlatformBuffer = build().encode(factory)
+
+    /** Convenience: [build] then [SctpPacket.encode] under an RFC 9653 §5.2 permission. */
+    public fun encode(
+        factory: BufferFactory,
+        outbound: OutboundChecksum,
+    ): PlatformBuffer = build().encode(factory, outbound)
 }

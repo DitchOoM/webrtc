@@ -433,7 +433,11 @@ public class SctpAssociation(
                 initialTsn = advertised.ourInitialTsn,
                 parameters = listOf(cookieParameter) + handshakeParameters(),
             )
-        emitPacket(listOf(initAck), init.initiateTag, out)
+        // The INIT ACK is the one packet whose checksum permission is derived rather than stored. RFC 9653
+        // §5.2 does not list the INIT ACK among the chunks that force a CRC32c — by the time we answer an
+        // INIT we have already read what it advertised — but a stateless responder has nowhere to keep
+        // that answer, so it is computed for this emit and forgotten with everything else.
+        emitPacket(listOf(initAck), init.initiateTag, out, config.zeroChecksum.emissionTo(peerZeroChecksum, errorDetection))
         // "the existing association, including its current state, and the corresponding TCB MUST NOT be
         // changed" (§5.2.1 / §5.2.2) — nothing above touches state, and the T1-init timer keeps running.
     }
@@ -744,7 +748,11 @@ public class SctpAssociation(
         // `AcceptedZero` cannot be introduced without this site being asked what to do about it. That is
         // the one place in the receive path where getting it wrong is invisible: an accepted-but-
         // unverifiable packet dropped here looks exactly like a peer that went quiet.
-        when (packet.validateChecksum()) {
+        //
+        // The acceptance passed is what WE advertised (RFC 9653 §5.3) — never what the peer permitted us
+        // to send. A peer we made no promise to gets the RFC 4960 §6.8 rule unchanged, so its zero
+        // checksum is a Mismatch and its packet is discarded.
+        when (packet.validateChecksum(zeroChecksumAcceptance)) {
             ChecksumVerdict.Verified, ChecksumVerdict.AcceptedZero -> Unit
             ChecksumVerdict.Mismatch, ChecksumVerdict.NotFromWire -> return
         }
@@ -1560,21 +1568,27 @@ public class SctpAssociation(
     // Every packet that leaves through here is encoded for this one transmission and retained by nobody,
     // so it is the driver's outright ([SctpOutput.Transmit.Owned]). The DATA path is the sole exception and
     // does not come through here — see [trySend].
+    //
+    // [outbound] defaults to what this association negotiated, and is passed explicitly by exactly one
+    // caller: the stateless responder answering an INIT, which has the peer's advertisement in hand for
+    // the length of that call and stores none of it (RFC 4960 §5.1.3).
     private fun emitPacket(
         chunks: List<SctpChunk>,
         headerTag: VerificationTag,
         out: MutableList<SctpOutput>,
+        outbound: OutboundChecksum = outboundChecksum,
     ) {
-        out += SctpOutput.Transmit.Owned(encodePacket(chunks, headerTag))
+        out += SctpOutput.Transmit.Owned(encodePacket(chunks, headerTag, outbound))
     }
 
     private fun encodePacket(
         chunks: List<SctpChunk>,
         headerTag: VerificationTag,
+        outbound: OutboundChecksum = outboundChecksum,
     ): PlatformBuffer {
         val builder = SctpPacketBuilder(localPort, remotePort, headerTag)
         for (chunk in chunks) builder.add(chunk)
-        return builder.encode(config.bufferFactory)
+        return builder.encode(config.bufferFactory, outbound)
     }
 
     /**

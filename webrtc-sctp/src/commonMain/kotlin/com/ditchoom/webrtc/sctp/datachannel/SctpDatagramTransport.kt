@@ -2,6 +2,7 @@ package com.ditchoom.webrtc.sctp.datachannel
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.webrtc.sctp.TransportErrorDetection
 
 /**
  * The point-to-point datagram seam beneath the SCTP association — **the boundary where DTLS slots in**
@@ -14,6 +15,23 @@ import com.ditchoom.buffer.freeIfNeeded
  * confines each to its own coroutine), mirroring buffer-flow's `Connection` contract.
  */
 public interface SctpDatagramTransport {
+    /**
+     * What this transport guarantees about the integrity of the bytes it carries (RFC 9653 §3) — the one
+     * thing the SCTP association above needs to know about the layer beneath it.
+     *
+     * Defaults to [TransportErrorDetection.CrcOnly], which is a refusal rather than an absence: a
+     * transport that says nothing gets the RFC 4960 §6.8 behaviour that shipped before RFC 9653 existed,
+     * in both directions. Overriding it is an assertion made on the transport's own behalf, and no type
+     * can check it — §3's two requirements (an equal or lower false-negative probability than CRC32c, and
+     * no path failure from middleboxes expecting a correct one) are properties of an implementation, not
+     * of a signature. That is why the unsafe answer has to be written out deliberately.
+     *
+     * `PlaintextDtls` deliberately does not override it: it encrypts nothing and authenticates nothing,
+     * so the default *is* the correct answer there, and its silence is the refusal rather than an
+     * oversight.
+     */
+    public val errorDetection: TransportErrorDetection get() = TransportErrorDetection.CrcOnly
+
     /** Send one encoded SCTP packet to the peer. Ownership of [packet] is not transferred. */
     public suspend fun send(packet: ReadBuffer)
 

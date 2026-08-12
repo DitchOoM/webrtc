@@ -72,6 +72,31 @@ public final class com/ditchoom/webrtc/sdp/DataChannelParameters {
 public final class com/ditchoom/webrtc/sdp/DataChannelParameters$Companion {
 }
 
+public abstract interface class com/ditchoom/webrtc/sdp/DataChannelSection {
+}
+
+public final class com/ditchoom/webrtc/sdp/DataChannelSection$Absent : com/ditchoom/webrtc/sdp/DataChannelSection {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sdp/DataChannelSection$Absent;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/DataChannelSection$Present : com/ditchoom/webrtc/sdp/DataChannelSection {
+	public fun <init> (Lcom/ditchoom/webrtc/sdp/MediaDescription;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sdp/MediaDescription;
+	public final fun copy (Lcom/ditchoom/webrtc/sdp/MediaDescription;)Lcom/ditchoom/webrtc/sdp/DataChannelSection$Present;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sdp/DataChannelSection$Present;Lcom/ditchoom/webrtc/sdp/MediaDescription;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/DataChannelSection$Present;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getMedia ()Lcom/ditchoom/webrtc/sdp/MediaDescription;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/DataChannelSectionKt {
+	public static final fun dataChannelSection (Lcom/ditchoom/webrtc/sdp/SessionDescription;)Lcom/ditchoom/webrtc/sdp/DataChannelSection;
+}
+
 public final class com/ditchoom/webrtc/sdp/DescriptionEndpoint : java/lang/Enum {
 	public static final field Local Lcom/ditchoom/webrtc/sdp/DescriptionEndpoint;
 	public static final field Remote Lcom/ditchoom/webrtc/sdp/DescriptionEndpoint;
@@ -225,6 +250,52 @@ public final class com/ditchoom/webrtc/sdp/JsepSession {
 	public final fun getSignalingState ()Lcom/ditchoom/webrtc/sdp/SignalingState;
 	public final fun handle (Lcom/ditchoom/webrtc/sdp/JsepEvent;Lkotlin/time/Instant;)Ljava/util/List;
 	public final fun nextDeadline ()Lkotlin/time/Instant;
+}
+
+public abstract interface class com/ditchoom/webrtc/sdp/MaxMessageSizeAttribute {
+}
+
+public final class com/ditchoom/webrtc/sdp/MaxMessageSizeAttribute$Absent : com/ditchoom/webrtc/sdp/MaxMessageSizeAttribute {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sdp/MaxMessageSizeAttribute$Absent;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/MaxMessageSizeAttribute$Bytes : com/ditchoom/webrtc/sdp/MaxMessageSizeAttribute {
+	public static final synthetic fun box-impl (J)Lcom/ditchoom/webrtc/sdp/MaxMessageSizeAttribute$Bytes;
+	public static fun constructor-impl (J)J
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (JLjava/lang/Object;)Z
+	public static final fun equals-impl0 (JJ)Z
+	public final fun getValue ()J
+	public fun hashCode ()I
+	public static fun hashCode-impl (J)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (J)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()J
+}
+
+public final class com/ditchoom/webrtc/sdp/MaxMessageSizeAttribute$Malformed : com/ditchoom/webrtc/sdp/MaxMessageSizeAttribute {
+	public fun <init> (Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;)Lcom/ditchoom/webrtc/sdp/MaxMessageSizeAttribute$Malformed;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sdp/MaxMessageSizeAttribute$Malformed;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sdp/MaxMessageSizeAttribute$Malformed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getValue ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/MaxMessageSizeAttribute$Unlimited : com/ditchoom/webrtc/sdp/MaxMessageSizeAttribute {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sdp/MaxMessageSizeAttribute$Unlimited;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sdp/MaxMessageSizeAttributeKt {
+	public static final fun maxMessageSizeAttribute (Lcom/ditchoom/webrtc/sdp/MediaDescription;)Lcom/ditchoom/webrtc/sdp/MaxMessageSizeAttribute;
 }
 
 public final class com/ditchoom/webrtc/sdp/MediaDescription : com/ditchoom/webrtc/sdp/SdpSection {

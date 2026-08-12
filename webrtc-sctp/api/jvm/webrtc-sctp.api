@@ -1,3 +1,60 @@
+public abstract interface class com/ditchoom/webrtc/sctp/ChecksumVerdict {
+	public abstract fun getAccepted ()Z
+}
+
+public final class com/ditchoom/webrtc/sctp/ChecksumVerdict$AcceptedZero : com/ditchoom/webrtc/sctp/ChecksumVerdict {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/ChecksumVerdict$AcceptedZero;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAccepted ()Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ChecksumVerdict$Mismatch : com/ditchoom/webrtc/sctp/ChecksumVerdict {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/ChecksumVerdict$Mismatch;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAccepted ()Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ChecksumVerdict$NotFromWire : com/ditchoom/webrtc/sctp/ChecksumVerdict {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/ChecksumVerdict$NotFromWire;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAccepted ()Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ChecksumVerdict$Verified : com/ditchoom/webrtc/sctp/ChecksumVerdict {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/ChecksumVerdict$Verified;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAccepted ()Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/ChunkChecksumRequirement {
+}
+
+public final class com/ditchoom/webrtc/sctp/ChunkChecksumRequirement$Crc32cRequired : com/ditchoom/webrtc/sctp/ChunkChecksumRequirement {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/ChunkChecksumRequirement$Crc32cRequired;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ChunkChecksumRequirement$EitherPermitted : com/ditchoom/webrtc/sctp/ChunkChecksumRequirement {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/ChunkChecksumRequirement$EitherPermitted;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ChunkChecksumRequirementKt {
+	public static final fun getChecksumRequirement (Lcom/ditchoom/webrtc/sctp/SctpChunk;)Lcom/ditchoom/webrtc/sctp/ChunkChecksumRequirement;
+}
+
 public final class com/ditchoom/webrtc/sctp/Crc32c {
 	public static final field INIT I
 	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/Crc32c;
@@ -70,6 +127,26 @@ public final class com/ditchoom/webrtc/sctp/ErrorCauseCode$Companion {
 	public final fun getUserInitiatedAbort-jwO-oqI ()S
 }
 
+public final class com/ditchoom/webrtc/sctp/ErrorDetectionMethodId {
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/ErrorDetectionMethodId$Companion;
+	public static final synthetic fun box-impl (I)Lcom/ditchoom/webrtc/sctp/ErrorDetectionMethodId;
+	public static fun constructor-impl (I)I
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (ILjava/lang/Object;)Z
+	public static final fun equals-impl0 (II)Z
+	public final fun getValue-pVg5ArA ()I
+	public fun hashCode ()I
+	public static fun hashCode-impl (I)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (I)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()I
+}
+
+public final class com/ditchoom/webrtc/sctp/ErrorDetectionMethodId$Companion {
+	public final fun getReserved-JxW4JJk ()I
+	public final fun getZeroChecksum-JxW4JJk ()I
+}
+
 public final class com/ditchoom/webrtc/sctp/ForwardTsnStream {
 	public synthetic fun <init> (ISLkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1-cFBZvdc ()I
@@ -94,6 +171,41 @@ public final class com/ditchoom/webrtc/sctp/GapAckBlock {
 	public final fun getStart-Mh2AYeg ()S
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/OutboundChecksum {
+}
+
+public final class com/ditchoom/webrtc/sctp/OutboundChecksum$Crc32c : com/ditchoom/webrtc/sctp/OutboundChecksum {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/OutboundChecksum$Crc32c;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/OutboundChecksum$ZeroWherePermitted : com/ditchoom/webrtc/sctp/OutboundChecksum {
+	public synthetic fun <init> (ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-JxW4JJk ()I
+	public final fun copy-IwwK7DY (I)Lcom/ditchoom/webrtc/sctp/OutboundChecksum$ZeroWherePermitted;
+	public static synthetic fun copy-IwwK7DY$default (Lcom/ditchoom/webrtc/sctp/OutboundChecksum$ZeroWherePermitted;IILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/OutboundChecksum$ZeroWherePermitted;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getMethod-JxW4JJk ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/PadBytes {
+	public static final synthetic fun box-impl (I)Lcom/ditchoom/webrtc/sctp/PadBytes;
+	public static fun constructor-impl (I)I
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (ILjava/lang/Object;)Z
+	public static final fun equals-impl0 (II)Z
+	public final fun getValue ()I
+	public fun hashCode ()I
+	public static fun hashCode-impl (I)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (I)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()I
 }
 
 public final class com/ditchoom/webrtc/sctp/ParameterType {
@@ -128,6 +240,7 @@ public final class com/ditchoom/webrtc/sctp/ParameterType$Companion {
 	public final fun getSupportedAddressTypes-VORfRic ()S
 	public final fun getSupportedExtensions-VORfRic ()S
 	public final fun getUnrecognizedParameter-VORfRic ()S
+	public final fun getZeroChecksumAcceptable-VORfRic ()S
 }
 
 public final class com/ditchoom/webrtc/sctp/PayloadProtocolId {
@@ -585,6 +698,21 @@ public final class com/ditchoom/webrtc/sctp/SctpChunk$InitAck : com/ditchoom/web
 	public fun writeValue (Lcom/ditchoom/buffer/WriteBuffer;)V
 }
 
+public final class com/ditchoom/webrtc/sctp/SctpChunk$Pad : com/ditchoom/webrtc/sctp/SctpChunk {
+	public synthetic fun <init> (ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-r_wunSY ()I
+	public final fun copy-55z12z8 (I)Lcom/ditchoom/webrtc/sctp/SctpChunk$Pad;
+	public static synthetic fun copy-55z12z8$default (Lcom/ditchoom/webrtc/sctp/SctpChunk$Pad;IILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpChunk$Pad;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getFlagsByte-w2LRezQ ()B
+	public final fun getPadding-r_wunSY ()I
+	public fun getType-xlduujU ()B
+	public fun getValueSize ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+	public fun writeValue (Lcom/ditchoom/buffer/WriteBuffer;)V
+}
+
 public final class com/ditchoom/webrtc/sctp/SctpChunk$ReConfig : com/ditchoom/webrtc/sctp/SctpChunk {
 	public static final field Companion Lcom/ditchoom/webrtc/sctp/SctpChunk$ReConfig$Companion;
 	public fun <init> (Ljava/util/List;)V
@@ -714,6 +842,7 @@ public final class com/ditchoom/webrtc/sctp/SctpChunkType$Companion {
 	public final fun getHeartbeatAck-xlduujU ()B
 	public final fun getInit-xlduujU ()B
 	public final fun getInitAck-xlduujU ()B
+	public final fun getPad-xlduujU ()B
 	public final fun getReConfig-xlduujU ()B
 	public final fun getSack-xlduujU ()B
 	public final fun getShutdown-xlduujU ()B
@@ -799,6 +928,7 @@ public final class com/ditchoom/webrtc/sctp/SctpErrorCause$Companion {
 public final class com/ditchoom/webrtc/sctp/SctpPacket {
 	public static final field Companion Lcom/ditchoom/webrtc/sctp/SctpPacket$Companion;
 	public final fun encode (Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/PlatformBuffer;
+	public final fun encode (Lcom/ditchoom/buffer/BufferFactory;Lcom/ditchoom/webrtc/sctp/OutboundChecksum;)Lcom/ditchoom/buffer/PlatformBuffer;
 	public static synthetic fun encode$default (Lcom/ditchoom/webrtc/sctp/SctpPacket;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/buffer/PlatformBuffer;
 	public final fun firstOrNull-BaCjjTE (B)Lcom/ditchoom/webrtc/sctp/SctpChunk;
 	public final fun getChunks ()Ljava/util/List;
@@ -807,6 +937,8 @@ public final class com/ditchoom/webrtc/sctp/SctpPacket {
 	public final fun getSourcePort-Mh2AYeg ()S
 	public final fun getVerificationTag-FZlQ57E ()I
 	public final fun release ()V
+	public final fun validateChecksum ()Lcom/ditchoom/webrtc/sctp/ChecksumVerdict;
+	public final fun validateChecksum (Lcom/ditchoom/webrtc/sctp/ZeroChecksumAcceptance;)Lcom/ditchoom/webrtc/sctp/ChecksumVerdict;
 	public final fun verifyChecksum ()Z
 }
 
@@ -819,6 +951,7 @@ public final class com/ditchoom/webrtc/sctp/SctpPacketBuilder {
 	public final fun add (Lcom/ditchoom/webrtc/sctp/SctpChunk;)Lcom/ditchoom/webrtc/sctp/SctpPacketBuilder;
 	public final fun build ()Lcom/ditchoom/webrtc/sctp/SctpPacket;
 	public final fun encode (Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/buffer/PlatformBuffer;
+	public final fun encode (Lcom/ditchoom/buffer/BufferFactory;Lcom/ditchoom/webrtc/sctp/OutboundChecksum;)Lcom/ditchoom/buffer/PlatformBuffer;
 	public static synthetic fun encode$default (Lcom/ditchoom/webrtc/sctp/SctpPacketBuilder;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/buffer/PlatformBuffer;
 }
 
@@ -836,10 +969,12 @@ public final class com/ditchoom/webrtc/sctp/SctpParameter$Companion {
 	public final fun forwardTsnSupported ()Lcom/ditchoom/webrtc/sctp/SctpParameter;
 	public final fun ofValue-FKy87FQ (SLcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/sctp/SctpParameter;
 	public final fun supportedExtensions (Ljava/util/List;)Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public final fun zeroChecksumAcceptable-IwwK7DY (I)Lcom/ditchoom/webrtc/sctp/SctpParameter;
 }
 
 public final class com/ditchoom/webrtc/sctp/SctpParameterKt {
 	public static final fun asSupportedExtensions (Lcom/ditchoom/webrtc/sctp/SctpParameter;)Ljava/util/List;
+	public static final fun asZeroChecksumAcceptable (Lcom/ditchoom/webrtc/sctp/SctpParameter;)Lcom/ditchoom/webrtc/sctp/ZeroChecksumParameterDecode;
 }
 
 public abstract interface class com/ditchoom/webrtc/sctp/SctpRejectReason {
@@ -930,6 +1065,27 @@ public final class com/ditchoom/webrtc/sctp/StreamSequenceNumber {
 	public final synthetic fun unbox-impl ()S
 }
 
+public abstract interface class com/ditchoom/webrtc/sctp/TransportErrorDetection {
+}
+
+public final class com/ditchoom/webrtc/sctp/TransportErrorDetection$CrcOnly : com/ditchoom/webrtc/sctp/TransportErrorDetection {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/TransportErrorDetection$CrcOnly;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/TransportErrorDetection$Provided : com/ditchoom/webrtc/sctp/TransportErrorDetection {
+	public synthetic fun <init> (ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-JxW4JJk ()I
+	public final fun copy-IwwK7DY (I)Lcom/ditchoom/webrtc/sctp/TransportErrorDetection$Provided;
+	public static synthetic fun copy-IwwK7DY$default (Lcom/ditchoom/webrtc/sctp/TransportErrorDetection$Provided;IILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/TransportErrorDetection$Provided;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getMethod-JxW4JJk ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/sctp/Tsn {
 	public static final synthetic fun box-impl (I)Lcom/ditchoom/webrtc/sctp/Tsn;
 	public static fun constructor-impl (I)I
@@ -996,6 +1152,312 @@ public final class com/ditchoom/webrtc/sctp/VerificationTagCodec : com/ditchoom/
 	public fun wireSize-d25ApmA (ILcom/ditchoom/buffer/codec/EncodeContext;)Lcom/ditchoom/buffer/codec/WireSize;
 }
 
+public abstract interface class com/ditchoom/webrtc/sctp/ZeroChecksumAcceptance {
+}
+
+public final class com/ditchoom/webrtc/sctp/ZeroChecksumAcceptance$Advertised : com/ditchoom/webrtc/sctp/ZeroChecksumAcceptance {
+	public synthetic fun <init> (ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-JxW4JJk ()I
+	public final fun copy-IwwK7DY (I)Lcom/ditchoom/webrtc/sctp/ZeroChecksumAcceptance$Advertised;
+	public static synthetic fun copy-IwwK7DY$default (Lcom/ditchoom/webrtc/sctp/ZeroChecksumAcceptance$Advertised;IILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/ZeroChecksumAcceptance$Advertised;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getMethod-JxW4JJk ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ZeroChecksumAcceptance$RequireCrc32c : com/ditchoom/webrtc/sctp/ZeroChecksumAcceptance {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/ZeroChecksumAcceptance$RequireCrc32c;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/ZeroChecksumParameterDecode {
+}
+
+public final class com/ditchoom/webrtc/sctp/ZeroChecksumParameterDecode$Advertised : com/ditchoom/webrtc/sctp/ZeroChecksumParameterDecode {
+	public synthetic fun <init> (ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-JxW4JJk ()I
+	public final fun copy-IwwK7DY (I)Lcom/ditchoom/webrtc/sctp/ZeroChecksumParameterDecode$Advertised;
+	public static synthetic fun copy-IwwK7DY$default (Lcom/ditchoom/webrtc/sctp/ZeroChecksumParameterDecode$Advertised;IILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/ZeroChecksumParameterDecode$Advertised;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getMethod-JxW4JJk ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ZeroChecksumParameterDecode$Malformed : com/ditchoom/webrtc/sctp/ZeroChecksumParameterDecode {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/webrtc/sctp/ZeroChecksumParameterDecode$Malformed;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/ZeroChecksumParameterDecode$Malformed;IILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/ZeroChecksumParameterDecode$Malformed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDeclaredLength ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ZeroChecksumParameterDecode$NotZeroChecksum : com/ditchoom/webrtc/sctp/ZeroChecksumParameterDecode {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/ZeroChecksumParameterDecode$NotZeroChecksum;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/ZeroChecksumPolicy {
+}
+
+public final class com/ditchoom/webrtc/sctp/ZeroChecksumPolicy$AcceptAndEmit : com/ditchoom/webrtc/sctp/ZeroChecksumPolicy {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/ZeroChecksumPolicy$AcceptAndEmit;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ZeroChecksumPolicy$AcceptOnly : com/ditchoom/webrtc/sctp/ZeroChecksumPolicy {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/ZeroChecksumPolicy$AcceptOnly;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/ZeroChecksumPolicy$Disabled : com/ditchoom/webrtc/sctp/ZeroChecksumPolicy {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/ZeroChecksumPolicy$Disabled;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/DeliveryReceipt {
+	public static final synthetic fun box-impl (J)Lcom/ditchoom/webrtc/sctp/association/DeliveryReceipt;
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (JLjava/lang/Object;)Z
+	public static final fun equals-impl0 (JJ)Z
+	public final fun getTicket ()J
+	public fun hashCode ()I
+	public static fun hashCode-impl (J)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (J)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()J
+}
+
+public final class com/ditchoom/webrtc/sctp/association/FragmentCeilingBytes : java/lang/Comparable {
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/association/FragmentCeilingBytes$Companion;
+	public static final synthetic fun box-impl (I)Lcom/ditchoom/webrtc/sctp/association/FragmentCeilingBytes;
+	public synthetic fun compareTo (Ljava/lang/Object;)I
+	public fun compareTo-rahhRwo (I)I
+	public static fun compareTo-rahhRwo (II)I
+	public static fun constructor-impl (I)I
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (ILjava/lang/Object;)Z
+	public static final fun equals-impl0 (II)Z
+	public final fun getValue ()I
+	public fun hashCode ()I
+	public static fun hashCode-impl (I)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (I)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()I
+}
+
+public final class com/ditchoom/webrtc/sctp/association/FragmentCeilingBytes$Companion {
+	public final fun of-dL9swL8 (II)I
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/association/OutgoingStreamCapacity {
+}
+
+public final class com/ditchoom/webrtc/sctp/association/OutgoingStreamCapacity$Negotiated : com/ditchoom/webrtc/sctp/association/OutgoingStreamCapacity {
+	public synthetic fun <init> (SLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-Xam5NJQ ()S
+	public final fun copy-guUB_Nc (S)Lcom/ditchoom/webrtc/sctp/association/OutgoingStreamCapacity$Negotiated;
+	public static synthetic fun copy-guUB_Nc$default (Lcom/ditchoom/webrtc/sctp/association/OutgoingStreamCapacity$Negotiated;SILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/OutgoingStreamCapacity$Negotiated;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getStreams-Xam5NJQ ()S
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/OutgoingStreamCapacity$NotNegotiated : com/ditchoom/webrtc/sctp/association/OutgoingStreamCapacity {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/association/OutgoingStreamCapacity$NotNegotiated;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/association/OversizedBacklog {
+}
+
+public final class com/ditchoom/webrtc/sctp/association/OversizedBacklog$None : com/ditchoom/webrtc/sctp/association/OversizedBacklog {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/association/OversizedBacklog$None;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/OversizedBacklog$Present : com/ditchoom/webrtc/sctp/association/OversizedBacklog {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/webrtc/sctp/association/OversizedBacklog$Present;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/association/OversizedBacklog$Present;IILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/OversizedBacklog$Present;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getChunks ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/association/PathAddressFamily {
+	public abstract fun getMinimumPathMtu-eOjVlzU ()I
+	public abstract fun getUnprobedPathMtu-eOjVlzU ()I
+}
+
+public final class com/ditchoom/webrtc/sctp/association/PathAddressFamily$Ipv4 : com/ditchoom/webrtc/sctp/association/PathAddressFamily {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/association/PathAddressFamily$Ipv4;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getMinimumPathMtu-eOjVlzU ()I
+	public fun getUnprobedPathMtu-eOjVlzU ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/PathAddressFamily$Ipv6 : com/ditchoom/webrtc/sctp/association/PathAddressFamily {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/association/PathAddressFamily$Ipv6;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getMinimumPathMtu-eOjVlzU ()I
+	public fun getUnprobedPathMtu-eOjVlzU ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/PathIdentity {
+	public static final synthetic fun box-impl (I)Lcom/ditchoom/webrtc/sctp/association/PathIdentity;
+	public static fun constructor-impl (I)I
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (ILjava/lang/Object;)Z
+	public static final fun equals-impl0 (II)Z
+	public final fun getOrdinal-pVg5ArA ()I
+	public fun hashCode ()I
+	public static fun hashCode-impl (I)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (I)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()I
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/association/PathMtuChangeCause {
+}
+
+public final class com/ditchoom/webrtc/sctp/association/PathMtuChangeCause$BaseRefuted : com/ditchoom/webrtc/sctp/association/PathMtuChangeCause {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/association/PathMtuChangeCause$BaseRefuted;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/PathMtuChangeCause$PathAssessed : com/ditchoom/webrtc/sctp/association/PathMtuChangeCause {
+	public fun <init> (Lcom/ditchoom/webrtc/sctp/association/PathAddressFamily;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sctp/association/PathAddressFamily;
+	public final fun copy (Lcom/ditchoom/webrtc/sctp/association/PathAddressFamily;)Lcom/ditchoom/webrtc/sctp/association/PathMtuChangeCause$PathAssessed;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/association/PathMtuChangeCause$PathAssessed;Lcom/ditchoom/webrtc/sctp/association/PathAddressFamily;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/PathMtuChangeCause$PathAssessed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFamily ()Lcom/ditchoom/webrtc/sctp/association/PathAddressFamily;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/PathMtuChangeCause$ProbeConfirmed : com/ditchoom/webrtc/sctp/association/PathMtuChangeCause {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/association/PathMtuChangeCause$ProbeConfirmed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/association/PathMtuPolicy {
+}
+
+public final class com/ditchoom/webrtc/sctp/association/PathMtuPolicy$Discover : com/ditchoom/webrtc/sctp/association/PathMtuPolicy {
+	public synthetic fun <init> (IIJIILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (IIJILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-eOjVlzU ()I
+	public final fun component2-RqpX_Qw ()I
+	public final fun component3-UwyO8pc ()J
+	public final fun component4-a9NEYoI ()I
+	public final fun copy-55gZfsM (IIJI)Lcom/ditchoom/webrtc/sctp/association/PathMtuPolicy$Discover;
+	public static synthetic fun copy-55gZfsM$default (Lcom/ditchoom/webrtc/sctp/association/PathMtuPolicy$Discover;IIJIILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/PathMtuPolicy$Discover;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getGranularity-a9NEYoI ()I
+	public final fun getMaxProbes-RqpX_Qw ()I
+	public final fun getRaiseInterval-UwyO8pc ()J
+	public final fun getSearchCeiling-eOjVlzU ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/PathMtuPolicy$Fixed : com/ditchoom/webrtc/sctp/association/PathMtuPolicy {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/association/PathMtuPolicy$Fixed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/PathOverheadBytes {
+	public static final synthetic fun box-impl (I)Lcom/ditchoom/webrtc/sctp/association/PathOverheadBytes;
+	public static fun constructor-impl (I)I
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (ILjava/lang/Object;)Z
+	public static final fun equals-impl0 (II)Z
+	public final fun getValue ()I
+	public fun hashCode ()I
+	public static fun hashCode-impl (I)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (I)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()I
+}
+
+public final class com/ditchoom/webrtc/sctp/association/PmtuBytes : java/lang/Comparable {
+	public static final synthetic fun box-impl (I)Lcom/ditchoom/webrtc/sctp/association/PmtuBytes;
+	public synthetic fun compareTo (Ljava/lang/Object;)I
+	public fun compareTo-UtiMV-0 (I)I
+	public static fun compareTo-UtiMV-0 (II)I
+	public static fun constructor-impl (I)I
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (ILjava/lang/Object;)Z
+	public static final fun equals-impl0 (II)Z
+	public final fun getValue ()I
+	public fun hashCode ()I
+	public static fun hashCode-impl (I)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (I)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()I
+}
+
+public final class com/ditchoom/webrtc/sctp/association/PmtuStep {
+	public static final synthetic fun box-impl (I)Lcom/ditchoom/webrtc/sctp/association/PmtuStep;
+	public static fun constructor-impl (I)I
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (ILjava/lang/Object;)Z
+	public static final fun equals-impl0 (II)Z
+	public final fun getValue ()I
+	public fun hashCode ()I
+	public static fun hashCode-impl (I)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (I)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()I
+}
+
+public final class com/ditchoom/webrtc/sctp/association/ProbeBudget {
+	public static final synthetic fun box-impl (I)Lcom/ditchoom/webrtc/sctp/association/ProbeBudget;
+	public static fun constructor-impl (I)I
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (ILjava/lang/Object;)Z
+	public static final fun equals-impl0 (II)Z
+	public final fun getValue ()I
+	public fun hashCode ()I
+	public static fun hashCode-impl (I)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (I)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()I
+}
+
 public final class com/ditchoom/webrtc/sctp/association/ProtocolViolationKind : java/lang/Enum {
 	public static final field MissingStateCookie Lcom/ditchoom/webrtc/sctp/association/ProtocolViolationKind;
 	public static final field ZeroStreams Lcom/ditchoom/webrtc/sctp/association/ProtocolViolationKind;
@@ -1004,11 +1466,59 @@ public final class com/ditchoom/webrtc/sctp/association/ProtocolViolationKind : 
 	public static fun values ()[Lcom/ditchoom/webrtc/sctp/association/ProtocolViolationKind;
 }
 
+public abstract interface class com/ditchoom/webrtc/sctp/association/ReceiveMessageLimit {
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/association/ReceiveMessageLimit$Companion;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/ReceiveMessageLimit$Bytes : com/ditchoom/webrtc/sctp/association/ReceiveMessageLimit {
+	public static final synthetic fun box-impl (J)Lcom/ditchoom/webrtc/sctp/association/ReceiveMessageLimit$Bytes;
+	public static fun constructor-impl (J)J
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (JLjava/lang/Object;)Z
+	public static final fun equals-impl0 (JJ)Z
+	public final fun getValue ()J
+	public fun hashCode ()I
+	public static fun hashCode-impl (J)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (J)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()J
+}
+
+public final class com/ditchoom/webrtc/sctp/association/ReceiveMessageLimit$Companion {
+	public final fun getDefault ()Lcom/ditchoom/webrtc/sctp/association/ReceiveMessageLimit;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/ReceiveMessageLimit$Unbounded : com/ditchoom/webrtc/sctp/association/ReceiveMessageLimit {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/association/ReceiveMessageLimit$Unbounded;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/ReceiveOverrunWindows {
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/association/ReceiveOverrunWindows$Companion;
+	public static final synthetic fun box-impl (I)Lcom/ditchoom/webrtc/sctp/association/ReceiveOverrunWindows;
+	public static fun constructor-impl (I)I
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (ILjava/lang/Object;)Z
+	public static final fun equals-impl0 (II)Z
+	public final fun getValue ()I
+	public fun hashCode ()I
+	public static fun hashCode-impl (I)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (I)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()I
+}
+
+public final class com/ditchoom/webrtc/sctp/association/ReceiveOverrunWindows$Companion {
+	public final fun getDefault-x1-hbnY ()I
+}
+
 public final class com/ditchoom/webrtc/sctp/association/SctpAssociation {
 	public static final field Companion Lcom/ditchoom/webrtc/sctp/association/SctpAssociation$Companion;
 	public static final field SCTP_DATA_CHANNEL_PORT S
-	public synthetic fun <init> (Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Lkotlin/random/Random;SSILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public synthetic fun <init> (Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Lkotlin/random/Random;SSLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Lkotlin/random/Random;SSLcom/ditchoom/webrtc/sctp/TransportErrorDetection;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/webrtc/sctp/association/SctpConfig;Lkotlin/random/Random;SSLcom/ditchoom/webrtc/sctp/TransportErrorDetection;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun close ()Ljava/util/List;
 	public final fun getState ()Lcom/ditchoom/webrtc/sctp/association/SctpAssociationState;
 	public final fun handle (Lcom/ditchoom/webrtc/sctp/association/SctpEvent;Lkotlin/time/Instant;)Ljava/util/List;
@@ -1078,8 +1588,8 @@ public final class com/ditchoom/webrtc/sctp/association/SctpAssociationState$Shu
 }
 
 public final class com/ditchoom/webrtc/sctp/association/SctpConfig {
-	public synthetic fun <init> (JJJIIIIIJSSIIILcom/ditchoom/buffer/BufferFactory;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public synthetic fun <init> (JJJIIIIIJSSIIILcom/ditchoom/buffer/BufferFactory;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JJJIIIIIJSSIIILcom/ditchoom/buffer/BufferFactory;ILcom/ditchoom/webrtc/sctp/association/ReceiveMessageLimit;Lcom/ditchoom/webrtc/sctp/association/StreamGrowthPolicy;Lcom/ditchoom/webrtc/sctp/ZeroChecksumPolicy;Lcom/ditchoom/webrtc/sctp/association/PathMtuPolicy;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (JJJIIIIIJSSIIILcom/ditchoom/buffer/BufferFactory;ILcom/ditchoom/webrtc/sctp/association/ReceiveMessageLimit;Lcom/ditchoom/webrtc/sctp/association/StreamGrowthPolicy;Lcom/ditchoom/webrtc/sctp/ZeroChecksumPolicy;Lcom/ditchoom/webrtc/sctp/association/PathMtuPolicy;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1-UwyO8pc ()J
 	public final fun component10-Mh2AYeg ()S
 	public final fun component11-Mh2AYeg ()S
@@ -1087,7 +1597,12 @@ public final class com/ditchoom/webrtc/sctp/association/SctpConfig {
 	public final fun component13 ()I
 	public final fun component14 ()I
 	public final fun component15 ()Lcom/ditchoom/buffer/BufferFactory;
+	public final fun component16-x1-hbnY ()I
+	public final fun component17 ()Lcom/ditchoom/webrtc/sctp/association/ReceiveMessageLimit;
+	public final fun component18 ()Lcom/ditchoom/webrtc/sctp/association/StreamGrowthPolicy;
+	public final fun component19 ()Lcom/ditchoom/webrtc/sctp/ZeroChecksumPolicy;
 	public final fun component2-UwyO8pc ()J
+	public final fun component20 ()Lcom/ditchoom/webrtc/sctp/association/PathMtuPolicy;
 	public final fun component3-UwyO8pc ()J
 	public final fun component4 ()I
 	public final fun component5 ()I
@@ -1095,8 +1610,8 @@ public final class com/ditchoom/webrtc/sctp/association/SctpConfig {
 	public final fun component7-pVg5ArA ()I
 	public final fun component8 ()I
 	public final fun component9-UwyO8pc ()J
-	public final fun copy-G94uY68 (JJJIIIIIJSSIIILcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/sctp/association/SctpConfig;
-	public static synthetic fun copy-G94uY68$default (Lcom/ditchoom/webrtc/sctp/association/SctpConfig;JJJIIIIIJSSIIILcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpConfig;
+	public final fun copy-KasSXes (JJJIIIIIJSSIIILcom/ditchoom/buffer/BufferFactory;ILcom/ditchoom/webrtc/sctp/association/ReceiveMessageLimit;Lcom/ditchoom/webrtc/sctp/association/StreamGrowthPolicy;Lcom/ditchoom/webrtc/sctp/ZeroChecksumPolicy;Lcom/ditchoom/webrtc/sctp/association/PathMtuPolicy;)Lcom/ditchoom/webrtc/sctp/association/SctpConfig;
+	public static synthetic fun copy-KasSXes$default (Lcom/ditchoom/webrtc/sctp/association/SctpConfig;JJJIIIIIJSSIIILcom/ditchoom/buffer/BufferFactory;ILcom/ditchoom/webrtc/sctp/association/ReceiveMessageLimit;Lcom/ditchoom/webrtc/sctp/association/StreamGrowthPolicy;Lcom/ditchoom/webrtc/sctp/ZeroChecksumPolicy;Lcom/ditchoom/webrtc/sctp/association/PathMtuPolicy;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpConfig;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getBufferFactory ()Lcom/ditchoom/buffer/BufferFactory;
 	public final fun getInboundStreams-Mh2AYeg ()S
@@ -1106,6 +1621,9 @@ public final class com/ditchoom/webrtc/sctp/association/SctpConfig {
 	public final fun getMaxPayloadBytes ()I
 	public final fun getMaxShutdownRetransmits ()I
 	public final fun getOutboundStreams-Mh2AYeg ()S
+	public final fun getPathMtu ()Lcom/ditchoom/webrtc/sctp/association/PathMtuPolicy;
+	public final fun getReceiveMessageLimit ()Lcom/ditchoom/webrtc/sctp/association/ReceiveMessageLimit;
+	public final fun getReceiveOverrun-x1-hbnY ()I
 	public final fun getReceiveWindowBytes-pVg5ArA ()I
 	public final fun getRtoInitial-UwyO8pc ()J
 	public final fun getRtoMax-UwyO8pc ()J
@@ -1113,6 +1631,8 @@ public final class com/ditchoom/webrtc/sctp/association/SctpConfig {
 	public final fun getSackDelay-UwyO8pc ()J
 	public final fun getSendBufferHighWaterBytes ()I
 	public final fun getSendBufferLowWaterBytes ()I
+	public final fun getStreamGrowth ()Lcom/ditchoom/webrtc/sctp/association/StreamGrowthPolicy;
+	public final fun getZeroChecksum ()Lcom/ditchoom/webrtc/sctp/ZeroChecksumPolicy;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -1141,6 +1661,39 @@ public final class com/ditchoom/webrtc/sctp/association/SctpEvent$DatagramReceiv
 	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/association/SctpEvent$DatagramReceived;Lcom/ditchoom/buffer/ReadBuffer;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpEvent$DatagramReceived;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getPayload ()Lcom/ditchoom/buffer/ReadBuffer;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/SctpEvent$MessageConsumed : com/ditchoom/webrtc/sctp/association/SctpEvent {
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-kutEkcA ()J
+	public final fun copy-SHYFsf8 (J)Lcom/ditchoom/webrtc/sctp/association/SctpEvent$MessageConsumed;
+	public static synthetic fun copy-SHYFsf8$default (Lcom/ditchoom/webrtc/sctp/association/SctpEvent$MessageConsumed;JILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpEvent$MessageConsumed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReceipt-kutEkcA ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/SctpEvent$PathChanged : com/ditchoom/webrtc/sctp/association/SctpEvent {
+	public fun <init> (Lcom/ditchoom/webrtc/sctp/association/SctpPathProfile$Assessed;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sctp/association/SctpPathProfile$Assessed;
+	public final fun copy (Lcom/ditchoom/webrtc/sctp/association/SctpPathProfile$Assessed;)Lcom/ditchoom/webrtc/sctp/association/SctpEvent$PathChanged;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/association/SctpEvent$PathChanged;Lcom/ditchoom/webrtc/sctp/association/SctpPathProfile$Assessed;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpEvent$PathChanged;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getPath ()Lcom/ditchoom/webrtc/sctp/association/SctpPathProfile$Assessed;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/SctpEvent$RequestMoreOutgoingStreams : com/ditchoom/webrtc/sctp/association/SctpEvent {
+	public synthetic fun <init> (SLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-Xam5NJQ ()S
+	public final fun copy-guUB_Nc (S)Lcom/ditchoom/webrtc/sctp/association/SctpEvent$RequestMoreOutgoingStreams;
+	public static synthetic fun copy-guUB_Nc$default (Lcom/ditchoom/webrtc/sctp/association/SctpEvent$RequestMoreOutgoingStreams;SILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpEvent$RequestMoreOutgoingStreams;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCount-Xam5NJQ ()S
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -1200,6 +1753,21 @@ public final class com/ditchoom/webrtc/sctp/association/SctpFailureReason$Handsh
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/sctp/association/SctpFailureReason$PeerMessageTooLarge : com/ditchoom/webrtc/sctp/association/SctpFailureReason {
+	public synthetic fun <init> (IJJLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-cFBZvdc ()I
+	public final fun component2 ()J
+	public final fun component3 ()J
+	public final fun copy-Eoy2qVw (IJJ)Lcom/ditchoom/webrtc/sctp/association/SctpFailureReason$PeerMessageTooLarge;
+	public static synthetic fun copy-Eoy2qVw$default (Lcom/ditchoom/webrtc/sctp/association/SctpFailureReason$PeerMessageTooLarge;IJJILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpFailureReason$PeerMessageTooLarge;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCeilingBytes ()J
+	public final fun getObservedBytes ()J
+	public final fun getStreamId-cFBZvdc ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/sctp/association/SctpFailureReason$PeerRestarted : com/ditchoom/webrtc/sctp/association/SctpFailureReason {
 	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/association/SctpFailureReason$PeerRestarted;
 	public fun equals (Ljava/lang/Object;)Z
@@ -1251,18 +1819,44 @@ public final class com/ditchoom/webrtc/sctp/association/SctpOutput$IncomingStrea
 }
 
 public final class com/ditchoom/webrtc/sctp/association/SctpOutput$MessageReceived : com/ditchoom/webrtc/sctp/association/SctpOutput {
-	public synthetic fun <init> (IIZLcom/ditchoom/buffer/ReadBuffer;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (IIZLcom/ditchoom/buffer/ReadBuffer;JLkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1-cFBZvdc ()I
 	public final fun component2-N_xLETs ()I
 	public final fun component3 ()Z
 	public final fun component4 ()Lcom/ditchoom/buffer/ReadBuffer;
-	public final fun copy-5Ooy7ls (IIZLcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$MessageReceived;
-	public static synthetic fun copy-5Ooy7ls$default (Lcom/ditchoom/webrtc/sctp/association/SctpOutput$MessageReceived;IIZLcom/ditchoom/buffer/ReadBuffer;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$MessageReceived;
+	public final fun component5-kutEkcA ()J
+	public final fun copy-16Ztdx4 (IIZLcom/ditchoom/buffer/ReadBuffer;J)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$MessageReceived;
+	public static synthetic fun copy-16Ztdx4$default (Lcom/ditchoom/webrtc/sctp/association/SctpOutput$MessageReceived;IIZLcom/ditchoom/buffer/ReadBuffer;JILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$MessageReceived;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getPayload ()Lcom/ditchoom/buffer/ReadBuffer;
 	public final fun getPayloadProtocolId-N_xLETs ()I
+	public final fun getReceipt-kutEkcA ()J
 	public final fun getStreamId-cFBZvdc ()I
 	public final fun getUnordered ()Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/SctpOutput$OutgoingCapacityChanged : com/ditchoom/webrtc/sctp/association/SctpOutput {
+	public fun <init> (Lcom/ditchoom/webrtc/sctp/association/OutgoingStreamCapacity$Negotiated;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sctp/association/OutgoingStreamCapacity$Negotiated;
+	public final fun copy (Lcom/ditchoom/webrtc/sctp/association/OutgoingStreamCapacity$Negotiated;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$OutgoingCapacityChanged;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/association/SctpOutput$OutgoingCapacityChanged;Lcom/ditchoom/webrtc/sctp/association/OutgoingStreamCapacity$Negotiated;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$OutgoingCapacityChanged;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCapacity ()Lcom/ditchoom/webrtc/sctp/association/OutgoingStreamCapacity$Negotiated;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/SctpOutput$OutgoingStreamsAdded : com/ditchoom/webrtc/sctp/association/SctpOutput {
+	public synthetic fun <init> (SLcom/ditchoom/webrtc/sctp/association/StreamAddOutcome;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-Xam5NJQ ()S
+	public final fun component2 ()Lcom/ditchoom/webrtc/sctp/association/StreamAddOutcome;
+	public final fun copy-qT-8zQE (SLcom/ditchoom/webrtc/sctp/association/StreamAddOutcome;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$OutgoingStreamsAdded;
+	public static synthetic fun copy-qT-8zQE$default (Lcom/ditchoom/webrtc/sctp/association/SctpOutput$OutgoingStreamsAdded;SLcom/ditchoom/webrtc/sctp/association/StreamAddOutcome;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$OutgoingStreamsAdded;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getOutcome ()Lcom/ditchoom/webrtc/sctp/association/StreamAddOutcome;
+	public final fun getRequested-Xam5NJQ ()S
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -1276,6 +1870,21 @@ public final class com/ditchoom/webrtc/sctp/association/SctpOutput$OutgoingStrea
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getOutcome ()Lcom/ditchoom/webrtc/sctp/association/StreamResetOutcome;
 	public final fun getScope ()Lcom/ditchoom/webrtc/sctp/association/StreamResetScope;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/SctpOutput$PathMtuChanged : com/ditchoom/webrtc/sctp/association/SctpOutput {
+	public synthetic fun <init> (ILcom/ditchoom/webrtc/sctp/association/PathMtuChangeCause;Lcom/ditchoom/webrtc/sctp/association/OversizedBacklog;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-2grwRdg ()I
+	public final fun component2 ()Lcom/ditchoom/webrtc/sctp/association/PathMtuChangeCause;
+	public final fun component3 ()Lcom/ditchoom/webrtc/sctp/association/OversizedBacklog;
+	public final fun copy-5Nd3hd8 (ILcom/ditchoom/webrtc/sctp/association/PathMtuChangeCause;Lcom/ditchoom/webrtc/sctp/association/OversizedBacklog;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$PathMtuChanged;
+	public static synthetic fun copy-5Nd3hd8$default (Lcom/ditchoom/webrtc/sctp/association/SctpOutput$PathMtuChanged;ILcom/ditchoom/webrtc/sctp/association/PathMtuChangeCause;Lcom/ditchoom/webrtc/sctp/association/OversizedBacklog;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpOutput$PathMtuChanged;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getBacklog ()Lcom/ditchoom/webrtc/sctp/association/OversizedBacklog;
+	public final fun getCause ()Lcom/ditchoom/webrtc/sctp/association/PathMtuChangeCause;
+	public final fun getCeiling-2grwRdg ()I
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -1335,6 +1944,32 @@ public final class com/ditchoom/webrtc/sctp/association/SctpOutput$Transmit$Reta
 	public fun toString ()Ljava/lang/String;
 }
 
+public abstract interface class com/ditchoom/webrtc/sctp/association/SctpPathProfile {
+}
+
+public final class com/ditchoom/webrtc/sctp/association/SctpPathProfile$Assessed : com/ditchoom/webrtc/sctp/association/SctpPathProfile {
+	public synthetic fun <init> (ILcom/ditchoom/webrtc/sctp/association/PathAddressFamily;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-Jwy5FCw ()I
+	public final fun component2 ()Lcom/ditchoom/webrtc/sctp/association/PathAddressFamily;
+	public final fun component3-Iflbs5s ()I
+	public final fun copy-0LZ3jUg (ILcom/ditchoom/webrtc/sctp/association/PathAddressFamily;I)Lcom/ditchoom/webrtc/sctp/association/SctpPathProfile$Assessed;
+	public static synthetic fun copy-0LZ3jUg$default (Lcom/ditchoom/webrtc/sctp/association/SctpPathProfile$Assessed;ILcom/ditchoom/webrtc/sctp/association/PathAddressFamily;IILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpPathProfile$Assessed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFamily ()Lcom/ditchoom/webrtc/sctp/association/PathAddressFamily;
+	public final fun getIdentity-Jwy5FCw ()I
+	public final fun getOverhead-Iflbs5s ()I
+	public final fun getUnprobedFragmentCeiling-2grwRdg ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/SctpPathProfile$Unassessed : com/ditchoom/webrtc/sctp/association/SctpPathProfile {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/association/SctpPathProfile$Unassessed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public abstract interface class com/ditchoom/webrtc/sctp/association/SctpReliability {
 }
 
@@ -1368,19 +2003,113 @@ public final class com/ditchoom/webrtc/sctp/association/SctpReliability$Reliable
 }
 
 public final class com/ditchoom/webrtc/sctp/association/SctpSendOptions {
-	public synthetic fun <init> (IILcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public synthetic fun <init> (IILcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (IILcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;Lcom/ditchoom/webrtc/sctp/association/SendOrigin;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (IILcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;Lcom/ditchoom/webrtc/sctp/association/SendOrigin;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1-cFBZvdc ()I
 	public final fun component2-N_xLETs ()I
 	public final fun component3 ()Lcom/ditchoom/webrtc/sctp/DeliveryOrder;
 	public final fun component4 ()Lcom/ditchoom/webrtc/sctp/association/SctpReliability;
-	public final fun copy-5Ooy7ls (IILcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;)Lcom/ditchoom/webrtc/sctp/association/SctpSendOptions;
-	public static synthetic fun copy-5Ooy7ls$default (Lcom/ditchoom/webrtc/sctp/association/SctpSendOptions;IILcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpSendOptions;
+	public final fun component5 ()Lcom/ditchoom/webrtc/sctp/association/SendOrigin;
+	public final fun copy-emNKg1s (IILcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;Lcom/ditchoom/webrtc/sctp/association/SendOrigin;)Lcom/ditchoom/webrtc/sctp/association/SctpSendOptions;
+	public static synthetic fun copy-emNKg1s$default (Lcom/ditchoom/webrtc/sctp/association/SctpSendOptions;IILcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;Lcom/ditchoom/webrtc/sctp/association/SendOrigin;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/SctpSendOptions;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getDelivery ()Lcom/ditchoom/webrtc/sctp/DeliveryOrder;
+	public final fun getOrigin ()Lcom/ditchoom/webrtc/sctp/association/SendOrigin;
 	public final fun getPayloadProtocolId-N_xLETs ()I
 	public final fun getReliability ()Lcom/ditchoom/webrtc/sctp/association/SctpReliability;
 	public final fun getStreamId-cFBZvdc ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/SendOrigin : java/lang/Enum {
+	public static final field Application Lcom/ditchoom/webrtc/sctp/association/SendOrigin;
+	public static final field Control Lcom/ditchoom/webrtc/sctp/association/SendOrigin;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/webrtc/sctp/association/SendOrigin;
+	public static fun values ()[Lcom/ditchoom/webrtc/sctp/association/SendOrigin;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/association/StreamAddOutcome {
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/association/StreamAddOutcome$NotAdded : com/ditchoom/webrtc/sctp/association/StreamAddOutcome {
+}
+
+public final class com/ditchoom/webrtc/sctp/association/StreamAddOutcome$NotAdded$Answered : com/ditchoom/webrtc/sctp/association/StreamAddOutcome$NotAdded {
+	public fun <init> (Lcom/ditchoom/webrtc/sctp/ReConfigResult;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sctp/ReConfigResult;
+	public final fun copy (Lcom/ditchoom/webrtc/sctp/ReConfigResult;)Lcom/ditchoom/webrtc/sctp/association/StreamAddOutcome$NotAdded$Answered;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/association/StreamAddOutcome$NotAdded$Answered;Lcom/ditchoom/webrtc/sctp/ReConfigResult;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/StreamAddOutcome$NotAdded$Answered;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getResult ()Lcom/ditchoom/webrtc/sctp/ReConfigResult;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/StreamAddOutcome$NotAdded$Unsupported : com/ditchoom/webrtc/sctp/association/StreamAddOutcome$NotAdded {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/association/StreamAddOutcome$NotAdded$Unsupported;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/StreamAddOutcome$NotAdded$WouldOverflow : com/ditchoom/webrtc/sctp/association/StreamAddOutcome$NotAdded {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/association/StreamAddOutcome$NotAdded$WouldOverflow;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/StreamAddOutcome$Performed : com/ditchoom/webrtc/sctp/association/StreamAddOutcome {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/association/StreamAddOutcome$Performed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/StreamCount : java/lang/Comparable {
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/association/StreamCount$Companion;
+	public static final fun admits-78fEIyU (SI)Z
+	public static final synthetic fun box-impl (S)Lcom/ditchoom/webrtc/sctp/association/StreamCount;
+	public synthetic fun compareTo (Ljava/lang/Object;)I
+	public fun compareTo-guUB_Nc (S)I
+	public static fun compareTo-guUB_Nc (SS)I
+	public static fun constructor-impl (S)S
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (SLjava/lang/Object;)Z
+	public static final fun equals-impl0 (SS)Z
+	public final fun getValue-Mh2AYeg ()S
+	public fun hashCode ()I
+	public static fun hashCode-impl (S)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (S)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()S
+}
+
+public final class com/ditchoom/webrtc/sctp/association/StreamCount$Companion {
+	public final fun getMax-Xam5NJQ ()S
+	public final fun getMaxUsableId-cFBZvdc ()I
+	public final fun getNone-Xam5NJQ ()S
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/association/StreamGrowthPolicy {
+}
+
+public final class com/ditchoom/webrtc/sctp/association/StreamGrowthPolicy$AddStreams : com/ditchoom/webrtc/sctp/association/StreamGrowthPolicy {
+	public synthetic fun <init> (SLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-Xam5NJQ ()S
+	public final fun copy-guUB_Nc (S)Lcom/ditchoom/webrtc/sctp/association/StreamGrowthPolicy$AddStreams;
+	public static synthetic fun copy-guUB_Nc$default (Lcom/ditchoom/webrtc/sctp/association/StreamGrowthPolicy$AddStreams;SILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/association/StreamGrowthPolicy$AddStreams;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getIncrement-Xam5NJQ ()S
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/association/StreamGrowthPolicy$Fixed : com/ditchoom/webrtc/sctp/association/StreamGrowthPolicy {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/association/StreamGrowthPolicy$Fixed;
+	public fun equals (Ljava/lang/Object;)Z
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -1434,18 +2163,74 @@ public final class com/ditchoom/webrtc/sctp/association/StreamResetScope$Streams
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/sctp/datachannel/BufferedAmount : java/lang/Comparable {
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/datachannel/BufferedAmount$Companion;
+	public static final synthetic fun box-impl (J)Lcom/ditchoom/webrtc/sctp/datachannel/BufferedAmount;
+	public synthetic fun compareTo (Ljava/lang/Object;)I
+	public fun compareTo-dzwMbG0 (J)I
+	public static fun compareTo-dzwMbG0 (JJ)I
+	public static fun constructor-impl (J)J
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (JLjava/lang/Object;)Z
+	public static final fun equals-impl0 (JJ)Z
+	public final fun getBytes ()J
+	public fun hashCode ()I
+	public static fun hashCode-impl (J)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (J)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()J
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/BufferedAmount$Companion {
+	public final fun getZERO-QLi-VWg ()J
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/datachannel/BufferedDataChannel : com/ditchoom/buffer/flow/Connection {
+	public fun awaitBufferedAmountLow-Y-iGCb8 (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun awaitBufferedAmountLow-Y-iGCb8$default (Lcom/ditchoom/webrtc/sctp/datachannel/BufferedDataChannel;JLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public abstract fun getBufferedAmount ()Lkotlinx/coroutines/flow/StateFlow;
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/BufferedDataChannel$DefaultImpls {
+	public static fun awaitBufferedAmountLow-Y-iGCb8 (Lcom/ditchoom/webrtc/sctp/datachannel/BufferedDataChannel;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun awaitBufferedAmountLow-Y-iGCb8$default (Lcom/ditchoom/webrtc/sctp/datachannel/BufferedDataChannel;JLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/datachannel/ChannelIdentity {
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/ChannelIdentity$InBand : com/ditchoom/webrtc/sctp/datachannel/ChannelIdentity {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/datachannel/ChannelIdentity$InBand;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/ChannelIdentity$Negotiated : com/ditchoom/webrtc/sctp/datachannel/ChannelIdentity {
+	public synthetic fun <init> (ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-cFBZvdc ()I
+	public final fun copy-78fEIyU (I)Lcom/ditchoom/webrtc/sctp/datachannel/ChannelIdentity$Negotiated;
+	public static synthetic fun copy-78fEIyU$default (Lcom/ditchoom/webrtc/sctp/datachannel/ChannelIdentity$Negotiated;IILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/datachannel/ChannelIdentity$Negotiated;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getId-cFBZvdc ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelConfig {
-	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;SILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;SLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;SLcom/ditchoom/webrtc/sctp/datachannel/ChannelIdentity;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;SLcom/ditchoom/webrtc/sctp/datachannel/ChannelIdentity;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()Ljava/lang/String;
 	public final fun component2 ()Ljava/lang/String;
 	public final fun component3 ()Lcom/ditchoom/webrtc/sctp/DeliveryOrder;
 	public final fun component4 ()Lcom/ditchoom/webrtc/sctp/association/SctpReliability;
 	public final fun component5-Mh2AYeg ()S
-	public final fun copy-kBKUC64 (Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;S)Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;
-	public static synthetic fun copy-kBKUC64$default (Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;SILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;
+	public final fun component6 ()Lcom/ditchoom/webrtc/sctp/datachannel/ChannelIdentity;
+	public final fun copy-8sC2xFo (Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;SLcom/ditchoom/webrtc/sctp/datachannel/ChannelIdentity;)Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;
+	public static synthetic fun copy-8sC2xFo$default (Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;Ljava/lang/String;Ljava/lang/String;Lcom/ditchoom/webrtc/sctp/DeliveryOrder;Lcom/ditchoom/webrtc/sctp/association/SctpReliability;SLcom/ditchoom/webrtc/sctp/datachannel/ChannelIdentity;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getDelivery ()Lcom/ditchoom/webrtc/sctp/DeliveryOrder;
+	public final fun getIdentity ()Lcom/ditchoom/webrtc/sctp/datachannel/ChannelIdentity;
 	public final fun getLabel ()Ljava/lang/String;
 	public final fun getPriority-Mh2AYeg ()S
 	public final fun getProtocol ()Ljava/lang/String;
@@ -1454,8 +2239,10 @@ public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelConfig {
 	public fun toString ()Ljava/lang/String;
 }
 
-public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelConnection : com/ditchoom/buffer/flow/Connection {
+public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelConnection : com/ditchoom/webrtc/sctp/datachannel/BufferedDataChannel {
+	public fun awaitBufferedAmountLow-Y-iGCb8 (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun close (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun getBufferedAmount ()Lkotlinx/coroutines/flow/StateFlow;
 	public final fun getConfig ()Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;
 	public fun getId ()J
 	public fun receive ()Lkotlinx/coroutines/flow/Flow;
@@ -1463,13 +2250,94 @@ public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelConnection : 
 	public synthetic fun send (Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
+public abstract interface class com/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal {
+	public abstract fun getDescription ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$PeerWouldNotAddStreams : com/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal {
+	public fun <init> (Lcom/ditchoom/webrtc/sctp/association/StreamAddOutcome$NotAdded;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/sctp/association/StreamAddOutcome$NotAdded;
+	public final fun copy (Lcom/ditchoom/webrtc/sctp/association/StreamAddOutcome$NotAdded;)Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$PeerWouldNotAddStreams;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$PeerWouldNotAddStreams;Lcom/ditchoom/webrtc/sctp/association/StreamAddOutcome$NotAdded;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$PeerWouldNotAddStreams;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getRefusal ()Lcom/ditchoom/webrtc/sctp/association/StreamAddOutcome$NotAdded;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$StreamIdBurned : com/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal {
+	public synthetic fun <init> (ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-cFBZvdc ()I
+	public final fun copy-78fEIyU (I)Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$StreamIdBurned;
+	public static synthetic fun copy-78fEIyU$default (Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$StreamIdBurned;IILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$StreamIdBurned;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getId-cFBZvdc ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$StreamIdClosing : com/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal {
+	public synthetic fun <init> (ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-cFBZvdc ()I
+	public final fun copy-78fEIyU (I)Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$StreamIdClosing;
+	public static synthetic fun copy-78fEIyU$default (Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$StreamIdClosing;IILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$StreamIdClosing;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getId-cFBZvdc ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$StreamIdInUse : com/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal {
+	public synthetic fun <init> (ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-cFBZvdc ()I
+	public final fun copy-78fEIyU (I)Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$StreamIdInUse;
+	public static synthetic fun copy-78fEIyU$default (Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$StreamIdInUse;IILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$StreamIdInUse;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getId-cFBZvdc ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$StreamIdOutsideNegotiatedRange : com/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal {
+	public synthetic fun <init> (ISLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-cFBZvdc ()I
+	public final fun component2-Xam5NJQ ()S
+	public final fun copy-jMAoGEw (IS)Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$StreamIdOutsideNegotiatedRange;
+	public static synthetic fun copy-jMAoGEw$default (Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$StreamIdOutsideNegotiatedRange;ISILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$StreamIdOutsideNegotiatedRange;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCapacity-Xam5NJQ ()S
+	public fun getDescription ()Ljava/lang/String;
+	public final fun getId-cFBZvdc ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$StreamIdSpaceExhausted : com/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal$StreamIdSpaceExhausted;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getDescription ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusedException : java/lang/Exception {
+	public fun <init> (Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal;)V
+	public final fun getRefusal ()Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelOpenRefusal;
+}
+
 public abstract interface class com/ditchoom/webrtc/sctp/datachannel/DataChannelPayload {
+	public abstract fun getWireByteCount ()J
 	public abstract fun release ()V
 }
 
 public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelPayload$Binary : com/ditchoom/webrtc/sctp/datachannel/DataChannelPayload {
 	public fun <init> (Lcom/ditchoom/buffer/ReadBuffer;)V
 	public final fun getBytes ()Lcom/ditchoom/buffer/ReadBuffer;
+	public fun getWireByteCount ()J
 	public fun release ()V
 	public fun toString ()Ljava/lang/String;
 }
@@ -1477,6 +2345,7 @@ public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelPayload$Binar
 public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelPayload$Text : com/ditchoom/webrtc/sctp/datachannel/DataChannelPayload {
 	public fun <init> (Ljava/lang/CharSequence;)V
 	public final fun getText ()Ljava/lang/CharSequence;
+	public fun getWireByteCount ()J
 	public fun release ()V
 	public fun toString ()Ljava/lang/String;
 }
@@ -1484,6 +2353,94 @@ public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelPayload$Text 
 public final class com/ditchoom/webrtc/sctp/datachannel/DataChannelPayloadKt {
 	public static final fun send (Lcom/ditchoom/buffer/flow/Connection;Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static final fun send (Lcom/ditchoom/buffer/flow/Connection;Ljava/lang/CharSequence;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/MessageRefusedException : java/lang/IllegalArgumentException {
+	public fun <init> (Lcom/ditchoom/webrtc/sctp/datachannel/MessageRefusedReason;)V
+	public final fun getReason ()Lcom/ditchoom/webrtc/sctp/datachannel/MessageRefusedReason;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/datachannel/MessageRefusedReason {
+	public abstract fun getMessageBytes ()J
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/MessageRefusedReason$ExceedsAdvertisedLimit : com/ditchoom/webrtc/sctp/datachannel/MessageRefusedReason {
+	public fun <init> (JJ)V
+	public final fun component1 ()J
+	public final fun component2 ()J
+	public final fun copy (JJ)Lcom/ditchoom/webrtc/sctp/datachannel/MessageRefusedReason$ExceedsAdvertisedLimit;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/datachannel/MessageRefusedReason$ExceedsAdvertisedLimit;JJILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/datachannel/MessageRefusedReason$ExceedsAdvertisedLimit;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCeilingBytes ()J
+	public fun getMessageBytes ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/MessageRefusedReason$ExceedsAssumedDefault : com/ditchoom/webrtc/sctp/datachannel/MessageRefusedReason {
+	public fun <init> (J)V
+	public final fun component1 ()J
+	public final fun copy (J)Lcom/ditchoom/webrtc/sctp/datachannel/MessageRefusedReason$ExceedsAssumedDefault;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/datachannel/MessageRefusedReason$ExceedsAssumedDefault;JILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/datachannel/MessageRefusedReason$ExceedsAssumedDefault;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getMessageBytes ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/MessageRefusedReason$PeerLimitUnknown : com/ditchoom/webrtc/sctp/datachannel/MessageRefusedReason {
+	public fun <init> (J)V
+	public final fun component1 ()J
+	public final fun copy (J)Lcom/ditchoom/webrtc/sctp/datachannel/MessageRefusedReason$PeerLimitUnknown;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/sctp/datachannel/MessageRefusedReason$PeerLimitUnknown;JILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/datachannel/MessageRefusedReason$PeerLimitUnknown;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getMessageBytes ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/webrtc/sctp/datachannel/PeerMessageLimit {
+	public static final field ASSUMED_DEFAULT_BYTES J
+	public static final field Companion Lcom/ditchoom/webrtc/sctp/datachannel/PeerMessageLimit$Companion;
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/PeerMessageLimit$Advertised : com/ditchoom/webrtc/sctp/datachannel/PeerMessageLimit {
+	public static final synthetic fun box-impl (J)Lcom/ditchoom/webrtc/sctp/datachannel/PeerMessageLimit$Advertised;
+	public static fun constructor-impl (J)J
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (JLjava/lang/Object;)Z
+	public static final fun equals-impl0 (JJ)Z
+	public final fun getBytes ()J
+	public fun hashCode ()I
+	public static fun hashCode-impl (J)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (J)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()J
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/PeerMessageLimit$AssumedDefault : com/ditchoom/webrtc/sctp/datachannel/PeerMessageLimit {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/datachannel/PeerMessageLimit$AssumedDefault;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/PeerMessageLimit$Companion {
+	public static final field ASSUMED_DEFAULT_BYTES J
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/PeerMessageLimit$NotYetNegotiated : com/ditchoom/webrtc/sctp/datachannel/PeerMessageLimit {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/datachannel/PeerMessageLimit$NotYetNegotiated;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/PeerMessageLimit$Unlimited : com/ditchoom/webrtc/sctp/datachannel/PeerMessageLimit {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/sctp/datachannel/PeerMessageLimit$Unlimited;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
 }
 
 public final class com/ditchoom/webrtc/sctp/datachannel/SctpClosedException : java/lang/Exception {
@@ -1500,14 +2457,21 @@ public final class com/ditchoom/webrtc/sctp/datachannel/SctpDataChannelStack : c
 	public final fun open (Lcom/ditchoom/webrtc/sctp/datachannel/DataChannelConfig;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun openBidirectional (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun openUnidirectional (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun pathChanged (Lcom/ditchoom/webrtc/sctp/association/SctpPathProfile$Assessed;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun setPeerMessageLimit (Lcom/ditchoom/webrtc/sctp/datachannel/PeerMessageLimit;)V
 	public final fun shutdown (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun start ()V
 }
 
 public abstract interface class com/ditchoom/webrtc/sctp/datachannel/SctpDatagramTransport {
 	public abstract fun close ()V
+	public fun getErrorDetection ()Lcom/ditchoom/webrtc/sctp/TransportErrorDetection;
 	public abstract fun receive (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public abstract fun send (Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/webrtc/sctp/datachannel/SctpDatagramTransport$DefaultImpls {
+	public static fun getErrorDetection (Lcom/ditchoom/webrtc/sctp/datachannel/SctpDatagramTransport;)Lcom/ditchoom/webrtc/sctp/TransportErrorDetection;
 }
 
 public final class com/ditchoom/webrtc/sctp/datachannel/SctpRole : java/lang/Enum {

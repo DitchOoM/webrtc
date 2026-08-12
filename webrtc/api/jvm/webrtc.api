@@ -61,6 +61,10 @@ public final class com/ditchoom/webrtc/MdnsAdvertisePolicy$Disabled : com/ditcho
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/MessageLimitsKt {
+	public static final fun asPeerMessageLimit (Lcom/ditchoom/webrtc/sdp/MaxMessageSizeAttribute;)Lcom/ditchoom/webrtc/sctp/datachannel/PeerMessageLimit;
+}
+
 public final class com/ditchoom/webrtc/NativePeerConnection : com/ditchoom/webrtc/RtcPeerConnection {
 	public static final field FOUNDATION_DIGITS I
 	public static final field FOUNDATION_RADIX I
@@ -76,6 +80,7 @@ public final class com/ditchoom/webrtc/NativePeerConnection : com/ditchoom/webrt
 	public fun getDiagnostics ()Lkotlinx/coroutines/flow/Flow;
 	public fun getIncomingDataChannels ()Lkotlinx/coroutines/flow/Flow;
 	public fun getLocalIceCandidates ()Lkotlinx/coroutines/flow/Flow;
+	public final fun getPeerMessageLimit ()Lkotlinx/coroutines/flow/StateFlow;
 	public fun getRenegotiationNeeded ()Lkotlinx/coroutines/flow/Flow;
 	public fun getSignalingState ()Lkotlinx/coroutines/flow/StateFlow;
 	public fun restartIce (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
@@ -340,6 +345,19 @@ public final class com/ditchoom/webrtc/SelectedPath$Opaque : com/ditchoom/webrtc
 }
 
 public abstract interface class com/ditchoom/webrtc/SessionDiagnostic {
+}
+
+public final class com/ditchoom/webrtc/SessionDiagnostic$DataPathMigrated : com/ditchoom/webrtc/SessionDiagnostic {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/IceDataPath;Lcom/ditchoom/webrtc/ice/IceDataPath;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/IceDataPath;
+	public final fun component2 ()Lcom/ditchoom/webrtc/ice/IceDataPath;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/IceDataPath;Lcom/ditchoom/webrtc/ice/IceDataPath;)Lcom/ditchoom/webrtc/SessionDiagnostic$DataPathMigrated;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/SessionDiagnostic$DataPathMigrated;Lcom/ditchoom/webrtc/ice/IceDataPath;Lcom/ditchoom/webrtc/ice/IceDataPath;ILjava/lang/Object;)Lcom/ditchoom/webrtc/SessionDiagnostic$DataPathMigrated;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFrom ()Lcom/ditchoom/webrtc/ice/IceDataPath;
+	public final fun getTo ()Lcom/ditchoom/webrtc/ice/IceDataPath;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
 }
 
 public final class com/ditchoom/webrtc/SessionDiagnostic$InterfaceProbeFailed : com/ditchoom/webrtc/SessionDiagnostic {

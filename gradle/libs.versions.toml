@@ -177,10 +177,25 @@ buffer = "6.29.0"
 #         `equals`/`hashCode`/`copy`/`componentN` all changed. Our single positional construction
 #         (LinkTopologyTest) still compiles precisely because the parameter is last; a future release
 #         inserting one mid-list would break it silently.
-# This does NOT move the buffer pin either. socket-udp 4.2.0's POM still declares buffer 6.25.0, so the
-# deliberate resolve-up to buffer 6.26.0 recorded above is unchanged — buffer 6.26.0 is still the latest
-# release, so there is nothing to re-align onto yet.
-socket = "4.4.0"
+#   - 4.4.0 is twenty-odd commits over 4.2.0. Four touch surfaces we consume: #313 (`NetworkMonitor
+#     .observations`, additive beside the `state` that `linkTopology()` folds), #315/#319 (trace-format
+#     observation-sequence gaps, a defaulted `droppedBefore` — the v1 handset capture still decodes,
+#     proven by `DeviceFlapReplayTest` at 4/0/0), #316/#317 (`transientNow` seam on FallbackTransport,
+#     defaulted to today's behaviour) and #303/#341, which replace `socket-udp`'s `sendWithBackpressure`
+#     polling ladder with an OP_WRITE readiness wait. That last one is OUR SEND PATH; upstream still
+#     asserts `sendDoesNotConsumeCallerBuffer`, which is this repo's "`send` does not consume" trap, so
+#     the invariant we ride is pinned on their side rather than merely believed.
+#     `DatagramCapabilities.requiresNativeMemoryBuffers` is unchanged from 4.1.0 through 4.4.1.
+#   - 4.4.1 is ONE commit over 4.4.0 — `fix(quic): stream read policy is a fixed 15s deadline,
+#     independent of the connection's idle timer` (#346). It touches `socket-quic` only, which this repo
+#     does not depend on at any coordinate (see [libraries]: socket-udp, socket, network-monitor,
+#     socket-testkit). Taken to stay on the latest published pin, not for any fix we consume.
+# The buffer pin does NOT follow socket's, and since 4.4.0 that is load-bearing rather than incidental:
+# socket-udp's POM declares **buffer 6.28.0**, the one version in that line to never resolve to (see the
+# `buffer` pin above). It stays out of the graph only because ours is higher and Gradle resolves UP —
+# verified rather than assumed, `:webrtc:dependencies` reports `com.ditchoom:buffer:6.28.0 -> 6.29.0`.
+# Never let this repo's buffer pin fall to or below 6.28.0, whatever socket's POM says.
+socket = "4.4.1"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"

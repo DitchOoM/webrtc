@@ -303,6 +303,17 @@ public class SctpAssociation(
                     }
             }
 
+    /**
+     * The congestion window in bytes (RFC 4960 §7.2), readable so a fixture can assert that it **grows**.
+     *
+     * Internal for the same reason the verification tags and [fragmentCeiling] are: no output carries it,
+     * and a frozen cwnd is invisible from the wire — every packet is well-formed, every chunk is
+     * acknowledged, and the only symptom is that a transfer takes one round trip per `cwnd / fragment`
+     * bytes forever. That is a throughput collapse a liveness assertion cannot see, because the association
+     * does eventually deliver (see [cwndIsTheLimit]).
+     */
+    internal val congestionWindowBytes: Int get() = ride.congestion.cwnd
+
     // Retained handshake artifacts (rebuilt-identical retransmits).
     private var localInit: SctpChunk.Init? = null
     private var cookieEcho: SctpChunk.CookieEcho? = null
@@ -1218,7 +1229,9 @@ public class SctpAssociation(
     ) {
         val rq = tcb.liveOrElse { return }.retransmission
         val cc = ride.congestion
-        val wasCwndLimited = rq.outstandingBytes >= cc.cwnd
+        // Measured BEFORE the ack is applied: it asks whether cwnd was holding the queue back over the round
+        // trip this SACK closes, which is a fact about the flight that is about to be reclaimed.
+        val wasCwndLimited = cwndIsTheLimit(rq, cc)
         val gapsAbsolute =
             sack.gapAckBlocks.map { block ->
                 Tsn(sack.cumulativeTsnAck.value + block.start.toUInt()) to Tsn(sack.cumulativeTsnAck.value + block.end.toUInt())
@@ -1381,6 +1394,37 @@ public class SctpAssociation(
         }
 
         if (rq.outstandingBytes > 0 && deadlines.t3 is Deadline.Unarmed) deadlines = deadlines.copy(t3 = Deadline.At(now + ride.rtt.rto))
+    }
+
+    /**
+     * Whether **cwnd** is what is holding the send queue back right now — RFC 4960 §7.2.1's condition that
+     * the window may only grow for a sender that is actually using it.
+     *
+     * §7.2.1 spells that condition `outstanding >= cwnd`, and read literally it is a *proxy*: it is exact
+     * only while every chunk is the same size **and** that size divides cwnd, because [trySend] stops at the
+     * last whole chunk that fits and leaves `cwnd mod fragmentSize` bytes unused. This stack satisfied both
+     * conditions by accident until the fragmentation point stopped being `SctpConfig.maxPayloadBytes` — every
+     * cwnd the controller can hold is a multiple of that value (`initialCwndMtus × mtu`, `+mtu` per ack,
+     * `mtu` after a timeout), so the flight landed exactly on cwnd and the proxy held.
+     *
+     * A path profile breaks it (ARCHITECTURE §11.2 / [SctpPathProfile]): a relayed IPv6 path fragments at
+     * 1116 bytes, four of those are 4464, the initial cwnd is 4800, and `4464 >= 4800` is false — so the
+     * literal test says "not cwnd-limited" **while the sender is blocked on cwnd**, the window never grows,
+     * and slow start never starts. It is self-perpetuating: cwnd is frozen at a value the flight can never
+     * reach, so no ack can ever unfreeze it. After a T3 collapses cwnd to one MTU it is one chunk per
+     * delayed-SACK interval, permanently.
+     *
+     * So the question is asked directly instead: this is exactly [trySend]'s own `!cwndOk` evaluated on the
+     * head of the queue, and the two must stay the same predicate. An **empty** queue is deliberately not
+     * cwnd-limited — that is the idle/application-limited sender §7.2.1 is protecting the window from, and
+     * it is the half the literal test got right.
+     */
+    private fun cwndIsTheLimit(
+        rq: RetransmissionQueue,
+        cc: CongestionControl,
+    ): Boolean {
+        val head = pendingSend.firstOrNull() ?: return false
+        return rq.outstandingBytes + head.bytes > cc.cwnd
     }
 
     // ────────────────────────────────── the path underneath ──────────────────────────────────

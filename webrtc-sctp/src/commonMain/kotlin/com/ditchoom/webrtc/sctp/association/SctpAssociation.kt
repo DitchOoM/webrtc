@@ -160,6 +160,18 @@ public class SctpAssociation(
     private var tcb: Tcb = Tcb.NoAssociation
 
     /**
+     * The RFC 4960 §3.3.2 a_rwnd accountant — what this endpoint still has room for, and how far past it
+     * arriving DATA is still stored (see [ReceiveWindow]).
+     *
+     * A `val` outside the [Tcb], because a [DeliveryReceipt] can come back after the control block that
+     * issued it is gone: the driver hands messages to an application coroutine, and the teardown that drops
+     * the TCB is a different one. Inside the TCB every credit would be a "does the association still exist"
+     * question at the call site; here it is a lookup that finds nothing, which is the same answer without
+     * the branch.
+     */
+    private val receiveWindow = ReceiveWindow(config.receiveWindowBytes, config.receiveOverrun)
+
+    /**
      * What is measured about the path currently underneath this association — RTT, congestion, the
      * consecutive-error budget, and the epoch that says which path they describe (see [PathRide]).
      *
@@ -749,7 +761,7 @@ public class SctpAssociation(
         tcb =
             Tcb.Live(
                 retransmission = retransmission,
-                reassembly = ReassemblyQueue(peerInitialTsn, config),
+                reassembly = ReassemblyQueue(peerInitialTsn, config, receiveWindow),
             )
         // The peer's advertised window is the RFC 4960 §7.2.1 seed for ssthresh, and it only becomes known
         // here. The epoch and any handshake RTT sample survive: this is the same path it always was.
@@ -860,10 +872,12 @@ public class SctpAssociation(
     ) {
         val reassembly = tcb.liveOrElse { return }.reassembly
         when (val ingest = reassembly.receive(chunk)) {
-            is ChunkIngest.Delivered ->
-                for (message in ingest.messages) {
-                    out += SctpOutput.MessageReceived(message.streamId, message.ppid, message.unordered, message.payload)
-                }
+            is ChunkIngest.Delivered -> for (message in ingest.messages) out += deliver(message)
+            // RFC 4960 §6.2, want of buffer: nothing was stored and nothing is owed. The caller SACKs on the
+            // way out of this packet — `receive` has already flagged it immediate — and that SACK reports
+            // the TSN as still missing (it never entered the gap map), which is what asks the peer to send
+            // it again once the window this endpoint is advertising has reopened.
+            ChunkIngest.RefusedForBuffer -> Unit
             // The peer is sending a message larger than we advertised we would take (RFC 8841 §6), which
             // RFC 8831 §6.6 forbids. Nothing was stored, so there is no partial message to release —
             // `fail` below drains the rest — and nothing further in this packet is processed, because
@@ -871,6 +885,23 @@ public class SctpAssociation(
             is ChunkIngest.MessageTooLarge -> abortOversizedMessage(ingest, out)
         }
     }
+
+    /**
+     * Hand one reassembled message to the driver, charging its bytes to the receive window.
+     *
+     * The charge and the hand-off are one expression because they are one event: a message that leaves here
+     * uncharged is receive-buffer space this endpoint keeps advertising while the memory is still out with
+     * the application, and a charge with no message is a window that shuts and never reopens. There is one
+     * call site per message-producing path, and both are directly below.
+     */
+    private fun deliver(message: ReassembledMessage): SctpOutput.MessageReceived =
+        SctpOutput.MessageReceived(
+            message.streamId,
+            message.ppid,
+            message.unordered,
+            message.payload,
+            receiveWindow.issue(message.bytes),
+        )
 
     /**
      * ABORT because the peer overran the ceiling we advertised (RFC 4960 §3.3.7 with a §3.3.10 Protocol
@@ -940,9 +971,7 @@ public class SctpAssociation(
         out: MutableList<SctpOutput>,
     ) {
         val reassembly = tcb.liveOrElse { return }.reassembly
-        for (message in reassembly.onForwardTsn(chunk.newCumulativeTsn, chunk.streams)) {
-            out += SctpOutput.MessageReceived(message.streamId, message.ppid, message.unordered, message.payload)
-        }
+        for (message in reassembly.onForwardTsn(chunk.newCumulativeTsn, chunk.streams)) out += deliver(message)
     }
 
     // ────────────────────────────────── send path ──────────────────────────────────
@@ -1504,10 +1533,21 @@ public class SctpAssociation(
 
     private fun emitSack(out: MutableList<SctpOutput>) {
         val reassembly = tcb.liveOrElse { return }.reassembly
-        emitPacket(listOf(reassembly.buildSack()), peerVerificationTag, out)
+        emitPacket(listOf(reassembly.buildSack(advertisedWindow(reassembly))), peerVerificationTag, out)
         packetsSinceSack = 0
         deadlines = deadlines.copy(sack = Deadline.Unarmed)
     }
+
+    /**
+     * The a_rwnd to put on the next SACK (RFC 4960 §3.3.2): what is left of the configured window after
+     * everything currently held against it — the reassembly queue's partial and order-blocked messages, and
+     * everything delivered upward that has not been credited back.
+     *
+     * Read here rather than stored, so it cannot be stale: the two quantities move on entirely different
+     * events (a chunk arriving, an application finishing with a message), and a cached sum would have to be
+     * invalidated by both.
+     */
+    private fun advertisedWindow(reassembly: ReassemblyQueue): UInt = receiveWindow.advertised(reassembly.bufferedBytes)
 
     // ────────────────────────────────── shutdown ──────────────────────────────────
 
@@ -1818,6 +1858,11 @@ public class SctpAssociation(
             }
         }
         tcb = Tcb.NoAssociation
+        // Every receipt still outstanding names a message of the association that is going away. Its buffer
+        // is the driver's to release (it was transferred), and the space it was holding is not this
+        // endpoint's to keep reserved — a peer that restarts gets the whole window back. Dropping the
+        // charges whole is also what makes a credit that arrives after this a clean no-op.
+        receiveWindow.forgetAll()
         reclaim(pendingSend.map { it.packet }, out)
         pendingSend.clear()
         pendingSendBytes = 0

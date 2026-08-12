@@ -53,6 +53,31 @@ public sealed interface SctpEvent {
         public val scope: StreamResetScope,
     ) : SctpEvent
 
+    /**
+     * The upper layer has finished with a message this association delivered — give its receive-buffer
+     * space back (RFC 4960 §3.3.2 a_rwnd).
+     *
+     * **The other half of [SctpOutput.MessageReceived], and not optional.** A delivered message's bytes stay
+     * charged against the window this endpoint advertises until [receipt] comes back, so a driver that
+     * delivers and never credits closes its own receive window one message at a time and eventually stalls
+     * a peer that is behaving perfectly. That failure is silent and cumulative, which is why the credit is
+     * fused with the buffer release wherever a message is *not* delivered onward (`InboundDelivery.discard`)
+     * — forgetting the one then means forgetting the other, and the pool census already catches that.
+     *
+     * Idempotent and unforgeable. Crediting one receipt twice credits once, and a receipt from an
+     * association that has since been torn down credits nothing — both are ordinary races between an
+     * application coroutine and a teardown, not caller errors. [DeliveryReceipt]'s constructor is internal,
+     * so the only receipts in existence are ones this association issued.
+     *
+     * A credit that reopens a window which was advertising **zero** emits a SACK immediately. Nothing else
+     * would: no DATA is arriving to trigger the delayed-SACK path — that is exactly what a shut window
+     * stops — so without this the peer learns only when its own RFC 4960 §6.1 probe times out, an RTO of
+     * silence for a receiver that is ready now.
+     */
+    public data class MessageConsumed(
+        public val receipt: DeliveryReceipt,
+    ) : SctpEvent
+
     /** Begin a graceful shutdown (RFC 4960 §9.2): drain outstanding data, then SHUTDOWN handshake. */
     public data object Shutdown : SctpEvent
 

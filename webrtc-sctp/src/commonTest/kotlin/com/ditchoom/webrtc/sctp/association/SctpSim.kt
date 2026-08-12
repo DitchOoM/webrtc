@@ -165,14 +165,33 @@ internal class SctpSim(
         error("SCTP sim did not converge in $maxSteps steps (livelock/hang): a=${a.state} b=${b.state}")
     }
 
+    /**
+     * Apply one endpoint's side effects, then **credit every message it just filed**.
+     *
+     * The credit is neither optional nor a nicety. A [SctpOutput.MessageReceived] charges its bytes to the
+     * receiving endpoint's a_rwnd (RFC 4960 §3.3.2) until the driver hands the receipt back, and this
+     * conductor *is* the driver — so a conductor that files without crediting watches its own window shrink
+     * by everything it has ever received and eventually stalls for a reason that has nothing to do with
+     * what the fixture is about. Standing in for an application that reads promptly is what every fixture
+     * here already assumes; this is where that assumption became something the code has to say.
+     *
+     * Credited **after** the loop rather than inside it, because a credit is itself an event whose outputs
+     * (the window-reopening SACK) have to be routed, and re-entering mid-iteration would interleave those
+     * packets with the ones still being scheduled.
+     */
     private fun apply(
         fromA: Boolean,
         outputs: List<SctpOutput>,
     ) {
+        var consumed: ArrayList<DeliveryReceipt>? = null
         for (output in outputs) {
             when (output) {
                 is SctpOutput.Transmit -> schedule(fromA, output.payloadView())
-                is SctpOutput.MessageReceived -> (if (fromA) inboxA else inboxB) += output
+                is SctpOutput.MessageReceived -> {
+                    (if (fromA) inboxA else inboxB) += output
+                    val receipts = consumed ?: ArrayList<DeliveryReceipt>().also { consumed = it }
+                    receipts += output.receipt
+                }
                 is SctpOutput.Aborted -> (if (fromA) abortsA else abortsB) += output.reason
                 SctpOutput.PeerRestarted -> (if (fromA) restartsA else restartsB).let { it.add(Unit) }
                 is SctpOutput.IncomingStreamsReset -> (if (fromA) incomingResetsA else incomingResetsB) += output.scope
@@ -188,6 +207,9 @@ internal class SctpSim(
                 is SctpOutput.ReclaimRetained -> Unit
             }
         }
+        val receipts = consumed ?: return
+        val endpoint = if (fromA) a else b
+        for (receipt in receipts) apply(fromA, endpoint.handle(SctpEvent.MessageConsumed(receipt), now))
     }
 
     private fun schedule(

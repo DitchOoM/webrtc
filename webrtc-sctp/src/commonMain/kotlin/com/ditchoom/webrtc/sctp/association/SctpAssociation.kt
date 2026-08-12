@@ -172,6 +172,16 @@ public class SctpAssociation(
     private val receiveWindow = ReceiveWindow(config.receiveWindowBytes, config.receiveOverrun)
 
     /**
+     * Bytes delivered upward whose [DeliveryReceipt] has not come back — test-visible, and the only direct
+     * read of "the driver still owes for these".
+     *
+     * Internal for the same reason the verification tags are: no output carries it. It is what tells a
+     * fixture apart a driver that credits at *delivery* — which would read zero here forever and provide no
+     * backpressure at all — from one that credits when the application is genuinely finished.
+     */
+    internal val outstandingReceiveBytes: Long get() = receiveWindow.outstandingBytes
+
+    /**
      * What is measured about the path currently underneath this association — RTT, congestion, the
      * consecutive-error budget, and the epoch that says which path they describe (see [PathRide]).
      *
@@ -378,6 +388,7 @@ public class SctpAssociation(
             is SctpEvent.SendMessage -> onSendMessage(event, now, out)
             is SctpEvent.ResetStreams -> onResetStreams(event.scope, now, out)
             is SctpEvent.PathChanged -> onPathChanged(event.path, now, out)
+            is SctpEvent.MessageConsumed -> onMessageConsumed(event.receipt, out)
             SctpEvent.Shutdown -> onShutdownRequested(now, out)
             SctpEvent.Abort -> onAbortRequested(out)
             SctpEvent.TimerFired -> onTimers(now, out)
@@ -884,6 +895,33 @@ public class SctpAssociation(
             // every remaining handler unwraps the TCB this tears down.
             is ChunkIngest.MessageTooLarge -> abortOversizedMessage(ingest, out)
         }
+    }
+
+    /**
+     * The upper layer finished with a delivered message (RFC 4960 §3.3.2): give its space back, and tell
+     * the peer at once if that reopened a window it had been told was shut.
+     *
+     * The SACK is the load-bearing half. A shut window stops inbound DATA by construction, and inbound DATA
+     * is the only thing that arms the delayed-SACK timer — so a receiver that drains has no other way to
+     * say so, and the peer would wait out its own RFC 4960 §6.1 probe to discover it. Emitted only on the
+     * zero-to-nonzero edge, because a SACK per consumed message on a healthy session is a packet per
+     * message for no information.
+     */
+    private fun onMessageConsumed(
+        receipt: DeliveryReceipt,
+        out: MutableList<SctpOutput>,
+    ) {
+        val live =
+            tcb.liveOrElse {
+                // No control block: the charges were dropped whole at teardown, so this finds nothing. It
+                // is still called rather than skipped, because "credit is a no-op without a TCB" is the
+                // window's rule to state, not every caller's to remember.
+                receiveWindow.credit(receipt)
+                return
+            }
+        val wasShut = advertisedWindow(live.reassembly) == 0u
+        if (receiveWindow.credit(receipt) == 0) return
+        if (wasShut && advertisedWindow(live.reassembly) > 0u) emitSack(out)
     }
 
     /**

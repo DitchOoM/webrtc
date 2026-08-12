@@ -5,6 +5,7 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.managed
+import com.ditchoom.webrtc.sctp.ErrorDetectionMethodId
 import com.ditchoom.webrtc.sctp.Tsn
 import com.ditchoom.webrtc.sctp.VerificationTag
 import kotlin.test.Test
@@ -37,8 +38,9 @@ class StateCookieSizeTest {
             peerTag = VerificationTag(0x11111111u),
             peerInitialTsn = Tsn(0x22222222u),
             peerRwnd = 0x33333333u,
-            peerForwardTsn = true,
-            peerReConfig = false,
+            peerMaxInbound = 0x8899u,
+            capabilities = PeerCapabilities.of(forwardTsn = true, reConfig = false),
+            peerZeroChecksum = ErrorDetectionMethodId.ZeroChecksum,
             ourTag = VerificationTag(0x44444444u),
             ourInitialTsn = Tsn(0x55555555u),
             localTieTag = VerificationTag(0x66666666u),
@@ -84,8 +86,9 @@ class StateCookieSizeTest {
                 peerTag = VerificationTag(0u),
                 peerInitialTsn = Tsn(0u),
                 peerRwnd = 0u,
-                peerForwardTsn = false,
-                peerReConfig = false,
+                peerMaxInbound = 0u,
+                capabilities = PeerCapabilities.None,
+                peerZeroChecksum = ErrorDetectionMethodId.Reserved,
                 ourTag = VerificationTag(0u),
                 ourInitialTsn = Tsn(0u),
                 localTieTag = VerificationTag(0u),

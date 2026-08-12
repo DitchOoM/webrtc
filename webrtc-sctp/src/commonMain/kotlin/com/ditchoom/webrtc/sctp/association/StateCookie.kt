@@ -3,6 +3,7 @@ package com.ditchoom.webrtc.sctp.association
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.annotations.Endianness
 import com.ditchoom.buffer.codec.annotations.ProtocolMessage
+import com.ditchoom.webrtc.sctp.ErrorDetectionMethodId
 import com.ditchoom.webrtc.sctp.Tsn
 import com.ditchoom.webrtc.sctp.VerificationTag
 
@@ -34,12 +35,30 @@ internal data class StateCookie(
     val peerTag: VerificationTag,
     val peerInitialTsn: Tsn,
     val peerRwnd: UInt,
-    val peerForwardTsn: Boolean,
-    // Whether the INIT that minted this cookie advertised RE-CONFIG (RFC 6525 §5.1). It has to ride in
-    // the cookie for the same reason [peerForwardTsn] does: the responder keeps no TCB between the INIT
-    // and the COOKIE ECHO, so an extension the INIT advertised is forgotten by the time the association
-    // comes up unless the cookie carries it — and an endpoint that forgot MUST NOT send RE-CONFIG.
-    val peerReConfig: Boolean,
+    /**
+     * The stream count this association settled on for inbound traffic: `min(our MIS, the peer's OS)`,
+     * computed when the INIT arrived (RFC 4960 §5.1.1).
+     *
+     * It rides here for the same reason the capabilities do — the responder holds no TCB across the
+     * handshake, so a number derived from the INIT is gone by the time the COOKIE ECHO returns. Deriving
+     * it again from the echo is not an option: the echo carries no stream counts at all.
+     */
+    val peerMaxInbound: UShort,
+    /**
+     * Everything the peer's INIT advertised, as one packed field (see [PeerCapabilities]) rather than one
+     * `Boolean` per extension. Extensions arrive in batches; fields do not merge, bits do.
+     */
+    val capabilities: PeerCapabilities,
+    /**
+     * The RFC 9653 §8 error-detection method the peer advertised, or [ErrorDetectionMethodId.Reserved]
+     * when it advertised none.
+     *
+     * **Nothing populates this with a real method yet** — Track H adds the parameter codec that reads it
+     * off the INIT. It is declared now because the cookie is the one structure in this module where
+     * incremental widening is genuinely dangerous, and adding it later would mean touching the layout
+     * twice: see the class KDoc on why that is worth avoiding once, let alone twice.
+     */
+    val peerZeroChecksum: ErrorDetectionMethodId,
     val ourTag: VerificationTag,
     val ourInitialTsn: Tsn,
     val localTieTag: VerificationTag,
@@ -67,8 +86,9 @@ internal data class StateCookie(
                     peerTag = VerificationTag(0u),
                     peerInitialTsn = Tsn(0u),
                     peerRwnd = 0u,
-                    peerForwardTsn = false,
-                    peerReConfig = false,
+                    peerMaxInbound = 0u,
+                    capabilities = PeerCapabilities.None,
+                    peerZeroChecksum = ErrorDetectionMethodId.Reserved,
                     ourTag = VerificationTag(0u),
                     ourInitialTsn = Tsn(0u),
                     localTieTag = VerificationTag(0u),

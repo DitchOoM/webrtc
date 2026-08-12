@@ -12,6 +12,7 @@ import com.ditchoom.webrtc.sctp.ChecksumVerdict
 import com.ditchoom.webrtc.sctp.DataChunkFlags
 import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.ErrorCauseCode
+import com.ditchoom.webrtc.sctp.ErrorDetectionMethodId
 import com.ditchoom.webrtc.sctp.ForwardTsnStream
 import com.ditchoom.webrtc.sctp.ReConfigParameter
 import com.ditchoom.webrtc.sctp.ReConfigParameterDecode
@@ -75,6 +76,17 @@ public class SctpAssociation(
     // Internal-readable for the same reason the verification tags above are: a fixture has to be able to
     // see that a teardown cleared the peer's advertised capabilities, and no output carries that fact.
     internal var peerExtensions: PeerExtensions = PeerExtensions.None
+        private set
+
+    /**
+     * Inbound streams this association negotiated: `min(our MIS, the peer's OS)` (RFC 4960 §5.1.1).
+     *
+     * Internal-readable for the same reason [peerExtensions] is — no output carries it, and a fixture has
+     * to be able to see that the responder recovered the number from its cookie rather than re-deriving
+     * it from an echo that does not contain it. **Nothing enforces it yet**; the inbound stream-id guard
+     * that consumes it is Track C's, and this is the value it will read.
+     */
+    internal var negotiatedInboundStreams: UShort = 0u
         private set
 
     private val orderedSendSsn = HashMap<StreamId, Int>()
@@ -342,8 +354,19 @@ public class SctpAssociation(
                     peerTag = init.initiateTag,
                     peerInitialTsn = init.initialTsn,
                     peerRwnd = init.advertisedReceiverWindow,
-                    peerForwardTsn = init.supportsForwardTsn(),
-                    peerReConfig = init.parameters.advertiseReConfig(),
+                    // RFC 4960 §5.1.1: the association carries min(our MIS, the peer's OS) inbound
+                    // streams. Computed here because the COOKIE ECHO carries no stream counts, so this is
+                    // the last moment the peer's number is in hand.
+                    peerMaxInbound = minOf(config.inboundStreams, init.outboundStreams),
+                    capabilities =
+                        PeerCapabilities.of(
+                            forwardTsn = init.supportsForwardTsn(),
+                            reConfig = init.parameters.advertiseReConfig(),
+                        ),
+                    // Track H reads the peer's advertisement off the INIT and populates this; until then
+                    // every cookie we mint says "none advertised", which is the correct conservative
+                    // answer rather than a placeholder.
+                    peerZeroChecksum = ErrorDetectionMethodId.Reserved,
                     ourTag = advertised.ourTag,
                     ourInitialTsn = advertised.ourInitialTsn,
                     localTieTag = advertised.localTieTag,
@@ -440,6 +463,9 @@ public class SctpAssociation(
                 forwardTsn = initAck.parameters.any { it.type == com.ditchoom.webrtc.sctp.ParameterType.ForwardTsnSupported },
                 reConfig = initAck.parameters.advertiseReConfig(),
             )
+        // The initiator never mints a cookie, so it settles the same §5.1.1 minimum straight off the
+        // INIT ACK. Both sides must reach the same number or they disagree about which stream ids exist.
+        negotiatedInboundStreams = minOf(config.inboundStreams, initAck.outboundStreams)
         establishControlBlocks(peerInitialTsn = initAck.initialTsn, peerRwnd = initAck.advertisedReceiverWindow)
         val echo = SctpChunk.CookieEcho(copyOf(cookieParam.value))
         cookieEcho = echo
@@ -588,7 +614,9 @@ public class SctpAssociation(
         localInitialTsn = cookie.ourInitialTsn
         nextTsn = cookie.ourInitialTsn
         peerVerificationTag = cookie.peerTag
-        peerExtensions = PeerExtensions(forwardTsn = cookie.peerForwardTsn, reConfig = cookie.peerReConfig)
+        peerExtensions =
+            PeerExtensions(forwardTsn = cookie.capabilities.forwardTsn, reConfig = cookie.capabilities.reConfig)
+        negotiatedInboundStreams = cookie.peerMaxInbound
         establishControlBlocks(peerInitialTsn = cookie.peerInitialTsn, peerRwnd = cookie.peerRwnd)
         emitPacket(listOf(SctpChunk.CookieAck), peerVerificationTag, out)
         transition(SctpAssociationState.Established, out)
@@ -1442,6 +1470,7 @@ public class SctpAssociation(
         // Both extension facts belong to the association going away — cleared as one value, so neither
         // can survive into the next peer's association (a half-cleared pair was invisible at the read).
         peerExtensions = PeerExtensions.None
+        negotiatedInboundStreams = 0u
     }
 
     private fun transition(

@@ -149,13 +149,47 @@ public class SctpAssociation(
     // Tracked as a running counter rather than summed on demand: this is read once per drive-loop item, and
     // walking the deque there would make a full send buffer quadratic in the number of queued fragments.
     //
-    // INTERNAL, deliberately. This is the truth the *driver* needs to apply backpressure (see
-    // SctpDataChannelStack), not a consumer-facing `bufferedAmount` — the data-channel API stays
-    // suspend-only, so nothing above this module observes a byte count.
+    // INTERNAL, deliberately. This is the association-wide depth the *driver* uses to park and release
+    // senders (see SctpDataChannelStack), and it is NOT what a consumer sees: W3C's `bufferedAmount` is
+    // per channel and counts application bytes only, which is [bufferedAmount] below. Two different
+    // questions over the same queue, and conflating them would report DCEP traffic to an application that
+    // did not send it.
     private var pendingSendBytes: Int = 0
 
     /** Bytes queued for transmission but not yet sent — the driver's backpressure signal. */
     internal val bufferedBytes: Int get() = pendingSendBytes
+
+    // Per-stream APPLICATION bytes in [pendingSend] — the projection W3C's `bufferedAmount` is (S5). One
+    // source of truth, not a second counter kept alongside: a gauge that tracked its own additions would
+    // drift the first time a fragment left the queue by a path nobody thought to instrument, and a
+    // `bufferedAmount` that disagrees with the queue is worse than none.
+    private val pendingApplicationBytes = HashMap<StreamId, Long>()
+
+    /**
+     * Application bytes queued on [streamId] and not yet handed to the wire (W3C `bufferedAmount`).
+     *
+     * A projection of [pendingSend], read on demand. A refused send never enters the association at all, so
+     * there is no path by which this can hold a value for a message that was never accepted.
+     */
+    internal fun bufferedAmount(streamId: StreamId): Long = pendingApplicationBytes[streamId] ?: 0L
+
+    // The two ways a fragment enters and leaves the unsent queue. Funnelled so the per-stream projection
+    // cannot be updated at one of them and forgotten at the other — the same argument as the reassembly
+    // queue's held-bytes ledger, one layer up.
+    private fun enqueuePending(data: OutstandingData) {
+        pendingSend.addLast(data)
+        pendingSendBytes += data.bytes
+        if (data.origin == SendOrigin.Application) {
+            pendingApplicationBytes[data.streamId] = (pendingApplicationBytes[data.streamId] ?: 0L) + data.bytes
+        }
+    }
+
+    private fun dequeuePending(data: OutstandingData) {
+        pendingSendBytes -= data.bytes
+        if (data.origin != SendOrigin.Application) return
+        val remaining = (pendingApplicationBytes[data.streamId] ?: 0L) - data.bytes
+        if (remaining > 0L) pendingApplicationBytes[data.streamId] = remaining else pendingApplicationBytes.remove(data.streamId)
+    }
 
     private var tcb: Tcb = Tcb.NoAssociation
 
@@ -1092,9 +1126,9 @@ public class SctpAssociation(
                     packet = encodePacket(listOf(chunk), peerVerificationTag),
                     reliability = options.reliability,
                     enqueuedAt = now,
+                    origin = options.origin,
                 )
-            pendingSend.addLast(data)
-            pendingSendBytes += data.bytes
+            enqueuePending(data)
             nextTsn = nextTsn.next()
         }
         // The views are spent the moment their bytes are inside the encoded packets above. They must be
@@ -1155,7 +1189,7 @@ public class SctpAssociation(
             val probing = !windowAdmits && rq.outstandingBytes == 0 && deadlines.zeroWindowProbe is Deadline.Unarmed
             if (!cwndOk || !(windowAdmits || probing)) break
             pendingSend.removeFirst()
-            pendingSendBytes -= next.bytes
+            dequeuePending(next)
             rq.onSent(next, now, ride.epoch)
             out += SctpOutput.Transmit.Retained(next.wirePacket())
             if (probing) {
@@ -1316,7 +1350,7 @@ public class SctpAssociation(
         while (pendingSend.isNotEmpty()) {
             val next = pendingSend.removeFirst()
             if (next.bytes > ceiling) {
-                pendingSendBytes -= next.bytes
+                dequeuePending(next)
                 rq.adoptAbandoned(next)
             } else {
                 remaining.addLast(next)
@@ -2015,6 +2049,7 @@ public class SctpAssociation(
         reclaim(pendingSend.map { it.packet }, out)
         pendingSend.clear()
         pendingSendBytes = 0
+        pendingApplicationBytes.clear()
         orderedSendSsn.clear()
         clearCookieEcho()
         // Both reconfiguration halves belong to the association that is going away: a pending or in-flight

@@ -23,6 +23,7 @@ import com.ditchoom.webrtc.sctp.association.SctpOutput
 import com.ditchoom.webrtc.sctp.association.SctpPathProfile
 import com.ditchoom.webrtc.sctp.association.SctpReliability
 import com.ditchoom.webrtc.sctp.association.SctpSendOptions
+import com.ditchoom.webrtc.sctp.association.SendOrigin
 import com.ditchoom.webrtc.sctp.association.StreamResetOutcome
 import com.ditchoom.webrtc.sctp.association.StreamResetScope
 import com.ditchoom.webrtc.sctp.dcep.ChannelType
@@ -136,8 +137,11 @@ public class SctpDataChannelStack(
     // buffer was above the high-water mark when it went in, so their deferred stays incomplete until the
     // buffer drains to the low-water mark. FIFO — the first sender to park is the first released.
     //
-    // This is what makes `send()` the ONLY backpressure signal the API needs: no bufferedAmount property,
-    // no onBufferedAmountLow callback: a caller that can outrun the association simply stops being resumed.
+    // This is what makes `send()` a backpressure signal on its own: a caller that can outrun the
+    // association simply stops being resumed, and the ordinary producer loop needs nothing else.
+    // `BufferedDataChannel` sits beside it rather than replacing it, for the producers a suspension cannot
+    // serve — one that must decide whether to produce at all this tick, and a multiplexer choosing which
+    // channel to feed. Both ask; this one blocks.
     private val awaitingDrain = ArrayDeque<SendCommand>()
     private val highWaterBytes = config.sendBufferHighWaterBytes
     private val lowWaterBytes = config.sendBufferLowWaterBytes
@@ -200,8 +204,14 @@ public class SctpDataChannelStack(
 
     override suspend fun openBidirectional(): Connection<DataChannelPayload> = open(DataChannelConfig())
 
-    /** Open a data channel with explicit [config] (label / ordering / reliability) — RFC 8832 §5.1. */
-    public suspend fun open(config: DataChannelConfig): Connection<DataChannelPayload> {
+    /**
+     * Open a data channel with explicit [config] (label / ordering / reliability) — RFC 8832 §5.1.
+     *
+     * Returns the narrower [BufferedDataChannel] rather than a bare [Connection] so `bufferedAmount` is
+     * reachable without a cast. The [StreamMux] overrides above cannot narrow past the interface they
+     * implement, but every channel this stack hands out — opened or accepted — is one of these.
+     */
+    public suspend fun open(config: DataChannelConfig): BufferedDataChannel {
         val deferred = CompletableDeferred<DataChannelConnection>()
         post(OpenCommand(config, deferred))
         return deferred.await()
@@ -375,8 +385,9 @@ public class SctpDataChannelStack(
             if (closed) break
             // Every item above can have drained the send buffer — a SACK opening cwnd/rwnd most obviously,
             // but also a timer firing a retransmit. This is the one serialized place that sees all of them,
-            // so it is the one place parked senders are released.
+            // so it is the one place parked senders are released and the gauges are republished.
             releaseDrainedSenders()
+            republishBufferedAmounts()
         }
     }
 
@@ -463,6 +474,19 @@ public class SctpDataChannelStack(
     private fun releaseDrainedSenders() {
         if (awaitingDrain.isEmpty() || association.bufferedBytes > lowWaterBytes) return
         while (awaitingDrain.isNotEmpty()) awaitingDrain.removeFirst().deferred.complete(Unit)
+    }
+
+    /**
+     * Republish every open channel's `bufferedAmount` from the association's queue — once per drive-loop
+     * item, which is exactly W3C's *"as of the last time the event loop started"*.
+     *
+     * Pushed from here rather than pulled by the gauge, because the association is only readable on this
+     * coroutine. It is still a projection and not a counter: the number comes from the queue every time, so
+     * a fragment leaving by a path nobody instrumented shows up here rather than drifting (S5).
+     * `MutableStateFlow` drops an unchanged value, so an idle session publishes nothing.
+     */
+    private fun republishBufferedAmounts() {
+        for ((streamId, connection) in channels) connection.publishBufferedAmount(association.bufferedAmount(streamId))
     }
 
     // Drop a locally closed channel and reset its outgoing stream — RFC 8831 §6.7's close. Only for a
@@ -914,7 +938,11 @@ public class SctpDataChannelStack(
         reliability: SctpReliability,
         payload: ReadBuffer,
     ) {
-        val options = SctpSendOptions(streamId, ppid, delivery = delivery, reliability = reliability)
+        // RFC 8832's OPEN and ACK are this stack's own traffic on the application's stream, so they are
+        // queued and retransmitted like anything else and are deliberately NOT counted by `bufferedAmount`
+        // — see SendOrigin. This is the only place in the module that says Control.
+        val options =
+            SctpSendOptions(streamId, ppid, delivery = delivery, reliability = reliability, origin = SendOrigin.Control)
         try {
             apply(association.handle(SctpEvent.SendMessage(options, payload), now()))
         } finally {
@@ -1270,19 +1298,30 @@ public class SctpClosedException(
  * `for (chunk in source) channel.send(chunk)` — is already flow-controlled, and a sender that outruns
  * the wire is throttled rather than buffered without bound.
  *
- * There is deliberately no `bufferedAmount` gauge and no low-water callback to subscribe to: the
- * suspension is the whole contract. If the association tears down while a caller is suspended, [send]
- * throws [SctpClosedException] — it never suspends forever.
+ * The suspension remains the whole contract for an ordinary producer loop. [bufferedAmount] and
+ * [awaitBufferedAmountLow] are there for the callers suspension cannot serve — a producer that must decide
+ * whether to produce at all this tick, and a multiplexer choosing which channel to feed — and neither
+ * replaces it. If the association tears down while a caller is suspended, [send] throws
+ * [SctpClosedException]; it never suspends forever.
  */
 public class DataChannelConnection internal constructor(
     internal val streamId: StreamId,
     public val config: DataChannelConfig,
     private val stack: SctpDataChannelStack,
-) : Connection<DataChannelPayload> {
+) : BufferedDataChannel {
     private val inbound = Channel<InboundDelivery>(Channel.UNLIMITED)
     private var open = true
+    private val _bufferedAmount = MutableStateFlow(BufferedAmount.ZERO)
 
     override val id: Long = streamId.value.toLong()
+
+    override val bufferedAmount: StateFlow<BufferedAmount> get() = _bufferedAmount
+
+    // Republished by the drive loop, which is the only place that may read the association. A projection,
+    // never a counter this class keeps: see [BufferedDataChannel.bufferedAmount].
+    internal fun publishBufferedAmount(bytes: Long) {
+        _bufferedAmount.value = BufferedAmount(bytes)
+    }
 
     override suspend fun send(message: DataChannelPayload) {
         check(open) { "data channel ${streamId.value} is closed" }
@@ -1343,5 +1382,9 @@ public class DataChannelConnection internal constructor(
     internal fun closeLocal() {
         open = false
         inbound.close()
+        // A closed channel has nothing left to drain — the association reclaims its unsent fragments at
+        // teardown — so anyone waiting on `awaitBufferedAmountLow` is released rather than stranded on a
+        // gauge that will never be republished again.
+        _bufferedAmount.value = BufferedAmount.ZERO
     }
 }

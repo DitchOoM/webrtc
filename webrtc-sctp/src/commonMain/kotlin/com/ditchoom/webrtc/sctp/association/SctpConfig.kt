@@ -58,4 +58,37 @@ public data class SctpConfig(
     public val sendBufferLowWaterBytes: Int = 512 * 1024,
     /** The buffer allocator for encoded packets and reassembly copies — inject a tracking factory in tests. */
     public val bufferFactory: BufferFactory = BufferFactory.Default,
-)
+) {
+    /**
+     * Two orderings this class only ever *documented*. Both are relations between two knobs, so neither
+     * field can defend itself and the type system cannot state them — a `Duration` cannot know about
+     * another `Duration`, and both inverted configs are perfectly constructible values whose damage
+     * appears much later, in a state machine, as behaviour rather than as an error.
+     *
+     * Inverting the water marks parks a sender that can never be woken: `send()` suspends at the high
+     * mark and resumes at the low one, so a low mark *above* the high one means the resume condition was
+     * already true when the park condition fired, and the drain that would signal it never runs. The
+     * association stays open and healthy, which is what makes it hard to read — it is a hang, not a
+     * failure, with no typed error to catch because nothing has gone wrong on the wire.
+     *
+     * Inverting the RTO bounds is quieter still. `rtoMin` is a floor and `rtoMax` a ceiling applied in
+     * that order, so `rtoMin > rtoMax` clamps every retransmission timeout to the floor and the
+     * exponential backoff in RFC 4960 §6.3.3 stops backing off — the association retransmits at a fixed
+     * fast cadence into a congested path, which is precisely the collapse the backoff exists to prevent.
+     * It still *works* on a good link, so a fixture that does not congest will not see it.
+     *
+     * Both are caller mistakes rather than peer behaviour, so they are `require` — the house rule that
+     * errors are typed and never stringly (directive #3) governs protocol outcomes, and a
+     * programming-error precondition is not one of those.
+     */
+    init {
+        require(sendBufferLowWaterBytes <= sendBufferHighWaterBytes) {
+            "sendBufferLowWaterBytes ($sendBufferLowWaterBytes) must be <= sendBufferHighWaterBytes " +
+                "($sendBufferHighWaterBytes); a low mark above the high one parks a sender that is never resumed"
+        }
+        require(rtoMin <= rtoMax) {
+            "rtoMin ($rtoMin) must be <= rtoMax ($rtoMax); an inverted pair clamps every RTO to the floor " +
+                "and defeats the RFC 4960 §6.3.3 backoff"
+        }
+    }
+}

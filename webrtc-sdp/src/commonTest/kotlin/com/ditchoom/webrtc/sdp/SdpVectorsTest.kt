@@ -60,7 +60,7 @@ class SdpVectorsTest {
         assertEquals(SetupRole.ActPass, m.setup())
         assertEquals(Mid("0"), m.mid())
         assertEquals(5000, m.sctpPort())
-        assertEquals(262144L, m.maxMessageSize())
+        assertEquals(MaxMessageSizeAttribute.Bytes(262144), m.maxMessageSizeAttribute())
         val fp = m.fingerprints().single()
         assertEquals("sha-256", fp.hashFunction)
         assertTrue(fp.value.startsWith("4A:AD:B9"))
@@ -74,7 +74,7 @@ class SdpVectorsTest {
         val m = sdp.mediaDescriptions.single()
         assertEquals("6f2a1b3c", m.iceUfrag())
         assertEquals(SetupRole.ActPass, m.setup())
-        assertEquals(1073741823L, m.maxMessageSize())
+        assertEquals(MaxMessageSizeAttribute.Bytes(1073741823), m.maxMessageSizeAttribute())
         assertEquals(1, m.candidates().size)
         assertTrue(m.hasEndOfCandidates())
         // A media section with no fingerprint of its own falls back to the session's (JSEP §5.2.1).

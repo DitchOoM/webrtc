@@ -113,13 +113,45 @@ public class SctpParameter internal constructor(
         private const val HASH_SEED = 31
         private const val HEX = 16
 
+        /**
+         * A parameter whose whole value is one 32-bit word — the shape of every fixed-width parameter
+         * this stack builds (Zero Checksum Acceptable's EDMID, HEARTBEAT's probe nonce).
+         *
+         * Exists so a value class does not have to become a buffer to reach the wire. Going through
+         * [ofValue] cost **two** allocations and a copy to move four bytes: a scratch for the caller to
+         * write into, then the padded buffer `ofValue` copies it to — and the caller then had to
+         * remember to release the scratch, which two builders here did not. A `UInt` is already exactly
+         * a padded 4-byte value, so it is written straight into the one buffer that survives.
+         *
+         * **[factory] defaults to the ambient allocator on purpose, and directive #6 is not yet satisfied
+         * here.** Passing the association's injected (pooled) factory is what the parameter *should* get,
+         * and it is accepted so the seam exists — but an outbound chunk currently has **no owner**:
+         * `releaseViews()` runs only on the inbound decode path, and `SctpAssociation` retains `localInit`
+         * and `cookieEcho` to re-encode on retransmission, so there is no point at which an outbound
+         * parameter's buffer is provably dead. On the ambient factory that is invisible (release is a
+         * no-op and the pool census cannot see it); on a pooled one it is a leak the ownership fixtures
+         * catch immediately. Thread the injected factory through only together with an outbound-chunk
+         * release path — see the follow-up issue.
+         */
+        public fun ofU32(
+            type: ParameterType,
+            value: UInt,
+            factory: BufferFactory = BufferFactory.managed(),
+        ): SctpParameter {
+            val padded = factory.allocate(U32_BYTES, ByteOrder.BIG_ENDIAN)
+            padded.writeUInt(value)
+            padded.resetForRead()
+            return SctpParameter(type, U32_BYTES, padded)
+        }
+
         /** Wraps a caller-built, exactly-[declared]-remaining-byte value, zero-padding to a 4-byte boundary. */
         public fun ofValue(
             type: ParameterType,
             declared: ReadBuffer,
+            factory: BufferFactory = BufferFactory.managed(),
         ): SctpParameter {
             val len = declared.remaining()
-            val padded = BufferFactory.managed().allocate(paddedLength(len), ByteOrder.BIG_ENDIAN)
+            val padded = factory.allocate(paddedLength(len), ByteOrder.BIG_ENDIAN)
             val dp = declared.position()
             padded.write(declared)
             declared.position(dp)
@@ -142,21 +174,23 @@ public class SctpParameter internal constructor(
          * Zero Checksum Acceptable (RFC 9653 §4) — a 4-byte value holding the [ErrorDetectionMethodId]
          * this endpoint is willing to rely on for packets it receives, so the wire Length field is 8.
          */
-        public fun zeroChecksumAcceptable(method: ErrorDetectionMethodId): SctpParameter {
-            val buf = BufferFactory.managed().allocate(EDMID_BYTES, ByteOrder.BIG_ENDIAN)
-            buf.writeUInt(method.value)
-            buf.resetForRead()
-            buf.setLimit(EDMID_BYTES)
-            return ofValue(ParameterType.ZeroChecksumAcceptable, buf)
-        }
+        public fun zeroChecksumAcceptable(
+            method: ErrorDetectionMethodId,
+            factory: BufferFactory = BufferFactory.managed(),
+        ): SctpParameter = ofU32(ParameterType.ZeroChecksumAcceptable, method.value, factory)
 
         /** Supported Extensions (RFC 5061 §4.2.7) — one chunk-type byte per supported extension. */
-        public fun supportedExtensions(types: List<SctpChunkType>): SctpParameter {
-            val buf = BufferFactory.managed().allocate(maxOf(1, types.size), ByteOrder.BIG_ENDIAN)
-            for (t in types) buf.writeByte(t.value.toByte())
-            buf.resetForRead()
-            buf.setLimit(types.size)
-            return ofValue(ParameterType.SupportedExtensions, buf)
+        public fun supportedExtensions(
+            types: List<SctpChunkType>,
+            factory: BufferFactory = BufferFactory.managed(),
+        ): SctpParameter {
+            // Written straight into the padded buffer: the value is already its own wire form, so the
+            // scratch-then-copy `ofValue` round trip bought nothing but an allocation nobody released.
+            val padded = factory.allocate(maxOf(1, paddedLength(types.size)), ByteOrder.BIG_ENDIAN)
+            for (t in types) padded.writeByte(t.value.toByte())
+            repeat(paddedLength(types.size) - types.size) { padded.writeByte(0) }
+            padded.resetForRead()
+            return SctpParameter(ParameterType.SupportedExtensions, types.size, padded)
         }
     }
 }
@@ -199,5 +233,8 @@ public fun SctpParameter.asZeroChecksumAcceptable(): ZeroChecksumParameterDecode
     return ZeroChecksumParameterDecode.Advertised(ErrorDetectionMethodId(v.u32(0)))
 }
 
+/** A 32-bit parameter value — already 4-byte aligned, so [paddedLength] is the identity on it. */
+internal const val U32_BYTES = 4
+
 /** RFC 9653 §4: the EDMID is a 32-bit unsigned integer, so the parameter's value is always four bytes. */
-private const val EDMID_BYTES = 4
+private const val EDMID_BYTES = U32_BYTES

@@ -70,13 +70,32 @@ public class SctpErrorCause internal constructor(
         private const val HASH_SEED = 31
         private const val HEX = 16
 
+        /**
+         * A cause whose whole value is one 32-bit word — RFC 4960 §3.3.10.1's Invalid Stream Identifier
+         * (the offending id, then two reserved bytes) is exactly this shape.
+         *
+         * The [SctpParameter.ofU32] rationale applies verbatim: a value class should not have to become
+         * a buffer, and routing four bytes through [ofValue] cost two allocations and a copy.
+         */
+        public fun ofU32(
+            code: ErrorCauseCode,
+            value: UInt,
+            factory: BufferFactory = BufferFactory.managed(),
+        ): SctpErrorCause {
+            val padded = factory.allocate(U32_BYTES, ByteOrder.BIG_ENDIAN)
+            padded.writeUInt(value)
+            padded.resetForRead()
+            return SctpErrorCause(code, U32_BYTES, padded)
+        }
+
         /** Wraps a caller-built, exactly-[declared]-remaining-byte cause value, zero-padding to a 4-byte boundary. */
         public fun ofValue(
             code: ErrorCauseCode,
             declared: ReadBuffer,
+            factory: BufferFactory = BufferFactory.managed(),
         ): SctpErrorCause {
             val len = declared.remaining()
-            val padded = BufferFactory.managed().allocate(paddedLength(len), ByteOrder.BIG_ENDIAN)
+            val padded = factory.allocate(paddedLength(len), ByteOrder.BIG_ENDIAN)
             val dp = declared.position()
             padded.write(declared)
             declared.position(dp)

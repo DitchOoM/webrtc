@@ -922,7 +922,10 @@ public final class com/ditchoom/webrtc/sctp/SctpErrorCause {
 
 public final class com/ditchoom/webrtc/sctp/SctpErrorCause$Companion {
 	public final fun empty-I67nsOA (S)Lcom/ditchoom/webrtc/sctp/SctpErrorCause;
-	public final fun ofValue-31A7jtQ (SLcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/sctp/SctpErrorCause;
+	public final fun ofU32-Wu2QJII (SILcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/sctp/SctpErrorCause;
+	public static synthetic fun ofU32-Wu2QJII$default (Lcom/ditchoom/webrtc/sctp/SctpErrorCause$Companion;SILcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpErrorCause;
+	public final fun ofValue-Kjig3j4 (SLcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/sctp/SctpErrorCause;
+	public static synthetic fun ofValue-Kjig3j4$default (Lcom/ditchoom/webrtc/sctp/SctpErrorCause$Companion;SLcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpErrorCause;
 }
 
 public final class com/ditchoom/webrtc/sctp/SctpPacket {
@@ -967,9 +970,14 @@ public final class com/ditchoom/webrtc/sctp/SctpParameter {
 
 public final class com/ditchoom/webrtc/sctp/SctpParameter$Companion {
 	public final fun forwardTsnSupported ()Lcom/ditchoom/webrtc/sctp/SctpParameter;
-	public final fun ofValue-FKy87FQ (SLcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/sctp/SctpParameter;
-	public final fun supportedExtensions (Ljava/util/List;)Lcom/ditchoom/webrtc/sctp/SctpParameter;
-	public final fun zeroChecksumAcceptable-IwwK7DY (I)Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public final fun ofU32-uyHV4Fc (SILcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public static synthetic fun ofU32-uyHV4Fc$default (Lcom/ditchoom/webrtc/sctp/SctpParameter$Companion;SILcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public final fun ofValue-JN5uJhI (SLcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public static synthetic fun ofValue-JN5uJhI$default (Lcom/ditchoom/webrtc/sctp/SctpParameter$Companion;SLcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public final fun supportedExtensions (Ljava/util/List;Lcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public static synthetic fun supportedExtensions$default (Lcom/ditchoom/webrtc/sctp/SctpParameter$Companion;Ljava/util/List;Lcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public final fun zeroChecksumAcceptable-jFaZm8Y (ILcom/ditchoom/buffer/BufferFactory;)Lcom/ditchoom/webrtc/sctp/SctpParameter;
+	public static synthetic fun zeroChecksumAcceptable-jFaZm8Y$default (Lcom/ditchoom/webrtc/sctp/SctpParameter$Companion;ILcom/ditchoom/buffer/BufferFactory;ILjava/lang/Object;)Lcom/ditchoom/webrtc/sctp/SctpParameter;
 }
 
 public final class com/ditchoom/webrtc/sctp/SctpParameterKt {

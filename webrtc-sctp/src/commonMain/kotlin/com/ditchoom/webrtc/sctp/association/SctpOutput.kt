@@ -93,6 +93,22 @@ public sealed interface SctpOutput {
     ) : SctpOutput
 
     /**
+     * An [SctpEvent.RequestMoreOutgoingStreams] this endpoint originated has been resolved (RFC 6525 §4.5).
+     * One is emitted for every request the association survives to resolve — including the ones it can
+     * never put on the wire ([StreamAddOutcome.NotAdded.Unsupported],
+     * [StreamAddOutcome.NotAdded.WouldOverflow]) — so the only way an ask goes unanswered is an association
+     * that fails first, which the driver hears about as [Aborted].
+     *
+     * [requested] is the accumulated count that actually went out, which may exceed any single ask: several
+     * requests made while one was in flight are merged into one, because §5.1.2 allows only one outstanding.
+     * On [StreamAddOutcome.Performed] the new ceiling arrives beside this as [OutgoingCapacityChanged].
+     */
+    public data class OutgoingStreamsAdded(
+        public val requested: StreamCount,
+        public val outcome: StreamAddOutcome,
+    ) : SctpOutput
+
+    /**
      * A complete user message was reassembled and is ready for delivery to the upper layer, in the
      * correct order for its stream. [payload] is a fresh buffer from `SctpConfig.bufferFactory` (the
      * reassembly copy) and is **transferred**: the driver owns it and owes it a release, either by passing

@@ -58,6 +58,12 @@ public data class SctpConfig(
     public val sendBufferLowWaterBytes: Int = 512 * 1024,
     /** The buffer allocator for encoded packets and reassembly copies — inject a tracking factory in tests. */
     public val bufferFactory: BufferFactory = BufferFactory.Default,
+    /**
+     * What to do when a data channel needs a stream id past what RFC 4960 §5.1.1 negotiated — refuse the
+     * open, or ask the peer for more streams (RFC 6525 §4.5). See [StreamGrowthPolicy] for why the default
+     * is [StreamGrowthPolicy.Fixed].
+     */
+    public val streamGrowth: StreamGrowthPolicy = StreamGrowthPolicy.Fixed,
 ) {
     /**
      * Two orderings this class only ever *documented*. Both are relations between two knobs, so neither

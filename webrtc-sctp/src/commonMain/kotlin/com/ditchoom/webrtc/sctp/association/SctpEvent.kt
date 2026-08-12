@@ -53,6 +53,23 @@ public sealed interface SctpEvent {
         public val scope: StreamResetScope,
     ) : SctpEvent
 
+    /**
+     * Ask the peer for [count] more **outgoing** streams than the handshake settled (RFC 6525 §4.5) —
+     * which the peer grants by increasing its own inbound count.
+     *
+     * Queued exactly like [ResetStreams], and for the same reason: §5.1.2 allows one outstanding
+     * reconfiguration request at a time, and these two share that single slot. Several requests while one
+     * is in flight accumulate into one, so a burst of opens waiting on capacity costs one round trip.
+     *
+     * The result arrives as [SctpOutput.OutgoingStreamsAdded] — including when the request never reaches
+     * the wire ([StreamAddOutcome.NotAdded.Unsupported], [StreamAddOutcome.NotAdded.WouldOverflow]) — so a
+     * caller waiting on the capacity is never left without an answer. On success the new ceiling is also
+     * announced as [SctpOutput.OutgoingCapacityChanged].
+     */
+    public data class RequestMoreOutgoingStreams(
+        public val count: StreamCount,
+    ) : SctpEvent
+
     /** Begin a graceful shutdown (RFC 4960 §9.2): drain outstanding data, then SHUTDOWN handshake. */
     public data object Shutdown : SctpEvent
 

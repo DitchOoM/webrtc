@@ -22,7 +22,9 @@ import com.ditchoom.webrtc.sctp.association.SctpFailureReason
 import com.ditchoom.webrtc.sctp.association.SctpOutput
 import com.ditchoom.webrtc.sctp.association.SctpReliability
 import com.ditchoom.webrtc.sctp.association.SctpSendOptions
+import com.ditchoom.webrtc.sctp.association.StreamAddOutcome
 import com.ditchoom.webrtc.sctp.association.StreamCount
+import com.ditchoom.webrtc.sctp.association.StreamGrowthPolicy
 import com.ditchoom.webrtc.sctp.association.StreamResetOutcome
 import com.ditchoom.webrtc.sctp.association.StreamResetScope
 import com.ditchoom.webrtc.sctp.dcep.ChannelType
@@ -108,6 +110,19 @@ public class SctpDataChannelStack(
     // off the association, because the driver only ever touches the core through the serialized loop and
     // an open parked for want of capacity has to be released by an *event*, not by polling.
     private var outgoingCapacity: OutgoingStreamCapacity = OutgoingStreamCapacity.NotNegotiated
+
+    // Opens that ran out of negotiated stream ids while `streamGrowth` is `AddStreams`: their RFC 6525 §4.5
+    // request is on the wire and they are retried when it is answered. The FIRST open to park is what
+    // issues the request and the rest ride it — which is also what stops the retry loop from asking again
+    // for capacity it is already waiting on.
+    private val opensAwaitingCapacity = ArrayDeque<OpenCommand>()
+
+    // Set when an OutgoingCapacityChanged lands inside apply(), drained AFTER the output loop for the same
+    // reason reciprocalResets is: dispatching a parked open re-enters the association, and doing that
+    // mid-output-list would interleave its packets with the ones already being applied.
+    private var capacityGrew = false
+
+    private val streamGrowth = config.streamGrowth
 
     // Scratch for the reciprocal resets one drive-loop item produced (RFC 8831 §6.7's "when the peer sees
     // that an incoming stream was reset, it also resets its corresponding outgoing stream"). Collected
@@ -398,7 +413,11 @@ public class SctpDataChannelStack(
                 // Both refusals used to be the same line of code walking off the end of the id space, and
                 // both used to be an exception thrown on this loop rather than an answer to the caller.
                 is StreamIdGrant.NeedsMoreStreams -> {
-                    refuseOpen(command, DataChannelOpenRefusal.StreamIdOutsideNegotiatedRange(grant.wanted, grant.capacity))
+                    when (val policy = streamGrowth) {
+                        StreamGrowthPolicy.Fixed ->
+                            refuseOpen(command, DataChannelOpenRefusal.StreamIdOutsideNegotiatedRange(grant.wanted, grant.capacity))
+                        is StreamGrowthPolicy.AddStreams -> parkForCapacity(command, policy, grant)
+                    }
                     return
                 }
                 StreamIdGrant.SpaceExhausted -> {
@@ -434,6 +453,28 @@ public class SctpDataChannelStack(
             is OutgoingStreamCapacity.Negotiated -> capacity.streams
         }
 
+    /**
+     * Hold [command] until the association has grown, and — if it is the first to wait — ask the peer for
+     * the streams (RFC 6525 §4.5). The ask is `max(policy increment, the shortfall)`: the configured batch
+     * amortises the round trip, and the shortfall is the floor below which this very open would park again
+     * on the next answer.
+     *
+     * Only the first waiter asks. §5.1.2 allows one outstanding reconfiguration request anyway, so a second
+     * ask would either be merged by the association or queued behind the first; not making it is what keeps
+     * the retry in `flushOpensAwaitingCapacity` from re-asking for capacity it is already waiting on.
+     */
+    private fun parkForCapacity(
+        command: OpenCommand,
+        policy: StreamGrowthPolicy.AddStreams,
+        grant: StreamIdGrant.NeedsMoreStreams,
+    ) {
+        val first = opensAwaitingCapacity.isEmpty()
+        opensAwaitingCapacity.addLast(command)
+        if (!first) return
+        val ask = if (policy.increment > grant.shortfall) policy.increment else grant.shortfall
+        apply(association.handle(SctpEvent.RequestMoreOutgoingStreams(ask), now()))
+    }
+
     // An open that cannot be given a stream id fails its caller with the typed reason. It must complete the
     // deferred — an open left hanging suspends its caller for the life of the process, which is the same
     // leak tearDown exists to prevent on the other paths.
@@ -463,7 +504,11 @@ public class SctpDataChannelStack(
                 // Ordered behind every Send already queued, which is what makes freeing these safe at all.
                 is SctpOutput.ReclaimRetained -> enqueue(OutboundItem.Release(output.packet))
                 is SctpOutput.StateChanged -> onStateChanged(output.state)
-                is SctpOutput.OutgoingCapacityChanged -> outgoingCapacity = output.capacity
+                is SctpOutput.OutgoingCapacityChanged -> {
+                    outgoingCapacity = output.capacity
+                    capacityGrew = true
+                }
+                is SctpOutput.OutgoingStreamsAdded -> onOutgoingStreamsAdded(output.outcome)
                 is SctpOutput.MessageReceived -> onMessage(output)
                 is SctpOutput.Aborted -> tearDown(output.reason)
                 // The association survived the peer's restart, but every channel on it did not: the peer
@@ -475,6 +520,33 @@ public class SctpDataChannelStack(
             }
         }
         flushReciprocalResets()
+        flushOpensAwaitingCapacity()
+    }
+
+    // Retry every open parked for want of stream ids, now that the association has more. A retry that still
+    // finds none re-parks — and, being the first to park again, issues the next request — so a peer that
+    // grants less than was asked for converges rather than spinning.
+    private fun flushOpensAwaitingCapacity() {
+        if (!capacityGrew) return
+        capacityGrew = false
+        val waiting = opensAwaitingCapacity.toList()
+        // Cleared BEFORE re-dispatching, so a re-park starts from an empty queue and reads as the first
+        // one — the same discipline flushReciprocalResets uses for the same re-entrancy reason.
+        opensAwaitingCapacity.clear()
+        for (command in waiting) dispatchOpen(command)
+    }
+
+    // The growth request came back refused, so every open waiting on it is answered with what the peer
+    // said. `Performed` is not handled here: the capacity change that came with it already released them.
+    private fun onOutgoingStreamsAdded(outcome: StreamAddOutcome) {
+        when (outcome) {
+            StreamAddOutcome.Performed -> Unit
+            is StreamAddOutcome.NotAdded -> {
+                val waiting = opensAwaitingCapacity.toList()
+                opensAwaitingCapacity.clear()
+                for (command in waiting) refuseOpen(command, DataChannelOpenRefusal.PeerWouldNotAddStreams(outcome))
+            }
+        }
     }
 
     // `outbound` is UNLIMITED so this only fails once it is CLOSED — i.e. the stack has torn down and the
@@ -815,6 +887,10 @@ public class SctpDataChannelStack(
         reciprocalResets.clear()
         for (command in pendingOpens) command.deferred.completeExceptionally(cause)
         pendingOpens.clear()
+        // …and the ones waiting on a stream-count increase that will now never be answered. Same leak,
+        // different queue: a caller suspended on an open the drive loop will never reach stays suspended.
+        for (command in opensAwaitingCapacity) command.deferred.completeExceptionally(cause)
+        opensAwaitingCapacity.clear()
         accepted.close()
         // Everything the association still owns — the retransmission queue, unsent messages, the retained
         // COOKIE ECHO, the reassembly state. Queued rather than freed on the spot, and queued BEFORE the

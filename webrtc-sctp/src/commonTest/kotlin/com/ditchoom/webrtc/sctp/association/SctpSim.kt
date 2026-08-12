@@ -71,6 +71,10 @@ internal class SctpSim(
     val capacitiesA = ArrayList<OutgoingStreamCapacity.Negotiated>()
     val capacitiesB = ArrayList<OutgoingStreamCapacity.Negotiated>()
 
+    /** RFC 6525 §4.5 stream-count increases each endpoint originated, and how each was answered. */
+    val streamsAddedA = ArrayList<SctpOutput.OutgoingStreamsAdded>()
+    val streamsAddedB = ArrayList<SctpOutput.OutgoingStreamsAdded>()
+
     /**
      * Feed [event] to one endpoint and route its side effects. Returns those side effects as well, so a
      * fixture can assert on what a *single* event produced (e.g. "the second reset request emitted no
@@ -164,6 +168,7 @@ internal class SctpSim(
                 is SctpOutput.OutgoingStreamsReset -> (if (fromA) outgoingResetsA else outgoingResetsB) += output
                 is SctpOutput.StateChanged -> Unit
                 is SctpOutput.OutgoingCapacityChanged -> (if (fromA) capacitiesA else capacitiesB) += output.capacity
+                is SctpOutput.OutgoingStreamsAdded -> (if (fromA) streamsAddedA else streamsAddedB) += output
                 // Deliberately NOT released here, and the reason is worth stating rather than eliding: a
                 // real driver frees these behind the sends it has queued, but this sim's in-flight queue
                 // holds views for a modelled *delay*, so a reclaim applied inline could outrun a datagram

@@ -1,6 +1,7 @@
 package com.ditchoom.webrtc.sctp.datachannel
 
 import com.ditchoom.webrtc.sctp.StreamId
+import com.ditchoom.webrtc.sctp.association.StreamAddOutcome
 import com.ditchoom.webrtc.sctp.association.StreamCount
 
 /**
@@ -67,6 +68,18 @@ public sealed interface DataChannelOpenRefusal {
      */
     public data object StreamIdSpaceExhausted : DataChannelOpenRefusal {
         override val description: String get() = "every stream id of this endpoint's parity is spent"
+    }
+
+    /**
+     * The association ran out of negotiated streams, `StreamGrowthPolicy.AddStreams` asked the peer for
+     * more (RFC 6525 §4.5), and [refusal] is what came back. Distinct from
+     * [StreamIdOutsideNegotiatedRange], which is the same shortage under `StreamGrowthPolicy.Fixed` where
+     * nothing was ever asked: one says "we did not ask", the other says "we asked and this is the answer".
+     */
+    public data class PeerWouldNotAddStreams(
+        public val refusal: StreamAddOutcome.NotAdded,
+    ) : DataChannelOpenRefusal {
+        override val description: String get() = "the peer did not add outgoing streams: $refusal"
     }
 }
 

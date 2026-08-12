@@ -92,7 +92,15 @@ public class SctpAssociation(
     internal val bufferedBytes: Int get() = pendingSendBytes
 
     private var tcb: Tcb = Tcb.NoAssociation
-    private val rtt = RttEstimator(config)
+
+    /**
+     * What is measured about the path currently underneath this association — RTT, congestion, the
+     * consecutive-error budget, and the epoch that says which path they describe (see [PathRide]).
+     *
+     * A `var` holding one value rather than four fields, because a migration invalidates all of them
+     * together and the reset is then a construction that cannot omit one.
+     */
+    private var ride: PathRide = PathRide.first(config)
 
     // Retained handshake artifacts (rebuilt-identical retransmits).
     private var localInit: SctpChunk.Init? = null
@@ -230,7 +238,6 @@ public class SctpAssociation(
     private var handshakeRetransmits = 0
     private var shutdownRetransmits = 0
     private var reConfigRetransmits = 0
-    private var consecutiveRtxErrors = 0
     private var packetsSinceSack = 0
 
     /**
@@ -559,7 +566,10 @@ public class SctpAssociation(
         }
         clearControlBlocks(out) // drop the old association's queues, stream state and unsent messages
         cancelAllTimers()
-        consecutiveRtxErrors = 0
+        // A restart invalidates every measurement: the peer's state is gone, so cwnd/SRTT describe a
+        // conversation that no longer exists, and the epoch must advance so nothing from the previous
+        // association can be mistaken for this one's.
+        ride = ride.onRestart()
         packetsSinceSack = 0
         // Adopt first, notify second: the COOKIE ACK is queued before the driver acts on the
         // notification, so the peer's handshake completes even when the driver tears its channels down.
@@ -609,8 +619,10 @@ public class SctpAssociation(
             Tcb.Live(
                 retransmission = retransmission,
                 reassembly = ReassemblyQueue(peerInitialTsn, config),
-                congestion = CongestionControl(config, peerRwnd),
             )
+        // The peer's advertised window is the RFC 4960 §7.2.1 seed for ssthresh, and it only becomes known
+        // here. The epoch and any handshake RTT sample survive: this is the same path it always was.
+        ride = ride.established(peerRwnd)
         // RFC 6525 §5.1.1: both endpoints seed their Re-configuration Request Sequence Number from their
         // own Initial TSN, so each side can predict where the other's numbering starts before a single
         // request has been exchanged — which is what lets §4.1's Response Sequence Number field be filled
@@ -709,25 +721,24 @@ public class SctpAssociation(
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        val live = tcb.liveOrElse { return }
-        val rq = live.retransmission
-        val cc = live.congestion
+        val rq = tcb.liveOrElse { return }.retransmission
+        val cc = ride.congestion
         val wasCwndLimited = rq.outstandingBytes >= cc.cwnd
         val gapsAbsolute =
             sack.gapAckBlocks.map { block ->
                 Tsn(sack.cumulativeTsnAck.value + block.start.toUInt()) to Tsn(sack.cumulativeTsnAck.value + block.end.toUInt())
             }
-        val outcome = rq.onSack(sack.cumulativeTsnAck, sack.advertisedReceiverWindow, gapsAbsolute, now)
+        val outcome = rq.onSack(sack.cumulativeTsnAck, sack.advertisedReceiverWindow, gapsAbsolute, now, ride.epoch)
         reclaim(outcome.reclaimed, out)
-        if (outcome.rttSample != null) rtt.observe(outcome.rttSample)
+        if (outcome.rttSample != null) ride.rtt.observe(outcome.rttSample)
         cc.onDataAcked(outcome.bytesNewlyAcked, wasCwndLimited)
         if (outcome.fastRetransmitTriggered) cc.onFastRetransmit()
-        if (outcome.cumulativeAdvanced) consecutiveRtxErrors = 0
+        if (outcome.cumulativeAdvanced) ride.onProgress()
 
         if (outcome.allDataAcknowledged) {
             deadlines = deadlines.copy(t3 = Deadline.Unarmed)
         } else if (outcome.cumulativeAdvanced) {
-            deadlines = deadlines.copy(t3 = Deadline.At(now + rtt.rto))
+            deadlines = deadlines.copy(t3 = Deadline.At(now + ride.rtt.rto))
         }
         // RFC 3758: expiry is also checked here, not only on T3 — a partially-reliable message can spend
         // its retransmit/lifetime budget while OTHER data keeps advancing the cum ack (so T3 is
@@ -812,9 +823,8 @@ public class SctpAssociation(
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        val live = tcb.liveOrElse { return }
-        val rq = live.retransmission
-        val cc = live.congestion
+        val rq = tcb.liveOrElse { return }.retransmission
+        val cc = ride.congestion
 
         // Retransmit the lost flight, but PACED BY cwnd (RFC 4960 §6.3.3 E3): after a T3 collapse to one
         // MTU we must not dump 100 outstanding chunks back onto the wire at once. Always send at least the
@@ -835,11 +845,11 @@ public class SctpAssociation(
             if (!cwndOk || !rwndOk) break
             pendingSend.removeFirst()
             pendingSendBytes -= next.bytes
-            rq.onSent(next, now)
+            rq.onSent(next, now, ride.epoch)
             out += SctpOutput.Transmit.Retained(next.wirePacket())
         }
 
-        if (rq.outstandingBytes > 0 && deadlines.t3 is Deadline.Unarmed) deadlines = deadlines.copy(t3 = Deadline.At(now + rtt.rto))
+        if (rq.outstandingBytes > 0 && deadlines.t3 is Deadline.Unarmed) deadlines = deadlines.copy(t3 = Deadline.At(now + ride.rtt.rto))
     }
 
     // ─────────────────── stream reconfiguration (RFC 6525) — the requester half ───────────────────
@@ -1110,13 +1120,13 @@ public class SctpAssociation(
             fail(SctpFailureReason.RetransmissionLimitReached, out)
             return
         }
-        rtt.backoff()
+        ride.rtt.backoff()
         emitPacket(listOf(SctpChunk.ReConfig.of(inFlight.request)), peerVerificationTag, out)
         armReConfig(now)
     }
 
     private fun armReConfig(now: Instant) {
-        deadlines = deadlines.copy(reConfig = Deadline.At(now + rtt.rto))
+        deadlines = deadlines.copy(reConfig = Deadline.At(now + ride.rtt.rto))
     }
 
     private fun cancelReConfig() {
@@ -1201,7 +1211,7 @@ public class SctpAssociation(
     ) {
         val rq = tcb.liveOrElse { return }.retransmission
         // The SHUTDOWN carries a cumulative TSN ack for our outbound data — process it like a SACK.
-        reclaim(rq.onSack(shutdown.cumulativeTsnAck, rq.peerReceiveWindow, emptyList(), now).reclaimed, out)
+        reclaim(rq.onSack(shutdown.cumulativeTsnAck, rq.peerReceiveWindow, emptyList(), now, ride.epoch).reclaimed, out)
         if (_state == SctpAssociationState.Established || _state == SctpAssociationState.ShutdownPending) {
             transition(SctpAssociationState.ShutdownReceived, out)
         }
@@ -1254,7 +1264,7 @@ public class SctpAssociation(
             fail(SctpFailureReason.HandshakeTimeout, out)
             return
         }
-        rtt.backoff()
+        ride.rtt.backoff()
         when (_state) {
             SctpAssociationState.CookieWait -> localInit?.let { emitPacket(listOf(it), VerificationTag(0u), out) }
             SctpAssociationState.CookieEchoed -> cookieEcho?.let { emitPacket(listOf(it), peerVerificationTag, out) }
@@ -1267,29 +1277,28 @@ public class SctpAssociation(
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        val live =
-            tcb.liveOrElse {
-                deadlines = deadlines.copy(t3 = Deadline.Unarmed)
-                return
-            }
-        val rq = live.retransmission
-        val cc = live.congestion
+        val rq =
+            tcb
+                .liveOrElse {
+                    deadlines = deadlines.copy(t3 = Deadline.Unarmed)
+                    return
+                }.retransmission
+        val cc = ride.congestion
         val hadOutstanding = rq.onT3Timeout()
         if (!hadOutstanding) {
             deadlines = deadlines.copy(t3 = Deadline.Unarmed)
             return
         }
         cc.onTimeout()
-        rtt.backoff()
-        consecutiveRtxErrors += 1
-        if (consecutiveRtxErrors > config.maxAssociationRetransmits) {
+        ride.rtt.backoff()
+        if (ride.retransmitFailed()) {
             fail(SctpFailureReason.RetransmissionLimitReached, out)
             return
         }
         // RFC 3758: abandon partially-reliable chunks past their budget before retransmitting.
         abandonExpired(now, out)
         trySend(now, out)
-        deadlines = deadlines.copy(t3 = Deadline.At(now + rtt.rto))
+        deadlines = deadlines.copy(t3 = Deadline.At(now + ride.rtt.rto))
     }
 
     private fun onShutdownTimeout(
@@ -1344,7 +1353,7 @@ public class SctpAssociation(
     }
 
     private fun armHandshake(now: Instant) {
-        deadlines = deadlines.copy(handshake = Deadline.At(now + rtt.rto))
+        deadlines = deadlines.copy(handshake = Deadline.At(now + ride.rtt.rto))
     }
 
     private fun cancelHandshake() {
@@ -1364,7 +1373,7 @@ public class SctpAssociation(
     }
 
     private fun armShutdown(now: Instant) {
-        deadlines = deadlines.copy(shutdown = Deadline.At(now + rtt.rto))
+        deadlines = deadlines.copy(shutdown = Deadline.At(now + ride.rtt.rto))
     }
 
     // Total by construction: a timer added to AssociationDeadlines is cancelled here without this

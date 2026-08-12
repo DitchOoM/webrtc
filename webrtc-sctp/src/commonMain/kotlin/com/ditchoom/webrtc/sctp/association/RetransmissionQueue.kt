@@ -60,9 +60,18 @@ internal sealed interface RttOrigin {
     /** Queued, not yet on the wire. No transmission instant exists, so no sample can be derived. */
     data object Untransmitted : RttOrigin
 
-    /** On the wire exactly once, at [transmittedAt] — the only state that may yield a sample. */
+    /**
+     * On the wire exactly once, at [transmittedAt] on the path identified by [epoch] — the only state
+     * that may yield a sample, and only while that epoch is still the one being ridden.
+     *
+     * The epoch is carried rather than checked here because this type does not know what "now" is riding.
+     * It is the second half of Karn's algorithm applied to space instead of time: [Ambiguous] says an ack
+     * cannot be attributed to a particular *transmission*, and a stale epoch says it cannot be attributed
+     * to a particular *path*. Both produce a duration that is arithmetically fine and describes nothing.
+     */
     data class SingleTransmission(
         val transmittedAt: Instant,
+        val epoch: PathEpoch,
     ) : RttOrigin
 
     /** Retransmitted at least once: Karn's algorithm forbids a sample, so no instant is carried. */
@@ -195,9 +204,11 @@ internal class RetransmissionQueue(
     fun onSent(
         data: OutstandingData,
         now: Instant,
+        epoch: PathEpoch,
     ) {
-        // The first (and so far only) transmission: this is the instant an RTT sample must measure from.
-        data.rttOrigin = RttOrigin.SingleTransmission(now)
+        // The first (and so far only) transmission: this is the instant an RTT sample must measure from,
+        // and [epoch] is the path it measures across.
+        data.rttOrigin = RttOrigin.SingleTransmission(now, epoch)
         outstanding[data.tsn.value] = data
         outstandingBytes += data.bytes
     }
@@ -236,6 +247,7 @@ internal class RetransmissionQueue(
         advertisedReceiverWindow: UInt,
         gapAckBlocks: List<Pair<Tsn, Tsn>>,
         now: Instant,
+        epoch: PathEpoch,
     ): SackOutcome {
         var bytesAcked = 0
         var rttSample: kotlin.time.Duration? = null
@@ -254,7 +266,12 @@ internal class RetransmissionQueue(
                 // RTT from the highest singly-transmitted, cum-acked chunk (Karn's algorithm) — measured
                 // from when it reached the wire, never from when it was queued.
                 when (val origin = data.rttOrigin) {
-                    is RttOrigin.SingleTransmission -> rttSample = now - origin.transmittedAt
+                    is RttOrigin.SingleTransmission ->
+                        // ...and only across the path it was sent on. A chunk transmitted before a
+                        // migration and acked after one yields a duration that spans two networks; folding
+                        // it into SRTT describes neither, and the error is systematically *large*, so it
+                        // inflates RTO on the path we just moved to precisely when recovery matters most.
+                        if (origin.epoch == epoch) rttSample = now - origin.transmittedAt
                     RttOrigin.Ambiguous, RttOrigin.Untransmitted -> Unit
                 }
                 cumIterator.remove()

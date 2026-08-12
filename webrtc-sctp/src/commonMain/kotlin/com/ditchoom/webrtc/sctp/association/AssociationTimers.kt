@@ -16,18 +16,22 @@ import kotlin.time.Instant
  * separately, so `onT3Timeout` unwrapped two of them and duplicated its disarm-and-return in both arms
  * for a state that cannot happen.
  *
- * The three are created together, in one place, and die together in `clearControlBlocks`. [Live] says so:
- * one unwrap answers for all three, and there is no bang anywhere.
+ * The queues are created together, in one place, and die together in `clearControlBlocks`. [Live] says so:
+ * one unwrap answers for both, and there is no bang anywhere.
+ *
+ * Congestion control has since moved out to [PathRide], which is a different lifetime rather than a
+ * smaller one: cwnd and ssthresh belong to the *path*, and a path can be replaced under an association
+ * that is not being torn down. Keeping it here would have made a migration reach into the control block
+ * to replace one field of it, which is exactly the partial population this type exists to forbid.
  */
 internal sealed interface Tcb {
     /** No association — before the handshake completes, and after any teardown. */
     data object NoAssociation : Tcb
 
-    /** An established association: all three structures exist for exactly as long as it does. */
+    /** An established association: both queues exist for exactly as long as it does. */
     class Live(
         val retransmission: RetransmissionQueue,
         val reassembly: ReassemblyQueue,
-        val congestion: CongestionControl,
     ) : Tcb
 }
 

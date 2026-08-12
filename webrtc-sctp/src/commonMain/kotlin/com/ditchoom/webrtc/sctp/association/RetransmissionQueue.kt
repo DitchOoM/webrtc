@@ -60,9 +60,18 @@ internal sealed interface RttOrigin {
     /** Queued, not yet on the wire. No transmission instant exists, so no sample can be derived. */
     data object Untransmitted : RttOrigin
 
-    /** On the wire exactly once, at [transmittedAt] — the only state that may yield a sample. */
+    /**
+     * On the wire exactly once, at [transmittedAt] on the path identified by [epoch] — the only state
+     * that may yield a sample, and only while that epoch is still the one being ridden.
+     *
+     * The epoch is carried rather than checked here because this type does not know what "now" is riding.
+     * It is the second half of Karn's algorithm applied to space instead of time: [Ambiguous] says an ack
+     * cannot be attributed to a particular *transmission*, and a stale epoch says it cannot be attributed
+     * to a particular *path*. Both produce a duration that is arithmetically fine and describes nothing.
+     */
     data class SingleTransmission(
         val transmittedAt: Instant,
+        val epoch: PathEpoch,
     ) : RttOrigin
 
     /** Retransmitted at least once: Karn's algorithm forbids a sample, so no instant is carried. */
@@ -107,6 +116,15 @@ internal class OutstandingData(
      * origin for an RTT sample, which is what [rttOrigin] exists to keep separate.
      */
     val enqueuedAt: Instant,
+    /**
+     * Whose message this fragment belongs to (see [SendOrigin]).
+     *
+     * Carried on the fragment rather than looked up per stream, because a stream carries both kinds — the
+     * DCEP OPEN and every application message on that channel ride the same stream id — so the id cannot
+     * answer the question. It is what keeps `bufferedAmount` counting only what `send()` queued, at the
+     * moment a fragment leaves the queue as well as when it entered.
+     */
+    val origin: SendOrigin,
 ) {
     /**
      * Whether this chunk can yield an RTT sample, and from when. A chunk sits in `pendingSend` for as long
@@ -195,9 +213,11 @@ internal class RetransmissionQueue(
     fun onSent(
         data: OutstandingData,
         now: Instant,
+        epoch: PathEpoch,
     ) {
-        // The first (and so far only) transmission: this is the instant an RTT sample must measure from.
-        data.rttOrigin = RttOrigin.SingleTransmission(now)
+        // The first (and so far only) transmission: this is the instant an RTT sample must measure from,
+        // and [epoch] is the path it measures across.
+        data.rttOrigin = RttOrigin.SingleTransmission(now, epoch)
         outstanding[data.tsn.value] = data
         outstandingBytes += data.bytes
     }
@@ -236,6 +256,7 @@ internal class RetransmissionQueue(
         advertisedReceiverWindow: UInt,
         gapAckBlocks: List<Pair<Tsn, Tsn>>,
         now: Instant,
+        epoch: PathEpoch,
     ): SackOutcome {
         var bytesAcked = 0
         var rttSample: kotlin.time.Duration? = null
@@ -254,7 +275,12 @@ internal class RetransmissionQueue(
                 // RTT from the highest singly-transmitted, cum-acked chunk (Karn's algorithm) — measured
                 // from when it reached the wire, never from when it was queued.
                 when (val origin = data.rttOrigin) {
-                    is RttOrigin.SingleTransmission -> rttSample = now - origin.transmittedAt
+                    is RttOrigin.SingleTransmission ->
+                        // ...and only across the path it was sent on. A chunk transmitted before a
+                        // migration and acked after one yields a duration that spans two networks; folding
+                        // it into SRTT describes neither, and the error is systematically *large*, so it
+                        // inflates RTO on the path we just moved to precisely when recovery matters most.
+                        if (origin.epoch == epoch) rttSample = now - origin.transmittedAt
                     RttOrigin.Ambiguous, RttOrigin.Untransmitted -> Unit
                 }
                 cumIterator.remove()
@@ -358,6 +384,58 @@ internal class RetransmissionQueue(
         if (anyAbandoned) recomputeAdvancedAckPoint()
         if (outstandingBytes < 0) outstandingBytes = 0
         return abandonedStreams.entries.map { it.key to it.value }
+    }
+
+    /** How many tracked chunks carry more user data than [maxUserBytes] — the RFC 8899 oversized backlog. */
+    fun oversized(maxUserBytes: Int): Int = outstanding.values.count { it.txState != TxState.Abandoned && it.bytes > maxUserBytes }
+
+    /**
+     * Abandon every chunk larger than [maxUserBytes] — the path MTU dropped underneath them and the bytes
+     * are already encoded, so they cannot be re-fragmented (RFC 4960 §6.1 retains the packet, and RFC 8260
+     * I-DATA, which would allow re-segmentation, is deliberately not implemented here).
+     *
+     * The same mechanism as [abandonExpired] and deliberately so — RFC 3758's FORWARD-TSN is what tells the
+     * peer to stop waiting for a TSN — but the **reason** is different in a way worth stating: an expired
+     * chunk was abandoned because the application said it could be, while these are abandoned because the
+     * path will not carry them at all. Retransmitting them instead is not a slower success, it is the
+     * association's RFC 4960 §8.1 error budget being spent on packets that are dropped by definition.
+     *
+     * Returns the per-stream highest abandoned ordered SSN, exactly as [abandonExpired] does, for the
+     * FORWARD-TSN the caller builds.
+     */
+    fun abandonOversized(maxUserBytes: Int): List<Pair<StreamId, StreamSequenceNumber>> {
+        val abandonedStreams = LinkedHashMap<StreamId, StreamSequenceNumber>()
+        var anyAbandoned = false
+        for (data in outstanding.values) {
+            if (data.txState == TxState.Abandoned || data.bytes <= maxUserBytes) continue
+            if (data.txState == TxState.InFlight) outstandingBytes -= data.bytes
+            data.txState = TxState.Abandoned
+            anyAbandoned = true
+            if (!data.flags.unordered) {
+                val prev = abandonedStreams[data.streamId]
+                if (prev == null || prev.value < data.ssn.value) abandonedStreams[data.streamId] = data.ssn
+            }
+        }
+        if (anyAbandoned) recomputeAdvancedAckPoint()
+        if (outstandingBytes < 0) outstandingBytes = 0
+        return abandonedStreams.entries.map { it.key to it.value }
+    }
+
+    /**
+     * Take an **unsent** chunk into the queue already abandoned.
+     *
+     * A fragment still in `pendingSend` has had its TSN assigned (RFC 4960 §6.1 assigns at enqueue), so
+     * simply dropping it would leave a hole the peer waits on forever — its cumulative TSN can never
+     * advance past a number nothing will ever explain. Adopting it here is what lets one FORWARD-TSN cover
+     * the whole stranded run, sent and unsent alike.
+     *
+     * Callers must adopt in TSN order and only for TSNs above everything already tracked, which is what
+     * `pendingSend`'s own ordering guarantees.
+     */
+    fun adoptAbandoned(data: OutstandingData) {
+        data.txState = TxState.Abandoned
+        outstanding[data.tsn.value] = data
+        recomputeAdvancedAckPoint()
     }
 
     /**

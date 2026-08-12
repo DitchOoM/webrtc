@@ -107,6 +107,55 @@ The vnet server rotates in place instead (`RealmPolicy.RotateAfter`), which is t
 client a realm change on a live allocation. This is the one parity row where the L1 fixture is not the
 cheap mirror of an L2 lane but the only place the behaviour is reachable at all.
 
+### Seven claims no lane we have can prove
+
+The realm-rotation row above is one instance of a general problem, and the data-channel spec-gap work
+added six more. They are collected here rather than left as gaps in the matrix, because an unexplained
+blank reads as an oversight and invites someone to "fix" it with a fixture that cannot fail.
+
+**The rule they share:** a capability-gated lane that silently degenerates is worse than no lane at all.
+A fixture that skips when a peer lacks a capability passes by not running, and a green result named for a
+path nobody executed is the exact failure this repo has documented twice (`Dtls13HelloRetryRequestTest`
+falling back to a one-group runtime; buffer-crypto's X25519 suite passing on Android by skipping). So each
+of these is L1-only **on purpose**, with the argument recorded.
+
+1. **RFC 8260 ndata negotiation.** werift has no chunk type 64/194 at all, and Chrome and WebKit gate it
+   behind a field trial that is off by default. A gated fixture would report green on three of five lanes
+   without exercising the path. This is the primary reason ndata is **cut from the implementation**, not
+   merely untested — the feature and its unprovability were decided together.
+
+2. **Receive-side flow control closing our window.** Requires an application that stops reading on cue,
+   and no containerized peer can be made to. L1 only. The *probe* half does get real L3 coverage, because
+   Chrome and Firefox close their own windows and our zero-window probe answers a real one.
+
+3. **The RFC 8261 §6.1 congestion reset on migration.** dcSCTP, usrsctp, Pion and werift do not implement
+   it, so a green interop lane proves nothing about agreement — it proves only that neither side crashed.
+   Our own instrumentation is the whole oracle, which is why `PathRide` resets are asserted as observable
+   state rather than inferred from throughput.
+
+4. **RFC 9653 zero-checksum emission being accepted by a peer.** Measured rather than assumed: dcSCTP
+   *does* implement RFC 9653 (`Capabilities::zero_checksum_method`, and two of the RFC's four authors
+   maintain it), **but the option defaults to `None()` and WebRTC's `media/sctp/dcsctp_transport.cc`
+   never sets it** — not behind a field trial, simply absent. So no browser advertises 0x8001 or sends a
+   zero checksum at any setting a lane can reach, and both directions are L1-only. Implementing it is
+   still correct: advertising is how the extension bootstraps, and RFC 9653 §5.1 obliges an endpoint that
+   advertised to accept. The interop value is zero *today*, which is a fact about 2026 rather than about
+   the code.
+
+5. **A peer violating `a=max-message-size`.** No production stack will — dcSCTP returns
+   `kErrorMessageTooLarge` from `Send()` rather than emitting the message — so the receive-side ABORT
+   (Protocol Violation, cause 13) is reachable only from a scripted violating sender. L1 only.
+
+6. **Malformed UTF-8 arriving from a browser.** The browser's `TextDecoder` has already substituted
+   U+FFFD before the bytes reach us; the original sequence does not exist by the time any assertion could
+   run. `MalformedTextMessageTest` is therefore L1 **and native-only** — it is not merely unprovable
+   against a browser, it is unprovable *through* one.
+
+7. **PMTU discovery finding a real constriction.** Docker bridge networks are uniformly 1500, so every
+   harness lane converges immediately and proves only that the search terminates. A constricted L2
+   topology does not exist and would be new harness work. The search itself — probe, refutation, the raise
+   timer, the RFC 8899 §5.2 base-refuted path — is L1 vnet only.
+
 ### L3 — Interop with foreign peers · tier Interop
 Borrow *other implementations* as the correctness oracle. Signaling is a seam, so the offer/answer
 exchange is scripted — interop runs are reproducible, not flaky live-network tests.

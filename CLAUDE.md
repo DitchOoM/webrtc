@@ -80,6 +80,22 @@ published `-sources.jar` rather than the version order.
   therefore a real discriminant, unlike the `Throwable` payloads beside it.
 - **`IceRestartPolicy` defaults to `Manual`** deliberately — an automatic restart is a renegotiation only
   the app's signaling channel can carry, so it is opt-in rather than a default flip.
+- **Four SCTP capabilities are implemented but default OFF, which is exactly how they get rebuilt by
+  mistake.** Read the `SctpConfig` knob before concluding any of them is missing: `pathMtu`
+  (RFC 8899 discovery — a HEARTBEAT+PAD probe, so HEARTBEAT *is* originated here, scoped to sizing and
+  never to liveness), `zeroChecksum` (RFC 9653 — additionally gated on what the transport underneath
+  guarantees, so a policy alone never grants it), `streamGrowth` (RFC 6525 ADD STREAMS), and
+  `receiveOverrun` (the aggregate receive-buffer ceiling, distinct from `receiveMessageLimit`'s
+  single-message one). Each is off by default because each changes bytes on the wire against every peer.
+- **Receive flow control is real and the credit is not optional.** `SctpOutput.MessageReceived` carries a
+  `DeliveryReceipt` that must come back as `SctpEvent.MessageConsumed`, or the endpoint closes its own
+  a_rwnd one message at a time and stalls a peer that is behaving perfectly — silently and cumulatively.
+  The credit is fused with the buffer release wherever a message is not delivered onward, so forgetting
+  one means forgetting the other and `assertPoolDrained` catches it.
+- **Stream-id exhaustion is an answer, not a crash.** RFC 8832 §6 gives each side half a 16-bit space and
+  the cursor never comes back down except through the reuse ledger; past the end, `open()` returns a typed
+  `DataChannelOpenRefusal` with the association still Established. It used to throw from inside the
+  serialized drive loop, which on Kotlin/Native is process death rather than a catchable exception.
 - **TURN is long-lived.** The allocation refreshes at a fraction of the *granted* LIFETIME, permissions
   are re-installed (§9), every request retransmits, and the long-term-credential key is the RFC 8489
   §9.2.2 `MD5(user:realm:pass)` — pure-Kotlin MD5 in `webrtc-stun`, pinned by the RFC 5769 §2.4 vector.
@@ -313,6 +329,18 @@ Things that have cost real time here. Read before acting on a premise that sound
   interface set reads to `pathRidesOneOf` as "the selected pair's interface is gone", which would restart
   a healthy session on every probe failure. A failure is `Unavailable(reason)`, never an empty
   `Enumerated`.
+- **A side effect placed after `emit` does not run for the two most common ways a flow is read.**
+  `first()` and `take(n)` terminate a flow *through* `emit` — by throwing an internal cancellation from
+  inside it — so `emit(x); credit(x)` silently never credits for either. This cost real time in the
+  receive-window seam, where the symptom is not an exception but a window that shrinks by one message per
+  read and a peer that eventually stalls while behaving correctly. Anything owed after a value is handed
+  out belongs in a `finally` around the `emit`, not after it.
+- **A fixture that counts the entries in its own list is not a coverage gate.** `ZeroChecksumWireTest`
+  asserted "every `SctpChunk` variant appears in this table" by counting distinct classes among the chunks
+  it names — so adding `SctpChunk.Pad` left it **green** while the claim became false. Kotlin has no
+  common-source enumeration of sealed subtypes to close that. The exhaustive `else`-free `when` is the
+  real gate (a compile error the moment a variant is added); a table like that only checks the arm chosen
+  is the intended one. Do not let the two be confused in a comment — that is how a green test starts lying.
 - **A deterministic "flake" is usually a harness observation bug, not a stack bug.** A red lane whose peer
   logs show success has, more than once, been the harness reading `docker compose logs` twice or matching
   only RUNNING containers. The same applies to leak fixtures: a harness that slices without releasing, or

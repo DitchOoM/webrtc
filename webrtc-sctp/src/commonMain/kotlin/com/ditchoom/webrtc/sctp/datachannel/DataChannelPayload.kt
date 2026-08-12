@@ -37,12 +37,29 @@ import com.ditchoom.buffer.freeIfNeeded
  */
 public sealed interface DataChannelPayload {
     /**
+     * How many bytes this message occupies on the wire — the number RFC 8841 §6's `a=max-message-size`
+     * bounds, and the one a caller may pre-check against `PeerMessageLimit` before sending.
+     *
+     * **Not `text.length`.** For a [Text] this is the UTF-8 encoded length, which for anything outside
+     * ASCII is larger: `Text("é")` is one character and two bytes. A gate that measured characters would
+     * pass a message that overruns the peer's ceiling, and RFC 8831 §6.6 makes exceeding it a MUST NOT —
+     * so the one number a size check may use is this one.
+     *
+     * Derived, never stored beside the payload. A [Binary]'s buffer and a [Text]'s `CharSequence` are
+     * both mutable after construction, so a cached count could describe a message that no longer exists;
+     * the send seam re-reads it at the moment it matters.
+     */
+    public val wireByteCount: Long
+
+    /**
      * A binary message — `WebRTC Binary` (PPID 53), or `WebRTC Binary Empty` (57) when [bytes] has no
      * remaining bytes. The buffer is the message: it is transmitted as-is and never decoded.
      */
     public class Binary(
         public val bytes: ReadBuffer,
     ) : DataChannelPayload {
+        override val wireByteCount: Long get() = bytes.remaining().toLong()
+
         override fun release() {
             bytes.freeIfNeeded()
         }
@@ -57,6 +74,8 @@ public sealed interface DataChannelPayload {
     public class Text(
         public val text: CharSequence,
     ) : DataChannelPayload {
+        override val wireByteCount: Long get() = utf8ByteCount(text)
+
         /** Nothing to release: this variant never owns a buffer. */
         override fun release(): Unit = Unit
 
@@ -71,6 +90,62 @@ public sealed interface DataChannelPayload {
      */
     public fun release()
 }
+
+/**
+ * The UTF-8 byte length of [text], counted without allocating anything — no array, no encode, no
+ * intermediate `String` (directive #1, and the whole point of knowing the size before paying for the
+ * encoding).
+ *
+ * It must **agree with the encoder**, not merely approximate it, because it is what a send is refused
+ * against: under-counting sends a message past a peer's stated ceiling (a MUST NOT), and over-counting
+ * refuses one the peer would have taken. The surrogate arm is where that agreement is won or lost — an
+ * astral-plane code point is ONE code point in FOUR bytes carried as TWO `Char`s, so charging three per
+ * `Char` says six.
+ *
+ * An **unpaired** surrogate charges three and cannot claim to agree with anything, because the targets do
+ * not agree with each other: it is not encodable, and `writeString` **throws** on the JVM where a
+ * `TextEncoder`-backed target substitutes U+FFFD (three bytes). Three is therefore the smallest count
+ * that never under-states any target's answer, which is the only property the gate needs — and where the
+ * encoder throws, the send fails on the encode before this number is consulted at all.
+ *
+ * `Utf8ByteCountTest` measures the expectation from `writeString` itself rather than from a second
+ * hand-written counter, which would only assert that two implementations of the same mistake agree.
+ */
+private fun utf8ByteCount(text: CharSequence): Long {
+    var count = 0L
+    var i = 0
+    while (i < text.length) {
+        val code = text[i].code
+        val highSurrogate = code in HIGH_SURROGATE_FIRST..HIGH_SURROGATE_LAST
+        val paired = highSurrogate && i + 1 < text.length && text[i + 1].code in LOW_SURROGATE_FIRST..LOW_SURROGATE_LAST
+        when {
+            code < ONE_BYTE_LIMIT -> {
+                count += 1
+                i += 1
+            }
+            code < TWO_BYTE_LIMIT -> {
+                count += 2
+                i += 1
+            }
+            paired -> {
+                count += 4
+                i += 2
+            }
+            else -> {
+                count += 3
+                i += 1
+            }
+        }
+    }
+    return count
+}
+
+private const val ONE_BYTE_LIMIT = 0x80
+private const val TWO_BYTE_LIMIT = 0x800
+private const val HIGH_SURROGATE_FIRST = 0xD800
+private const val HIGH_SURROGATE_LAST = 0xDBFF
+private const val LOW_SURROGATE_FIRST = 0xDC00
+private const val LOW_SURROGATE_LAST = 0xDFFF
 
 /**
  * Send one binary message — sugar for `send(DataChannelPayload.Binary(bytes))`, which is what the

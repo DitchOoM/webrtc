@@ -161,6 +161,25 @@ public final class com/ditchoom/webrtc/ice/ComponentId : java/lang/Enum {
 	public static fun values ()[Lcom/ditchoom/webrtc/ice/ComponentId;
 }
 
+public abstract interface class com/ditchoom/webrtc/ice/DataCarrier {
+}
+
+public final class com/ditchoom/webrtc/ice/DataCarrier$None : com/ditchoom/webrtc/ice/DataCarrier {
+	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/DataCarrier$None;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/DataCarrier$Riding : com/ditchoom/webrtc/ice/DataCarrier {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/CandidatePair;)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getPair ()Lcom/ditchoom/webrtc/ice/CandidatePair;
+	public final fun getPath ()Lcom/ditchoom/webrtc/ice/IceDataPath;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public abstract interface class com/ditchoom/webrtc/ice/DatagramBinder {
 	public abstract fun bind (Lcom/ditchoom/buffer/flow/SocketAddress;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
@@ -372,6 +391,10 @@ public final class com/ditchoom/webrtc/ice/IceCandidate$ServerReflexive : com/di
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/webrtc/ice/IceCandidateKt {
+	public static final fun getLocalSocket (Lcom/ditchoom/webrtc/ice/IceCandidate;)Lcom/ditchoom/webrtc/stun/TransportAddress;
+}
+
 public final class com/ditchoom/webrtc/ice/IceCandidateLine {
 	public static final field INSTANCE Lcom/ditchoom/webrtc/ice/IceCandidateLine;
 	public final fun format (Lcom/ditchoom/webrtc/ice/IceCandidate;Lcom/ditchoom/webrtc/ice/CandidateGeneration;Lcom/ditchoom/webrtc/ice/CandidatePrivacy;)Ljava/lang/String;
@@ -468,6 +491,23 @@ public final class com/ditchoom/webrtc/ice/IceCredentials {
 
 public final class com/ditchoom/webrtc/ice/IceCredentials$Companion {
 	public final fun random (Lkotlin/random/Random;)Lcom/ditchoom/webrtc/ice/IceCredentials;
+}
+
+public final class com/ditchoom/webrtc/ice/IceDataPath {
+	public fun <init> (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransportAddress;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public final fun component2 ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public final fun copy (Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransportAddress;)Lcom/ditchoom/webrtc/ice/IceDataPath;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/IceDataPath;Lcom/ditchoom/webrtc/stun/TransportAddress;Lcom/ditchoom/webrtc/stun/TransportAddress;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceDataPath;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFromBase ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public final fun getTo ()Lcom/ditchoom/webrtc/stun/TransportAddress;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/ice/IceDataPathKt {
+	public static final fun getCarrier (Lcom/ditchoom/webrtc/ice/IcePath;)Lcom/ditchoom/webrtc/ice/DataCarrier;
 }
 
 public abstract interface class com/ditchoom/webrtc/ice/IceDataReadResult {

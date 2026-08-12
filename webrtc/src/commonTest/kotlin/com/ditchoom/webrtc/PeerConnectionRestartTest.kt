@@ -16,6 +16,7 @@ import com.ditchoom.webrtc.ice.DatagramBinder
 import com.ditchoom.webrtc.ice.IceAgentDriver
 import com.ditchoom.webrtc.ice.IceCandidate
 import com.ditchoom.webrtc.ice.IceConfig
+import com.ditchoom.webrtc.ice.IceDataPath
 import com.ditchoom.webrtc.ice.IceFailureReason
 import com.ditchoom.webrtc.ice.InterfaceChangeTrigger
 import com.ditchoom.webrtc.ice.InterfaceEnumerationFailure
@@ -118,6 +119,66 @@ class PeerConnectionRestartTest {
             // renumbered stream, which is precisely the failure §9 exists to prevent.
             assertEquals(streamId, channel.id, "the data channel kept its stream id across the restart")
             assertEquals("after", echo(channel, "after"), "the data channel still round-trips after the restart")
+        }
+
+    @Test
+    fun a_restart_that_moves_the_route_reports_exactly_one_data_path_migration() =
+        runTest {
+            // RFC 8261 §6.1 at the session seam: the SCTP association must be TOLD the path moved, and the
+            // app must be able to see that it was. Before this the session collected `d.path` and wrote
+            // only `_connectionState` — so the association carried the retired path's congestion window,
+            // RTT estimate and half-spent error budget onto the new one, invisibly.
+            //
+            // The count is the assertion. "At least one migration" is green on a fold that fires on every
+            // ICE signal, which would reset a healthy path's measurements several times per restart; and
+            // asserting only after the move cannot see the first nomination wrongly reported as one. So
+            // this collects from before the first echo and checks the list at both ends.
+            val f = connectedPeers()
+            val migrations = MutableStateFlow<List<SessionDiagnostic.DataPathMigrated>>(emptyList())
+            backgroundScope.launch {
+                f.alice.diagnostics
+                    .filterIsInstance<SessionDiagnostic.DataPathMigrated>()
+                    .collect { migrations.value = migrations.value + it }
+            }
+
+            val channel = f.alice.createDataChannel(DataChannelConfig(label = "restart/migration"))
+            assertEquals("before", echo(channel, "before"), "the channel works before the restart")
+            assertTrue(
+                migrations.value.isEmpty(),
+                "learning where data rides is not the route moving — the first path must report nothing",
+            )
+            val pairBefore = knownPair(f.alice.connectionState.value)
+
+            f.alice.restartIce()
+            renegotiate(f.alice, f.bob)
+            val connected =
+                assertNotNull(
+                    withTimeoutOrNull(timeout) {
+                        f.alice.connectionState.first { it is PeerConnectionState.Connected && knownPair(it) != pairBefore }
+                    },
+                    "alice reconverged on a new pair",
+                )
+            val pairAfter = knownPair(connected)
+            assertEquals("after", echo(channel, "after"), "the channel still round-trips after the restart")
+
+            val reported =
+                assertNotNull(
+                    withTimeoutOrNull(QUIET) { migrations.first { it.isNotEmpty() } },
+                    "the route moved and the session said nothing — the exact silence RFC 8261 §6.1 needs closed",
+                )
+            assertEquals(1, reported.size, "one move, one report: not one per ICE signal")
+            // Both endpoints are the TRANSMIT identity, not the pair: a restart re-gathering the same
+            // interface changes the pair without moving anything, and a report keyed on pair equality
+            // would be counting those too.
+            assertEquals(
+                IceDataPath(fromBase = pairBefore.local.base, to = pairBefore.remote.address),
+                reported.single().from,
+            )
+            assertEquals(
+                IceDataPath(fromBase = pairAfter.local.base, to = pairAfter.remote.address),
+                reported.single().to,
+            )
+            assertNotEquals(reported.single().from, reported.single().to, "a migration is a move, by definition")
         }
 
     @Test

@@ -42,12 +42,12 @@ class ReassemblyQueueTest {
     // malformed gap block (offset wraps to a u16 with end < start) — it is simply omitted.
     @Test
     fun gap_block_beyond_u16_offset_is_omitted_not_malformed() {
-        val q = ReassemblyQueue(peerInitialTsn = Tsn(100u), config = SctpConfig())
+        val q = reassemblyQueue(peerInitialTsn = Tsn(100u))
         // TSN 100 is missing, so the cumulative point stays at 99 forever.
         q.receive(data(tsn = 200)) // offset 101 — a representable gap block
         q.receive(data(tsn = 100_000)) // offset 99901 — beyond a u16, must be dropped from the SACK
 
-        val sack = q.buildSack()
+        val sack = q.buildSack(SctpConfig().receiveWindowBytes)
         assertEquals(Tsn(99u), sack.cumulativeTsnAck)
         assertTrue(sack.gapAckBlocks.all { it.end >= it.start }, "no malformed (end < start) gap block")
         assertTrue(
@@ -69,11 +69,11 @@ class ReassemblyQueueTest {
     // R3-F3: RFC 7053 SACK-IMMEDIATELY 'I' bit forces a prompt SACK even for perfectly in-order data.
     @Test
     fun i_bit_requests_immediate_sack() {
-        val q = ReassemblyQueue(peerInitialTsn = Tsn(1u), config = SctpConfig())
+        val q = reassemblyQueue(peerInitialTsn = Tsn(1u))
         q.receive(data(tsn = 1, immediate = false))
         // In-order, no I-bit → delayed SACK is fine.
         assertTrue(!q.sackImmediatelyRequested, "in-order non-immediate data does not force a SACK")
-        q.buildSack()
+        q.buildSack(SctpConfig().receiveWindowBytes)
         q.receive(data(tsn = 2, immediate = true))
         assertTrue(q.sackImmediatelyRequested, "the I bit forces an immediate SACK (RFC 7053)")
     }
@@ -81,10 +81,10 @@ class ReassemblyQueueTest {
     // R3-F5: a B..E run whose fragments claim different streams must not be spliced into one message.
     @Test
     fun fragments_from_different_streams_are_not_spliced() {
-        val q = ReassemblyQueue(peerInitialTsn = Tsn(1u), config = SctpConfig())
+        val q = reassemblyQueue(peerInitialTsn = Tsn(1u))
         val begin = data(tsn = 1, streamId = StreamId(1), beginning = true, ending = false, unordered = true)
         val end = data(tsn = 2, streamId = StreamId(2), beginning = false, ending = true, unordered = true)
-        val delivered = q.receive(begin) + q.receive(end)
+        val delivered = q.delivered(begin) + q.delivered(end)
         assertEquals(0, delivered.size, "a stream-discontinuous B..E run is not assembled")
     }
 
@@ -92,15 +92,46 @@ class ReassemblyQueueTest {
     // rather than leaving it stuck in the ordered-ready map, and delivery resumes at the new SSN.
     @Test
     fun forward_tsn_drops_held_ordered_message_it_skips() {
-        val q = ReassemblyQueue(peerInitialTsn = Tsn(1u), config = SctpConfig())
+        val q = reassemblyQueue(peerInitialTsn = Tsn(1u))
         // Deliver ordered ssn=1 first (held: we still expect ssn=0).
-        val held = q.receive(data(tsn = 2, ssn = 1))
+        val held = q.delivered(data(tsn = 2, ssn = 1))
         assertEquals(0, held.size, "ssn=1 is held while ssn=0 is missing")
         // Peer abandons ssn=0 and ssn=1: FORWARD-TSN to cum TSN 2, stream0 skip to ssn 1.
         val afterForward = q.onForwardTsn(Tsn(2u), listOf(ForwardTsnStream(stream0, StreamSequenceNumber(1u))))
         assertEquals(0, afterForward.size, "the skipped-over held message is dropped, not delivered")
         // A subsequent ssn=2 delivers immediately (expected advanced past the skip).
-        val next = q.receive(data(tsn = 3, ssn = 2))
+        val next = q.delivered(data(tsn = 3, ssn = 2))
         assertEquals(1, next.size, "delivery resumes at the SSN after the skip")
+    }
+}
+
+/**
+ * A queue over a receive window sized from [config] — the shape the association builds, so a fixture that
+ * exercises the queue alone still exercises the same admission arithmetic.
+ */
+internal fun reassemblyQueue(
+    peerInitialTsn: Tsn,
+    config: SctpConfig = SctpConfig(),
+): ReassemblyQueue = ReassemblyQueue(peerInitialTsn, config, ReceiveWindow(config.receiveWindowBytes, config.receiveOverrun))
+
+/**
+ * Ingest a chunk that is expected to be accepted, and return what became deliverable.
+ *
+ * Every fixture in this file predates the RFC 8841 §6 receive ceiling and the RFC 4960 §6.2 buffer
+ * ceiling, and none of them approaches either, so a refusal here is a defect in the accounting rather than
+ * a case under test — and it fails loudly instead of silently reading as "nothing became deliverable",
+ * which is what an `emptyList()` fallback would have made it.
+ *
+ * The held-bytes ledger is checked on the way past, because every fixture in this file is a receive-side
+ * fixture and that is where [ReassemblyQueue.heldBytesAgreeWithContents] says it should be checked.
+ */
+internal fun ReassemblyQueue.delivered(chunk: SctpChunk.Data): List<ReassembledMessage> {
+    val ingest = receive(chunk)
+    assertTrue(heldBytesAgreeWithContents(), "held-bytes ledger drifted after TSN ${chunk.tsn.value}")
+    assertTrue(runsAgreeWithFragments(), "run index drifted after TSN ${chunk.tsn.value}")
+    return when (ingest) {
+        is ChunkIngest.Delivered -> ingest.messages
+        ChunkIngest.RefusedForBuffer -> throw AssertionError("unexpected want-of-buffer refusal at TSN ${chunk.tsn.value}")
+        is ChunkIngest.MessageTooLarge -> throw AssertionError("unexpected receive-ceiling refusal: $ingest")
     }
 }

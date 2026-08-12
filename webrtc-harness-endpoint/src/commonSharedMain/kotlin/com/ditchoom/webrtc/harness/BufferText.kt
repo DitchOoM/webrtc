@@ -31,7 +31,11 @@ internal fun utf8Len(s: String): Int {
             code < 0x80 -> { n += 1; i += 1 }
             code < 0x800 -> { n += 2; i += 1 }
             // A well-formed pair is one code point in four bytes. An UNPAIRED surrogate is not encodable
-            // at all; three is what a replacement character costs, which is what an encoder substitutes.
+            // at all, and the targets do not agree about it: `writeString` THROWS on the JVM, where a
+            // TextEncoder-backed target substitutes U+FFFD. Three is the smallest count that never
+            // under-states either answer — this used to claim the encoder always substitutes, which
+            // `Utf8ByteCountTest` measured false. Every string this harness sends is ASCII, so the arm
+            // remains unreachable in practice; it is stated correctly rather than removed.
             pairedWithLow -> { n += 4; i += 2 }
             else -> { n += 3; i += 1 }
         }

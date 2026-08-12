@@ -312,12 +312,13 @@ class StreamResetTest {
     fun the_requests_this_subset_does_not_perform_are_denied_not_ignored() {
         val sim = established()
         val sequence = ReConfigRequestSequenceNumber(500u)
+        // The two requests that remain unperformable. The Add Outgoing / Add Incoming pair used to sit
+        // here too and is now honoured — see StreamGrowthTest, which asserts both the increase and the
+        // §5.2.1 repeat rule that keeps a retransmitted one from applying twice.
         val refused =
             listOf(
                 ReConfigParameter.IncomingSsnReset(sequence, listOf(stream)),
                 ReConfigParameter.SsnTsnReset(sequence),
-                ReConfigParameter.AddOutgoingStreams(sequence, 4u),
-                ReConfigParameter.AddIncomingStreams(sequence, 4u),
             )
         for (request in refused) {
             // Each runs on its own association: they all share one sequence number, and the point here is

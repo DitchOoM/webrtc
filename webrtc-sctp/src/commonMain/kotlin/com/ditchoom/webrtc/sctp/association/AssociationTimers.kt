@@ -16,19 +16,52 @@ import kotlin.time.Instant
  * separately, so `onT3Timeout` unwrapped two of them and duplicated its disarm-and-return in both arms
  * for a state that cannot happen.
  *
- * The three are created together, in one place, and die together in `clearControlBlocks`. [Live] says so:
- * one unwrap answers for all three, and there is no bang anywhere.
+ * The queues are created together, in one place, and die together in `clearControlBlocks`. [Live] says so:
+ * one unwrap answers for both, and there is no bang anywhere.
+ *
+ * Congestion control has since moved out to [PathRide], which is a different lifetime rather than a
+ * smaller one: cwnd and ssthresh belong to the *path*, and a path can be replaced under an association
+ * that is not being torn down. Keeping it here would have made a migration reach into the control block
+ * to replace one field of it, which is exactly the partial population this type exists to forbid.
  */
 internal sealed interface Tcb {
     /** No association — before the handshake completes, and after any teardown. */
     data object NoAssociation : Tcb
 
-    /** An established association: all three structures exist for exactly as long as it does. */
+    /** An established association: both queues exist for exactly as long as it does. */
     class Live(
         val retransmission: RetransmissionQueue,
         val reassembly: ReassemblyQueue,
-        val congestion: CongestionControl,
+        /** What the handshake settled — a `var` because RFC 6525 §4.5 raises the stream counts in place. */
+        var negotiated: Negotiated,
     ) : Tcb
+}
+
+/**
+ * Everything the two endpoints agreed on while forming this association: which extensions the peer
+ * advertised, and how many streams exist in each direction (RFC 4960 §5.1.1).
+ *
+ * It lives **on [Tcb.Live]** rather than beside it, and that placement is the point. Every field here is
+ * a fact about one particular peer, learned during one particular handshake, and each was previously a
+ * free-standing field that a teardown had to remember to clear — the shape that let
+ * `clearControlBlocks` reset `peerSupportsReConfig` and forget `peerSupportsForwardTsn`, so a departed
+ * peer's advertised capability survived into the association state. Here the whole value dies with the
+ * control block it describes, so "partial reliability available with no association" is unconstructible
+ * rather than merely unwritten.
+ *
+ * [incomingStreams] is `min(our MIS, the peer's OS)` and [outgoingStreams] is `min(our OS, the peer's
+ * MIS)` — two different minima that a symmetric configuration makes equal, which is exactly why one
+ * value standing for both would pass every fixture this repo runs.
+ */
+internal data class Negotiated(
+    val extensions: PeerExtensions,
+    val outgoingStreams: StreamCount,
+    val incomingStreams: StreamCount,
+) {
+    companion object {
+        /** No association: nothing advertised, no streams in either direction. */
+        val None: Negotiated = Negotiated(PeerExtensions.None, StreamCount.None, StreamCount.None)
+    }
 }
 
 /**
@@ -75,8 +108,9 @@ internal sealed interface Deadline {
  * Held as five independent fields, cancelling them was five assignments a caller had to remember, and
  * `cancelAllTimers` enumerated them by hand — so a timer added later is cancelled everywhere the author
  * thought to look and left running everywhere they did not. That is not hypothetical: the RFC 4960 §6.1
- * zero-window probe and the RFC 8899 PMTU probe both arrive in this same change set, and each would have
- * been one more line to forget in a function whose name promises it cancels everything.
+ * zero-window probe and the RFC 8899 PMTU probe both arrived after this class did, and each would have
+ * been one more line to forget in a function whose name promises it cancels everything. Neither needed an
+ * edit to [cancelAll], which is the property this shape was for.
  *
  * [cancelAll] is therefore a fresh instance rather than a sequence of assignments: a new timer added
  * below defaults to [Deadline.Unarmed] and is cancelled correctly without anyone editing [cancelAll].
@@ -94,6 +128,27 @@ internal data class AssociationDeadlines(
     val shutdown: Deadline = Deadline.Unarmed,
     /** The RFC 6525 §5.1.2 reconfiguration-request retransmit timer. */
     val reConfig: Deadline = Deadline.Unarmed,
+    /**
+     * RFC 8899's PROBE_TIMER while a path-MTU probe is unanswered, and its PMTU_RAISE_TIMER while a
+     * completed search rests. One field for both because they are never armed at once — the search is
+     * either measuring or resting — and because [PathMtuTracker] owns which; this is where the
+     * association's single timer fold can see it.
+     */
+    val probe: Deadline = Deadline.Unarmed,
+    /**
+     * RFC 4960 §6.1 rule A's zero-window probe — the persist timer, and the one this class predicted.
+     *
+     * Armed while the peer's advertised window will not admit the head of the send queue and nothing is
+     * outstanding to keep T3 running. Without it the send path has two bad options and takes the second:
+     * probe on every call, which streams the queue through a shut window at RTT cadence (RFC 1122 §4.2.3.4
+     * silly-window syndrome), or do not probe at all, which is a permanent stall with no timer armed
+     * anywhere. It paces the probe to one per RTO instead.
+     *
+     * Separate from [t3] because they answer different questions. T3 asks "was that chunk lost"; this asks
+     * "has the receiver made room" — and the second is not a congestion signal, which is why the answer to
+     * it must not spend the RFC 4960 §8.1 error budget (see `SctpAssociation.onT3Timeout`).
+     */
+    val zeroWindowProbe: Deadline = Deadline.Unarmed,
 ) {
     /**
      * The earliest armed deadline, or [Deadline.Unarmed] when nothing is armed. The single enumeration
@@ -101,7 +156,7 @@ internal data class AssociationDeadlines(
      */
     fun earliest(): Deadline {
         var soonest: Deadline = Deadline.Unarmed
-        for (candidate in listOf(handshake, t3, sack, shutdown, reConfig)) {
+        for (candidate in listOf(handshake, t3, sack, shutdown, reConfig, probe, zeroWindowProbe)) {
             val current = soonest
             soonest =
                 when {

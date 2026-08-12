@@ -8,6 +8,7 @@ import com.ditchoom.webrtc.sdp.SessionDescription
 import com.ditchoom.webrtc.sdp.fingerprints
 import com.ditchoom.webrtc.sdp.icePwd
 import com.ditchoom.webrtc.sdp.iceUfrag
+import com.ditchoom.webrtc.sdp.maxMessageSizeAttribute
 import com.ditchoom.webrtc.sdp.setup
 
 /**
@@ -50,7 +51,12 @@ object SdpCodecFuzzer {
         }
     }
 
-    // Everything reachable on a successfully parsed description must be crash-free on hostile content.
+    // Everything reachable on a successfully parsed description must be crash-free on hostile content —
+    // including the superseded readers, which a consumer can still call. `maxMessageSizeAttribute` is the
+    // one here whose result type carries a construction `require`, so it is the sharpest of these: a
+    // digit run the reader mis-ranges lands as an IllegalArgumentException out of a value class, not as a
+    // wrong number.
+    @Suppress("DEPRECATION")
     private fun exercise(sdp: SessionDescription) {
         sdp.toText() // re-serialization must not throw
         sdp.encode() // datagram serialization must not throw
@@ -68,6 +74,7 @@ object SdpCodecFuzzer {
             m.fingerprints()
             m.sctpPort()
             m.maxMessageSize()
+            m.maxMessageSizeAttribute()
             m.candidates()
             m.hasEndOfCandidates()
             m.isBundleOnly()

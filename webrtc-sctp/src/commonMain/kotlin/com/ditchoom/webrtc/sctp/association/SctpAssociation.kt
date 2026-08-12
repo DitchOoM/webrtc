@@ -8,10 +8,13 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.webrtc.sctp.ChecksumVerdict
 import com.ditchoom.webrtc.sctp.DataChunkFlags
 import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.ErrorCauseCode
+import com.ditchoom.webrtc.sctp.ErrorDetectionMethodId
 import com.ditchoom.webrtc.sctp.ForwardTsnStream
+import com.ditchoom.webrtc.sctp.OutboundChecksum
 import com.ditchoom.webrtc.sctp.ReConfigParameter
 import com.ditchoom.webrtc.sctp.ReConfigParameterDecode
 import com.ditchoom.webrtc.sctp.ReConfigRequestSequenceNumber
@@ -25,12 +28,28 @@ import com.ditchoom.webrtc.sctp.SctpPacketBuilder
 import com.ditchoom.webrtc.sctp.SctpParameter
 import com.ditchoom.webrtc.sctp.StreamId
 import com.ditchoom.webrtc.sctp.StreamSequenceNumber
+import com.ditchoom.webrtc.sctp.TransportErrorDetection
 import com.ditchoom.webrtc.sctp.Tsn
 import com.ditchoom.webrtc.sctp.VerificationTag
+import com.ditchoom.webrtc.sctp.ZeroChecksumAcceptance
+import com.ditchoom.webrtc.sctp.ZeroChecksumParameterDecode
+import com.ditchoom.webrtc.sctp.acceptanceOver
 import com.ditchoom.webrtc.sctp.asSupportedExtensions
+import com.ditchoom.webrtc.sctp.asZeroChecksumAcceptable
+import com.ditchoom.webrtc.sctp.emissionTo
 import kotlin.random.Random
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
+
+// The RFC 8899 probe nonce carried in the Heartbeat Info parameter. File-private rather than a
+// `const val` in a private companion, which is still emitted as a public static field.
+private const val PROBE_NONCE_BYTES = 4
+private const val BYTE_MASK = 0xFFu
+
+// RFC 4960 §3.3.10.1: an Invalid Stream Identifier cause value is the 2-byte offending id plus 2 reserved
+// bytes. File-private rather than a companion constant — a `const val` in a private companion is still
+// emitted as a public static field.
+private const val INVALID_STREAM_CAUSE_BYTES = 4
 
 /**
  * The **sans-io SCTP association** (RFC 4960 subset per RFC 8831 / ARCHITECTURE §11.2 — dcSCTP-style: one path,
@@ -45,16 +64,29 @@ import kotlin.time.Instant
  * Entropy is injected once ([random], directive #2): it seeds the Verification Tag and the initial TSN,
  * so a scenario replays bit-for-bit. Production wires `CryptoRandom`; tests wire a seeded [Random].
  *
- * **Path liveness** is intentionally delegated, not duplicated: this subset sends no SCTP HEARTBEATs, so
- * an association with no outstanding data does not itself detect a silently-dead peer. In WebRTC that is
- * covered a layer down by ICE consent freshness (RFC 7675), which tears down the transport on a dead
- * path and thereby closes the association — so a redundant SCTP heartbeat timer is deliberately omitted.
+ * [errorDetection] is the one thing this machine has to be told about the layer beneath it, and it is
+ * told rather than asked because the association owns no transport (ARCHITECTURE §5.1). It is what RFC
+ * 9653 negotiation is *about*: a transport that detects errors itself is what makes the CRC32c redundant.
+ * Defaults to [TransportErrorDetection.CrcOnly], so an association built without it behaves exactly as it
+ * did before RFC 9653 existed.
+ *
+ * **Path liveness** is intentionally delegated, not duplicated. An association with no outstanding data
+ * does not itself detect a silently-dead peer; in WebRTC that is covered a layer down by ICE consent
+ * freshness (RFC 7675), which tears down the transport on a dead path and thereby closes the association.
+ * So there is no SCTP heartbeat *timer* here, and no liveness use of HEARTBEAT at all.
+ *
+ * That is now a claim about **why** HEARTBEATs are sent rather than whether they are. RFC 8899 path-MTU
+ * probing (see [PathMtuTracker]) originates a HEARTBEAT carrying a nonce, padded to a candidate size, and
+ * reads the HEARTBEAT-ACK as confirmation that the size fits — so the chunk type is on the wire, scoped
+ * to that one purpose. The distinction is worth keeping sharp: a probe answers "how big may a datagram
+ * be", never "is the peer alive", and nothing here arms a timer on the second question.
  */
 public class SctpAssociation(
     private val config: SctpConfig = SctpConfig(),
     @Suppress("UnseamedEntropy") private val random: Random = Random.Default,
     private val localPort: UShort = SCTP_DATA_CHANNEL_PORT,
     private val remotePort: UShort = SCTP_DATA_CHANNEL_PORT,
+    private val errorDetection: TransportErrorDetection = TransportErrorDetection.CrcOnly,
 ) {
     private var _state: SctpAssociationState = SctpAssociationState.Closed
 
@@ -71,9 +103,84 @@ public class SctpAssociation(
     private var localInitialTsn: Tsn = Tsn(0u)
     private var nextTsn: Tsn = Tsn(0u)
 
-    // Internal-readable for the same reason the verification tags above are: a fixture has to be able to
-    // see that a teardown cleared the peer's advertised capabilities, and no output carries that fact.
-    internal var peerExtensions: PeerExtensions = PeerExtensions.None
+    /**
+     * What the handshake settled (see [Negotiated]), or [Negotiated.None] while there is no association.
+     *
+     * A projection of [Tcb.Live] rather than a field, so there is exactly one copy of these facts and it
+     * dies with the control block that learned them. Internal-readable for the same reason the
+     * verification tags above are: a fixture has to be able to see that a teardown cleared the peer's
+     * advertised capabilities, and no output carries that fact.
+     */
+    internal val negotiated: Negotiated
+        get() =
+            when (val current = tcb) {
+                Tcb.NoAssociation -> Negotiated.None
+                is Tcb.Live -> current.negotiated
+            }
+
+    /** The peer's advertised RFC 3758 / RFC 6525 extensions — test-visible, see [negotiated]. */
+    internal val peerExtensions: PeerExtensions get() = negotiated.extensions
+
+    /** Inbound streams this association negotiated: `min(our MIS, the peer's OS)` (RFC 4960 §5.1.1). */
+    internal val negotiatedInboundStreams: UShort get() = negotiated.incomingStreams.value
+
+    /**
+     * How many outgoing streams this endpoint may use (RFC 4960 §5.1.1), for the data-channel layer's
+     * stream-id allocator. Also emitted as [SctpOutput.OutgoingCapacityChanged] so a sans-io driver never
+     * has to poll for it; this accessor exists because a fixture asserting the *handshake* should not have
+     * to reconstruct it from an output list.
+     */
+    internal val outgoingCapacity: OutgoingStreamCapacity
+        get() =
+            when (val current = tcb) {
+                Tcb.NoAssociation -> OutgoingStreamCapacity.NotNegotiated
+                is Tcb.Live -> OutgoingStreamCapacity.Negotiated(current.negotiated.outgoingStreams)
+            }
+
+    /**
+     * The peer's Maximum Inbound Streams, as its most recent INIT or INIT ACK advertised it — the ceiling
+     * RFC 4960 §5.1.1 puts on how many outgoing streams this endpoint may use.
+     *
+     * Held as a hint rather than derived at establish time because the two roles learn it at different
+     * moments. The initiator has the INIT ACK in hand when the control block is built; the **responder**
+     * learned it from an INIT it answered statelessly, and the COOKIE ECHO carries no stream counts at
+     * all — the State Cookie's own `peerMaxInbound` is the *other* minimum (`min(our MIS, the peer's OS)`),
+     * which says nothing about how many streams the peer will accept from us.
+     *
+     * It is a single scalar, so a stateless responder still retains no TCB per INIT, and it is only ever
+     * used to **lower** `config.outboundStreams`: an endpoint that never heard a number keeps its own, and
+     * a peer that interleaves INITs can only make us more conservative than its last word or as generous
+     * as our own configuration — never more. A peer restart (§5.2.4 action A) clears it with the rest of
+     * the control block and therefore falls back to our configured value, which is the safe direction.
+     */
+    private var peerMaxInboundStreams: StreamCount = StreamCount.Max
+
+    /**
+     * RFC 9653 §5.3, the **receive** direction: whether a packet arriving with a zero checksum may be
+     * processed on the transport's guarantee instead of the CRC32c.
+     *
+     * A `val`, and settled before a single byte is exchanged, because §5.3 keys the obligation on what we
+     * *sent* — and what we send is decided entirely by our own policy and our own transport, neither of
+     * which the peer can influence. Nothing in the handshake can widen it; a peer cannot talk us into
+     * accepting an unverifiable packet by advertising anything.
+     */
+    internal val zeroChecksumAcceptance: ZeroChecksumAcceptance = config.zeroChecksum.acceptanceOver(errorDetection)
+
+    /**
+     * RFC 9653 §5.2, the **send** direction: whether this endpoint may leave the checksum field at zero.
+     *
+     * A `var`, and [OutboundChecksum.Crc32c] until the peer's own advertisement is in hand — restriction 1
+     * of §5.2 makes that the only safe starting point, and it is also why this is a separate field from
+     * [zeroChecksumAcceptance] rather than a projection of it. Advertising says "I will accept one from
+     * you"; it grants nothing in this direction. Collapsing the two into one "zero checksum negotiated"
+     * flag is the failure this shape exists to make unrepresentable: read as permission to send, every
+     * packet we emit is dropped by a peer that never agreed to receive one, and the association dies
+     * looking exactly like a dead path.
+     *
+     * Internal-readable for the same reason [peerExtensions] is: no output carries it, so a fixture has no
+     * other way to see which direction was settled.
+     */
+    internal var outboundChecksum: OutboundChecksum = OutboundChecksum.Crc32c
         private set
 
     private val orderedSendSsn = HashMap<StreamId, Int>()
@@ -83,23 +190,136 @@ public class SctpAssociation(
     // Tracked as a running counter rather than summed on demand: this is read once per drive-loop item, and
     // walking the deque there would make a full send buffer quadratic in the number of queued fragments.
     //
-    // INTERNAL, deliberately. This is the truth the *driver* needs to apply backpressure (see
-    // SctpDataChannelStack), not a consumer-facing `bufferedAmount` — the data-channel API stays
-    // suspend-only, so nothing above this module observes a byte count.
+    // INTERNAL, deliberately. This is the association-wide depth the *driver* uses to park and release
+    // senders (see SctpDataChannelStack), and it is NOT what a consumer sees: W3C's `bufferedAmount` is
+    // per channel and counts application bytes only, which is [bufferedAmount] below. Two different
+    // questions over the same queue, and conflating them would report DCEP traffic to an application that
+    // did not send it.
     private var pendingSendBytes: Int = 0
 
     /** Bytes queued for transmission but not yet sent — the driver's backpressure signal. */
     internal val bufferedBytes: Int get() = pendingSendBytes
 
+    // Per-stream APPLICATION bytes in [pendingSend] — the projection W3C's `bufferedAmount` is (S5). One
+    // source of truth, not a second counter kept alongside: a gauge that tracked its own additions would
+    // drift the first time a fragment left the queue by a path nobody thought to instrument, and a
+    // `bufferedAmount` that disagrees with the queue is worse than none.
+    private val pendingApplicationBytes = HashMap<StreamId, Long>()
+
+    /**
+     * Application bytes queued on [streamId] and not yet handed to the wire (W3C `bufferedAmount`).
+     *
+     * A projection of [pendingSend], read on demand. A refused send never enters the association at all, so
+     * there is no path by which this can hold a value for a message that was never accepted.
+     */
+    internal fun bufferedAmount(streamId: StreamId): Long = pendingApplicationBytes[streamId] ?: 0L
+
+    // The two ways a fragment enters and leaves the unsent queue. Funnelled so the per-stream projection
+    // cannot be updated at one of them and forgotten at the other — the same argument as the reassembly
+    // queue's held-bytes ledger, one layer up.
+    private fun enqueuePending(data: OutstandingData) {
+        pendingSend.addLast(data)
+        pendingSendBytes += data.bytes
+        if (data.origin == SendOrigin.Application) {
+            pendingApplicationBytes[data.streamId] = (pendingApplicationBytes[data.streamId] ?: 0L) + data.bytes
+        }
+    }
+
+    private fun dequeuePending(data: OutstandingData) {
+        pendingSendBytes -= data.bytes
+        if (data.origin != SendOrigin.Application) return
+        val remaining = (pendingApplicationBytes[data.streamId] ?: 0L) - data.bytes
+        if (remaining > 0L) pendingApplicationBytes[data.streamId] = remaining else pendingApplicationBytes.remove(data.streamId)
+    }
+
     private var tcb: Tcb = Tcb.NoAssociation
-    private val rtt = RttEstimator(config)
+
+    /**
+     * The RFC 4960 §3.3.2 a_rwnd accountant — what this endpoint still has room for, and how far past it
+     * arriving DATA is still stored (see [ReceiveWindow]).
+     *
+     * A `val` outside the [Tcb], because a [DeliveryReceipt] can come back after the control block that
+     * issued it is gone: the driver hands messages to an application coroutine, and the teardown that drops
+     * the TCB is a different one. Inside the TCB every credit would be a "does the association still exist"
+     * question at the call site; here it is a lookup that finds nothing, which is the same answer without
+     * the branch.
+     */
+    private val receiveWindow = ReceiveWindow(config.receiveWindowBytes, config.receiveOverrun)
+
+    /**
+     * Bytes delivered upward whose [DeliveryReceipt] has not come back — test-visible, and the only direct
+     * read of "the driver still owes for these".
+     *
+     * Internal for the same reason the verification tags are: no output carries it. It is what tells a
+     * fixture apart a driver that credits at *delivery* — which would read zero here forever and provide no
+     * backpressure at all — from one that credits when the application is genuinely finished.
+     */
+    internal val outstandingReceiveBytes: Long get() = receiveWindow.outstandingBytes
+
+    /**
+     * What is measured about the path currently underneath this association — RTT, congestion, the
+     * consecutive-error budget, and the epoch that says which path they describe (see [PathRide]).
+     *
+     * A `var` holding one value rather than four fields, because a migration invalidates all of them
+     * together and the reset is then a construction that cannot omit one.
+     */
+    private var ride: PathRide = PathRide.first(config)
+
+    /**
+     * What the layer below has said about the path it carries us on (RFC 8261 §6.1). [SctpPathProfile]
+     * for why this is sealed rather than a nullable, and [SctpEvent.PathChanged] for who sets it.
+     *
+     * Internal-readable for the same reason the verification tags are: no output carries the profile, so a
+     * fixture asserting that a re-statement was adopted without a reset has no other way to see it.
+     */
+    internal var pathProfile: SctpPathProfile = SctpPathProfile.Unassessed
+        private set
+
+    /** RFC 8899 path MTU discovery for the current path — inert under [PathMtuPolicy.Fixed]. */
+    private val pathMtu = PathMtuTracker(config.pathMtu)
+
+    /**
+     * The largest user-data payload one DATA chunk may carry right now (RFC 4960 §6.9).
+     *
+     * Three inputs, one rule: **a measurement beats configuration; an assumption does not.**
+     *
+     * - No profile at all → `config.maxPayloadBytes` exactly, which is the behaviour that shipped before
+     *   path events existed. A driver that never sends [SctpEvent.PathChanged] is untouched by any of this.
+     * - A profile, nothing probed → the smaller of `config.maxPayloadBytes` and what the family admits
+     *   unprobed. The family ceiling may only *lower* the configured value: raising it would put a
+     *   fragment size on the wire that nobody asked for, on the strength of a guess about the link.
+     * - A probe-confirmed size → that size, whichever way it moves the configured value. It is a
+     *   measurement of the path this association is actually on, and measuring it is precisely what the
+     *   caller asked for by choosing [PathMtuPolicy.Discover].
+     */
+    internal val fragmentCeiling: Int
+        get() =
+            when (val measured = pathMtu.measured) {
+                is MeasuredCeiling.Confirmed -> measured.ceiling.value
+                MeasuredCeiling.NotMeasured ->
+                    when (val profile = pathProfile) {
+                        SctpPathProfile.Unassessed -> config.maxPayloadBytes
+                        is SctpPathProfile.Assessed -> minOf(config.maxPayloadBytes, profile.unprobedFragmentCeiling.value)
+                    }
+            }
+
+    /**
+     * The congestion window in bytes (RFC 4960 §7.2), readable so a fixture can assert that it **grows**.
+     *
+     * Internal for the same reason the verification tags and [fragmentCeiling] are: no output carries it,
+     * and a frozen cwnd is invisible from the wire — every packet is well-formed, every chunk is
+     * acknowledged, and the only symptom is that a transfer takes one round trip per `cwnd / fragment`
+     * bytes forever. That is a throughput collapse a liveness assertion cannot see, because the association
+     * does eventually deliver (see [cwndIsTheLimit]).
+     */
+    internal val congestionWindowBytes: Int get() = ride.congestion.cwnd
 
     // Retained handshake artifacts (rebuilt-identical retransmits).
     private var localInit: SctpChunk.Init? = null
     private var cookieEcho: SctpChunk.CookieEcho? = null
 
     // ── RFC 6525 stream reconfiguration — two state machines, each one field ──
-    private var outgoingReset: OutgoingReset = OutgoingReset.Ready(PendingReset.Nothing)
+    private var requester: ReConfigRequester = ReConfigRequester.Ready(PendingRequests())
     private var peerRequests: PeerRequests = PeerRequests.NoneYet(ReConfigRequestSequenceNumber(0u))
     private var nextRequestSequence = ReConfigRequestSequenceNumber(0u)
 
@@ -139,30 +359,88 @@ public class SctpAssociation(
     }
 
     /**
+     * How many more outgoing streams the upper layer has asked for but that is not yet on the wire
+     * (RFC 6525 §4.5). Sealed rather than a [StreamCount] starting at zero, because zero is a value the
+     * request field may not carry — so "nothing asked for" and "asked for none" would be the same number
+     * meaning two different things.
+     */
+    private sealed interface PendingGrowth {
+        data object None : PendingGrowth
+
+        data class Streams(
+            val count: StreamCount,
+        ) : PendingGrowth
+
+        /** Accumulate: several opens waiting on capacity ride one request (§5.1.2 will not overlap two). */
+        fun plus(more: StreamCount): PendingGrowth =
+            when (this) {
+                None -> if (more == StreamCount.None) None else Streams(more)
+                is Streams -> Streams(count.plusSaturating(more))
+            }
+    }
+
+    /** Everything the upper layer has asked for that is waiting for the wire to be free. */
+    private data class PendingRequests(
+        val reset: PendingReset = PendingReset.Nothing,
+        val growth: PendingGrowth = PendingGrowth.None,
+    )
+
+    /**
+     * A RE-CONFIG request this endpoint originated, retained whole while it is outstanding so the
+     * retransmit timer re-emits it **byte-identically** — a re-derived reset would carry a newer
+     * last-assigned TSN, which the peer reads as a *different* request at the same sequence number.
+     *
+     * Sealed over the two kinds this subset originates, because RFC 6525 §5.1.2 allows only one request
+     * outstanding at a time across **both** of them: a reset and a stream-count increase share one slot,
+     * one sequence number space and one retransmit timer. Modelling them as two independent state
+     * machines would let both be on the wire at once, which the peer answers with
+     * `ErrorRequestAlreadyInProgress` for whichever it saw second.
+     */
+    private sealed interface ReConfigRequest {
+        val sequence: ReConfigRequestSequenceNumber
+
+        /** The wire form, re-emitted unchanged on every retransmit. */
+        val parameter: ReConfigParameter
+
+        data class Reset(
+            override val sequence: ReConfigRequestSequenceNumber,
+            val scope: StreamResetScope,
+            override val parameter: ReConfigParameter.OutgoingSsnReset,
+        ) : ReConfigRequest
+
+        data class AddOutgoing(
+            override val sequence: ReConfigRequestSequenceNumber,
+            val count: StreamCount,
+            override val parameter: ReConfigParameter.AddOutgoingStreams,
+        ) : ReConfigRequest
+    }
+
+    /**
      * The requester half (RFC 6525 §5.1.2): at most one request may be outstanding, which is why this is
      * one field with two states rather than a nullable "in flight" beside a queue. Both states carry the
-     * pending set, so a reset asked for at any moment has exactly one place to go.
+     * pending set, so anything asked for at any moment has exactly one place to go.
      */
-    private sealed interface OutgoingReset {
+    private sealed interface ReConfigRequester {
         /** What has piled up behind whatever this state is doing. */
-        val pending: PendingReset
+        val pending: PendingRequests
 
         /** Nothing on the wire — [pending] goes out as soon as the association can send it. */
         data class Ready(
-            override val pending: PendingReset,
-        ) : OutgoingReset
+            override val pending: PendingRequests,
+        ) : ReConfigRequester
 
-        /**
-         * [request] is on the wire and unanswered. Retained whole so the retransmit timer re-emits it
-         * byte-identically (a re-derived request would carry a newer last-assigned TSN, which the peer
-         * would read as a *different* request at the same sequence number).
-         */
+        /** [request] is on the wire and unanswered. */
         data class InFlight(
-            val sequence: ReConfigRequestSequenceNumber,
-            val scope: StreamResetScope,
-            val request: ReConfigParameter.OutgoingSsnReset,
-            override val pending: PendingReset,
-        ) : OutgoingReset
+            val request: ReConfigRequest,
+            override val pending: PendingRequests,
+        ) : ReConfigRequester
+
+        /** The same state with a different pending set — the one mutation both variants share. */
+        fun withPending(pending: PendingRequests): ReConfigRequester =
+            when (this) {
+                is Ready -> copy(pending = pending)
+                is InFlight -> copy(pending = pending)
+            }
     }
 
     /**
@@ -225,12 +503,40 @@ public class SctpAssociation(
         ) : RequestAdmission
     }
 
+    /**
+     * Whether the data currently outstanding is an RFC 4960 §6.1 rule A **window probe**, and whether the
+     * peer has been heard from since the last T3 expiry that was excused because of it.
+     *
+     * Three states rather than two Booleans, because the pair `probing`/`sackedSinceLastExpiry` can spell
+     * "not probing, but the excuse is available", which is the combination that would silently disarm the
+     * RFC 4960 §8.1 error budget for an ordinary retransmission — i.e. the opposite failure from the one
+     * this whole mechanism fixes, and a much worse one. Here the excuse only exists in a state that says
+     * a probe is what is outstanding.
+     */
+    private sealed interface WindowProbe {
+        /** Not probing: the peer's window admitted what was sent, so a T3 expiry is an ordinary failure. */
+        data object None : WindowProbe
+
+        /**
+         * A probe is outstanding and nothing has been heard from the peer since probing began, or since the
+         * last expiry that was excused. RFC 8540 §3.20 keys the excuse on the sender *continuing* to
+         * receive SACKs, so this state is charged: a peer that goes quiet the moment it shuts its window is
+         * indistinguishable from a peer that died with its window shut, and the association must still give
+         * up on it.
+         */
+        data object Silent : WindowProbe
+
+        /** A probe is outstanding and the peer has SACKed since the last expiry — the next one is excused. */
+        data object Answered : WindowProbe
+    }
+
+    private var windowProbe: WindowProbe = WindowProbe.None
+
     // ── Timers as absolute deadlines (ARCHITECTURE §5.1: nextDeadline is the whole clock contract) ──
     private var deadlines = AssociationDeadlines()
     private var handshakeRetransmits = 0
     private var shutdownRetransmits = 0
     private var reConfigRetransmits = 0
-    private var consecutiveRtxErrors = 0
     private var packetsSinceSack = 0
 
     /**
@@ -254,6 +560,9 @@ public class SctpAssociation(
             is SctpEvent.DatagramReceived -> onDatagram(event.payload, now, out)
             is SctpEvent.SendMessage -> onSendMessage(event, now, out)
             is SctpEvent.ResetStreams -> onResetStreams(event.scope, now, out)
+            is SctpEvent.PathChanged -> onPathChanged(event.path, now, out)
+            is SctpEvent.RequestMoreOutgoingStreams -> onRequestMoreOutgoingStreams(event.count, now, out)
+            is SctpEvent.MessageConsumed -> onMessageConsumed(event.receipt, out)
             SctpEvent.Shutdown -> onShutdownRequested(now, out)
             SctpEvent.Abort -> onAbortRequested(out)
             SctpEvent.TimerFired -> onTimers(now, out)
@@ -299,7 +608,7 @@ public class SctpAssociation(
                 outboundStreams = config.outboundStreams,
                 inboundStreams = config.inboundStreams,
                 initialTsn = localInitialTsn,
-                parameters = listOf(SctpParameter.forwardTsnSupported(), supportedExtensions()),
+                parameters = handshakeParameters(),
             )
         localInit = init
         emitPacket(listOf(init), VerificationTag(0u), out)
@@ -317,6 +626,10 @@ public class SctpAssociation(
             abortWith(SctpFailureReason.ProtocolViolation(ProtocolViolationKind.ZeroStreams), reflectTag = init.initiateTag, out)
             return
         }
+        // The peer's MIS, kept for the moment the COOKIE ECHO comes home — see [peerMaxInboundStreams].
+        // Recorded before the SHUTDOWN-ACK-SENT early return below, because that path answers a *previous*
+        // association and never reaches an establish that could read it.
+        peerMaxInboundStreams = StreamCount(init.inboundStreams)
         val advertised =
             when (val response = initResponse()) {
                 // RFC 4960 §9.2: an INIT while we are SHUTDOWN-ACK-SENT is not a new association — our
@@ -327,6 +640,9 @@ public class SctpAssociation(
                 }
                 is InitResponse.Advertise -> response
             }
+        // Read once and used twice: the cookie carries it across the handshake the responder holds no TCB
+        // through, and it also decides the checksum on the INIT ACK this call is about to emit.
+        val peerZeroChecksum = init.parameters.zeroChecksumAdvertised()
         val cookie =
             encodeCookie(
                 StateCookie(
@@ -334,8 +650,20 @@ public class SctpAssociation(
                     peerTag = init.initiateTag,
                     peerInitialTsn = init.initialTsn,
                     peerRwnd = init.advertisedReceiverWindow,
-                    peerForwardTsn = init.supportsForwardTsn(),
-                    peerReConfig = init.parameters.advertiseReConfig(),
+                    // RFC 4960 §5.1.1: the association carries min(our MIS, the peer's OS) inbound
+                    // streams. Computed here because the COOKIE ECHO carries no stream counts, so this is
+                    // the last moment the peer's number is in hand.
+                    peerMaxInbound = minOf(config.inboundStreams, init.outboundStreams),
+                    capabilities =
+                        PeerCapabilities.of(
+                            forwardTsn = init.supportsForwardTsn(),
+                            reConfig = init.parameters.advertiseReConfig(),
+                        ),
+                    // RFC 9653 §5.2 restriction 1: permission to emit a zero checksum comes from the
+                    // peer's advertisement, which arrives in this INIT and is gone by the time the COOKIE
+                    // ECHO returns — the responder keeps no TCB in between. There is nothing to re-derive
+                    // it from either; the echo carries no parameters of its own.
+                    peerZeroChecksum = peerZeroChecksum,
                     ourTag = advertised.ourTag,
                     ourInitialTsn = advertised.ourInitialTsn,
                     localTieTag = advertised.localTieTag,
@@ -354,14 +682,13 @@ public class SctpAssociation(
                 outboundStreams = config.outboundStreams,
                 inboundStreams = config.inboundStreams,
                 initialTsn = advertised.ourInitialTsn,
-                parameters =
-                    listOf(
-                        cookieParameter,
-                        SctpParameter.forwardTsnSupported(),
-                        supportedExtensions(),
-                    ),
+                parameters = listOf(cookieParameter) + handshakeParameters(),
             )
-        emitPacket(listOf(initAck), init.initiateTag, out)
+        // The INIT ACK is the one packet whose checksum permission is derived rather than stored. RFC 9653
+        // §5.2 does not list the INIT ACK among the chunks that force a CRC32c — by the time we answer an
+        // INIT we have already read what it advertised — but a stateless responder has nowhere to keep
+        // that answer, so it is computed for this emit and forgotten with everything else.
+        emitPacket(listOf(initAck), init.initiateTag, out, config.zeroChecksum.emissionTo(peerZeroChecksum, errorDetection))
         // "the existing association, including its current state, and the corresponding TCB MUST NOT be
         // changed" (§5.2.1 / §5.2.2) — nothing above touches state, and the T1-init timer keeps running.
     }
@@ -421,18 +748,43 @@ public class SctpAssociation(
         out: MutableList<SctpOutput>,
     ) {
         if (_state != SctpAssociationState.CookieWait) return
+        // RFC 4960 §3.3.2 forbids zero in either stream field of an INIT **or** an INIT ACK, and the
+        // consequence of accepting one is worse on this side: a zero OS means the peer will never send on
+        // any stream, and a zero MIS means every id we allocate is out of range, so the association comes
+        // up healthy and carries nothing. The INIT arm of this check has always existed; this is its
+        // mirror, and without it the initiator was the one side that could not see the violation.
+        if (initAck.outboundStreams == 0u.toUShort() || initAck.inboundStreams == 0u.toUShort()) {
+            abortWith(SctpFailureReason.ProtocolViolation(ProtocolViolationKind.ZeroStreams), reflectTag = initAck.initiateTag, out)
+            return
+        }
         val cookieParam = initAck.stateCookie()
         if (cookieParam == null) {
             abortWith(SctpFailureReason.ProtocolViolation(ProtocolViolationKind.MissingStateCookie), reflectTag = initAck.initiateTag, out)
             return
         }
         peerVerificationTag = initAck.initiateTag
-        peerExtensions =
-            PeerExtensions(
-                forwardTsn = initAck.parameters.any { it.type == com.ditchoom.webrtc.sctp.ParameterType.ForwardTsnSupported },
-                reConfig = initAck.parameters.advertiseReConfig(),
-            )
-        establishControlBlocks(peerInitialTsn = initAck.initialTsn, peerRwnd = initAck.advertisedReceiverWindow)
+        peerMaxInboundStreams = StreamCount(initAck.inboundStreams)
+        // RFC 9653 §5.2 restriction 1: the INIT ACK is where the initiator learns whether the peer will
+        // accept a zero checksum. Settled here and nowhere else on this path — the COOKIE ECHO we are
+        // about to send must carry a real CRC32c regardless (§5.2 restriction 2).
+        outboundChecksum = config.zeroChecksum.emissionTo(initAck.parameters.zeroChecksumAdvertised(), errorDetection)
+        // The initiator never mints a cookie, so it settles both §5.1.1 minima straight off the INIT ACK.
+        // Both sides must reach the same inbound number or they disagree about which stream ids exist.
+        establishControlBlocks(
+            peerInitialTsn = initAck.initialTsn,
+            peerRwnd = initAck.advertisedReceiverWindow,
+            negotiated =
+                Negotiated(
+                    extensions =
+                        PeerExtensions(
+                            forwardTsn = initAck.parameters.any { it.type == com.ditchoom.webrtc.sctp.ParameterType.ForwardTsnSupported },
+                            reConfig = initAck.parameters.advertiseReConfig(),
+                        ),
+                    outgoingStreams = StreamCount(minOf(config.outboundStreams, initAck.inboundStreams)),
+                    incomingStreams = StreamCount(minOf(config.inboundStreams, initAck.outboundStreams)),
+                ),
+            out = out,
+        )
         val echo = SctpChunk.CookieEcho(copyOf(cookieParam.value))
         cookieEcho = echo
         emitPacket(listOf(echo), peerVerificationTag, out)
@@ -473,7 +825,7 @@ public class SctpAssociation(
                     cancelHandshake()
                     clearCookieEcho()
                     trySend(now, out)
-                    maybeSendReset(now, out)
+                    maybeSendReConfig(now, out)
                 }
             }
             // Actions C and "any case not shown in Table 2": discard the cookie, change no state, and
@@ -559,7 +911,10 @@ public class SctpAssociation(
         }
         clearControlBlocks(out) // drop the old association's queues, stream state and unsent messages
         cancelAllTimers()
-        consecutiveRtxErrors = 0
+        // A restart invalidates every measurement: the peer's state is gone, so cwnd/SRTT describe a
+        // conversation that no longer exists, and the epoch must advance so nothing from the previous
+        // association can be mistaken for this one's.
+        ride = ride.onRestart()
         packetsSinceSack = 0
         // Adopt first, notify second: the COOKIE ACK is queued before the driver acts on the
         // notification, so the peer's handshake completes even when the driver tears its channels down.
@@ -577,14 +932,29 @@ public class SctpAssociation(
         localInitialTsn = cookie.ourInitialTsn
         nextTsn = cookie.ourInitialTsn
         peerVerificationTag = cookie.peerTag
-        peerExtensions = PeerExtensions(forwardTsn = cookie.peerForwardTsn, reConfig = cookie.peerReConfig)
-        establishControlBlocks(peerInitialTsn = cookie.peerInitialTsn, peerRwnd = cookie.peerRwnd)
+        // The responder's half of RFC 9653 §5.2 restriction 1: the peer's advertisement was read off an
+        // INIT this endpoint deliberately kept no state about, so the cookie is the only place it survives.
+        outboundChecksum = config.zeroChecksum.emissionTo(cookie.peerZeroChecksum, errorDetection)
+        establishControlBlocks(
+            peerInitialTsn = cookie.peerInitialTsn,
+            peerRwnd = cookie.peerRwnd,
+            negotiated =
+                Negotiated(
+                    extensions =
+                        PeerExtensions(forwardTsn = cookie.capabilities.forwardTsn, reConfig = cookie.capabilities.reConfig),
+                    // The cookie carries the inbound minimum; the outbound one is bounded by the peer's
+                    // MIS, which only the INIT/INIT ACK said — see [peerMaxInboundStreams].
+                    outgoingStreams = StreamCount(minOf(config.outboundStreams, peerMaxInboundStreams.value)),
+                    incomingStreams = StreamCount(cookie.peerMaxInbound),
+                ),
+            out = out,
+        )
         emitPacket(listOf(SctpChunk.CookieAck), peerVerificationTag, out)
         transition(SctpAssociationState.Established, out)
         cancelHandshake()
         clearCookieEcho()
         trySend(now, out)
-        maybeSendReset(now, out)
+        maybeSendReConfig(now, out)
     }
 
     private fun onCookieAck(
@@ -596,21 +966,29 @@ public class SctpAssociation(
         cancelHandshake()
         clearCookieEcho()
         trySend(now, out)
-        maybeSendReset(now, out)
+        maybeSendReConfig(now, out)
     }
 
     private fun establishControlBlocks(
         peerInitialTsn: Tsn,
         peerRwnd: UInt,
+        negotiated: Negotiated,
+        out: MutableList<SctpOutput>,
     ) {
         val retransmission = RetransmissionQueue(config, localInitialTsn)
         retransmission.setPeerReceiveWindow(peerRwnd)
         tcb =
             Tcb.Live(
                 retransmission = retransmission,
-                reassembly = ReassemblyQueue(peerInitialTsn, config),
-                congestion = CongestionControl(config, peerRwnd),
+                reassembly = ReassemblyQueue(peerInitialTsn, config, receiveWindow),
+                negotiated = negotiated,
             )
+        // The stream-id allocator above this layer cannot pick an id until it knows the ceiling, and the
+        // ceiling only exists from here on. Emitted rather than polled so the driver stays sans-io.
+        out += SctpOutput.OutgoingCapacityChanged(OutgoingStreamCapacity.Negotiated(negotiated.outgoingStreams))
+        // The peer's advertised window is the RFC 4960 §7.2.1 seed for ssthresh, and it only becomes known
+        // here. The epoch and any handshake RTT sample survive: this is the same path it always was.
+        ride = ride.established(peerRwnd)
         // RFC 6525 §5.1.1: both endpoints seed their Re-configuration Request Sequence Number from their
         // own Initial TSN, so each side can predict where the other's numbering starts before a single
         // request has been exchanged — which is what lets §4.1's Response Sequence Number field be filled
@@ -650,7 +1028,19 @@ public class SctpAssociation(
     ) {
         // Integrity: over DTLS the transport authenticates, but the SCTP CRC32c is still on the wire —
         // a mismatch is a corrupt datagram we drop (T0: never a throw).
-        if (!packet.verifyChecksum()) return
+        //
+        // Written as an exhaustive `when` rather than the Boolean projection so that RFC 9653's
+        // `AcceptedZero` cannot be introduced without this site being asked what to do about it. That is
+        // the one place in the receive path where getting it wrong is invisible: an accepted-but-
+        // unverifiable packet dropped here looks exactly like a peer that went quiet.
+        //
+        // The acceptance passed is what WE advertised (RFC 9653 §5.3) — never what the peer permitted us
+        // to send. A peer we made no promise to gets the RFC 4960 §6.8 rule unchanged, so its zero
+        // checksum is a Mismatch and its packet is discarded.
+        when (packet.validateChecksum(zeroChecksumAcceptance)) {
+            ChecksumVerdict.Verified, ChecksumVerdict.AcceptedZero -> Unit
+            ChecksumVerdict.Mismatch, ChecksumVerdict.NotFromWire -> return
+        }
         if (!verificationTagOk(packet)) return
 
         // A SACK is owed for any chunk that advances the receiver's cumulative TSN — DATA *or* a
@@ -673,7 +1063,7 @@ public class SctpAssociation(
                     onForwardTsn(chunk, out)
                 }
                 is SctpChunk.Heartbeat -> emitPacket(listOf(SctpChunk.HeartbeatAck(chunk.info)), peerVerificationTag, out)
-                is SctpChunk.HeartbeatAck -> Unit
+                is SctpChunk.HeartbeatAck -> onHeartbeatAck(chunk, now, out)
                 is SctpChunk.Abort -> {
                     fail(SctpFailureReason.AbortReceived, out)
                     return
@@ -683,6 +1073,11 @@ public class SctpAssociation(
                 is SctpChunk.ShutdownComplete -> onShutdownComplete(out)
                 is SctpChunk.Error -> Unit
                 is SctpChunk.ReConfig -> onReConfig(chunk, now, out)
+                // RFC 4820 §3: padding, by definition carrying nothing. This codec never decodes an
+                // inbound type 132 into this variant (it stays Unrecognized — see SctpChunk.Pad), so this
+                // arm is only reachable from a hand-built packet in a fixture. Either way the answer is
+                // the same one RFC 4960 §3.2 gives for a skippable chunk: ignore it, keep processing.
+                is SctpChunk.Pad -> Unit
                 is SctpChunk.Unrecognized -> Unit
             }
         }
@@ -698,9 +1093,132 @@ public class SctpAssociation(
         chunk: SctpChunk.Data,
         out: MutableList<SctpOutput>,
     ) {
-        val reassembly = tcb.liveOrElse { return }.reassembly
-        for (message in reassembly.receive(chunk)) {
-            out += SctpOutput.MessageReceived(message.streamId, message.ppid, message.unordered, message.payload)
+        val live = tcb.liveOrElse { return }
+        // RFC 4960 §3.3.10.1: a DATA chunk naming a stream outside the number this association negotiated
+        // is refused with an ERROR, not reassembled. Until now the number was settled and then never read,
+        // so a peer could open reassembly state on any of 65536 ids regardless of what it agreed to — a
+        // peer-paced allocator, reachable before any application ever sees the stream.
+        //
+        // The TSN is still acknowledged. Dropping it outright leaves our cumulative point below it, so the
+        // peer retransmits the same refused chunk until its error counter aborts the association — the
+        // exact failure this module already avoids by *answering* the RE-CONFIG requests it will not
+        // perform rather than ignoring them.
+        //
+        // This gate precedes reassembly deliberately: it is the cheapest of the three peer-paced-allocator
+        // refusals here, and a chunk on a stream that does not exist should reach neither the message-size
+        // accounting nor the receive-window accounting that the other two guard.
+        if (!live.negotiated.incomingStreams.admits(chunk.streamId)) {
+            live.reassembly.discard(chunk.tsn)
+            emitPacket(listOf(SctpChunk.Error(listOf(invalidStreamIdentifier(chunk.streamId)))), peerVerificationTag, out)
+            return
+        }
+        when (val ingest = live.reassembly.receive(chunk)) {
+            is ChunkIngest.Delivered -> for (message in ingest.messages) out += deliver(message)
+            // RFC 4960 §6.2, want of buffer: nothing was stored and nothing is owed. The caller SACKs on the
+            // way out of this packet — `receive` has already flagged it immediate — and that SACK reports
+            // the TSN as still missing (it never entered the gap map), which is what asks the peer to send
+            // it again once the window this endpoint is advertising has reopened.
+            ChunkIngest.RefusedForBuffer -> Unit
+            // The peer is sending a message larger than we advertised we would take (RFC 8841 §6), which
+            // RFC 8831 §6.6 forbids. Nothing was stored, so there is no partial message to release —
+            // `fail` below drains the rest — and nothing further in this packet is processed, because
+            // every remaining handler unwraps the TCB this tears down.
+            is ChunkIngest.MessageTooLarge -> abortOversizedMessage(ingest, out)
+        }
+    }
+
+    /**
+     * The upper layer finished with a delivered message (RFC 4960 §3.3.2): give its space back, and tell
+     * the peer at once if that reopened a window it had been told was shut.
+     *
+     * The SACK is the load-bearing half. A shut window stops inbound DATA by construction, and inbound DATA
+     * is the only thing that arms the delayed-SACK timer — so a receiver that drains has no other way to
+     * say so, and the peer would wait out its own RFC 4960 §6.1 probe to discover it. Emitted only on the
+     * zero-to-nonzero edge, because a SACK per consumed message on a healthy session is a packet per
+     * message for no information.
+     */
+    private fun onMessageConsumed(
+        receipt: DeliveryReceipt,
+        out: MutableList<SctpOutput>,
+    ) {
+        val live =
+            tcb.liveOrElse {
+                // No control block: the charges were dropped whole at teardown, so this finds nothing. It
+                // is still called rather than skipped, because "credit is a no-op without a TCB" is the
+                // window's rule to state, not every caller's to remember.
+                receiveWindow.credit(receipt)
+                return
+            }
+        val wasShut = advertisedWindow(live.reassembly) == 0u
+        if (receiveWindow.credit(receipt) == 0) return
+        if (wasShut && advertisedWindow(live.reassembly) > 0u) emitSack(out)
+    }
+
+    /**
+     * Hand one reassembled message to the driver, charging its bytes to the receive window.
+     *
+     * The charge and the hand-off are one expression because they are one event: a message that leaves here
+     * uncharged is receive-buffer space this endpoint keeps advertising while the memory is still out with
+     * the application, and a charge with no message is a window that shuts and never reopens. There is one
+     * call site per message-producing path, and both are directly below.
+     */
+    private fun deliver(message: ReassembledMessage): SctpOutput.MessageReceived =
+        SctpOutput.MessageReceived(
+            message.streamId,
+            message.ppid,
+            message.unordered,
+            message.payload,
+            receiveWindow.issue(message.bytes),
+        )
+
+    /**
+     * ABORT because the peer overran the ceiling we advertised (RFC 4960 §3.3.7 with a §3.3.10 Protocol
+     * Violation cause, code 13).
+     *
+     * Not [abortWith]: that one reflects the peer's own tag (T bit set), which is what an endpoint with
+     * no TCB must do. Here there is a live association, so the ABORT carries the peer's verification tag
+     * in the header with T clear — an out-of-the-blue-shaped ABORT from an association that exists would
+     * be discarded by a correct peer's RFC 4960 §8.5.1 checks, and the peer would keep sending.
+     *
+     * The cause carries no cause-specific text. RFC 4960 §3.3.10.13 permits some, but a string is a
+     * diagnostic and never a discriminant (directive #3) — everything actionable is already in the typed
+     * [SctpFailureReason.PeerMessageTooLarge] this endpoint reports upward.
+     */
+    private fun abortOversizedMessage(
+        ingest: ChunkIngest.MessageTooLarge,
+        out: MutableList<SctpOutput>,
+    ) {
+        emitPacket(
+            listOf(
+                SctpChunk.Abort(
+                    verificationTagReflected = false,
+                    causes = listOf(SctpErrorCause.empty(ErrorCauseCode.ProtocolViolation)),
+                ),
+            ),
+            peerVerificationTag,
+            out,
+        )
+        fail(SctpFailureReason.PeerMessageTooLarge(ingest.streamId, ingest.ceilingBytes, ingest.observedBytes), out)
+    }
+
+    /**
+     * The RFC 4960 §3.3.10.1 Invalid Stream Identifier cause: the offending id, then two reserved bytes.
+     *
+     * The declared value is allocated from the injected factory and released here — `SctpErrorCause.ofValue`
+     * copies it into its own padded buffer, so this function is its last reader (directive #6).
+     */
+    private fun invalidStreamIdentifier(streamId: StreamId): SctpErrorCause {
+        val value = config.bufferFactory.allocate(INVALID_STREAM_CAUSE_BYTES, ByteOrder.BIG_ENDIAN)
+        return try {
+            value.writeByte(((streamId.value shr Byte.SIZE_BITS) and 0xFF).toByte())
+            value.writeByte((streamId.value and 0xFF).toByte())
+            value.writeByte(0)
+            value.writeByte(0)
+            value.resetForRead()
+            value.setLimit(INVALID_STREAM_CAUSE_BYTES)
+            SctpErrorCause.ofValue(ErrorCauseCode.InvalidStreamIdentifier, value)
+        } finally {
+            value.freeIfNeeded()
         }
     }
 
@@ -709,25 +1227,32 @@ public class SctpAssociation(
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        val live = tcb.liveOrElse { return }
-        val rq = live.retransmission
-        val cc = live.congestion
-        val wasCwndLimited = rq.outstandingBytes >= cc.cwnd
+        val rq = tcb.liveOrElse { return }.retransmission
+        val cc = ride.congestion
+        // Measured BEFORE the ack is applied: it asks whether cwnd was holding the queue back over the round
+        // trip this SACK closes, which is a fact about the flight that is about to be reclaimed.
+        val wasCwndLimited = cwndIsTheLimit(rq, cc)
         val gapsAbsolute =
             sack.gapAckBlocks.map { block ->
                 Tsn(sack.cumulativeTsnAck.value + block.start.toUInt()) to Tsn(sack.cumulativeTsnAck.value + block.end.toUInt())
             }
-        val outcome = rq.onSack(sack.cumulativeTsnAck, sack.advertisedReceiverWindow, gapsAbsolute, now)
+        val outcome = rq.onSack(sack.cumulativeTsnAck, sack.advertisedReceiverWindow, gapsAbsolute, now, ride.epoch)
+        // RFC 8540 §3.20's clarification of RFC 4960 §6.1 rule A: *"If the sender continues to receive SACKs
+        // from the peer while doing zero window probing, the unacknowledged window probes SHOULD NOT
+        // increment the error counter for the association or any destination transport address."* This is
+        // where "continues to receive SACKs" is observed. `trySend` below resets it to None if the window
+        // has reopened enough to admit an ordinary chunk.
+        if (windowProbe != WindowProbe.None) windowProbe = WindowProbe.Answered
         reclaim(outcome.reclaimed, out)
-        if (outcome.rttSample != null) rtt.observe(outcome.rttSample)
+        if (outcome.rttSample != null) ride.rtt.observe(outcome.rttSample)
         cc.onDataAcked(outcome.bytesNewlyAcked, wasCwndLimited)
         if (outcome.fastRetransmitTriggered) cc.onFastRetransmit()
-        if (outcome.cumulativeAdvanced) consecutiveRtxErrors = 0
+        if (outcome.cumulativeAdvanced) ride.onProgress()
 
         if (outcome.allDataAcknowledged) {
             deadlines = deadlines.copy(t3 = Deadline.Unarmed)
         } else if (outcome.cumulativeAdvanced) {
-            deadlines = deadlines.copy(t3 = Deadline.At(now + rtt.rto))
+            deadlines = deadlines.copy(t3 = Deadline.At(now + ride.rtt.rto))
         }
         // RFC 3758: expiry is also checked here, not only on T3 — a partially-reliable message can spend
         // its retransmit/lifetime budget while OTHER data keeps advancing the cum ack (so T3 is
@@ -743,9 +1268,7 @@ public class SctpAssociation(
         out: MutableList<SctpOutput>,
     ) {
         val reassembly = tcb.liveOrElse { return }.reassembly
-        for (message in reassembly.onForwardTsn(chunk.newCumulativeTsn, chunk.streams)) {
-            out += SctpOutput.MessageReceived(message.streamId, message.ppid, message.unordered, message.payload)
-        }
+        for (message in reassembly.onForwardTsn(chunk.newCumulativeTsn, chunk.streams)) out += deliver(message)
     }
 
     // ────────────────────────────────── send path ──────────────────────────────────
@@ -793,9 +1316,9 @@ public class SctpAssociation(
                     packet = encodePacket(listOf(chunk), peerVerificationTag),
                     reliability = options.reliability,
                     enqueuedAt = now,
+                    origin = options.origin,
                 )
-            pendingSend.addLast(data)
-            pendingSendBytes += data.bytes
+            enqueuePending(data)
             nextTsn = nextTsn.next()
         }
         // The views are spent the moment their bytes are inside the encoded packets above. They must be
@@ -806,15 +1329,35 @@ public class SctpAssociation(
         trySend(now, out)
     }
 
-    // The RFC 4960 §6.1 send routine: flush retransmits first, then new data while cwnd and the peer
-    // receive window allow, arming the T3-rtx timer whenever data is outstanding.
+    /**
+     * The RFC 4960 §6.1 send routine: flush retransmits first, then new data while cwnd and the peer
+     * receive window allow, arming the T3-rtx timer whenever data is outstanding.
+     *
+     * ## Rule A's window probe, generalized past zero
+     *
+     * *"Regardless of the value of rwnd (including if it is 0), the data sender can always have one DATA
+     * chunk in flight to the receiver"*, and *"a zero window probe SHOULD only be sent when all outstanding
+     * DATA chunks have been cumulatively acknowledged and no DATA chunks are in flight."*
+     *
+     * This used to test `peerReceiveWindow == 0u`, which is rule A read as though only an exactly-zero
+     * window blocks a sender. It does not: a peer advertising 100 bytes blocks a 1200-byte fragment just as
+     * completely, and nothing was outstanding to keep T3 armed — so the association went **silent with data
+     * queued and no timer running anywhere**, permanently. Unreachable before receive-side flow control,
+     * because nothing ever advertised less than a full window; reachable now, because a receiver near its
+     * ceiling advertises exactly that. The test is therefore what rule A actually says: the window will not
+     * admit the head of the queue, and nothing is in flight.
+     *
+     * The probe is paced by [AssociationDeadlines.zeroWindowProbe] rather than sent on every call. Without
+     * the gate, each SACK acknowledging the previous probe would immediately release the next one, which
+     * walks the whole send queue through a shut window one chunk per round trip — RFC 1122 §4.2.3.4's silly
+     * window syndrome, arrived at by trying to avoid a stall.
+     */
     private fun trySend(
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        val live = tcb.liveOrElse { return }
-        val rq = live.retransmission
-        val cc = live.congestion
+        val rq = tcb.liveOrElse { return }.retransmission
+        val cc = ride.congestion
 
         // Retransmit the lost flight, but PACED BY cwnd (RFC 4960 §6.3.3 E3): after a T3 collapse to one
         // MTU we must not dump 100 outstanding chunks back onto the wire at once. Always send at least the
@@ -830,16 +1373,213 @@ public class SctpAssociation(
             val next = pendingSend.first()
             val projected = rq.outstandingBytes + next.bytes
             val cwndOk = projected <= cc.cwnd
-            val zeroWindowProbe = rq.peerReceiveWindow == 0u && rq.outstandingBytes == 0
-            val rwndOk = projected.toUInt() <= rq.peerReceiveWindow || zeroWindowProbe
-            if (!cwndOk || !rwndOk) break
+            val windowAdmits = projected.toUInt() <= rq.peerReceiveWindow
+            // Rule A's one-chunk exemption: nothing in flight, and the persist timer has not already spent
+            // this interval's probe. cwnd still binds — a probe is DATA and RFC 4960 §7.2 governs it.
+            val probing = !windowAdmits && rq.outstandingBytes == 0 && deadlines.zeroWindowProbe is Deadline.Unarmed
+            if (!cwndOk || !(windowAdmits || probing)) break
             pendingSend.removeFirst()
-            pendingSendBytes -= next.bytes
-            rq.onSent(next, now)
+            dequeuePending(next)
+            rq.onSent(next, now, ride.epoch)
             out += SctpOutput.Transmit.Retained(next.wirePacket())
+            if (probing) {
+                // No SACK has arrived *since probing began*, so the first expiry is charged (RFC 8540
+                // §3.20 excuses only a sender that keeps hearing from its peer). `onSack` promotes it.
+                windowProbe = WindowProbe.Silent
+                deadlines = deadlines.copy(zeroWindowProbe = Deadline.At(now + ride.rtt.rto))
+            } else {
+                // The window admitted this chunk, so whatever it was doing before, it is not probing now.
+                windowProbe = WindowProbe.None
+            }
         }
 
-        if (rq.outstandingBytes > 0 && deadlines.t3 is Deadline.Unarmed) deadlines = deadlines.copy(t3 = Deadline.At(now + rtt.rto))
+        if (rq.outstandingBytes > 0 && deadlines.t3 is Deadline.Unarmed) deadlines = deadlines.copy(t3 = Deadline.At(now + ride.rtt.rto))
+    }
+
+    /**
+     * Whether **cwnd** is what is holding the send queue back right now — RFC 4960 §7.2.1's condition that
+     * the window may only grow for a sender that is actually using it.
+     *
+     * §7.2.1 spells that condition `outstanding >= cwnd`, and read literally it is a *proxy*: it is exact
+     * only while every chunk is the same size **and** that size divides cwnd, because [trySend] stops at the
+     * last whole chunk that fits and leaves `cwnd mod fragmentSize` bytes unused. This stack satisfied both
+     * conditions by accident until the fragmentation point stopped being `SctpConfig.maxPayloadBytes` — every
+     * cwnd the controller can hold is a multiple of that value (`initialCwndMtus × mtu`, `+mtu` per ack,
+     * `mtu` after a timeout), so the flight landed exactly on cwnd and the proxy held.
+     *
+     * A path profile breaks it (ARCHITECTURE §11.2 / [SctpPathProfile]): a relayed IPv6 path fragments at
+     * 1116 bytes, four of those are 4464, the initial cwnd is 4800, and `4464 >= 4800` is false — so the
+     * literal test says "not cwnd-limited" **while the sender is blocked on cwnd**, the window never grows,
+     * and slow start never starts. It is self-perpetuating: cwnd is frozen at a value the flight can never
+     * reach, so no ack can ever unfreeze it. After a T3 collapses cwnd to one MTU it is one chunk per
+     * delayed-SACK interval, permanently.
+     *
+     * So the question is asked directly instead: this is exactly [trySend]'s own `!cwndOk` evaluated on the
+     * head of the queue, and the two must stay the same predicate. An **empty** queue is deliberately not
+     * cwnd-limited — that is the idle/application-limited sender §7.2.1 is protecting the window from, and
+     * it is the half the literal test got right.
+     */
+    private fun cwndIsTheLimit(
+        rq: RetransmissionQueue,
+        cc: CongestionControl,
+    ): Boolean {
+        val head = pendingSend.firstOrNull() ?: return false
+        return rq.outstandingBytes + head.bytes > cc.cwnd
+    }
+
+    // ────────────────────────────────── the path underneath ──────────────────────────────────
+
+    /**
+     * RFC 8261 §6.1: the lower layer says the path changed, so *"SCTP SHOULD retest the path MTU and reset
+     * the congestion state to the initial state"*.
+     *
+     * Three cases, decided by [PathIdentity] and nothing else:
+     *
+     * - **First assessment.** Adopt the profile and reset **nothing**. There was no previous path, so
+     *   there is no measurement describing one — and cwnd/SRTT at this point are the initial values a
+     *   reset would restore anyway. Resetting here would look harmless and would be: it is skipped
+     *   because "a path change resets measurements" and "learning what the path is resets measurements"
+     *   are different claims, and only the first is true.
+     * - **A re-statement** (the same identity). Adopt the profile — the family or the overhead may have
+     *   been recomputed — and reset nothing. This is what lets a session layer republish on every ICE
+     *   event without filtering, which is the difference between a fold it can get wrong and one it
+     *   cannot.
+     * - **A migration.** Everything measured describes a link that is gone: [PathRide.onNewPath] discards
+     *   cwnd, ssthresh, SRTT/RTTVAR and the RFC 4960 §8.1 consecutive-error budget as one value, and
+     *   advances the epoch so an ack for a chunk sent on the old path cannot contribute an RTT sample
+     *   spanning both networks.
+     *
+     * **T3 is disarmed here and re-armed by [trySend], deliberately.** The timer belongs to
+     * [AssociationDeadlines] — the one place every timer lives — rather than beside the measurements, so
+     * the migration does both halves rather than moving one timer out to keep them together. Disarming
+     * without re-arming would hang an association with data outstanding, so the re-arm is not optional:
+     * [trySend]'s own "outstanding data and no T3" rule arms it from the *fresh* RTO, which is precisely
+     * the value RFC 8261 §6.1 asks for. Leaving the old deadline in place instead would keep a T3
+     * computed from a backed-off RTO on the retired path, i.e. up to `rtoMax` of silence before the new
+     * path's first retransmission.
+     *
+     * The error budget is the half that turns a slow recovery into a dead session: a migration is most
+     * often performed *because* the old path was failing, so without this the new path inherits a budget
+     * already spent and aborts every data channel on it at the next expiry.
+     */
+    private fun onPathChanged(
+        profile: SctpPathProfile.Assessed,
+        now: Instant,
+        out: MutableList<SctpOutput>,
+    ) {
+        val previous = pathProfile
+        val ceilingBefore = fragmentCeiling
+        pathProfile = profile
+        // "Retest the path MTU" is the other half of §6.1's sentence, and it runs on a re-statement too:
+        // the overhead may have moved (the same route re-measured through a TURN relay) even when the
+        // identity has not, and every confirmed size was confirmed against the old arithmetic.
+        applyPathMtu(pathMtu.onPathAssessed(profile, now, ride.rtt.rto), ceilingBefore, now, out)
+        val migrated =
+            when (previous) {
+                SctpPathProfile.Unassessed -> false
+                is SctpPathProfile.Assessed -> previous.identity != profile.identity
+            }
+        if (!migrated) return
+        ride = ride.onNewPath()
+        deadlines = deadlines.copy(t3 = Deadline.Unarmed)
+        trySend(now, out)
+    }
+
+    /**
+     * Apply what [PathMtuTracker] decided: put probes on the wire, publish a moved ceiling, and — when the
+     * ceiling *fell* — deal with the DATA chunks that were encoded above it.
+     *
+     * [ceilingBefore] is measured by the caller before the tracker runs, because "did the ceiling drop" is
+     * a question about the association's *effective* fragmentation point (which `SctpConfig.maxPayloadBytes`
+     * still bounds while nothing is measured) and not about the raw path ceiling the effect carries.
+     */
+    private fun applyPathMtu(
+        effects: List<PathMtuEffect>,
+        ceilingBefore: Int,
+        now: Instant,
+        out: MutableList<SctpOutput>,
+    ) {
+        deadlines = deadlines.copy(probe = pathMtu.deadline)
+        for (effect in effects) {
+            when (effect) {
+                is PathMtuEffect.Probe -> emitProbe(effect, out)
+                is PathMtuEffect.CeilingChanged -> {
+                    val backlog = if (fragmentCeiling < ceilingBefore) abandonOversized(now, out) else OversizedBacklog.None
+                    out += SctpOutput.PathMtuChanged(effect.ceiling, effect.cause, backlog)
+                }
+            }
+        }
+        // The tracker's deadline moves as effects are produced (a probe arms PROBE_TIMER, a completed
+        // search arms PMTU_RAISE_TIMER), so it is read again after the loop rather than only before it.
+        deadlines = deadlines.copy(probe = pathMtu.deadline)
+    }
+
+    /**
+     * An RFC 8899 probe: a HEARTBEAT carrying the probe nonce, followed by an RFC 4820 PAD chunk that
+     * brings the datagram to the candidate size.
+     *
+     * Emitted as an ordinary [SctpOutput.Transmit.Owned] and tracked nowhere else, which is what makes RFC
+     * 8899 §3's "a probe's loss is not a congestion signal" structural rather than remembered: it is not
+     * DATA, so it never enters the retransmission queue, never counts toward the flight size, and cannot
+     * reach cwnd or the RFC 4960 §8.1 error budget.
+     */
+    private fun emitProbe(
+        probe: PathMtuEffect.Probe,
+        out: MutableList<SctpOutput>,
+    ) {
+        val nonce = config.bufferFactory.allocate(PROBE_NONCE_BYTES, ByteOrder.BIG_ENDIAN)
+        val info =
+            try {
+                nonce.writeUInt(probe.nonce.value)
+                nonce.resetForRead()
+                nonce.setLimit(PROBE_NONCE_BYTES)
+                // `ofValue` copies into the parameter's own padded buffer, so the scratch buffer is dead
+                // the moment the parameter exists — the same contract the State Cookie relies on.
+                SctpParameter.ofValue(com.ditchoom.webrtc.sctp.ParameterType.HeartbeatInfo, nonce)
+            } finally {
+                nonce.freeIfNeeded()
+            }
+        emitPacket(listOf(SctpChunk.Heartbeat(info), SctpChunk.Pad(probe.padding)), peerVerificationTag, out)
+    }
+
+    /**
+     * The path MTU dropped under DATA chunks that are already encoded at the old size, so they can never be
+     * delivered (RFC 4960 §6.1 retains the encoded packet; there is no re-fragmentation without RFC 8260
+     * I-DATA, which this stack deliberately does not implement).
+     *
+     * Unsent fragments are **adopted into the retransmission queue as abandoned** rather than dropped: their
+     * TSNs were assigned at enqueue, so discarding them would leave a hole the peer's cumulative TSN can
+     * never advance past. Adopting them is what lets one FORWARD-TSN cover the whole stranded run.
+     *
+     * Where the peer never advertised RFC 3758 support there is nothing to be done — a TSN cannot be
+     * skipped, so the chunks stay and are reported. That is the honest answer rather than a silent drop:
+     * the association will spend its error budget on them, and the backlog is the only warning of it.
+     */
+    private fun abandonOversized(
+        now: Instant,
+        out: MutableList<SctpOutput>,
+    ): OversizedBacklog {
+        val rq = tcb.liveOrElse { return OversizedBacklog.None }.retransmission
+        val ceiling = fragmentCeiling
+        val queued = pendingSend.count { it.bytes > ceiling }
+        val stranded = rq.oversized(ceiling) + queued
+        if (stranded == 0) return OversizedBacklog.None
+        if (!peerExtensions.forwardTsn) return OversizedBacklog.Present(stranded)
+        // Adopt in TSN order: pendingSend is already in that order and every entry is above everything the
+        // queue tracks, which is the precondition adoptAbandoned states.
+        val remaining = ArrayDeque<OutstandingData>(pendingSend.size)
+        while (pendingSend.isNotEmpty()) {
+            val next = pendingSend.removeFirst()
+            if (next.bytes > ceiling) {
+                dequeuePending(next)
+                rq.adoptAbandoned(next)
+            } else {
+                remaining.addLast(next)
+            }
+        }
+        pendingSend.addAll(remaining)
+        flushAbandoned(rq.abandonOversized(ceiling), rq, out)
+        return OversizedBacklog.Present(stranded)
     }
 
     // ─────────────────── stream reconfiguration (RFC 6525) — the requester half ───────────────────
@@ -849,31 +1589,55 @@ public class SctpAssociation(
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        outgoingReset =
-            when (val current = outgoingReset) {
-                is OutgoingReset.Ready -> OutgoingReset.Ready(current.pending.plus(scope))
-                is OutgoingReset.InFlight -> current.copy(pending = current.pending.plus(scope))
-            }
-        maybeSendReset(now, out)
+        val pending = requester.pending
+        requester = requester.withPending(pending.copy(reset = pending.reset.plus(scope)))
+        maybeSendReConfig(now, out)
     }
 
     /**
-     * Put the pending reset on the wire, if anything is pending and nothing else is outstanding (RFC 6525
-     * §5.1.2). Called both when the upper layer asks and whenever the previous request is answered, so a
-     * queue of channel closes drains one request at a time without the driver having to sequence them.
+     * The upper layer wants [count] more outgoing streams than the handshake settled (RFC 6525 §4.5).
+     * Queued exactly like a reset, because §5.1.2 gives the two one outstanding-request slot between them.
      */
-    private fun maybeSendReset(
+    private fun onRequestMoreOutgoingStreams(
+        count: StreamCount,
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        val ready = outgoingReset as? OutgoingReset.Ready ?: return
-        val pending = ready.pending as? PendingReset.Some ?: return
+        if (count == StreamCount.None) return // asking for none is a no-op; the wire cannot say it at all
+        val pending = requester.pending
+        requester = requester.withPending(pending.copy(growth = pending.growth.plus(count)))
+        maybeSendReConfig(now, out)
+    }
+
+    /**
+     * Put the pending request on the wire, if anything is pending and nothing else is outstanding (RFC 6525
+     * §5.1.2). Called both when the upper layer asks and whenever the previous request is answered, so a
+     * queue of channel closes and stream-count increases drains one at a time without the driver having to
+     * sequence them.
+     *
+     * Growth goes first when both are pending. A close has already completed for its caller — the channel
+     * is shut, and the reset only frees the id — while an open is *blocked* on the capacity, so putting the
+     * reset first would hold a caller for a full extra round trip to no purpose.
+     */
+    private fun maybeSendReConfig(
+        now: Instant,
+        out: MutableList<SctpOutput>,
+    ) {
+        val ready = requester as? ReConfigRequester.Ready ?: return
         if (_state != SctpAssociationState.Established) return
+        when (val growth = ready.pending.growth) {
+            PendingGrowth.None -> Unit
+            is PendingGrowth.Streams -> {
+                sendAddOutgoingStreams(growth.count, ready.pending, now, out)
+                return
+            }
+        }
+        val pending = ready.pending.reset as? PendingReset.Some ?: return
         val scope = pending.scope
         // A peer that never advertised RE-CONFIG cannot be sent one (RFC 6525 §5.1). Answer the caller
         // rather than dropping the request: a channel close that is unanswerable still has to complete.
-        if (!peerExtensions.reConfig) {
-            outgoingReset = OutgoingReset.Ready(PendingReset.Nothing)
+        if (!negotiated.extensions.reConfig) {
+            requester = ReConfigRequester.Ready(ready.pending.copy(reset = PendingReset.Nothing))
             out += SctpOutput.OutgoingStreamsReset(scope, StreamResetOutcome.Unsupported)
             return
         }
@@ -892,9 +1656,50 @@ public class SctpAssociation(
                 senderLastAssignedTsn = Tsn(nextTsn.value - 1u),
                 streams = scope.streamList(),
             )
-        outgoingReset = OutgoingReset.InFlight(sequence, scope, request, PendingReset.Nothing)
+        emit(ReConfigRequest.Reset(sequence, scope, request), ready.pending.copy(reset = PendingReset.Nothing), now, out)
+    }
+
+    private fun sendAddOutgoingStreams(
+        count: StreamCount,
+        pending: PendingRequests,
+        now: Instant,
+        out: MutableList<SctpOutput>,
+    ) {
+        val drained = pending.copy(growth = PendingGrowth.None)
+        val refusal =
+            when {
+                // Same rule as a reset: RFC 6525 §5.1 makes the Supported Extensions advertisement the
+                // invitation, so a peer that did not send one is never sent a RE-CONFIG chunk.
+                !negotiated.extensions.reConfig -> StreamAddOutcome.NotAdded.Unsupported
+                // Both the §4.5 count field and the negotiated total are u16, so there is nothing truthful
+                // to ask for past the ceiling. Refused here rather than clamped: a clamp would report
+                // success for an increase the caller did not get.
+                negotiated.outgoingStreams.wouldOverflow(count) -> StreamAddOutcome.NotAdded.WouldOverflow
+                else -> null
+            }
+        if (refusal != null) {
+            requester = ReConfigRequester.Ready(drained)
+            out += SctpOutput.OutgoingStreamsAdded(count, refusal)
+            return
+        }
+        val sequence = nextRequestSequence
+        nextRequestSequence = sequence.next()
+        val request = ReConfigParameter.AddOutgoingStreams(sequence, count.value)
+        emit(ReConfigRequest.AddOutgoing(sequence, count, request), drained, now, out)
+    }
+
+    // The one place a request this endpoint originated goes on the wire: it becomes the single outstanding
+    // request, resets the retransmit budget and arms the timer. Both kinds go through here so neither can
+    // acquire a second slot RFC 6525 §5.1.2 does not have.
+    private fun emit(
+        request: ReConfigRequest,
+        pending: PendingRequests,
+        now: Instant,
+        out: MutableList<SctpOutput>,
+    ) {
+        requester = ReConfigRequester.InFlight(request, pending)
         reConfigRetransmits = 0
-        emitPacket(listOf(SctpChunk.ReConfig.of(request)), peerVerificationTag, out)
+        emitPacket(listOf(SctpChunk.ReConfig.of(request.parameter)), peerVerificationTag, out)
         armReConfig(now)
     }
 
@@ -903,11 +1708,11 @@ public class SctpAssociation(
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        val inFlight = outgoingReset as? OutgoingReset.InFlight ?: return
+        val inFlight = requester as? ReConfigRequester.InFlight ?: return
         // A response for anything other than the request actually outstanding is stale (a duplicate of an
         // already-completed one, or a peer answering a sequence number we never sent) — discard it rather
         // than completing the live request on someone else's answer.
-        if (response.responseSequenceNumber != inFlight.sequence) return
+        if (response.responseSequenceNumber != inFlight.request.sequence) return
         if (response.result == ReConfigResult.InProgress) {
             // RFC 6525 §5.2.2: the peer is holding the reset until its cumulative TSN catches up. The
             // request stays outstanding and the timer is restarted from scratch — the peer sends the final
@@ -916,20 +1721,57 @@ public class SctpAssociation(
             armReConfig(now)
             return
         }
-        outgoingReset = OutgoingReset.Ready(inFlight.pending)
+        requester = ReConfigRequester.Ready(inFlight.pending)
         cancelReConfig()
+        when (val request = inFlight.request) {
+            is ReConfigRequest.Reset -> completeReset(request, response.result, out)
+            is ReConfigRequest.AddOutgoing -> completeStreamAdd(request, response.result, out)
+        }
+        maybeSendReConfig(now, out)
+    }
+
+    private fun completeReset(
+        request: ReConfigRequest.Reset,
+        result: ReConfigResult,
+        out: MutableList<SctpOutput>,
+    ) {
         val outcome =
-            if (response.result.isSuccess) {
+            if (result.isSuccess) {
                 // Our outgoing SSN state for these streams is now reset on both sides, so the next ordered
                 // message on such a stream starts again at SSN 0 — which is what makes the stream id
                 // reusable for a brand-new data channel (RFC 8831 §6.7).
-                resetOutgoingSsn(inFlight.scope)
+                resetOutgoingSsn(request.scope)
                 StreamResetOutcome.Performed
             } else {
-                StreamResetOutcome.Refused(response.result)
+                StreamResetOutcome.Refused(result)
             }
-        out += SctpOutput.OutgoingStreamsReset(inFlight.scope, outcome)
-        maybeSendReset(now, out)
+        out += SctpOutput.OutgoingStreamsReset(request.scope, outcome)
+    }
+
+    /**
+     * The peer answered our Add Outgoing Streams request (RFC 6525 §4.5).
+     *
+     * Only `SuccessPerformed` raises the count. `SuccessNothingToDo` is reported as an answered refusal
+     * rather than folded in with it: the peer is saying it did nothing, and raising our ceiling on that
+     * would have us allocate a stream id it never agreed to accept — an ERROR from the peer that this
+     * association discards, for a channel that opens and then delivers nothing.
+     */
+    private fun completeStreamAdd(
+        request: ReConfigRequest.AddOutgoing,
+        result: ReConfigResult,
+        out: MutableList<SctpOutput>,
+    ) {
+        val live = tcb.liveOrElse { return }
+        val outcome =
+            if (result == ReConfigResult.SuccessPerformed) {
+                val raised = live.negotiated.outgoingStreams.plusSaturating(request.count)
+                live.negotiated = live.negotiated.copy(outgoingStreams = raised)
+                out += SctpOutput.OutgoingCapacityChanged(OutgoingStreamCapacity.Negotiated(raised))
+                StreamAddOutcome.Performed
+            } else {
+                StreamAddOutcome.NotAdded.Answered(result)
+            }
+        out += SctpOutput.OutgoingStreamsAdded(request.count, outcome)
     }
 
     private fun resetOutgoingSsn(scope: StreamResetScope) {
@@ -976,17 +1818,86 @@ public class SctpAssociation(
         when (parameter) {
             is ReConfigParameter.OutgoingSsnReset -> onIncomingStreamReset(parameter, responses, out)
             is ReConfigParameter.Response -> onReConfigResponse(parameter, now, out)
-            // The four requests this subset decodes but will not perform (see ReConfig.kt's header): an
-            // Incoming SSN Reset would have us reset streams the peer does not own the sequencing of, an
-            // SSN/TSN reset would have to unwind the retransmission queue and FORWARD-TSN together, and
-            // adding streams is meaningless when INIT already advertised 1024 of them. Each is REFUSED,
-            // explicitly and in sequence, rather than ignored — an ignored request is retransmitted until
-            // the peer's error counter aborts the whole association.
+            // The two requests this subset decodes but will not perform (see ReConfig.kt's header): an
+            // Incoming SSN Reset would have us reset streams the peer does not own the sequencing of, and
+            // an SSN/TSN reset would have to unwind the retransmission queue and FORWARD-TSN together.
+            // Each is REFUSED, explicitly and in sequence, rather than ignored — an ignored request is
+            // retransmitted until the peer's error counter aborts the whole association.
             is ReConfigParameter.IncomingSsnReset -> refuse(parameter.requestSequenceNumber, responses)
             is ReConfigParameter.SsnTsnReset -> refuse(parameter.requestSequenceNumber, responses)
-            is ReConfigParameter.AddOutgoingStreams -> refuse(parameter.requestSequenceNumber, responses)
-            is ReConfigParameter.AddIncomingStreams -> refuse(parameter.requestSequenceNumber, responses)
+            // RFC 6525 §4.5: the peer wants more streams to send ON, which are the ones we receive on.
+            is ReConfigParameter.AddOutgoingStreams ->
+                onPeerAddStreams(parameter.requestSequenceNumber, StreamCount(parameter.count), AddedDirection.Incoming, responses, out)
+            // RFC 6525 §4.6: the peer wants more streams to receive on, which are the ones we send on.
+            is ReConfigParameter.AddIncomingStreams ->
+                onPeerAddStreams(parameter.requestSequenceNumber, StreamCount(parameter.count), AddedDirection.Outgoing, responses, out)
         }
+    }
+
+    /**
+     * Which of **this** endpoint's two stream counts an inbound RFC 6525 add request raises. Named rather
+     * than a Boolean because the mapping inverts — the peer's *outgoing* request raises our *incoming*
+     * count — and a flag at the call site would read as agreeing with the parameter's own name while
+     * meaning the opposite.
+     */
+    private enum class AddedDirection {
+        /** RFC 6525 §4.6 Add Incoming Streams: this endpoint may now send on more streams. */
+        Outgoing,
+
+        /** RFC 6525 §4.5 Add Outgoing Streams: this endpoint must now accept data on more streams. */
+        Incoming,
+    }
+
+    /**
+     * The peer is asking this association to grow (RFC 6525 §4.5 / §4.6). Honoured rather than denied: the
+     * counts are ours to raise, growing costs nothing, and a peer that has to open more channels than the
+     * handshake allowed has no other way to say so.
+     *
+     * It runs through [admit] like every other inbound request, and that is the load-bearing part. A
+     * retransmitted add request answered by *processing* it again would raise the count a second time —
+     * silently, since both answers are Success — and leave the two endpoints disagreeing about how many
+     * streams exist, which is the disagreement the whole §5.2.1 repeat rule exists to prevent.
+     */
+    private fun onPeerAddStreams(
+        sequence: ReConfigRequestSequenceNumber,
+        count: StreamCount,
+        direction: AddedDirection,
+        responses: MutableList<ReConfigParameter>,
+        out: MutableList<SctpOutput>,
+    ) {
+        when (val admission = admit(sequence)) {
+            is RequestAdmission.Answer -> {
+                responses += admission.response
+                return
+            }
+            RequestAdmission.Process -> Unit
+        }
+        val live = tcb.liveOrElse { return }
+        val current =
+            when (direction) {
+                AddedDirection.Outgoing -> live.negotiated.outgoingStreams
+                AddedDirection.Incoming -> live.negotiated.incomingStreams
+            }
+        // RFC 6525 §4.5 forbids a zero count, and neither total can pass what a u16 holds.
+        val performed = count != StreamCount.None && !current.wouldOverflow(count)
+        if (performed) {
+            val raised = current.plusSaturating(count)
+            live.negotiated =
+                when (direction) {
+                    AddedDirection.Outgoing -> live.negotiated.copy(outgoingStreams = raised)
+                    AddedDirection.Incoming -> live.negotiated.copy(incomingStreams = raised)
+                }
+            // Only the outgoing direction is anyone else's business: it is the ceiling the stream-id
+            // allocator reads. A larger inbound count is enforced by the guard in onData and by nothing
+            // above it.
+            if (direction == AddedDirection.Outgoing) {
+                out += SctpOutput.OutgoingCapacityChanged(OutgoingStreamCapacity.Negotiated(raised))
+            }
+        }
+        val response =
+            ReConfigParameter.Response(sequence, if (performed) ReConfigResult.SuccessPerformed else ReConfigResult.Denied)
+        responses += response
+        peerRequests = PeerRequests.Answered(sequence, response)
     }
 
     private fun refuse(
@@ -1098,7 +2009,7 @@ public class SctpAssociation(
         out: MutableList<SctpOutput>,
     ) {
         val inFlight =
-            outgoingReset as? OutgoingReset.InFlight ?: run {
+            requester as? ReConfigRequester.InFlight ?: run {
                 deadlines = deadlines.copy(reConfig = Deadline.Unarmed)
                 return
             }
@@ -1110,13 +2021,13 @@ public class SctpAssociation(
             fail(SctpFailureReason.RetransmissionLimitReached, out)
             return
         }
-        rtt.backoff()
-        emitPacket(listOf(SctpChunk.ReConfig.of(inFlight.request)), peerVerificationTag, out)
+        ride.rtt.backoff()
+        emitPacket(listOf(SctpChunk.ReConfig.of(inFlight.request.parameter)), peerVerificationTag, out)
         armReConfig(now)
     }
 
     private fun armReConfig(now: Instant) {
-        deadlines = deadlines.copy(reConfig = Deadline.At(now + rtt.rto))
+        deadlines = deadlines.copy(reConfig = Deadline.At(now + ride.rtt.rto))
     }
 
     private fun cancelReConfig() {
@@ -1153,10 +2064,21 @@ public class SctpAssociation(
 
     private fun emitSack(out: MutableList<SctpOutput>) {
         val reassembly = tcb.liveOrElse { return }.reassembly
-        emitPacket(listOf(reassembly.buildSack()), peerVerificationTag, out)
+        emitPacket(listOf(reassembly.buildSack(advertisedWindow(reassembly))), peerVerificationTag, out)
         packetsSinceSack = 0
         deadlines = deadlines.copy(sack = Deadline.Unarmed)
     }
+
+    /**
+     * The a_rwnd to put on the next SACK (RFC 4960 §3.3.2): what is left of the configured window after
+     * everything currently held against it — the reassembly queue's partial and order-blocked messages, and
+     * everything delivered upward that has not been credited back.
+     *
+     * Read here rather than stored, so it cannot be stale: the two quantities move on entirely different
+     * events (a chunk arriving, an application finishing with a message), and a cached sum would have to be
+     * invalidated by both.
+     */
+    private fun advertisedWindow(reassembly: ReassemblyQueue): UInt = receiveWindow.advertised(reassembly.bufferedBytes)
 
     // ────────────────────────────────── shutdown ──────────────────────────────────
 
@@ -1201,7 +2123,7 @@ public class SctpAssociation(
     ) {
         val rq = tcb.liveOrElse { return }.retransmission
         // The SHUTDOWN carries a cumulative TSN ack for our outbound data — process it like a SACK.
-        reclaim(rq.onSack(shutdown.cumulativeTsnAck, rq.peerReceiveWindow, emptyList(), now).reclaimed, out)
+        reclaim(rq.onSack(shutdown.cumulativeTsnAck, rq.peerReceiveWindow, emptyList(), now, ride.epoch).reclaimed, out)
         if (_state == SctpAssociationState.Established || _state == SctpAssociationState.ShutdownPending) {
             transition(SctpAssociationState.ShutdownReceived, out)
         }
@@ -1243,6 +2165,55 @@ public class SctpAssociation(
         if (deadlines.sack.dueAt(now)) emitSack(out)
         if (deadlines.shutdown.dueAt(now)) onShutdownTimeout(now, out)
         if (deadlines.reConfig.dueAt(now)) onReConfigTimeout(now, out)
+        // The persist timer (RFC 4960 §6.1 rule A): disarm, then let `trySend` decide whether the window is
+        // still shut and another probe is owed. Deliberately not "re-send the probe" — the previous one may
+        // have been acknowledged, in which case the next chunk in the queue is the probe, and asking
+        // `trySend` is what keeps that decision in the one place that knows both windows.
+        if (deadlines.zeroWindowProbe.dueAt(now)) {
+            deadlines = deadlines.copy(zeroWindowProbe = Deadline.Unarmed)
+            trySend(now, out)
+        }
+        if (deadlines.probe.dueAt(now)) {
+            // Read before the tracker runs: `fragmentCeiling` is derived from what the tracker has
+            // measured, so evaluating it as an argument would read it *after* the call that changes it.
+            val ceilingBefore = fragmentCeiling
+            applyPathMtu(pathMtu.onTimer(now, ride.rtt.rto), ceilingBefore, now, out)
+        }
+    }
+
+    /**
+     * A HEARTBEAT-ACK came back. RFC 4960 §3.3.6 requires it echo the Heartbeat Info parameter verbatim,
+     * so the probe nonce inside it is what says *which size* the path just demonstrated it carries.
+     *
+     * An ACK that carries no nonce we minted is discarded silently — it is a peer answering a HEARTBEAT of
+     * its own devising, or a probe from a path we have since left. Matching on the nonce rather than
+     * merely on "a HEARTBEAT-ACK arrived" is what stops a late answer confirming a size the search has
+     * already refuted, which is the one outcome a PMTU search must never produce.
+     */
+    private fun onHeartbeatAck(
+        chunk: SctpChunk.HeartbeatAck,
+        now: Instant,
+        out: MutableList<SctpOutput>,
+    ) {
+        val nonce = chunk.info.probeNonce() ?: return
+        val ceilingBefore = fragmentCeiling
+        applyPathMtu(pathMtu.onProbeAcknowledged(nonce, now, ride.rtt.rto), ceilingBefore, now, out)
+    }
+
+    /**
+     * The probe nonce inside a Heartbeat Info parameter, or null when this is not one of ours.
+     *
+     * Null is the honest answer here rather than a typed reject: an unrecognised HEARTBEAT-ACK is not a
+     * protocol violation and produces no outcome at all — it is genuinely absent information, which is the
+     * one meaning a nullable is allowed to carry.
+     */
+    private fun SctpParameter.probeNonce(): ProbeNonce? {
+        if (type != com.ditchoom.webrtc.sctp.ParameterType.HeartbeatInfo || length < PROBE_NONCE_BYTES) return null
+        val view = paddedValue
+        val base = view.position()
+        var value = 0u
+        for (i in 0 until PROBE_NONCE_BYTES) value = (value shl Byte.SIZE_BITS) or (view[base + i].toUInt() and BYTE_MASK)
+        return ProbeNonce(value)
     }
 
     private fun onHandshakeTimeout(
@@ -1254,7 +2225,7 @@ public class SctpAssociation(
             fail(SctpFailureReason.HandshakeTimeout, out)
             return
         }
-        rtt.backoff()
+        ride.rtt.backoff()
         when (_state) {
             SctpAssociationState.CookieWait -> localInit?.let { emitPacket(listOf(it), VerificationTag(0u), out) }
             SctpAssociationState.CookieEchoed -> cookieEcho?.let { emitPacket(listOf(it), peerVerificationTag, out) }
@@ -1267,30 +2238,62 @@ public class SctpAssociation(
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        val live =
-            tcb.liveOrElse {
-                deadlines = deadlines.copy(t3 = Deadline.Unarmed)
-                return
-            }
-        val rq = live.retransmission
-        val cc = live.congestion
+        val rq =
+            tcb
+                .liveOrElse {
+                    deadlines = deadlines.copy(t3 = Deadline.Unarmed)
+                    return
+                }.retransmission
+        val cc = ride.congestion
         val hadOutstanding = rq.onT3Timeout()
         if (!hadOutstanding) {
             deadlines = deadlines.copy(t3 = Deadline.Unarmed)
             return
         }
         cc.onTimeout()
-        rtt.backoff()
-        consecutiveRtxErrors += 1
-        if (consecutiveRtxErrors > config.maxAssociationRetransmits) {
-            fail(SctpFailureReason.RetransmissionLimitReached, out)
-            return
+        ride.rtt.backoff()
+        if (!excuseWindowProbe()) {
+            if (ride.retransmitFailed()) {
+                fail(SctpFailureReason.RetransmissionLimitReached, out)
+                return
+            }
         }
         // RFC 3758: abandon partially-reliable chunks past their budget before retransmitting.
         abandonExpired(now, out)
         trySend(now, out)
-        deadlines = deadlines.copy(t3 = Deadline.At(now + rtt.rto))
+        deadlines = deadlines.copy(t3 = Deadline.At(now + ride.rtt.rto))
     }
+
+    /**
+     * Whether this T3 expiry is a **window probe going unanswered by a peer that is otherwise talking**,
+     * and therefore must not be charged to the RFC 4960 §8.1 error budget. Consumes the excuse.
+     *
+     * RFC 4960 §6.1 rule A, as clarified by RFC 8540 §3.20: *"If the sender continues to receive SACKs from
+     * the peer while doing zero window probing, the unacknowledged window probes SHOULD NOT increment the
+     * error counter for the association or any destination transport address."* The reason the RFC gives is
+     * the whole argument — the receiver may keep its window closed for an indefinite time, and it is
+     * entitled to. An application that stops reading is not a network failure.
+     *
+     * **This is what made the excuse necessary rather than theoretical.** `consecutiveRtxErrors` was bumped
+     * unconditionally, so a peer whose application stalled for ~10 backed-off RTOs aborted us — every data
+     * channel on the association, with `RetransmissionLimitReached`, over a path that was working. It was
+     * unreachable webrtc↔webrtc only because neither side ever advertised a window below its configured
+     * maximum, which is precisely what receive-side flow control has just changed.
+     *
+     * The excuse is **consumed**, not standing, and that is the safety property. It is granted once per
+     * intervening SACK, so a peer that goes silent while its window is shut gets exactly one free expiry
+     * and every one after it is charged — the association still aborts a genuinely dead peer at the usual
+     * budget. Without the consumption, a stack that shut its window and then died would hold the far end
+     * open forever, which trades one hang for another.
+     */
+    private fun excuseWindowProbe(): Boolean =
+        when (windowProbe) {
+            WindowProbe.None, WindowProbe.Silent -> false
+            WindowProbe.Answered -> {
+                windowProbe = WindowProbe.Silent
+                true
+            }
+        }
 
     private fun onShutdownTimeout(
         now: Instant,
@@ -1319,9 +2322,26 @@ public class SctpAssociation(
         now: Instant,
         out: MutableList<SctpOutput>,
     ) {
-        val rq = tcb.liveOrElse { return }.retransmission
-        if (!peerExtensions.forwardTsn) return
-        val skips = rq.abandonExpired(now)
+        val live = tcb.liveOrElse { return }
+        val rq = live.retransmission
+        if (!live.negotiated.extensions.forwardTsn) return
+        flushAbandoned(rq.abandonExpired(now), rq, out)
+    }
+
+    /**
+     * Tell the peer to stop waiting for whatever was just abandoned (RFC 3758 §3.5), and reclaim the
+     * encoded packets the FORWARD-TSN now covers.
+     *
+     * Shared by the two things that abandon chunks — a partial-reliability budget running out, and a path
+     * MTU that dropped underneath already-encoded bytes. They decide *which* chunks for entirely different
+     * reasons and the wire consequence is identical, which is exactly the line to draw: a second copy of
+     * this would be a second place to get the advanced-ack-point arithmetic wrong.
+     */
+    private fun flushAbandoned(
+        skips: List<Pair<StreamId, StreamSequenceNumber>>,
+        rq: RetransmissionQueue,
+        out: MutableList<SctpOutput>,
+    ) {
         val advanced = rq.advancedPeerAckPoint
         if (skips.isNotEmpty() || rq.cumulativeAckPoint.sackPrecedes(advanced)) {
             val streams = skips.map { (id, ssn) -> ForwardTsnStream(id, ssn) }
@@ -1344,7 +2364,7 @@ public class SctpAssociation(
     }
 
     private fun armHandshake(now: Instant) {
-        deadlines = deadlines.copy(handshake = Deadline.At(now + rtt.rto))
+        deadlines = deadlines.copy(handshake = Deadline.At(now + ride.rtt.rto))
     }
 
     private fun cancelHandshake() {
@@ -1364,7 +2384,7 @@ public class SctpAssociation(
     }
 
     private fun armShutdown(now: Instant) {
-        deadlines = deadlines.copy(shutdown = Deadline.At(now + rtt.rto))
+        deadlines = deadlines.copy(shutdown = Deadline.At(now + ride.rtt.rto))
     }
 
     // Total by construction: a timer added to AssociationDeadlines is cancelled here without this
@@ -1411,19 +2431,35 @@ public class SctpAssociation(
             }
         }
         tcb = Tcb.NoAssociation
+        // Whatever was outstanding belonged to the association going away, so nothing is being probed now.
+        // A survivor here would carry the RFC 4960 §8.1 excuse into the next association's first T3.
+        windowProbe = WindowProbe.None
+        // Every receipt still outstanding names a message of the association that is going away. Its buffer
+        // is the driver's to release (it was transferred), and the space it was holding is not this
+        // endpoint's to keep reserved — a peer that restarts gets the whole window back. Dropping the
+        // charges whole is also what makes a credit that arrives after this a clean no-op.
+        receiveWindow.forgetAll()
         reclaim(pendingSend.map { it.packet }, out)
         pendingSend.clear()
         pendingSendBytes = 0
+        pendingApplicationBytes.clear()
         orderedSendSsn.clear()
         clearCookieEcho()
         // Both reconfiguration halves belong to the association that is going away: a pending or in-flight
         // request names TSNs and sequence numbers of a TCB that no longer exists, and a peer restart
         // (§5.2.4 action A) re-seeds both sequence spaces in establishControlBlocks.
-        outgoingReset = OutgoingReset.Ready(PendingReset.Nothing)
+        requester = ReConfigRequester.Ready(PendingRequests())
         peerRequests = PeerRequests.NoneYet(ReConfigRequestSequenceNumber(0u))
-        // Both extension facts belong to the association going away — cleared as one value, so neither
-        // can survive into the next peer's association (a half-cleared pair was invisible at the read).
-        peerExtensions = PeerExtensions.None
+        // Permission to emit a zero checksum was granted by the peer that is going away, and RFC 9653
+        // §5.2 restriction 1 forbids carrying it into an association whose peer has not granted it again.
+        // A survivor here is the quietest failure in this file: every packet of the next association is
+        // discarded by a peer that never agreed, with nothing malformed anywhere to explain it.
+        outboundChecksum = OutboundChecksum.Crc32c
+        // What the departing peer advertised and how many streams it agreed to now go with the control
+        // block that learned them — nothing to reset here, which is the whole reason [Negotiated] lives on
+        // [Tcb.Live]. The one fact that outlives it is the hint below, because it is the *input* to the
+        // next negotiation rather than its result, and a stale one would quietly cap the next association.
+        peerMaxInboundStreams = StreamCount.Max
     }
 
     private fun transition(
@@ -1460,38 +2496,49 @@ public class SctpAssociation(
     // Every packet that leaves through here is encoded for this one transmission and retained by nobody,
     // so it is the driver's outright ([SctpOutput.Transmit.Owned]). The DATA path is the sole exception and
     // does not come through here — see [trySend].
+    //
+    // [outbound] defaults to what this association negotiated, and is passed explicitly by exactly one
+    // caller: the stateless responder answering an INIT, which has the peer's advertisement in hand for
+    // the length of that call and stores none of it (RFC 4960 §5.1.3).
     private fun emitPacket(
         chunks: List<SctpChunk>,
         headerTag: VerificationTag,
         out: MutableList<SctpOutput>,
+        outbound: OutboundChecksum = outboundChecksum,
     ) {
-        out += SctpOutput.Transmit.Owned(encodePacket(chunks, headerTag))
+        out += SctpOutput.Transmit.Owned(encodePacket(chunks, headerTag, outbound))
     }
 
     private fun encodePacket(
         chunks: List<SctpChunk>,
         headerTag: VerificationTag,
+        outbound: OutboundChecksum = outboundChecksum,
     ): PlatformBuffer {
         val builder = SctpPacketBuilder(localPort, remotePort, headerTag)
         for (chunk in chunks) builder.add(chunk)
-        return builder.encode(config.bufferFactory)
+        return builder.encode(config.bufferFactory, outbound)
     }
 
     /**
-     * Split one user message into per-chunk payloads of at most [SctpConfig.maxPayloadBytes] (RFC 4960
-     * §6.9). The results are **zero-copy views over the caller's borrowed payload**, valid only for the
-     * duration of this `handle` call — [onSendMessage] consumes each one immediately by encoding it into
-     * its wire packet, which is the copy that survives. A sub-MTU message is therefore not copied here at
-     * all; it is simply the whole payload as one view.
+     * Split one user message into per-chunk payloads of at most [fragmentCeiling] (RFC 4960 §6.9). The
+     * results are **zero-copy views over the caller's borrowed payload**, valid only for the duration of
+     * this `handle` call — [onSendMessage] consumes each one immediately by encoding it into its wire
+     * packet, which is the copy that survives. A sub-MTU message is therefore not copied here at all; it
+     * is simply the whole payload as one view.
+     *
+     * The ceiling is read **once** per message rather than per fragment: a path event cannot land
+     * mid-`handle` (the core is a serialized state machine), but reading it once is what guarantees every
+     * fragment of one message is sized against one path, which the count computed just below assumes.
      */
     private fun fragment(payload: ReadBuffer): List<ReadBuffer> {
+        val ceiling = fragmentCeiling
         val slice = payload.slice()
         val total = slice.remaining()
-        if (total <= config.maxPayloadBytes) return listOf(slice)
-        val out = ArrayList<ReadBuffer>((total + config.maxPayloadBytes - 1) / config.maxPayloadBytes)
+        if (total <= ceiling) return listOf(slice)
+        val out = ArrayList<ReadBuffer>((total + ceiling - 1) / ceiling)
         var offset = 0
         while (offset < total) {
-            val len = minOf(config.maxPayloadBytes, total - offset)
+            val len = minOf(ceiling, total - offset)
             val fragment = slice.slice()
             fragment.position(offset)
             fragment.setLimit(offset + len)
@@ -1533,6 +2580,47 @@ public class SctpAssociation(
     // parameter is not required to be unique, and a peer that sends two must not have the second ignored.
     private fun List<SctpParameter>.advertiseReConfig(): Boolean =
         any { it.asSupportedExtensions()?.contains(SctpChunkType.ReConfig) == true }
+
+    /**
+     * The parameters both the INIT and the INIT ACK carry (RFC 9653 §4 allows Zero Checksum Acceptable in
+     * exactly those two chunks and nowhere else).
+     *
+     * One list for both, because advertising in only one of them is an asymmetry with no honest reading:
+     * whichever role this endpoint ends up playing, §5.3 binds it to accept what it advertised, and
+     * [zeroChecksumAcceptance] does not depend on the role.
+     */
+    private fun handshakeParameters(): List<SctpParameter> {
+        val parameters = mutableListOf(SctpParameter.forwardTsnSupported(), supportedExtensions())
+        when (val acceptance = zeroChecksumAcceptance) {
+            ZeroChecksumAcceptance.RequireCrc32c -> Unit
+            is ZeroChecksumAcceptance.Advertised -> parameters += SctpParameter.zeroChecksumAcceptable(acceptance.method)
+        }
+        return parameters
+    }
+
+    /**
+     * The error detection method a peer's INIT/INIT-ACK parameters advertise, or
+     * [ErrorDetectionMethodId.Reserved] when they advertise none (RFC 9653 §8 reserves 0 for exactly this
+     * — there is no "was it present" Boolean to carry).
+     *
+     * `first` rather than `any`, the opposite of [advertiseReConfig], because RFC 9653 §4 says the
+     * parameter "MUST NOT appear more than once in any chunk". A peer that sends two has contradicted
+     * itself and there is no join over method identifiers that would combine them, so the first one wins.
+     *
+     * A malformed parameter is skipped rather than propagated: type 0x8001's high bits mandate
+     * skip-and-continue, so it must not cost the peer its association, and a length we cannot trust is not
+     * evidence of a method we should rely on either.
+     */
+    private fun List<SctpParameter>.zeroChecksumAdvertised(): ErrorDetectionMethodId {
+        for (parameter in this) {
+            when (val decoded = parameter.asZeroChecksumAcceptable()) {
+                ZeroChecksumParameterDecode.NotZeroChecksum -> Unit
+                is ZeroChecksumParameterDecode.Malformed -> Unit
+                is ZeroChecksumParameterDecode.Advertised -> return decoded.method
+            }
+        }
+        return ErrorDetectionMethodId.Reserved
+    }
 
     private fun randomTag(): VerificationTag {
         val v = random.nextInt().toUInt()

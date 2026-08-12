@@ -80,18 +80,55 @@ public sealed interface SctpOutput {
     ) : SctpOutput
 
     /**
+     * How many outgoing streams this endpoint may use has been settled or raised (RFC 4960 §5.1.1, and
+     * RFC 6525 §4.5 when it grows). Emitted once when the handshake completes and again after every
+     * successful Add Outgoing Streams exchange.
+     *
+     * It is an output rather than a property the driver reads because the stream-id allocator above this
+     * layer has to *react* to it: an open parked for want of capacity is released by this event and by
+     * nothing else, and a driver that polled would have to guess when to look.
+     */
+    public data class OutgoingCapacityChanged(
+        public val capacity: OutgoingStreamCapacity.Negotiated,
+    ) : SctpOutput
+
+    /**
+     * An [SctpEvent.RequestMoreOutgoingStreams] this endpoint originated has been resolved (RFC 6525 §4.5).
+     * One is emitted for every request the association survives to resolve — including the ones it can
+     * never put on the wire ([StreamAddOutcome.NotAdded.Unsupported],
+     * [StreamAddOutcome.NotAdded.WouldOverflow]) — so the only way an ask goes unanswered is an association
+     * that fails first, which the driver hears about as [Aborted].
+     *
+     * [requested] is the accumulated count that actually went out, which may exceed any single ask: several
+     * requests made while one was in flight are merged into one, because §5.1.2 allows only one outstanding.
+     * On [StreamAddOutcome.Performed] the new ceiling arrives beside this as [OutgoingCapacityChanged].
+     */
+    public data class OutgoingStreamsAdded(
+        public val requested: StreamCount,
+        public val outcome: StreamAddOutcome,
+    ) : SctpOutput
+
+    /**
      * A complete user message was reassembled and is ready for delivery to the upper layer, in the
      * correct order for its stream. [payload] is a fresh buffer from `SctpConfig.bufferFactory` (the
      * reassembly copy) and is **transferred**: the driver owns it and owes it a release, either by passing
      * that ownership on to the application or by freeing it. [unordered] and [payloadProtocolId] let the
      * DataChannel layer route DCEP vs. app data (RFC 8831 §6.6) — and a DCEP message is one no application
      * ever sees, so nothing but the driver can free those.
+     *
+     * The driver owes **two** things for this message, and [receipt] is the second. Until it comes back as
+     * [SctpEvent.MessageConsumed] these bytes are still counted against the a_rwnd this endpoint advertises
+     * (RFC 4960 §3.3.2), so a driver that delivers without ever crediting closes its own receive window one
+     * message at a time — which is why the two duties are discharged together wherever possible (see
+     * `InboundDelivery.discard`). Crediting a receipt twice credits once; crediting one from an association
+     * that has since torn down does nothing.
      */
     public data class MessageReceived(
         public val streamId: StreamId,
         public val payloadProtocolId: PayloadProtocolId,
         public val unordered: Boolean,
         public val payload: ReadBuffer,
+        public val receipt: DeliveryReceipt,
     ) : SctpOutput
 
     /**
@@ -145,4 +182,34 @@ public sealed interface SctpOutput {
      * brings a new transport with it — which is exactly why it is surfaced rather than assumed away.
      */
     public data object PeerRestarted : SctpOutput
+
+    /**
+     * The fragmentation ceiling the **path** admits has changed — because the path was named, because a
+     * probe confirmed a size, or because the size already being emitted turned out not to be carried
+     * (RFC 8899 / RFC 8261 §6.1).
+     *
+     * [ceiling] is the path's answer, not necessarily the number the next message is fragmented at. While
+     * nothing has been *measured* the association fragments at `min(ceiling, SctpConfig.maxPayloadBytes)`,
+     * because an unprobed family-derived ceiling is an assumption and an assumption must not raise a size
+     * the caller configured; once a probe has confirmed a size, [ceiling] is the fragmentation point
+     * outright. Both rules are on `SctpConfig.pathMtu`.
+     *
+     * **Nothing is required of the driver.** This is an observation — the association has already applied
+     * it. It exists because the alternative is invisible: a session whose MTU was black-holed and a
+     * session whose peer went quiet look identical from outside, and a session that quietly halved its
+     * fragment size after a network change has no other way of saying so.
+     */
+    public data class PathMtuChanged(
+        /** What the path admits per DATA chunk of user data. */
+        public val ceiling: FragmentCeilingBytes,
+        /** Which of the three events this was — they call for different reactions; see the type. */
+        public val cause: PathMtuChangeCause,
+        /**
+         * DATA chunks already encoded above the new ceiling, if any. Classic SCTP assigns a TSN at enqueue
+         * and retains the encoded packet, so these cannot be re-fragmented: they are skipped via RFC 3758
+         * FORWARD-TSN where the peer supports it, and where it does not they cannot be skipped at all.
+         * Always [OversizedBacklog.None] when the ceiling went up.
+         */
+        public val backlog: OversizedBacklog,
+    ) : SctpOutput
 }

@@ -1,5 +1,7 @@
 package com.ditchoom.webrtc.sctp.association
 
+import com.ditchoom.webrtc.sctp.StreamId
+
 /**
  * The lifecycle phase of an [SctpAssociation] (RFC 4960 §4). A **sealed** set so a consumer's `when` is
  * exhaustive with no `else`; the cross-cutting protocol data (TSN counters, send/retransmit queues,
@@ -62,6 +64,31 @@ public sealed interface SctpFailureReason {
     public data class ProtocolViolation(
         public val detail: ProtocolViolationKind,
     ) : SctpFailureReason
+
+    /**
+     * The peer sent a user message larger than the `a=max-message-size` this endpoint advertised
+     * (RFC 8841 §6), so the association was ABORTed with a Protocol Violation cause (RFC 4960 §3.3.7).
+     *
+     * A variant of its own rather than a [ProtocolViolationKind], because that enum is documented as the
+     * *handshake* faults and every one of its cases is fatal before an association exists. This one
+     * happens mid-session, on a working association, and carries the three numbers that make it
+     * actionable — which stream, what we promised, and what arrived.
+     *
+     * [observedBytes] is what was **held** when the ceiling was crossed, not the message's final size:
+     * the refusal happens as soon as enough of one message has arrived to be certain, and the rest of it
+     * never does.
+     */
+    public data class PeerMessageTooLarge(
+        public val streamId: StreamId,
+        public val ceilingBytes: Long,
+        public val observedBytes: Long,
+    ) : SctpFailureReason {
+        init {
+            require(observedBytes > ceilingBytes) {
+                "$observedBytes bytes does not exceed the advertised ceiling of $ceilingBytes"
+            }
+        }
+    }
 }
 
 /**

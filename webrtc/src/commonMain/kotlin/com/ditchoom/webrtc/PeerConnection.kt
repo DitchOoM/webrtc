@@ -25,18 +25,21 @@ import com.ditchoom.webrtc.ice.MdnsResolution
 import com.ditchoom.webrtc.ice.MdnsResolver
 import com.ditchoom.webrtc.ice.NetworkMonitor
 import com.ditchoom.webrtc.ice.Ufrag
+import com.ditchoom.webrtc.ice.carrier
 import com.ditchoom.webrtc.ice.resolveHostCandidate
 import com.ditchoom.webrtc.sctp.association.SctpAssociationState
 import com.ditchoom.webrtc.sctp.association.SctpConfig
 import com.ditchoom.webrtc.sctp.association.SctpFailureReason
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelConfig
 import com.ditchoom.webrtc.sctp.datachannel.DataChannelPayload
+import com.ditchoom.webrtc.sctp.datachannel.PeerMessageLimit
 import com.ditchoom.webrtc.sctp.datachannel.SctpClosedException
 import com.ditchoom.webrtc.sctp.datachannel.SctpDataChannelStack
 import com.ditchoom.webrtc.sctp.datachannel.SctpDatagramTransport
 import com.ditchoom.webrtc.sctp.datachannel.SctpRole
 import com.ditchoom.webrtc.sdp.AppliedSdpType
 import com.ditchoom.webrtc.sdp.DataChannelParameters
+import com.ditchoom.webrtc.sdp.DataChannelSection
 import com.ditchoom.webrtc.sdp.Fingerprint
 import com.ditchoom.webrtc.sdp.JsepEvent
 import com.ditchoom.webrtc.sdp.JsepOutput
@@ -50,9 +53,11 @@ import com.ditchoom.webrtc.sdp.SetupRole
 import com.ditchoom.webrtc.sdp.SignalingState
 import com.ditchoom.webrtc.sdp.TlsId
 import com.ditchoom.webrtc.sdp.TlsIdAttribute
+import com.ditchoom.webrtc.sdp.dataChannelSection
 import com.ditchoom.webrtc.sdp.fingerprints
 import com.ditchoom.webrtc.sdp.icePwd
 import com.ditchoom.webrtc.sdp.iceUfrag
+import com.ditchoom.webrtc.sdp.maxMessageSizeAttribute
 import com.ditchoom.webrtc.sdp.setup
 import com.ditchoom.webrtc.sdp.tlsId
 import kotlinx.coroutines.CompletableDeferred
@@ -486,6 +491,26 @@ public class NativePeerConnection(
     private val _signalingState = MutableStateFlow<SignalingState>(SignalingState.Stable)
     override val signalingState: StateFlow<SignalingState> get() = _signalingState
 
+    private val _peerMessageLimit = MutableStateFlow<PeerMessageLimit>(PeerMessageLimit.NotYetNegotiated)
+
+    /**
+     * The largest data-channel message the peer will accept, as read from the `a=max-message-size`
+     * (RFC 8841 §6) of the **data-channel section** of the last remote description applied — never from
+     * whichever section happened to be first (see [SessionDescription.dataChannelSection]).
+     *
+     * A `StateFlow` rather than a value because it genuinely has a lifetime: it is
+     * [PeerMessageLimit.NotYetNegotiated] until a remote description lands, and a renegotiation may
+     * restate it. Published because an application that batches has to size its messages against it, and
+     * the alternative — discovering the ceiling by having a send refused — is a worse way to learn a
+     * number the peer wrote down in the offer.
+     *
+     * It stays [PeerMessageLimit.NotYetNegotiated] for a remote description carrying no data-channel
+     * section at all. That is not the same as a section that omitted the attribute (which is
+     * [PeerMessageLimit.AssumedDefault], RFC 8831 §6.6): a default is a default *of* an association, and
+     * a description with no `m=application` is not negotiating one.
+     */
+    public val peerMessageLimit: StateFlow<PeerMessageLimit> get() = _peerMessageLimit
+
     private val localCandidateChannel = Channel<String>(Channel.UNLIMITED)
     override val localIceCandidates: Flow<String> get() = localCandidateChannel.receiveAsFlow()
 
@@ -521,6 +546,11 @@ public class NativePeerConnection(
     private fun report(diagnostic: SessionDiagnostic) {
         diagnosticChannel.trySend(diagnostic)
     }
+
+    // Where application data rides, folded across the whole SESSION rather than per ICE generation — the
+    // association survives a restart (RFC 8842 §5.5) and so must the memory of the path it was on, or the
+    // one migration that matters reads as a first path. See [DataPathFold].
+    private val dataPath = DataPathFold()
 
     // Asks the establishment loop for another attempt, on an ICE generation that has just been restarted
     // — the session half of RFC 7675 §5.1's "a new session, or an ICE restart, is needed". CONFLATED
@@ -1235,7 +1265,13 @@ public class NativePeerConnection(
         val secured = dtls.secure(d.appDataTransport(), dtlsRole, peerFingerprint)
         val sctpRole = if (dtlsRole == DtlsRole.Client) SctpRole.Client else SctpRole.Server
         val liveStack =
-            SctpDataChannelStack(secured, scope, clock, sctpRole, config.sctpConfig, sctpRandom).also { it.start() }
+            SctpDataChannelStack(secured, scope, clock, sctpRole, config.sctpConfig, sctpRandom).also {
+                // The peer's ceiling was read from a description applied before this stack existed — every
+                // first negotiation, since DTLS has to finish first. Handed over BEFORE `start()`, so the
+                // gate is armed ahead of the first message the app can possibly send on it.
+                it.setPeerMessageLimit(_peerMessageLimit.value)
+                it.start()
+            }
 
         negotiationLock.withLock {
             if (closed) {
@@ -1297,6 +1333,19 @@ public class NativePeerConnection(
                     // resurrects a Failed or Closed session, so the terminals below still win.
                     launch {
                         d.path.collect { path ->
+                            // The data path is folded FIRST and unconditionally, ahead of the connection-state
+                            // projection's guards below. The two answer different questions: the association
+                            // needs to know which path it is riding whatever the public lifecycle says, and a
+                            // guard written for the lifecycle would silently swallow the RFC 8261 §6.1
+                            // notification (see DataPathFold).
+                            when (val observed = dataPath.observe(path.carrier)) {
+                                PathObservation.Unchanged -> Unit
+                                is PathObservation.Adopted -> liveStack.pathChanged(observed.profile)
+                                is PathObservation.Migrated -> {
+                                    report(SessionDiagnostic.DataPathMigrated(from = observed.from, to = observed.to))
+                                    liveStack.pathChanged(observed.profile)
+                                }
+                            }
                             val live = _connectionState.value
                             if (live !is PeerConnectionState.Connected && live !is PeerConnectionState.Restarting) return@collect
                             _connectionState.value =
@@ -1379,6 +1428,7 @@ public class NativePeerConnection(
             (media?.fingerprints() ?: emptyList()).firstOrNull() ?: description.fingerprints().firstOrNull()
         if (fingerprint != null) remoteFingerprint = RemoteFingerprint.Declared(fingerprint)
         honorTlsId(media, description)
+        honorPeerMessageLimit(description)
         // A candidate carried *inside* a description belongs to that description's generation by
         // construction — the ufrag it would be tagged with is three lines above it in the same SDP — so it
         // is tagged with it here rather than left to whatever the line happens to say. It is also the one
@@ -1387,6 +1437,34 @@ public class NativePeerConnection(
         val sdpGeneration = if (ufrag == null) CandidateGeneration.Untagged else CandidateGeneration.Tagged(Ufrag(ufrag))
         startedTransport()?.let { live ->
             media?.candidates()?.forEach { line -> addRemoteCandidateLine(live, TrickledCandidate(line, sdpGeneration)) }
+        }
+    }
+
+    /**
+     * Read the peer's `a=max-message-size` (RFC 8841 §6) off the **data-channel** section and publish it.
+     *
+     * Deliberately not from `media` above, which is `mediaDescriptions.firstOrNull()`. Unlike `ice-ufrag`
+     * and `setup`, this attribute has no session-level fallback — RFC 8841 §6 defines it at media level
+     * only, describing one SCTP association — so "the first section" is not an approximation of the right
+     * one. A Phase-2 description with `m=audio` first would hand that read a plausible section whose
+     * silence about SCTP reads as RFC 8831 §6.6's generous 64 KiB default, i.e. a wrong *number* rather
+     * than a visible miss.
+     *
+     * A description with no data-channel section leaves the flow alone rather than resetting it: an
+     * offer that renegotiates media only has said nothing about the association, and forgetting a
+     * ceiling the peer already stated is how a promise gets exceeded.
+     */
+    private fun honorPeerMessageLimit(description: SessionDescription) {
+        when (val section = description.dataChannelSection()) {
+            DataChannelSection.Absent -> Unit
+            is DataChannelSection.Present -> {
+                val limit = section.media.maxMessageSizeAttribute().asPeerMessageLimit()
+                _peerMessageLimit.value = limit
+                // Also to the association, where the send gate lives (RFC 8831 §6.6). A stack that comes
+                // up later takes it from the flow at construction, so a description applied before DTLS
+                // finished — which is every first negotiation — is not lost.
+                (dataChannels as? DataChannelStack.Up)?.stack?.setPeerMessageLimit(limit)
+            }
         }
     }
 
@@ -1467,6 +1545,11 @@ public class NativePeerConnection(
             fingerprint = dtls.localFingerprint,
             setup = setup,
             mid = config.dataChannelMid,
+            // What we advertise IS what we enforce (RFC 8841 §6): the same `SctpConfig.receiveMessageLimit`
+            // the reassembly queue refuses a peer's oversized message against. Taking the data class's own
+            // default here instead would let a caller lower its receive ceiling and keep advertising
+            // 256 KiB — a promise the association is configured to break.
+            maxMessageSize = advertisedMaxMessageSize(config.sctpConfig.receiveMessageLimit),
             // RFC 8842 §5.3/§5.5: the same value in every offer and answer this session ever emits, so a
             // peer that honours tls-id reads "keep the association" from us as reliably as it reads it
             // from the unchanged fingerprint.

@@ -12,6 +12,8 @@ import com.ditchoom.webrtc.dtls.DtlsState
 import com.ditchoom.webrtc.dtls.DtlsStep
 import com.ditchoom.webrtc.ice.IceDataReadResult
 import com.ditchoom.webrtc.ice.IceDataTransport
+import com.ditchoom.webrtc.sctp.ErrorDetectionMethodId
+import com.ditchoom.webrtc.sctp.TransportErrorDetection
 import com.ditchoom.webrtc.sctp.datachannel.SctpDatagramTransport
 import com.ditchoom.webrtc.sdp.Fingerprint
 import kotlinx.coroutines.CancellationException
@@ -129,6 +131,24 @@ public class PureKotlinDtls(
     private inner class Session(
         private val iceData: IceDataTransport,
     ) : SctpDatagramTransport {
+        /**
+         * RFC 9653 §6: SCTP over DTLS as specified in RFC 8261 *is* an alternate error detection method,
+         * and it is the one entry 1 of RFC 9653 §8's registry names ("SCTP over DTLS").
+         *
+         * This is the assertion the interface's KDoc says no type can check, so it is worth stating what
+         * it rests on. Both of §3's requirements hold here and neither is an approximation: every record
+         * this session hands upward has passed an AEAD open, whose forgery probability is far below
+         * CRC32c's collision probability — and RFC 9653 §6 states outright that there are no
+         * method-specific constraints for DTLS encapsulation, so §5.2's fourth restriction is vacuous.
+         * The middlebox requirement is met by the same fact that makes the first one interesting: a
+         * middlebox never sees the SCTP header at all, so nothing on the path can object to a zero in it.
+         *
+         * Declaring it grants nothing on its own. `SctpConfig.zeroChecksum` still has to permit it, the
+         * peer still has to advertise, and the two directions are still settled separately.
+         */
+        override val errorDetection: TransportErrorDetection =
+            TransportErrorDetection.Provided(ErrorDetectionMethodId.ZeroChecksum)
+
         // Records arriving from the ICE app-data seam. A forwarder coroutine feeds this because
         // IceDataTransport.receive() is a plain suspend fun and cannot be `select`ed on directly — the
         // same merged-inbox shape IceAgentDriver uses.

@@ -52,8 +52,21 @@ internal class RttEstimator(
 /**
  * The congestion controller (RFC 4960 §7.2): slow start, congestion avoidance, and the cwnd collapse on
  * loss. Pure state over bytes — the association tells it what was acked and when a retransmit fired; it
- * owns cwnd/ssthresh/partial-bytes-acked. One path only (the dcSCTP subset has no multihoming, RFC
- * §11.2), so there is a single cwnd, not a per-destination table.
+ * owns cwnd/ssthresh/partial-bytes-acked.
+ *
+ * **One cwnd, and one path at a time** — the dcSCTP subset has no multihoming (ARCHITECTURE §11.2; RFC
+ * 8831 §5 forbids it on this wire), so there is no per-destination table. That is not the same as the
+ * path never changing: a migration replaces this controller wholesale via [PathRide.onNewPath], because
+ * everything measured here described a link that is gone.
+ *
+ * **[mtu] is the *configured* payload size, not a discovered one, and that is a deliberate conservatism
+ * rather than an oversight.** RFC 8899 discovery can raise the fragmentation ceiling above
+ * [SctpConfig.maxPayloadBytes], and this controller does not follow it: the initial cwnd stays
+ * `initialCwndMtus × maxPayloadBytes`, §7.2.1's per-ack growth stays capped at that unit, and §7.2.3's
+ * collapse floors at it. Every one of those errs *small* — a slightly slower ramp and a slightly deeper
+ * collapse — so a stale value here costs throughput and can never overshoot the path. Threading the
+ * discovered size in would be strictly better and is a follow-up; it is recorded rather than done because
+ * changing congestion arithmetic is not a change to make as a side effect of a PMTU commit.
  */
 internal class CongestionControl(
     private val config: SctpConfig,

@@ -53,11 +53,79 @@ public sealed interface SctpEvent {
         public val scope: StreamResetScope,
     ) : SctpEvent
 
+    /**
+     * Ask the peer for [count] more **outgoing** streams than the handshake settled (RFC 6525 §4.5) —
+     * which the peer grants by increasing its own inbound count.
+     *
+     * Queued exactly like [ResetStreams], and for the same reason: §5.1.2 allows one outstanding
+     * reconfiguration request at a time, and these two share that single slot. Several requests while one
+     * is in flight accumulate into one, so a burst of opens waiting on capacity costs one round trip.
+     *
+     * The result arrives as [SctpOutput.OutgoingStreamsAdded] — including when the request never reaches
+     * the wire ([StreamAddOutcome.NotAdded.Unsupported], [StreamAddOutcome.NotAdded.WouldOverflow]) — so a
+     * caller waiting on the capacity is never left without an answer. On success the new ceiling is also
+     * announced as [SctpOutput.OutgoingCapacityChanged].
+     */
+    public data class RequestMoreOutgoingStreams(
+        public val count: StreamCount,
+    ) : SctpEvent
+
+    /**
+     * The upper layer has finished with a message this association delivered — give its receive-buffer
+     * space back (RFC 4960 §3.3.2 a_rwnd).
+     *
+     * **The other half of [SctpOutput.MessageReceived], and not optional.** A delivered message's bytes stay
+     * charged against the window this endpoint advertises until [receipt] comes back, so a driver that
+     * delivers and never credits closes its own receive window one message at a time and eventually stalls
+     * a peer that is behaving perfectly. That failure is silent and cumulative, which is why the credit is
+     * fused with the buffer release wherever a message is *not* delivered onward (`InboundDelivery.discard`)
+     * — forgetting the one then means forgetting the other, and the pool census already catches that.
+     *
+     * Idempotent and unforgeable. Crediting one receipt twice credits once, and a receipt from an
+     * association that has since been torn down credits nothing — both are ordinary races between an
+     * application coroutine and a teardown, not caller errors. [DeliveryReceipt]'s constructor is internal,
+     * so the only receipts in existence are ones this association issued.
+     *
+     * A credit that reopens a window which was advertising **zero** emits a SACK immediately. Nothing else
+     * would: no DATA is arriving to trigger the delayed-SACK path — that is exactly what a shut window
+     * stops — so without this the peer learns only when its own RFC 4960 §6.1 probe times out, an RTO of
+     * silence for a receiver that is ready now.
+     */
+    public data class MessageConsumed(
+        public val receipt: DeliveryReceipt,
+    ) : SctpEvent
+
     /** Begin a graceful shutdown (RFC 4960 §9.2): drain outstanding data, then SHUTDOWN handshake. */
     public data object Shutdown : SctpEvent
 
     /** Abort the association immediately (RFC 4960 §9.1): emit ABORT and close. */
     public data object Abort : SctpEvent
+
+    /**
+     * The layer below moved, or named itself for the first time — RFC 8261 §6.1: *"If the SCTP layer is
+     * notified about a path change by its lower layers, SCTP SHOULD retest the path MTU and reset the
+     * congestion state to the initial state."* **Nothing could say this before**, which is the gap this
+     * event closes: after an RFC 8445 §9 ICE restart moved the 5-tuple, the association carried the
+     * retired path's cwnd, ssthresh and SRTT, a T3 armed from a backed-off RTO, and a
+     * consecutive-error budget that a migration performed *because* the old path was failing had already
+     * half spent.
+     *
+     * **One event, not two.** "The path was assessed for the first time" and "the path migrated" are the
+     * same notification with different histories, and the association is the only party that knows which
+     * it is — it holds the previous [SctpPathProfile]. Splitting them would have made every driver
+     * responsible for a distinction it has to re-derive, and a driver that got it wrong would reset a
+     * healthy path's congestion state on the first packet of every session.
+     *
+     * [SctpPathProfile.Assessed.identity] is the whole discriminant. An identity equal to the current one
+     * is a re-statement — the profile is adopted and nothing is discarded — which is what lets a session
+     * layer republish on every ICE event without having to filter first.
+     *
+     * Delivering this is **optional**: an association that never receives one stays
+     * [SctpPathProfile.Unassessed] and behaves exactly as it did before the event existed.
+     */
+    public data class PathChanged(
+        public val path: SctpPathProfile.Assessed,
+    ) : SctpEvent
 
     /** The driver's timer reached [SctpAssociation.nextDeadline] — run every retransmit/SACK/timer due now. */
     public data object TimerFired : SctpEvent

@@ -34,6 +34,7 @@ class RetransmissionQueueRttTest {
     private val t0 = Instant.fromEpochSeconds(100)
     private val queueDelay = 900.milliseconds
     private val pathRtt = 40.milliseconds
+    private val epoch = PathEpoch(0)
 
     private fun chunk(
         tsn: Tsn,
@@ -48,6 +49,7 @@ class RetransmissionQueueRttTest {
         packet = BufferFactory.managed().allocate(16, ByteOrder.BIG_ENDIAN),
         reliability = reliability,
         enqueuedAt = enqueuedAt,
+        origin = SendOrigin.Application,
     )
 
     /** The bug: a chunk that queued for 900 ms on a 40 ms path must sample 40 ms, not 940 ms. */
@@ -57,13 +59,14 @@ class RetransmissionQueueRttTest {
         val data = chunk(Tsn(1u), enqueuedAt = t0)
 
         val transmittedAt = t0 + queueDelay
-        queue.onSent(data, transmittedAt)
+        queue.onSent(data, transmittedAt, epoch)
         val outcome =
             queue.onSack(
                 Tsn(1u),
                 advertisedReceiverWindow = 1_000_000u,
                 gapAckBlocks = emptyList(),
                 now = transmittedAt + pathRtt,
+                epoch = epoch,
             )
 
         assertEquals(pathRtt, outcome.rttSample, "RTT must be measured from transmission, not from enqueue")
@@ -74,10 +77,17 @@ class RetransmissionQueueRttTest {
     fun retransmitted_chunk_yields_no_rtt_sample() {
         val queue = RetransmissionQueue(SctpConfig(), Tsn(1u))
         val data = chunk(Tsn(1u), enqueuedAt = t0)
-        queue.onSent(data, t0)
+        queue.onSent(data, t0, epoch)
 
         queue.markRetransmitted(data)
-        val outcome = queue.onSack(Tsn(1u), advertisedReceiverWindow = 1_000_000u, gapAckBlocks = emptyList(), now = t0 + pathRtt)
+        val outcome =
+            queue.onSack(
+                Tsn(1u),
+                advertisedReceiverWindow = 1_000_000u,
+                gapAckBlocks = emptyList(),
+                now = t0 + pathRtt,
+                epoch = epoch,
+            )
 
         assertNull(outcome.rttSample, "a retransmitted chunk cannot be attributed to one transmission")
     }
@@ -105,7 +115,7 @@ class RetransmissionQueueRttTest {
         val data = chunk(Tsn(1u), enqueuedAt = t0, reliability = SctpReliability.MaxLifetime(budget))
 
         // Transmitted late — after the lifetime budget already expired while it sat queued.
-        queue.onSent(data, t0 + queueDelay)
+        queue.onSent(data, t0 + queueDelay, epoch)
         val abandoned = queue.abandonExpired(now = t0 + queueDelay)
 
         assertEquals(
@@ -113,5 +123,61 @@ class RetransmissionQueueRttTest {
             abandoned,
             "a message that spent its whole lifetime queued is abandoned",
         )
+    }
+
+    /**
+     * Karn's algorithm applied to space rather than time: a chunk sent before a path change and acked
+     * after one produces a duration spanning two different networks, and folding it into SRTT describes
+     * neither of them.
+     *
+     * The direction of the error is what makes it worth forbidding rather than tolerating. A migration
+     * usually happens *because* the old path became slow or stopped answering, so the straddling sample
+     * is systematically large — it inflates RTO on the path just moved to, at the exact moment recovery
+     * matters most. A sample that is merely noisy would average out; this one does not.
+     */
+    @Test
+    fun a_sample_straddling_a_path_change_is_refused() {
+        val queue = RetransmissionQueue(SctpConfig(), Tsn(1u))
+        val data = chunk(Tsn(1u), enqueuedAt = t0)
+        queue.onSent(data, t0, epoch)
+
+        val outcome =
+            queue.onSack(
+                Tsn(1u),
+                advertisedReceiverWindow = 1_000_000u,
+                gapAckBlocks = emptyList(),
+                now = t0 + pathRtt,
+                epoch = epoch.next(),
+            )
+
+        assertNull(
+            outcome.rttSample,
+            "a chunk transmitted on the previous path cannot measure the current one",
+        )
+    }
+
+    /**
+     * The guard must be an equality test on the epoch and nothing more — in particular it must not be an
+     * ordering ("newer than"), because a chunk cannot be sent on a *later* epoch than the one being
+     * acked and a comparison that admits one is a comparison that will admit the stale case too once the
+     * counter is ever reused. Same epoch, sample; any other epoch, none.
+     */
+    @Test
+    fun the_original_epoch_still_samples_after_the_ride_moves_on() {
+        val queue = RetransmissionQueue(SctpConfig(), Tsn(1u))
+        val later = epoch.next()
+        val data = chunk(Tsn(1u), enqueuedAt = t0)
+        queue.onSent(data, t0, later)
+
+        val outcome =
+            queue.onSack(
+                Tsn(1u),
+                advertisedReceiverWindow = 1_000_000u,
+                gapAckBlocks = emptyList(),
+                now = t0 + pathRtt,
+                epoch = later,
+            )
+
+        assertEquals(pathRtt, outcome.rttSample, "a chunk sent and acked on one path must still sample it")
     }
 }

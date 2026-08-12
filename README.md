@@ -160,16 +160,25 @@ where the handshake depends on a native library being present.
 - **DTLS 1.2 / 1.3** with the RFC 8122 fingerprint check binding the signaling channel to the data path.
 - **SCTP** (RFC 8831) + **DCEP** (RFC 8832): ordered/unordered, reliable/partially-reliable, fragmentation
   and reassembly, per-channel and graceful shutdown.
+- **Path-MTU discovery** (RFC 8899, opt-in via `PathMtuPolicy.Discover`) and **RFC 9653 zero checksum**
+  (opt-in via `ZeroChecksumPolicy`, and only ever granted when the transport underneath detects errors
+  itself — over DTLS, it does). A path change resets congestion, RTT and the error budget together
+  (RFC 8261 §6.1) rather than carrying a dead link's measurements onto a live one.
 - **A network monitor** — `systemNetworkMonitor()` is push-based where the OS offers a signal
   (`ConnectivityManager`, `AF_NETLINK`, `NWPathMonitor`, the JDK-21 routing socket) and polls where it
   does not. Pair it with `IceRestartPolicy.OnNetworkChange` to restart automatically when the selected
   pair's interface goes away. The default stays `Manual`, because a restart is a renegotiation only your
   signaling channel can carry.
 
-Deliberately **not** implemented: SCTP multihoming, RFC 8260 interleaving, and HEARTBEAT (ICE consent
-freshness owns path liveness); RFC 6525's four non-originated reconfiguration request types (decoded and
-explicitly refused); and establishing a *new* DTLS association on renegotiation (a re-answer implying the
-opposite role is refused with a typed reason).
+Deliberately **not** implemented: SCTP multihoming — which is **forbidden on this wire**, not merely
+skipped (RFC 8831 §5 and RFC 8261 §6.1 permit exactly one address per association, so implementing it
+would be a conformance bug rather than a feature); RFC 8260 interleaving; RFC 6525's four non-originated
+reconfiguration request types (decoded and explicitly refused); and establishing a *new* DTLS association
+on renegotiation (a re-answer implying the opposite role is refused with a typed reason).
+
+HEARTBEAT is **originated, scoped by purpose**: RFC 8899 path-MTU probing sends one padded to a candidate
+size and reads the HEARTBEAT-ACK as confirmation. It is never used for liveness — ICE consent freshness
+(RFC 7675) owns that, and no timer here asks whether the peer is alive.
 
 ## Why an own stack
 

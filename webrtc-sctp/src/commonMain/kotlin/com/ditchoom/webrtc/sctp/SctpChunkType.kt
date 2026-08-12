@@ -69,6 +69,18 @@ public value class SctpChunkType(
          */
         public val ReConfig: SctpChunkType = SctpChunkType(130u)
 
+        /**
+         * PAD (RFC 4820 §3) — a chunk whose entire body is padding; type 132 (0x84). It exists so a
+         * packet can be inflated to an exact size without carrying data, which is what an RFC 8899 path
+         * MTU probe is.
+         *
+         * Its high bits are `10`, so a peer that does not implement RFC 4820 skips the chunk and keeps
+         * processing the rest of the packet ([UnrecognizedAction.SkipAndContinue]) — which is the whole
+         * reason a probe can be built this way at all: the HEARTBEAT bundled beside it is answered
+         * normally, so the probe is confirmed by a peer that has never heard of PAD.
+         */
+        public val Pad: SctpChunkType = SctpChunkType(132u)
+
         /** FORWARD-TSN (RFC 3758 §3.2) — the partial-reliability skip marker; type 192 (0xC0). */
         public val ForwardTsn: SctpChunkType = SctpChunkType(192u)
     }

@@ -13,14 +13,21 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.PayloadProtocolId
 import com.ditchoom.webrtc.sctp.StreamId
+import com.ditchoom.webrtc.sctp.association.DeliveryReceipt
+import com.ditchoom.webrtc.sctp.association.OutgoingStreamCapacity
 import com.ditchoom.webrtc.sctp.association.SctpAssociation
 import com.ditchoom.webrtc.sctp.association.SctpAssociationState
 import com.ditchoom.webrtc.sctp.association.SctpConfig
 import com.ditchoom.webrtc.sctp.association.SctpEvent
 import com.ditchoom.webrtc.sctp.association.SctpFailureReason
 import com.ditchoom.webrtc.sctp.association.SctpOutput
+import com.ditchoom.webrtc.sctp.association.SctpPathProfile
 import com.ditchoom.webrtc.sctp.association.SctpReliability
 import com.ditchoom.webrtc.sctp.association.SctpSendOptions
+import com.ditchoom.webrtc.sctp.association.SendOrigin
+import com.ditchoom.webrtc.sctp.association.StreamAddOutcome
+import com.ditchoom.webrtc.sctp.association.StreamCount
+import com.ditchoom.webrtc.sctp.association.StreamGrowthPolicy
 import com.ditchoom.webrtc.sctp.association.StreamResetOutcome
 import com.ditchoom.webrtc.sctp.association.StreamResetScope
 import com.ditchoom.webrtc.sctp.dcep.ChannelType
@@ -35,7 +42,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
@@ -71,7 +78,11 @@ public class SctpDataChannelStack(
     config: SctpConfig = SctpConfig(),
     @Suppress("UnseamedEntropy") random: Random = Random.Default,
 ) : StreamMux<DataChannelPayload> {
-    private val association = SctpAssociation(config, random)
+    // The association is sans-io and owns no transport, so what the transport guarantees has to be handed
+    // to it (ARCHITECTURE §5.1). This is the only place both are in scope, which is why the wiring lives
+    // here rather than in SctpConfig: a transport's integrity guarantee is a fact about the transport, not
+    // a knob a caller sets beside its RTO bounds.
+    private val association = SctpAssociation(config, random, errorDetection = transport.errorDetection)
     private val bufferFactory = config.bufferFactory
 
     private val inbox = Channel<DriveItem>(Channel.UNLIMITED)
@@ -90,19 +101,40 @@ public class SctpDataChannelStack(
     // Inbound user messages that arrived before their channel's DCEP OPEN registered the stream — held
     // briefly (bounded) and flushed when the OPEN lands, so an unordered first message that SCTP delivers
     // ahead of the still-in-order OPEN is not silently lost. Bounded to defeat a peer that never OPENs.
-    private val pendingInbound = HashMap<StreamId, ArrayDeque<PendingInbound>>()
-    private var nextStreamId: Int = if (role == SctpRole.Client) 0 else 1
+    private val pendingInbound = HashMap<StreamId, ArrayDeque<InboundDelivery>>()
     private var closed = false
 
-    // Stream ids mid-close: RFC 8831 §6.7 closes a data channel by resetting BOTH directions, and the two
-    // resets are independent RFC 6525 exchanges that complete in either order. An id sits here holding
-    // whichever half has landed; when the other one arrives the entry is dropped and the id recycled.
-    private val resetHalves = HashMap<StreamId, ResetHalf>()
+    // The peer's `a=max-message-size` (RFC 8841 §6). Read and written ONLY on the drive loop — the send
+    // gate consults it there, and [setPeerMessageLimit] posts rather than assigns — so it needs no
+    // synchronization and cannot be observed half-updated by a caller's coroutine.
+    private var peerMessageLimit: PeerMessageLimit = PeerMessageLimit.NotYetNegotiated
 
-    // Stream ids whose channel is fully closed on both sides and which may back a new open. Reusing an id
-    // is only safe after both resets: the SSN state the peer holds for it is gone, so a new channel's
-    // first ordered message at SSN 0 is not read as a duplicate of the old channel's.
-    private val reusableStreamIds = ArrayDeque<StreamId>()
+    /**
+     * Which stream ids exist, which are ours to hand out, which are mid-close and which may be reused —
+     * one ledger (RFC 8832 §6, RFC 8831 §6.7). It replaces a reuse queue, a half-close map, a parity
+     * predicate and a bare `Int` cursor that between them kept the same fact in four places, and it is
+     * where an open that cannot be given an id becomes a typed refusal rather than a throw on this loop.
+     */
+    private val streamIds = StreamIdAllocator(role)
+
+    // How many outgoing streams the association negotiated (RFC 4960 §5.1.1) — the ceiling every stream id
+    // this side hands out must sit under. Tracked from SctpOutput.OutgoingCapacityChanged rather than read
+    // off the association, because the driver only ever touches the core through the serialized loop and
+    // an open parked for want of capacity has to be released by an *event*, not by polling.
+    private var outgoingCapacity: OutgoingStreamCapacity = OutgoingStreamCapacity.NotNegotiated
+
+    // Opens that ran out of negotiated stream ids while `streamGrowth` is `AddStreams`: their RFC 6525 §4.5
+    // request is on the wire and they are retried when it is answered. The FIRST open to park is what
+    // issues the request and the rest ride it — which is also what stops the retry loop from asking again
+    // for capacity it is already waiting on.
+    private val opensAwaitingCapacity = ArrayDeque<OpenCommand>()
+
+    // Set when an OutgoingCapacityChanged lands inside apply(), drained AFTER the output loop for the same
+    // reason reciprocalResets is: dispatching a parked open re-enters the association, and doing that
+    // mid-output-list would interleave its packets with the ones already being applied.
+    private var capacityGrew = false
+
+    private val streamGrowth = config.streamGrowth
 
     // Scratch for the reciprocal resets one drive-loop item produced (RFC 8831 §6.7's "when the peer sees
     // that an incoming stream was reset, it also resets its corresponding outgoing stream"). Collected
@@ -125,8 +157,11 @@ public class SctpDataChannelStack(
     // buffer was above the high-water mark when it went in, so their deferred stays incomplete until the
     // buffer drains to the low-water mark. FIFO — the first sender to park is the first released.
     //
-    // This is what makes `send()` the ONLY backpressure signal the API needs: no bufferedAmount property,
-    // no onBufferedAmountLow callback: a caller that can outrun the association simply stops being resumed.
+    // This is what makes `send()` a backpressure signal on its own: a caller that can outrun the
+    // association simply stops being resumed, and the ordinary producer loop needs nothing else.
+    // `BufferedDataChannel` sits beside it rather than replacing it, for the producers a suspension cannot
+    // serve — one that must decide whether to produce at all this tick, and a multiplexer choosing which
+    // channel to feed. Both ask; this one blocks.
     private val awaitingDrain = ArrayDeque<SendCommand>()
     private val highWaterBytes = config.sendBufferHighWaterBytes
     private val lowWaterBytes = config.sendBufferLowWaterBytes
@@ -147,9 +182,42 @@ public class SctpDataChannelStack(
     internal var discardedInbound: Int = 0
         private set
 
+    // Peer DCEP OPENs this stack would not register, counted by reason. Bounded — there are three reasons
+    // — and test-visible only: nothing above this layer surfaces them yet, and a decline is not an error
+    // (a duplicate OPEN is the ordinary retransmit case).
+    private val declinedOpens = HashMap<InboundOpenDecline, Int>()
+
+    /** How many peer DCEP OPENs were declined for [reason] — test-visible, see [admitInboundOpen]. */
+    internal fun declinedInboundOpens(reason: InboundOpenDecline): Int = declinedOpens[reason] ?: 0
+
+    /**
+     * The outgoing stream capacity the association settled (RFC 4960 §5.1.1) — test-visible only. It is
+     * the ceiling on every stream id this side allocates, and nothing a consumer can otherwise observe.
+     */
+    internal val negotiatedOutgoingCapacity: OutgoingStreamCapacity get() = outgoingCapacity
+
     /** Queued-but-unsent user bytes, and how many senders are parked on backpressure — test-visible only. */
     internal val bufferedBytes: Int get() = association.bufferedBytes
     internal val parkedSenders: Int get() = awaitingDrain.size
+
+    /**
+     * Receive-window bytes this stack has been handed and not yet credited back (RFC 4960 §3.3.2) —
+     * test-visible only, and the one direct read of whether the credit seam is closed.
+     *
+     * A stack that credited on *delivery* rather than on consumption reads zero here throughout and offers
+     * the peer no backpressure whatever, while passing every liveness fixture in this module. This is what
+     * tells the two apart.
+     */
+    internal val outstandingReceiveBytes: Long get() = association.outstandingReceiveBytes
+
+    /**
+     * Every [SctpOutput.PathMtuChanged] this stack has seen, in order — test-visible only, and the only
+     * place the RFC 8899 search is observable from above the association. Bounded: a search converges in a
+     * handful of probes and a raise timer re-opens it at most once every raise interval, so an unbounded
+     * list here would still be a slow leak on a session that lives for days.
+     */
+    internal val pathMtuChanges: List<SctpOutput.PathMtuChanged> get() = pathMtuHistory.toList()
+    private val pathMtuHistory = ArrayDeque<SctpOutput.PathMtuChanged>()
 
     /**
      * Stream ids whose channel closed in both directions and that a future open will reuse — test-visible
@@ -157,7 +225,10 @@ public class SctpDataChannelStack(
      * when its second RFC 6525 reset completes, which no consumer-facing signal reports (the flow closing
      * only means the *local* half is done).
      */
-    internal val recycledStreamIds: List<StreamId> get() = reusableStreamIds.toList()
+    internal val recycledStreamIds: List<StreamId> get() = streamIds.recycled
+
+    /** The stream-id ledger, so a fixture can assert its invariants (plan residue R5) — test-visible only. */
+    internal val streamIdLedger: StreamIdAllocator get() = streamIds
 
     /** Launch the driver: the transport reader, and the single serialized association drive loop. */
     public fun start() {
@@ -170,8 +241,14 @@ public class SctpDataChannelStack(
 
     override suspend fun openBidirectional(): Connection<DataChannelPayload> = open(DataChannelConfig())
 
-    /** Open a data channel with explicit [config] (label / ordering / reliability) — RFC 8832 §5.1. */
-    public suspend fun open(config: DataChannelConfig): Connection<DataChannelPayload> {
+    /**
+     * Open a data channel with explicit [config] (label / ordering / reliability) — RFC 8832 §5.1.
+     *
+     * Returns the narrower [BufferedDataChannel] rather than a bare [Connection] so `bufferedAmount` is
+     * reachable without a cast. The [StreamMux] overrides above cannot narrow past the interface they
+     * implement, but every channel this stack hands out — opened or accepted — is one of these.
+     */
+    public suspend fun open(config: DataChannelConfig): BufferedDataChannel {
         val deferred = CompletableDeferred<DataChannelConnection>()
         post(OpenCommand(config, deferred))
         return deferred.await()
@@ -196,6 +273,45 @@ public class SctpDataChannelStack(
     override suspend fun openUnidirectional(): Sender<DataChannelPayload> = open(DataChannelConfig())
 
     override suspend fun acceptUnidirectional(): Receiver<DataChannelPayload> = accepted.receive()
+
+    /**
+     * Tell the association which path it is riding, or that the path moved (RFC 8261 §6.1 — see
+     * [SctpEvent.PathChanged]). Routed through the drive loop like every other input, so `handle` stays
+     * serialized and a path event can never interleave with a datagram.
+     *
+     * **Fail-quiet on a torn-down stack**, like [shutdown] and unlike [open]: the session layer publishes
+     * this from a path watcher whose cancellation races the teardown it is watching for, so a path event
+     * arriving one dispatch late is the ordinary shape of a closing session rather than a caller error
+     * worth an exception.
+     */
+    public suspend fun pathChanged(profile: SctpPathProfile.Assessed) {
+        if (closed) return
+        try {
+            inbox.send(DriveItem.Command(PathChangedCommand(profile)))
+        } catch (_: kotlinx.coroutines.channels.ClosedSendChannelException) {
+            // already torn down
+        }
+    }
+
+    /**
+     * Tell this stack what the peer's `a=max-message-size` (RFC 8841 §6) said, so a `send` that would
+     * overrun it is refused here rather than discovered by the peer (RFC 8831 §6.6 makes exceeding it a
+     * MUST NOT). Until told, the stack assumes [PeerMessageLimit.NotYetNegotiated] and applies §6.6's
+     * 64 KiB — the only ceiling defensible in the absence of a statement.
+     *
+     * Non-suspending and posted rather than assigned: the limit is read on the drive loop beside the
+     * send it gates, so it is delivered as an ordered item like every other command. Best-effort on a
+     * torn-down stack, where nothing will be sent anyway.
+     *
+     * A session layer that reads SDP (`NativePeerConnection` does) calls this for its consumer. A caller
+     * driving this module directly — it is published on its own — is the reason it is public: a peer's
+     * ceiling can be known by means other than SDP, and the alternative to saying so is being capped at
+     * 64 KiB with no way to raise it.
+     */
+    public fun setPeerMessageLimit(limit: PeerMessageLimit) {
+        if (closed) return
+        inbox.trySend(DriveItem.Command(PeerMessageLimitCommand(limit)))
+    }
 
     /** Begin a graceful association shutdown (RFC 4960 §9.2). No-op once the stack has closed. */
     public suspend fun shutdown() {
@@ -306,20 +422,26 @@ public class SctpDataChannelStack(
             if (closed) break
             // Every item above can have drained the send buffer — a SACK opening cwnd/rwnd most obviously,
             // but also a timer firing a retransmit. This is the one serialized place that sees all of them,
-            // so it is the one place parked senders are released.
+            // so it is the one place parked senders are released and the gauges are republished.
             releaseDrainedSenders()
+            republishBufferedAmounts()
         }
     }
 
     private fun onCommand(command: Command) {
         when (command) {
-            is OpenCommand ->
-                if (association.state == SctpAssociationState.Established) {
-                    dispatchOpen(command)
-                } else {
-                    pendingOpens.addLast(command)
-                }
+            is OpenCommand -> onOpenCommand(command)
             is SendCommand -> {
+                // RFC 8841 §6 / RFC 8831 §6.6: a message larger than the peer will accept never reaches
+                // the association. Gated HERE, before the ordering override and before `handle`, for the
+                // same reason the override is resolved here — the peer's ceiling is drive-loop state.
+                // A refusal fails only this send: nothing is queued, no TSN is assigned, the channel
+                // stays open, and `sendMessage`'s `finally` frees whatever it allocated.
+                val refusal = refuse(command.wireByteCount)
+                if (refusal != null) {
+                    command.deferred.completeExceptionally(MessageRefusedException(refusal))
+                    return
+                }
                 // RFC 8832 §6: user data on a channel we opened is sent ORDERED until that channel is
                 // confirmed, whatever ordering the channel was configured with. Ordered delivery is the
                 // stronger guarantee, so an unordered channel is never violated by it — and it is what
@@ -343,7 +465,38 @@ public class SctpDataChannelStack(
                 }
             }
             is CloseChannelCommand -> onCloseChannel(command.streamId)
+            is PathChangedCommand -> apply(association.handle(SctpEvent.PathChanged(command.profile), now()))
+            is MessageConsumedCommand -> apply(association.handle(SctpEvent.MessageConsumed(command.receipt), now()))
+            is PeerMessageLimitCommand -> peerMessageLimit = command.limit
             ShutdownCommand -> apply(association.handle(SctpEvent.Shutdown, now()))
+        }
+    }
+
+    /**
+     * Why a message of [wireByteCount] bytes may not be sent, or null when it may (RFC 8841 §6).
+     *
+     * The `when` is the whole gate. Each arm names a ceiling **and** the reason it is that ceiling, so
+     * two of them enforce the same 64 KiB and report different things — which is the point: "the peer
+     * said nothing" and "the peer has not been heard from" are different situations with different fixes,
+     * and a lone "too large" would make them indistinguishable.
+     *
+     * DCEP control messages do not come through here (see [sendOnStream], which reaches `handle`
+     * directly): RFC 8832's OPEN/ACK are protocol, not user data, and are bounded by their own grammar.
+     */
+    private fun refuse(wireByteCount: Long): MessageRefusedReason? {
+        val assumed = PeerMessageLimit.ASSUMED_DEFAULT_BYTES
+        return when (val limit = peerMessageLimit) {
+            PeerMessageLimit.Unlimited -> null
+            is PeerMessageLimit.Advertised ->
+                if (wireByteCount > limit.bytes) {
+                    MessageRefusedReason.ExceedsAdvertisedLimit(wireByteCount, limit.bytes)
+                } else {
+                    null
+                }
+            PeerMessageLimit.AssumedDefault ->
+                if (wireByteCount > assumed) MessageRefusedReason.ExceedsAssumedDefault(wireByteCount) else null
+            PeerMessageLimit.NotYetNegotiated ->
+                if (wireByteCount > assumed) MessageRefusedReason.PeerLimitUnknown(wireByteCount) else null
         }
     }
 
@@ -353,6 +506,19 @@ public class SctpDataChannelStack(
     private fun releaseDrainedSenders() {
         if (awaitingDrain.isEmpty() || association.bufferedBytes > lowWaterBytes) return
         while (awaitingDrain.isNotEmpty()) awaitingDrain.removeFirst().deferred.complete(Unit)
+    }
+
+    /**
+     * Republish every open channel's `bufferedAmount` from the association's queue — once per drive-loop
+     * item, which is exactly W3C's *"as of the last time the event loop started"*.
+     *
+     * Pushed from here rather than pulled by the gauge, because the association is only readable on this
+     * coroutine. It is still a projection and not a counter: the number comes from the queue every time, so
+     * a fragment leaving by a path nobody instrumented shows up here rather than drifting (S5).
+     * `MutableStateFlow` drops an unchanged value, so an idle session publishes nothing.
+     */
+    private fun republishBufferedAmounts() {
+        for ((streamId, connection) in channels) connection.publishBufferedAmount(association.bufferedAmount(streamId))
     }
 
     // Drop a locally closed channel and reset its outgoing stream — RFC 8831 §6.7's close. Only for a
@@ -369,25 +535,90 @@ public class SctpDataChannelStack(
     // channel that reuses the id.
     private fun forgetStream(streamId: StreamId) {
         unconfirmedOutbound -= streamId
-        // Held data for a stream that is going away reaches no channel now, so this is its last reader.
-        pendingInbound.remove(streamId)?.forEach { it.payload.release() }
+        // Held data for a stream that is going away reaches no channel now, so this is its last reader —
+        // of both the buffer and the window space it is holding.
+        pendingInbound.remove(streamId)?.forEach { it.discard(this) }
     }
 
     private fun resetOutgoing(streams: Set<StreamId>) {
         apply(association.handle(SctpEvent.ResetStreams(StreamResetScope.Streams(streams)), now()))
     }
 
-    private fun dispatchOpen(command: OpenCommand) {
-        // Prefer an id whose channel closed cleanly on both sides over burning a fresh one (RFC 8832 §6
-        // gives each side only half of a 16-bit space, and `nextStreamId` never comes back down).
-        val streamId =
-            if (reusableStreamIds.isEmpty()) {
-                StreamId(nextStreamId).also { nextStreamId += 2 }
-            } else {
-                reusableStreamIds.removeFirst()
+    /**
+     * An open has reached the drive loop. A negotiated id (RFC 8832 §5) is **reserved here** — before the
+     * Established check can park the command — and that ordering is the point: the ledger entry exists
+     * from this moment, so no later automatic allocation and no peer DCEP OPEN can take the id, whatever
+     * order the dispatches happen in afterwards.
+     *
+     * Only collision refusals can be answered here. Whether the id fits the association's negotiated
+     * stream count cannot be: there may be no association yet, and therefore no count. That check runs at
+     * dispatch, which is also where the reservation is given back if it fails.
+     */
+    private fun onOpenCommand(command: OpenCommand) {
+        when (val identity = command.config.identity) {
+            ChannelIdentity.InBand -> Unit
+            is ChannelIdentity.Negotiated -> {
+                val refusal = streamIds.claim(identity.id, ChannelProvenance.OutOfBand)
+                if (refusal != null) {
+                    refuseOpen(command, refusal)
+                    return
+                }
             }
-        val connection = registerChannel(streamId, command.config, incoming = false)
-        unconfirmedOutbound += streamId
+        }
+        if (association.state == SctpAssociationState.Established) {
+            dispatchOpen(command)
+        } else {
+            pendingOpens.addLast(command)
+        }
+    }
+
+    private fun dispatchOpen(command: OpenCommand) {
+        when (val identity = command.config.identity) {
+            ChannelIdentity.InBand -> dispatchInBandOpen(command)
+            is ChannelIdentity.Negotiated -> dispatchNegotiatedOpen(command, identity.id)
+        }
+    }
+
+    /**
+     * A negotiated channel is usable the moment the association is: nothing is sent, nothing is awaited,
+     * and the peer's half was created independently (RFC 8832 §5). All that is left is the range check
+     * that [onOpenCommand] could not make.
+     */
+    private fun dispatchNegotiatedOpen(
+        command: OpenCommand,
+        id: StreamId,
+    ) {
+        val capacity = negotiatedStreams()
+        if (!capacity.admits(id)) {
+            // Give the reservation back, or the id is spent for the life of the association on an open
+            // that never happened — and `allocate` would step over it forever.
+            streamIds.relinquish(id)
+            refuseOpen(command, DataChannelOpenRefusal.StreamIdOutsideNegotiatedRange(id, capacity))
+            return
+        }
+        command.deferred.complete(registerChannel(id, command.config, ChannelProvenance.OutOfBand))
+    }
+
+    private fun dispatchInBandOpen(command: OpenCommand) {
+        val streamId =
+            when (val grant = streamIds.allocate(negotiatedStreams())) {
+                is StreamIdGrant.Granted -> grant.id
+                // Both refusals used to be the same line of code walking off the end of the id space, and
+                // both used to be an exception thrown on this loop rather than an answer to the caller.
+                is StreamIdGrant.NeedsMoreStreams -> {
+                    when (val policy = streamGrowth) {
+                        StreamGrowthPolicy.Fixed ->
+                            refuseOpen(command, DataChannelOpenRefusal.StreamIdOutsideNegotiatedRange(grant.wanted, grant.capacity))
+                        is StreamGrowthPolicy.AddStreams -> parkForCapacity(command, policy, grant)
+                    }
+                    return
+                }
+                StreamIdGrant.SpaceExhausted -> {
+                    refuseOpen(command, DataChannelOpenRefusal.StreamIdSpaceExhausted)
+                    return
+                }
+            }
+        val connection = registerChannel(streamId, command.config, ChannelProvenance.LocalInBand)
         val open =
             DataChannelMessage.Open(
                 channelType = channelTypeOf(command.config),
@@ -404,6 +635,47 @@ public class SctpDataChannelStack(
             payload = open.encode(bufferFactory),
         )
         command.deferred.complete(connection)
+    }
+
+    // How many outgoing streams the association negotiated, as a plain count. `NotNegotiated` becomes zero
+    // rather than an unbounded default: a capacity that does not exist admits no id, which is the honest
+    // reading and is what makes the range check total without a nullable in the middle of it.
+    private fun negotiatedStreams(): StreamCount =
+        when (val capacity = outgoingCapacity) {
+            OutgoingStreamCapacity.NotNegotiated -> StreamCount.None
+            is OutgoingStreamCapacity.Negotiated -> capacity.streams
+        }
+
+    /**
+     * Hold [command] until the association has grown, and — if it is the first to wait — ask the peer for
+     * the streams (RFC 6525 §4.5). The ask is `max(policy increment, the shortfall)`: the configured batch
+     * amortises the round trip, and the shortfall is the floor below which this very open would park again
+     * on the next answer.
+     *
+     * Only the first waiter asks. §5.1.2 allows one outstanding reconfiguration request anyway, so a second
+     * ask would either be merged by the association or queued behind the first; not making it is what keeps
+     * the retry in `flushOpensAwaitingCapacity` from re-asking for capacity it is already waiting on.
+     */
+    private fun parkForCapacity(
+        command: OpenCommand,
+        policy: StreamGrowthPolicy.AddStreams,
+        grant: StreamIdGrant.NeedsMoreStreams,
+    ) {
+        val first = opensAwaitingCapacity.isEmpty()
+        opensAwaitingCapacity.addLast(command)
+        if (!first) return
+        val ask = if (policy.increment > grant.shortfall) policy.increment else grant.shortfall
+        apply(association.handle(SctpEvent.RequestMoreOutgoingStreams(ask), now()))
+    }
+
+    // An open that cannot be given a stream id fails its caller with the typed reason. It must complete the
+    // deferred — an open left hanging suspends its caller for the life of the process, which is the same
+    // leak tearDown exists to prevent on the other paths.
+    private fun refuseOpen(
+        command: OpenCommand,
+        refusal: DataChannelOpenRefusal,
+    ) {
+        command.deferred.completeExceptionally(DataChannelOpenRefusedException(refusal))
     }
 
     private fun apply(outputs: List<SctpOutput>) {
@@ -425,6 +697,11 @@ public class SctpDataChannelStack(
                 // Ordered behind every Send already queued, which is what makes freeing these safe at all.
                 is SctpOutput.ReclaimRetained -> enqueue(OutboundItem.Release(output.packet))
                 is SctpOutput.StateChanged -> onStateChanged(output.state)
+                is SctpOutput.OutgoingCapacityChanged -> {
+                    outgoingCapacity = output.capacity
+                    capacityGrew = true
+                }
+                is SctpOutput.OutgoingStreamsAdded -> onOutgoingStreamsAdded(output.outcome)
                 is SctpOutput.MessageReceived -> onMessage(output)
                 is SctpOutput.Aborted -> tearDown(output.reason)
                 // The association survived the peer's restart, but every channel on it did not: the peer
@@ -433,9 +710,40 @@ public class SctpDataChannelStack(
                 SctpOutput.PeerRestarted -> tearDown(SctpFailureReason.PeerRestarted)
                 is SctpOutput.IncomingStreamsReset -> onIncomingStreamsReset(output.scope)
                 is SctpOutput.OutgoingStreamsReset -> onOutgoingStreamsReset(output.scope, output.outcome)
+                // An observation the association has already applied — nothing here has to act on it. It
+                // is recorded so a fixture and the session layer can see a black-holed MTU, which is
+                // otherwise indistinguishable from a peer that stopped acknowledging.
+                is SctpOutput.PathMtuChanged -> onPathMtuChanged(output)
             }
         }
         flushReciprocalResets()
+        flushOpensAwaitingCapacity()
+    }
+
+    // Retry every open parked for want of stream ids, now that the association has more. A retry that still
+    // finds none re-parks — and, being the first to park again, issues the next request — so a peer that
+    // grants less than was asked for converges rather than spinning.
+    private fun flushOpensAwaitingCapacity() {
+        if (!capacityGrew) return
+        capacityGrew = false
+        val waiting = opensAwaitingCapacity.toList()
+        // Cleared BEFORE re-dispatching, so a re-park starts from an empty queue and reads as the first
+        // one — the same discipline flushReciprocalResets uses for the same re-entrancy reason.
+        opensAwaitingCapacity.clear()
+        for (command in waiting) dispatchOpen(command)
+    }
+
+    // The growth request came back refused, so every open waiting on it is answered with what the peer
+    // said. `Performed` is not handled here: the capacity change that came with it already released them.
+    private fun onOutgoingStreamsAdded(outcome: StreamAddOutcome) {
+        when (outcome) {
+            StreamAddOutcome.Performed -> Unit
+            is StreamAddOutcome.NotAdded -> {
+                val waiting = opensAwaitingCapacity.toList()
+                opensAwaitingCapacity.clear()
+                for (command in waiting) refuseOpen(command, DataChannelOpenRefusal.PeerWouldNotAddStreams(outcome))
+            }
+        }
     }
 
     // `outbound` is UNLIMITED so this only fails once it is CLOSED — i.e. the stack has torn down and the
@@ -456,7 +764,7 @@ public class SctpDataChannelStack(
                 connection.closeLocal()
                 reciprocalResets += streamId
             }
-            noteResetHalf(streamId, ResetHalf.Peers)
+            streamIds.noteResetHalf(streamId, ResetHalf.Peers)
         }
     }
 
@@ -466,25 +774,11 @@ public class SctpDataChannelStack(
     ) {
         for (streamId in scope.resolve()) {
             when (outcome) {
-                StreamResetOutcome.Performed -> noteResetHalf(streamId, ResetHalf.Ours)
+                StreamResetOutcome.Performed -> streamIds.noteResetHalf(streamId, ResetHalf.Ours)
                 // The peer refused, or cannot reset at all. It still holds SSN state for the stream, so the
                 // channel is closed locally (already done) but the id is spent for the rest of the session.
-                is StreamResetOutcome.Refused, StreamResetOutcome.Unsupported -> resetHalves.remove(streamId)
+                is StreamResetOutcome.Refused, StreamResetOutcome.Unsupported -> streamIds.burn(streamId)
             }
-        }
-    }
-
-    // Record one direction of a channel's close; when both have landed the id is free to open again.
-    private fun noteResetHalf(
-        streamId: StreamId,
-        half: ResetHalf,
-    ) {
-        val seen = resetHalves.put(streamId, half)
-        if (seen != null && seen != half) {
-            resetHalves.remove(streamId)
-            // Only ids of OUR parity are ours to hand out again (RFC 8832 §6) — a peer-opened stream is
-            // the peer's to reuse, and claiming it would collide with its next open.
-            if (!streamIsPeerParity(streamId)) reusableStreamIds.addLast(streamId)
         }
     }
 
@@ -501,9 +795,14 @@ public class SctpDataChannelStack(
     // one already half-closed, since both are ids whose reset bookkeeping is still live.
     private fun StreamResetScope.resolve(): Collection<StreamId> =
         when (this) {
-            StreamResetScope.AllStreams -> channels.keys + resetHalves.keys
+            StreamResetScope.AllStreams -> channels.keys + streamIds.liveIds
             is StreamResetScope.Streams -> ids
         }
+
+    private fun onPathMtuChanged(change: SctpOutput.PathMtuChanged) {
+        pathMtuHistory.addLast(change)
+        while (pathMtuHistory.size > MAX_PATH_MTU_HISTORY) pathMtuHistory.removeFirst()
+    }
 
     private fun onStateChanged(state: SctpAssociationState) {
         _state.value = state
@@ -522,53 +821,76 @@ public class SctpDataChannelStack(
             // A DCEP message is decoded and acted on inside this call and nothing keeps a view of it, so
             // this is its last reader. The reassembly copy it rides in came from SctpConfig.bufferFactory
             // like any other (MessageReceived.payload is a transfer), and DCEP is the one class of message
-            // no application ever sees — which is exactly why nothing else could free it.
+            // no application ever sees — which is exactly why nothing else could free it. Its bytes were
+            // charged to the receive window like every other message's, so the release gives both back.
             try {
                 onDcep(message)
             } finally {
-                message.payload.freeIfNeeded()
+                relinquish(message.payload, message.receipt)
             }
             return
         }
-        // RFC 8831 §6.6's empty-message marker: the wire carries one 0x00 that is stripped back to nothing
-        // here. That byte is still a reassembly buffer, and substituting EMPTY_BUFFER for it drops the only
-        // reference to it — so it is released rather than merely replaced.
-        val payload =
-            when (val inbound = payloadFor(message.payloadProtocolId, message.payload)) {
+        val delivery =
+            when (val inbound = payloadFor(message)) {
                 is InboundMessage.Discarded -> {
-                    // The buffer is already released by payloadFor; a discarded message is never delivered,
-                    // and never fabricated into an empty one either. Counted so a fixture — and, once the
-                    // session layer carries it, a SessionDiagnostic — can see that it happened.
+                    // The buffer and the window space are already given back by payloadFor; a discarded
+                    // message is never delivered, and never fabricated into an empty one either. Counted so
+                    // a fixture — and, once the session layer carries it, a SessionDiagnostic — can see it.
                     discardedInbound += 1
                     return
                 }
-                is InboundMessage.Deliver -> inbound.payload
+                is InboundMessage.Deliver -> inbound.delivery
             }
         val connection = channels[message.streamId]
         if (connection != null) {
-            connection.deliver(payload)
+            connection.deliver(delivery)
         } else {
             // User data (an unordered first message) beat its ordered DCEP OPEN — hold it, bounded, until
             // the OPEN registers the channel; drop beyond the cap (a peer sending data on a stream it
-            // never OPENs). Dropping means releasing: past the cap this is the message's last reader.
+            // never OPENs). Dropping means releasing AND crediting: past the cap this is the last reader.
             val queue = pendingInbound.getOrPut(message.streamId) { ArrayDeque() }
-            if (queue.size < MAX_PENDING_INBOUND) {
-                queue.addLast(PendingInbound(payload))
-            } else {
-                payload.release()
-            }
+            if (queue.size < MAX_PENDING_INBOUND) queue.addLast(delivery) else delivery.discard(this)
         }
+    }
+
+    /**
+     * Hand one message's reassembly buffer and its receive-window charge back together (RFC 4960 §3.3.2).
+     *
+     * The pairing is the point — see [InboundDelivery]. This is the shape used where the message never
+     * becomes an [InboundDelivery] at all: DCEP, which no application sees, and the two decode paths in
+     * [payloadFor] that consume the buffer before a delivery exists.
+     */
+    private fun relinquish(
+        buffer: ReadBuffer,
+        receipt: DeliveryReceipt,
+    ) {
+        buffer.freeIfNeeded()
+        creditDelivery(receipt)
+    }
+
+    /**
+     * Tell the association the upper layer has finished with a delivered message.
+     *
+     * Posted rather than applied, even from the drive loop itself: `association.handle` is only ever called
+     * from one place, and a credit emitted from inside `apply` — which is where most of these come from —
+     * would re-enter it mid-output-list. The window-reopening SACK it can produce then rides out as an
+     * ordinary drive-loop item, behind the packets already queued. Best-effort on a torn-down stack, where
+     * `association.close()` has already dropped every outstanding charge.
+     */
+    internal fun creditDelivery(receipt: DeliveryReceipt) {
+        if (closed) return
+        inbox.trySend(DriveItem.Command(MessageConsumedCommand(receipt)))
     }
 
     private fun onDcep(message: SctpOutput.MessageReceived) {
         when (val decoded = (DataChannelMessage.decode(message.payload) as? DataChannelDecodeResult.Success)?.message) {
             is DataChannelMessage.Open -> {
-                // RFC 8832 §6: the peer owns the opposite stream-id parity. Reject an OPEN on our own
-                // parity (a misbehaving/duplicate peer OPEN would otherwise overwrite a local channel),
-                // and reject a duplicate OPEN on an already-registered stream.
-                if (streamIsPeerParity(message.streamId) && message.streamId !in channels) {
-                    val config = configOf(decoded)
-                    registerChannel(message.streamId, config, incoming = true)
+                when (val admission = admitInboundOpen(message.streamId)) {
+                    InboundOpenAdmission.Admit -> {
+                        streamIds.adoptPeerOpen(message.streamId)
+                        registerChannel(message.streamId, configOf(decoded), ChannelProvenance.PeerInBand)
+                    }
+                    is InboundOpenAdmission.Decline -> declinedOpens[admission.reason] = declinedInboundOpens(admission.reason) + 1
                 }
                 // Always ACK a (re-)OPEN so a peer whose ACK was lost converges.
                 sendOnStream(
@@ -584,25 +906,52 @@ public class SctpDataChannelStack(
         }
     }
 
-    // Whether [streamId] carries the PEER's parity (RFC 8832 §6): a Client peer uses even ids, a Server
-    // peer odd — i.e. the opposite of our own role's parity.
-    private fun streamIsPeerParity(streamId: StreamId): Boolean {
-        val even = streamId.value % 2 == 0
-        return if (role == SctpRole.Client) !even else even
-    }
+    /**
+     * Whether a peer's DCEP OPEN may register a channel on [streamId] (RFC 8832 §6).
+     *
+     * The third refusal is the one that could not be expressed before. `streamIsPeerParity(id) && id !in
+     * channels` is TRUE for an id the application reserved out of band but has not yet registered, so the
+     * peer's stray OPEN would take it, publish an in-band channel on `accept`, and the application's own
+     * negotiated open would then fail `StreamIdInUse` for a reason nothing reported. The ledger is what
+     * can see that reservation; the routing map cannot, because a reserved channel is not in it yet.
+     */
+    private fun admitInboundOpen(streamId: StreamId): InboundOpenAdmission =
+        when {
+            streamIds.parityOf(streamId) == StreamParity.Ours -> InboundOpenAdmission.Decline(InboundOpenDecline.OurParity)
+            // The ledger is asked BEFORE the routing map, because it is the only one that can see an id
+            // the application has reserved but whose channel has not been dispatched yet — and because
+            // "the application owns this id" is a sharper answer than "something is already here" even
+            // once it has been.
+            (streamIds.stateOf(streamId) as? StreamIdState.Claimed)?.origin == ChannelProvenance.OutOfBand ->
+                InboundOpenAdmission.Decline(InboundOpenDecline.ReservedOutOfBand)
+            streamId in channels -> InboundOpenAdmission.Decline(InboundOpenDecline.AlreadyOpen)
+            else -> InboundOpenAdmission.Admit
+        }
 
+    /**
+     * Register a channel on [streamId]. [provenance] decides the two things that used to be independent
+     * Booleans: whether the channel is published to `accept`, and whether user data on it is forced
+     * ordered until the peer answers (RFC 8832 §6). Only a channel WE opened in band is both unpublished
+     * and force-ordered, and only a peer-opened one is published — a combination two flags could express
+     * wrongly and this cannot.
+     */
     private fun registerChannel(
         streamId: StreamId,
         config: DataChannelConfig,
-        incoming: Boolean,
+        provenance: ChannelProvenance,
     ): DataChannelConnection {
         val connection = DataChannelConnection(streamId, config, this)
         channels[streamId] = connection
-        // Flush any user data that arrived before this OPEN, in arrival order.
-        pendingInbound.remove(streamId)?.forEach { held ->
-            connection.deliver(held.payload)
+        if (provenance == ChannelProvenance.LocalInBand) unconfirmedOutbound += streamId
+        // Flush any user data that arrived before this registration, in arrival order. Each carries its own
+        // receipt onward, so the credit still happens where the application finishes with it.
+        pendingInbound.remove(streamId)?.forEach { held -> connection.deliver(held) }
+        when (provenance) {
+            ChannelProvenance.PeerInBand -> accepted.trySend(connection)
+            // Nothing is sent or expected out of band, so there is no DCEP OPEN to keep first on the wire
+            // and nobody to publish it to — the application that named the id already holds the channel.
+            ChannelProvenance.LocalInBand, ChannelProvenance.OutOfBand -> Unit
         }
-        if (incoming) accepted.trySend(connection)
         return connection
     }
 
@@ -629,6 +978,11 @@ public class SctpDataChannelStack(
             }
         }
 
+        // The size the RFC 8841 §6 gate measures, taken from the MESSAGE rather than from its encoding:
+        // an empty one rides a marker byte the peer's ceiling does not count, and this is the same number
+        // a caller can pre-check with `DataChannelPayload.wireByteCount`. That it equals what the encoder
+        // actually wrote for a Text is asserted, not assumed — see Utf8ByteCountTest.
+        val wireByteCount = message.wireByteCount
         val empty = encoded.remaining() == 0
         val ppid =
             when (message) {
@@ -643,7 +997,7 @@ public class SctpDataChannelStack(
         val deferred = CompletableDeferred<Unit>()
         val options = SctpSendOptions(streamId, ppid, delivery = config.delivery, reliability = config.reliability)
         try {
-            post(SendCommand(options, payload, deferred))
+            post(SendCommand(options, payload, wireByteCount, deferred))
             deferred.await()
         } finally {
             // By the time the deferred settles — completed or failed — the association has either encoded
@@ -674,7 +1028,10 @@ public class SctpDataChannelStack(
     ) {
         val options = SctpSendOptions(streamId, ppid, delivery = config.delivery, reliability = config.reliability)
         val deferred = CompletableDeferred<Unit>()
-        post(SendCommand(options, payload, deferred))
+        // No `DataChannelPayload` to ask, so the buffer IS the message here — which is exact, since this
+        // seam never carries the empty-message marker. It is still gated: a fixture standing in for a
+        // non-conforming peer must not be able to walk around the peer's ceiling either.
+        post(SendCommand(options, payload, payload.remaining().toLong(), deferred))
         deferred.await()
     }
 
@@ -690,7 +1047,14 @@ public class SctpDataChannelStack(
     }
 
     /**
-     * The typed message a received PPID denotes (RFC 8831 §6.6), taking ownership of [buffer].
+     * The typed message a received PPID denotes (RFC 8831 §6.6), taking ownership of [message]'s buffer
+     * **and** of its receive-window charge.
+     *
+     * Both duties are discharged in the same three lines wherever the buffer stops being a buffer: the
+     * empty marker's byte and a decoded string's bytes are released here, and their window space goes back
+     * with them (see [relinquish]). What comes out the other side either still owes a receipt
+     * ([InboundDelivery.Metered]) or does not ([InboundDelivery.Unmetered]) — and no third state, where
+     * the buffer is gone and the charge is still standing, is expressible.
      *
      * The deprecated "partial" PPIDs 54/55 map to their complete counterparts: they exist only for
      * pre-RFC-8831 implementations that fragmented above SCTP, and our reassembly has already delivered a
@@ -698,35 +1062,40 @@ public class SctpDataChannelStack(
      * here. An unrecognised PPID is delivered as [DataChannelPayload.Binary] rather than dropped — a peer
      * using a PPID we do not model still sent bytes the application may understand.
      */
-    private fun payloadFor(
-        ppid: PayloadProtocolId,
-        buffer: ReadBuffer,
-    ): InboundMessage {
+    private fun payloadFor(message: SctpOutput.MessageReceived): InboundMessage {
+        val ppid = message.payloadProtocolId
+        val buffer = message.payload
         // The empty markers carry one 0x00 that is stripped back to nothing. That byte is still a
-        // reassembly buffer, so it is released here rather than merely dropped on the floor.
+        // reassembly buffer, so it is released here rather than merely dropped on the floor — and the
+        // window space it was holding is returned with it, which is what leaves the payload Unmetered.
         if (isEmptyPpid(ppid)) {
-            buffer.freeIfNeeded()
+            relinquish(buffer, message.receipt)
             val emptyPayload =
                 if (ppid == PayloadProtocolId.WebRtcStringEmpty) {
                     DataChannelPayload.Text("")
                 } else {
                     DataChannelPayload.Binary(ReadBuffer.EMPTY_BUFFER)
                 }
-            return InboundMessage.Deliver(emptyPayload)
+            return InboundMessage.Deliver(InboundDelivery.Unmetered(emptyPayload))
         }
         val isText = ppid == PayloadProtocolId.WebRtcString || ppid == PayloadProtocolId.WebRtcStringPartial
-        if (!isText) return InboundMessage.Deliver(DataChannelPayload.Binary(buffer))
+        // A Binary's buffer IS the reassembly copy and travels to the application, so its charge travels
+        // with it and is credited when the collector is done.
+        if (!isText) return InboundMessage.Deliver(InboundDelivery.Metered(DataChannelPayload.Binary(buffer), message.receipt))
 
         // RFC 8831 §6.6 requires a string message to be UTF-8, but a peer is not obliged to be correct.
         // Decoding is the only place this stack parses attacker-supplied bytes into a higher type, so a
         // failure is contained here and reported as a typed discard — never a throw into the drive loop
         // (T0 discipline), which would take the whole association down with it.
+        //
+        // Either way the buffer is spent here: a decoded Text owns no buffer, and a malformed one is
+        // dropped. So both arms relinquish, and what they hand on is Unmetered.
         return try {
             val text = buffer.readString(buffer.remaining(), Charset.UTF8)
-            buffer.freeIfNeeded()
-            InboundMessage.Deliver(DataChannelPayload.Text(text))
+            relinquish(buffer, message.receipt)
+            InboundMessage.Deliver(InboundDelivery.Unmetered(DataChannelPayload.Text(text)))
         } catch (_: Throwable) {
-            buffer.freeIfNeeded()
+            relinquish(buffer, message.receipt)
             InboundMessage.Discarded(InboundDiscardReason.MalformedUtf8)
         }
     }
@@ -752,7 +1121,11 @@ public class SctpDataChannelStack(
         reliability: SctpReliability,
         payload: ReadBuffer,
     ) {
-        val options = SctpSendOptions(streamId, ppid, delivery = delivery, reliability = reliability)
+        // RFC 8832's OPEN and ACK are this stack's own traffic on the application's stream, so they are
+        // queued and retransmitted like anything else and are deliberately NOT counted by `bufferedAmount`
+        // — see SendOrigin. This is the only place in the module that says Control.
+        val options =
+            SctpSendOptions(streamId, ppid, delivery = delivery, reliability = reliability, origin = SendOrigin.Control)
         try {
             apply(association.handle(SctpEvent.SendMessage(options, payload), now()))
         } finally {
@@ -775,15 +1148,18 @@ public class SctpDataChannelStack(
         // touched: closing a channel's flow still emits what is buffered in it, so those messages are the
         // application's (see DataChannelConnection.receive), and draining them here would steal them.
         for (queue in pendingInbound.values) {
-            for (held in queue) held.payload.release()
+            for (held in queue) held.discard(this)
         }
         pendingInbound.clear()
         unconfirmedOutbound.clear()
-        resetHalves.clear()
-        reusableStreamIds.clear()
+        streamIds.clear()
         reciprocalResets.clear()
         for (command in pendingOpens) command.deferred.completeExceptionally(cause)
         pendingOpens.clear()
+        // …and the ones waiting on a stream-count increase that will now never be answered. Same leak,
+        // different queue: a caller suspended on an open the drive loop will never reach stays suspended.
+        for (command in opensAwaitingCapacity) command.deferred.completeExceptionally(cause)
+        opensAwaitingCapacity.clear()
         accepted.close()
         // Everything the association still owns — the retransmission queue, unsent messages, the retained
         // COOKIE ECHO, the reassembly state. Queued rather than freed on the spot, and queued BEFORE the
@@ -822,7 +1198,14 @@ public class SctpDataChannelStack(
         when (command) {
             is OpenCommand -> command.deferred.completeExceptionally(cause)
             is SendCommand -> command.deferred.completeExceptionally(cause)
-            is CloseChannelCommand, ShutdownCommand -> Unit
+            // A credit that never reaches the association is not a lost resource: `association.close()`
+            // drops every outstanding charge whole, so the window it would have reopened no longer exists.
+            is CloseChannelCommand,
+            is PeerMessageLimitCommand,
+            is MessageConsumedCommand,
+            ShutdownCommand,
+            is PathChangedCommand,
+            -> Unit
         }
     }
 
@@ -914,6 +1297,10 @@ public class SctpDataChannelStack(
         // Cap on user messages buffered per stream before its DCEP OPEN arrives — bounds a peer that
         // sends data on a stream it never OPENs (see pendingInbound / onMessage).
         private const val MAX_PENDING_INBOUND = 64
+
+        // How many RFC 8899 ceiling changes stay observable. A search converges in a handful of probes,
+        // so this holds several whole searches while staying bounded on a session that lives for days.
+        private const val MAX_PATH_MTU_HISTORY = 32
     }
 }
 
@@ -925,14 +1312,43 @@ internal class OpenCommand(
     val deferred: CompletableDeferred<DataChannelConnection>,
 ) : Command
 
+/**
+ * One user message on its way to the association.
+ *
+ * [wireByteCount] rides along rather than being re-derived on the drive loop, and it is deliberately not
+ * `payload.remaining()`: an EMPTY message travels as RFC 8831 §6.6's single `0x00` marker byte, so the
+ * buffer's own length would say one where the message is zero. It is the *message's* size — what
+ * `a=max-message-size` bounds — measured once, by the caller, from the payload it was handed.
+ */
 internal class SendCommand(
     val options: SctpSendOptions,
     val payload: ReadBuffer,
+    val wireByteCount: Long,
     val deferred: CompletableDeferred<Unit>,
 ) : Command
 
 internal class CloseChannelCommand(
     val streamId: StreamId,
+) : Command
+
+/** The lower layer named the path, or moved it — RFC 8261 §6.1; see [SctpDataChannelStack.pathChanged]. */
+internal class PathChangedCommand(
+    val profile: SctpPathProfile.Assessed,
+) : Command
+
+/** The peer's `a=max-message-size` (RFC 8841 §6), delivered to the drive loop that gates sends on it. */
+internal class PeerMessageLimitCommand(
+    val limit: PeerMessageLimit,
+) : Command
+
+/**
+ * The upper layer finished with a delivered message — return its receive-window space (RFC 4960 §3.3.2).
+ *
+ * A command like every other input, so `association.handle` stays called from exactly one place: most of
+ * these originate inside `apply`, and applying them there would re-enter it mid-output-list.
+ */
+internal class MessageConsumedCommand(
+    val receipt: DeliveryReceipt,
 ) : Command
 
 internal data object ShutdownCommand : Command
@@ -952,7 +1368,7 @@ internal enum class ResetHalf {
 }
 
 /**
- * What one received DATA message decoded to: a payload to deliver, or a typed refusal.
+ * What one received DATA message decoded to: a delivery to route, or a typed refusal.
  *
  * Decoding a `WebRTC String` is the only place this stack turns attacker-supplied bytes into a higher
  * type, so it is the only place that can fail — and it must fail as a value, not as a throw into the
@@ -960,12 +1376,47 @@ internal enum class ResetHalf {
  */
 internal sealed interface InboundMessage {
     data class Deliver(
-        val payload: DataChannelPayload,
+        val delivery: InboundDelivery,
     ) : InboundMessage
 
     data class Discarded(
         val reason: InboundDiscardReason,
     ) : InboundMessage
+}
+
+/**
+ * Whether a peer's DCEP OPEN may register a channel here (RFC 8832 §6). A sealed decision rather than the
+ * two-predicate `if` it replaces, because the third case — an id the application reserved out of band —
+ * is invisible to both of those predicates and was therefore silently admitted.
+ */
+internal sealed interface InboundOpenAdmission {
+    /** Register the channel and publish it on `accept`. */
+    data object Admit : InboundOpenAdmission
+
+    /** Do not register it; [reason] says why. The OPEN is still acknowledged, so a lost ACK converges. */
+    data class Decline(
+        val reason: InboundOpenDecline,
+    ) : InboundOpenAdmission
+}
+
+/** Why a peer's DCEP OPEN was not registered. */
+internal sealed interface InboundOpenDecline {
+    /**
+     * The id is of **our** parity (RFC 8832 §6), so it is not the peer's to open on. Admitting it would
+     * let a misbehaving or duplicated peer OPEN overwrite a local channel.
+     */
+    data object OurParity : InboundOpenDecline
+
+    /** A channel is already registered here — the ordinary retransmitted-OPEN case. */
+    data object AlreadyOpen : InboundOpenDecline
+
+    /**
+     * The application reserved this id for a negotiated channel (RFC 8832 §5) and has not registered it
+     * yet, so neither the parity test nor the routing map can see it. Admitting the OPEN would publish an
+     * in-band channel on `accept` for a stream the application already owns, and the application's own
+     * open would then fail as "in use" for a reason nothing reported.
+     */
+    data object ReservedOutOfBand : InboundOpenDecline
 }
 
 /** Why a received message could not be delivered. */
@@ -974,10 +1425,71 @@ internal sealed interface InboundDiscardReason {
     data object MalformedUtf8 : InboundDiscardReason
 }
 
-// One inbound user message held until its channel's DCEP OPEN registers the stream (see pendingInbound).
-internal class PendingInbound(
-    val payload: DataChannelPayload,
-)
+/**
+ * One inbound message on its way to an application, and whether the association's receive window is still
+ * holding space for it.
+ *
+ * Two duties travel with a received message and they are easy to separate by accident: the reassembly
+ * buffer has to be released, and the [DeliveryReceipt] has to go back (RFC 4960 §3.3.2). They are
+ * discharged at six different places in this file — delivered, held for an unopened stream, dropped past
+ * the hold cap, dropped when the stream is forgotten, dropped at teardown, and consumed by the collector —
+ * and forgetting the credit at any one of them shrinks the advertised window permanently, with nothing
+ * observable until a long session stalls.
+ *
+ * So [discard] does **both**, and is the only way a message that nobody consumes leaves this stack.
+ * Forgetting the credit now means forgetting the release, and an unreleased reassembly buffer is caught by
+ * the `assertPoolDrained` gate the seam-ownership fixtures already run. An invisible bug class becomes one
+ * an existing gate catches.
+ */
+internal sealed interface InboundDelivery {
+    val payload: DataChannelPayload
+
+    /** Charged to the association's receive window; [receipt] has to go back exactly once. */
+    class Metered(
+        override val payload: DataChannelPayload,
+        val receipt: DeliveryReceipt,
+    ) : InboundDelivery
+
+    /**
+     * Nothing is charged for this one, because its charge was already returned where its buffer was.
+     *
+     * The producer is RFC 8831 §6.6's empty message: it rides one `0x00` marker byte that is stripped at
+     * decode, and the buffer holding that byte is released there — so the window space it was holding is
+     * returned there too, rather than being owed by a payload that no longer references anything.
+     */
+    class Unmetered(
+        override val payload: DataChannelPayload,
+    ) : InboundDelivery
+}
+
+/**
+ * Give back the buffer **and** the receive-window space — the only way a message nobody consumes leaves.
+ *
+ * See [InboundDelivery] for why the two are one call. The payload is released first so that a credit which
+ * races a teardown cannot leave the buffer behind.
+ */
+internal fun InboundDelivery.discard(stack: SctpDataChannelStack) {
+    payload.release()
+    creditTo(stack)
+}
+
+/**
+ * Give back the receive-window space only — for a message the application **has** consumed, whose buffer
+ * was transferred to it and is therefore not this stack's to release (see `DataChannelConnection.receive`).
+ *
+ * A separate name from [discard] rather than a Boolean, because a reader at either call site must not have
+ * to check whether the other one also frees.
+ */
+internal fun InboundDelivery.consumed(stack: SctpDataChannelStack) {
+    creditTo(stack)
+}
+
+private fun InboundDelivery.creditTo(stack: SctpDataChannelStack) {
+    when (this) {
+        is InboundDelivery.Metered -> stack.creditDelivery(receipt)
+        is InboundDelivery.Unmetered -> Unit
+    }
+}
 
 /**
  * Thrown to a caller awaiting [SctpDataChannelStack.open] / a channel `send` / `shutdown` when the stack
@@ -1007,19 +1519,30 @@ public class SctpClosedException(
  * `for (chunk in source) channel.send(chunk)` — is already flow-controlled, and a sender that outruns
  * the wire is throttled rather than buffered without bound.
  *
- * There is deliberately no `bufferedAmount` gauge and no low-water callback to subscribe to: the
- * suspension is the whole contract. If the association tears down while a caller is suspended, [send]
- * throws [SctpClosedException] — it never suspends forever.
+ * The suspension remains the whole contract for an ordinary producer loop. [bufferedAmount] and
+ * [awaitBufferedAmountLow] are there for the callers suspension cannot serve — a producer that must decide
+ * whether to produce at all this tick, and a multiplexer choosing which channel to feed — and neither
+ * replaces it. If the association tears down while a caller is suspended, [send] throws
+ * [SctpClosedException]; it never suspends forever.
  */
 public class DataChannelConnection internal constructor(
     internal val streamId: StreamId,
     public val config: DataChannelConfig,
     private val stack: SctpDataChannelStack,
-) : Connection<DataChannelPayload> {
-    private val inbound = Channel<DataChannelPayload>(Channel.UNLIMITED)
+) : BufferedDataChannel {
+    private val inbound = Channel<InboundDelivery>(Channel.UNLIMITED)
     private var open = true
+    private val _bufferedAmount = MutableStateFlow(BufferedAmount.ZERO)
 
     override val id: Long = streamId.value.toLong()
+
+    override val bufferedAmount: StateFlow<BufferedAmount> get() = _bufferedAmount
+
+    // Republished by the drive loop, which is the only place that may read the association. A projection,
+    // never a counter this class keeps: see [BufferedDataChannel.bufferedAmount].
+    internal fun publishBufferedAmount(bytes: Long) {
+        _bufferedAmount.value = BufferedAmount(bytes)
+    }
 
     override suspend fun send(message: DataChannelPayload) {
         check(open) { "data channel ${streamId.value} is closed" }
@@ -1035,8 +1558,32 @@ public class DataChannelConnection internal constructor(
      * Deliberately not drained on close: a closed channel's flow still emits what is already buffered in
      * it, so releasing those here would be taking messages the application can still legitimately read.
      * The corollary is that abandoning a channel with unread messages abandons their buffers too.
+     *
+     * **This is where receive-side flow control closes its loop.** The association's receive window keeps
+     * a message's bytes charged until the upper layer is finished with it (RFC 4960 §3.3.2), and "finished"
+     * is defined here as *the collector has had it* — the credit is posted after `emit`, never before. A
+     * collector that takes its time therefore paces the peer through the a_rwnd on every SACK, which is the
+     * only backpressure signal that reaches the far end at all; the `send()` suspension throttles the local
+     * application and says nothing to the peer.
+     *
+     * The credit is in a `finally` because the terminal operators that end a flow do so **through** `emit`:
+     * `first()` takes its value and then aborts the collection from inside the emit that delivered it, and
+     * `take(n)` does the same on the nth. Crediting only on a normal return would therefore skip the credit
+     * for exactly the two most common ways to read one message — the collector holds the payload, and the
+     * window silently keeps the space. Posting it on the way out covers both, and posting it on a genuine
+     * cancellation is harmless: at that point the flow is over, and whatever is still queued behind it is
+     * dropped with the channel.
      */
-    override fun receive(): Flow<DataChannelPayload> = inbound.receiveAsFlow()
+    override fun receive(): Flow<DataChannelPayload> =
+        flow {
+            for (delivery in inbound) {
+                try {
+                    emit(delivery.payload)
+                } finally {
+                    delivery.consumed(stack)
+                }
+            }
+        }
 
     /**
      * Close this data channel: stop delivering inbound messages, and reset the outgoing SCTP stream so
@@ -1049,12 +1596,16 @@ public class DataChannelConnection internal constructor(
         stack.closeChannel(streamId)
     }
 
-    internal fun deliver(payload: DataChannelPayload) {
-        inbound.trySend(payload)
+    internal fun deliver(delivery: InboundDelivery) {
+        inbound.trySend(delivery)
     }
 
     internal fun closeLocal() {
         open = false
         inbound.close()
+        // A closed channel has nothing left to drain — the association reclaims its unsent fragments at
+        // teardown — so anyone waiting on `awaitBufferedAmountLow` is released rather than stranded on a
+        // gauge that will never be republished again.
+        _bufferedAmount.value = BufferedAmount.ZERO
     }
 }

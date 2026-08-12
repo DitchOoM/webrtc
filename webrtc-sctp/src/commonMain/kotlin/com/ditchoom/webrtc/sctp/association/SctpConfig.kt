@@ -4,6 +4,8 @@ package com.ditchoom.webrtc.sctp.association
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
+import com.ditchoom.webrtc.sctp.TransportErrorDetection
+import com.ditchoom.webrtc.sctp.ZeroChecksumPolicy
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -58,4 +60,96 @@ public data class SctpConfig(
     public val sendBufferLowWaterBytes: Int = 512 * 1024,
     /** The buffer allocator for encoded packets and reassembly copies — inject a tracking factory in tests. */
     public val bufferFactory: BufferFactory = BufferFactory.Default,
-)
+    /**
+     * How far above [receiveWindowBytes] this endpoint still stores arriving DATA before invoking RFC 4960
+     * §6.2's want-of-buffer drop — the deliberate departure documented on [ReceiveOverrunWindows].
+     *
+     * It is a multiple of [receiveWindowBytes] rather than a byte count so that "the ceiling is below the
+     * window" is unconstructible: the multiplier's own `require(value >= 1)` makes the ceiling at least the
+     * window by construction, and no `init` block here has to restate it.
+     */
+    public val receiveOverrun: ReceiveOverrunWindows = ReceiveOverrunWindows.Default,
+    /**
+     * The largest user message this endpoint will reassemble (RFC 8841 §6). One value with two jobs: the
+     * session layer advertises it as `a=max-message-size`, and the reassembly queue refuses a peer's
+     * message that crosses it (RFC 4960 §3.3.7 ABORT, Protocol Violation).
+     *
+     * They must be the same number — advertising one ceiling and enforcing another is either a promise
+     * broken or a receive buffer the peer paces — so it is one knob rather than two.
+     */
+    public val receiveMessageLimit: ReceiveMessageLimit = ReceiveMessageLimit.Default,
+    /**
+     * What to do when a data channel needs a stream id past what RFC 4960 §5.1.1 negotiated — refuse the
+     * open, or ask the peer for more streams (RFC 6525 §4.5). See [StreamGrowthPolicy] for why the default
+     * is [StreamGrowthPolicy.Fixed].
+     */
+    public val streamGrowth: StreamGrowthPolicy = StreamGrowthPolicy.Fixed,
+    /**
+     * RFC 9653 zero checksum — how far the upper layer permits this association to go.
+     *
+     * The policy is only ever half the answer: what the association actually advertises and emits is this
+     * combined with what the transport underneath guarantees ([TransportErrorDetection]), and a transport
+     * that guarantees nothing collapses every setting here back to CRC32c. Defaults to
+     * [ZeroChecksumPolicy.Disabled] because the extension is an optimization, and a default that changes
+     * the bytes we put on the wire against every peer is not one a consumer asked for.
+     */
+    public val zeroChecksum: ZeroChecksumPolicy = ZeroChecksumPolicy.Disabled,
+    /**
+     * Whether this association measures the MTU of the path it rides (RFC 8899), or takes the address
+     * family's word for it. [PathMtuPolicy.Fixed] by default — see that type for why probing is opt-in.
+     *
+     * Either way, [maxPayloadBytes] stops being the whole story the moment a path is assessed: an
+     * *unprobed* family ceiling may only lower it (an assumption must not raise a configured size), while
+     * a *probe-confirmed* one supersedes it in both directions, because that is the measurement the caller
+     * asked for by choosing [PathMtuPolicy.Discover].
+     */
+    public val pathMtu: PathMtuPolicy = PathMtuPolicy.Fixed,
+) {
+    /**
+     * Two orderings this class only ever *documented*. Both are relations between two knobs, so neither
+     * field can defend itself and the type system cannot state them — a `Duration` cannot know about
+     * another `Duration`, and both inverted configs are perfectly constructible values whose damage
+     * appears much later, in a state machine, as behaviour rather than as an error.
+     *
+     * Inverting the water marks parks a sender that can never be woken: `send()` suspends at the high
+     * mark and resumes at the low one, so a low mark *above* the high one means the resume condition was
+     * already true when the park condition fired, and the drain that would signal it never runs. The
+     * association stays open and healthy, which is what makes it hard to read — it is a hang, not a
+     * failure, with no typed error to catch because nothing has gone wrong on the wire.
+     *
+     * Inverting the RTO bounds is quieter still. `rtoMin` is a floor and `rtoMax` a ceiling applied in
+     * that order, so `rtoMin > rtoMax` clamps every retransmission timeout to the floor and the
+     * exponential backoff in RFC 4960 §6.3.3 stops backing off — the association retransmits at a fixed
+     * fast cadence into a congested path, which is precisely the collapse the backoff exists to prevent.
+     * It still *works* on a good link, so a fixture that does not congest will not see it.
+     *
+     * Both are caller mistakes rather than peer behaviour, so they are `require` — the house rule that
+     * errors are typed and never stringly (directive #3) governs protocol outcomes, and a
+     * programming-error precondition is not one of those.
+     *
+     * The third is the same shape and arrived with receive-side flow control. A message the peer is *allowed*
+     * to send ([receiveMessageLimit]) must fit under the ceiling at which this endpoint starts dropping for
+     * want of buffer (`receiveWindowBytes × receiveOverrun`). Inverted, a legal message can never be
+     * assembled: every chunk past the ceiling is refused, the run never completes, its bytes are never
+     * released, and the window stays shut — a deadlock produced by two knobs that are individually
+     * reasonable, which is exactly the class the other two belong to. Only [ReceiveMessageLimit.Bytes] can
+     * be compared; [ReceiveMessageLimit.Unbounded] states no number and is the caller's decision to accept
+     * whatever the peer sends.
+     */
+    init {
+        require(sendBufferLowWaterBytes <= sendBufferHighWaterBytes) {
+            "sendBufferLowWaterBytes ($sendBufferLowWaterBytes) must be <= sendBufferHighWaterBytes " +
+                "($sendBufferHighWaterBytes); a low mark above the high one parks a sender that is never resumed"
+        }
+        require(rtoMin <= rtoMax) {
+            "rtoMin ($rtoMin) must be <= rtoMax ($rtoMax); an inverted pair clamps every RTO to the floor " +
+                "and defeats the RFC 4960 §6.3.3 backoff"
+        }
+        val overrunCeilingBytes = receiveWindowBytes.toLong() * receiveOverrun.value
+        require(receiveMessageLimit !is ReceiveMessageLimit.Bytes || receiveMessageLimit.value <= overrunCeilingBytes) {
+            "receiveMessageLimit (${(receiveMessageLimit as ReceiveMessageLimit.Bytes).value}) must be <= " +
+                "receiveWindowBytes × receiveOverrun ($overrunCeilingBytes); a message this endpoint permits " +
+                "but cannot buffer can never be reassembled, and the receive window never reopens"
+        }
+    }
+}

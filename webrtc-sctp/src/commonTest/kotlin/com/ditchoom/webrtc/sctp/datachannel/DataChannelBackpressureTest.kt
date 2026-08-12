@@ -126,9 +126,13 @@ class DataChannelBackpressureTest {
     }
 
     /**
-     * The core guarantee of the suspend-only design: once the association is behind, `send()` stops
-     * returning. A caller that can outrun the wire is throttled by the suspension itself — there is no
-     * bufferedAmount to poll and no callback to register.
+     * The core guarantee of the suspending send: once the association is behind, `send()` stops returning.
+     * A caller that can outrun the wire is throttled by the suspension itself, with nothing to poll and
+     * nothing to register.
+     *
+     * `BufferedDataChannel` has since added a gauge and a wait, and this fixture is what keeps them from
+     * being read as a replacement: the suspension is still the whole contract for a producer loop, and it
+     * still holds for a caller that never looks at `bufferedAmount`.
      */
     @Test
     fun send_suspends_once_the_send_buffer_is_full_and_resumes_when_it_drains() =

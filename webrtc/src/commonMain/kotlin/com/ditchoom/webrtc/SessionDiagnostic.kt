@@ -1,6 +1,7 @@
 package com.ditchoom.webrtc
 
 import com.ditchoom.webrtc.ice.CandidateDiscardReason
+import com.ditchoom.webrtc.ice.IceDataPath
 import com.ditchoom.webrtc.ice.InterfaceEnumerationFailure
 import com.ditchoom.webrtc.stun.StunErrorCode
 import com.ditchoom.webrtc.stun.TransportAddress
@@ -149,5 +150,37 @@ public sealed interface SessionDiagnostic {
          * the server's own and is diagnostic only.
          */
         public val error: StunErrorCode,
+    ) : SessionDiagnostic
+
+    /**
+     * Application data stopped riding one ICE path and started riding another — an RFC 8445 §9 restart
+     * that nominated a genuinely different pair, most often a Wi-Fi→cellular walk or a carrier switch.
+     * The SCTP association was told, and reset its congestion state, RTT estimate and retransmission
+     * error budget accordingly (RFC 8261 §6.1).
+     *
+     * **Non-fatal, and in fact the opposite:** this is the session surviving something that would
+     * otherwise have ended it. It is here rather than in [PeerConnectionState] because a migration is not
+     * a state — the session is `Connected` before and after, and the transition is instantaneous — while
+     * the throughput dip that follows a congestion reset is real and is otherwise unexplainable from
+     * outside. Without it, a session that quietly halves its rate after a network change looks identical
+     * to a session that met a congested link.
+     *
+     * **Emitted on a move, never on the first path.** Learning where data rides is not the path changing:
+     * a first nomination produces no diagnostic, so a count of these over a session is a count of actual
+     * migrations. Nor is it emitted when a restart merely *begins* — RFC 8445 §9 keeps data on the
+     * retained pair for the whole restart window, so the event lands when the new pair nominates and not
+     * one signal earlier.
+     *
+     * [IceDataPath] rather than [com.ditchoom.webrtc.ice.CandidatePair] is what both fields carry, and
+     * that is what makes the count trustworthy: pair identity reports two moves that are not moves (a
+     * restart re-gathering the same interface at a different ordinal, and a host pair superseded by a
+     * server-reflexive one over the same socket), and each would otherwise appear here as a migration
+     * that cost a healthy path its measurements. See that type.
+     */
+    public data class DataPathMigrated(
+        /** The transmit identity data was riding until now. */
+        public val from: IceDataPath,
+        /** The transmit identity it rides from now on. */
+        public val to: IceDataPath,
     ) : SessionDiagnostic
 }

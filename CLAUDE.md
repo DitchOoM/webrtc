@@ -36,10 +36,17 @@ it is unchanged between 4.2.0 and 4.4.0.
 Buffer rides ahead deliberately: 6.26.0 is the Apple AEAD ownership fix and #343 the Android X25519
 fix (both below), pure internal fixes with no API change, so resolving buffer up underneath a socket
 built against an older one is safe. **socket-udp 4.4.0's POM declares buffer 6.28.0** — the one version
-never to resolve to (below) — so the skew that used to name 6.25.0 is now a skew that names the poisoned
-number, and the only thing keeping it out of the graph is that our own pin is *higher* and Gradle
-resolves **up**. Verified rather than assumed: `:webrtc:dependencies` reports
-`com.ditchoom:buffer:6.28.0 -> 6.29.0`. Never let this repo's buffer pin fall to or below 6.28.0.
+never to resolve to (below) — so the skew that used to name 6.25.0 now names the poisoned number. Our
+own pin is higher and Gradle resolves **up**, verified rather than assumed: `:webrtc:dependencies`
+reports `com.ditchoom:buffer:6.28.0 -> 6.29.0`.
+
+Do not read that as "socket can break Android X25519", which an earlier revision of this line implied.
+It cannot: #343 lives in **`buffer-crypto`**, and socket declares only `buffer`, `buffer-flow` and
+`buffer-codec` — never `buffer-crypto` — so its POM can pin buffer *core* low and nothing else. The
+upstream bump is hygiene, not a live break. **The rule that is load-bearing is about OUR pin**, because
+`libs.versions.toml` drives `buffer-crypto` off the same `buffer` version ref: set that ref to 6.28.0
+and buffer-crypto goes to 6.28.0 with it, and Android X25519 breaks. Never let this repo's buffer pin
+fall to or below 6.28.0.
 
 **6.28.0 is the one buffer version in this line to never resolve to**, and the reason is worth keeping
 even though the pin no longer depends on it. For one night the highest number was not the newest

@@ -859,9 +859,47 @@ public class SctpAssociation(
         out: MutableList<SctpOutput>,
     ) {
         val reassembly = tcb.liveOrElse { return }.reassembly
-        for (message in reassembly.receive(chunk)) {
-            out += SctpOutput.MessageReceived(message.streamId, message.ppid, message.unordered, message.payload)
+        when (val ingest = reassembly.receive(chunk)) {
+            is ChunkIngest.Delivered ->
+                for (message in ingest.messages) {
+                    out += SctpOutput.MessageReceived(message.streamId, message.ppid, message.unordered, message.payload)
+                }
+            // The peer is sending a message larger than we advertised we would take (RFC 8841 §6), which
+            // RFC 8831 §6.6 forbids. Nothing was stored, so there is no partial message to release —
+            // `fail` below drains the rest — and nothing further in this packet is processed, because
+            // every remaining handler unwraps the TCB this tears down.
+            is ChunkIngest.MessageTooLarge -> abortOversizedMessage(ingest, out)
         }
+    }
+
+    /**
+     * ABORT because the peer overran the ceiling we advertised (RFC 4960 §3.3.7 with a §3.3.10 Protocol
+     * Violation cause, code 13).
+     *
+     * Not [abortWith]: that one reflects the peer's own tag (T bit set), which is what an endpoint with
+     * no TCB must do. Here there is a live association, so the ABORT carries the peer's verification tag
+     * in the header with T clear — an out-of-the-blue-shaped ABORT from an association that exists would
+     * be discarded by a correct peer's RFC 4960 §8.5.1 checks, and the peer would keep sending.
+     *
+     * The cause carries no cause-specific text. RFC 4960 §3.3.10.13 permits some, but a string is a
+     * diagnostic and never a discriminant (directive #3) — everything actionable is already in the typed
+     * [SctpFailureReason.PeerMessageTooLarge] this endpoint reports upward.
+     */
+    private fun abortOversizedMessage(
+        ingest: ChunkIngest.MessageTooLarge,
+        out: MutableList<SctpOutput>,
+    ) {
+        emitPacket(
+            listOf(
+                SctpChunk.Abort(
+                    verificationTagReflected = false,
+                    causes = listOf(SctpErrorCause.empty(ErrorCauseCode.ProtocolViolation)),
+                ),
+            ),
+            peerVerificationTag,
+            out,
+        )
+        fail(SctpFailureReason.PeerMessageTooLarge(ingest.streamId, ingest.ceilingBytes, ingest.observedBytes), out)
     }
 
     private fun onSack(

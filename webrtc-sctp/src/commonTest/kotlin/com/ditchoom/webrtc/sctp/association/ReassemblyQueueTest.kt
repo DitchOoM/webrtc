@@ -84,7 +84,7 @@ class ReassemblyQueueTest {
         val q = ReassemblyQueue(peerInitialTsn = Tsn(1u), config = SctpConfig())
         val begin = data(tsn = 1, streamId = StreamId(1), beginning = true, ending = false, unordered = true)
         val end = data(tsn = 2, streamId = StreamId(2), beginning = false, ending = true, unordered = true)
-        val delivered = q.receive(begin) + q.receive(end)
+        val delivered = q.delivered(begin) + q.delivered(end)
         assertEquals(0, delivered.size, "a stream-discontinuous B..E run is not assembled")
     }
 
@@ -94,13 +94,27 @@ class ReassemblyQueueTest {
     fun forward_tsn_drops_held_ordered_message_it_skips() {
         val q = ReassemblyQueue(peerInitialTsn = Tsn(1u), config = SctpConfig())
         // Deliver ordered ssn=1 first (held: we still expect ssn=0).
-        val held = q.receive(data(tsn = 2, ssn = 1))
+        val held = q.delivered(data(tsn = 2, ssn = 1))
         assertEquals(0, held.size, "ssn=1 is held while ssn=0 is missing")
         // Peer abandons ssn=0 and ssn=1: FORWARD-TSN to cum TSN 2, stream0 skip to ssn 1.
         val afterForward = q.onForwardTsn(Tsn(2u), listOf(ForwardTsnStream(stream0, StreamSequenceNumber(1u))))
         assertEquals(0, afterForward.size, "the skipped-over held message is dropped, not delivered")
         // A subsequent ssn=2 delivers immediately (expected advanced past the skip).
-        val next = q.receive(data(tsn = 3, ssn = 2))
+        val next = q.delivered(data(tsn = 3, ssn = 2))
         assertEquals(1, next.size, "delivery resumes at the SSN after the skip")
     }
 }
+
+/**
+ * Ingest a chunk that is expected to be accepted, and return what became deliverable.
+ *
+ * Every fixture in this file predates the RFC 8841 §6 receive ceiling and none of them approaches it, so
+ * a [ChunkIngest.MessageTooLarge] here is a defect in the accounting rather than a case under test — and
+ * it fails loudly instead of silently reading as "nothing became deliverable", which is what an
+ * `emptyList()` fallback would have made it.
+ */
+internal fun ReassemblyQueue.delivered(chunk: SctpChunk.Data): List<ReassembledMessage> =
+    when (val ingest = receive(chunk)) {
+        is ChunkIngest.Delivered -> ingest.messages
+        is ChunkIngest.MessageTooLarge -> throw AssertionError("unexpected receive-ceiling refusal: $ingest")
+    }

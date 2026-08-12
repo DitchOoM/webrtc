@@ -77,6 +77,9 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6.3.0
 
+      - name: Prime the Gradle distribution (retry a flaky CDN)
+        run: .ci/prime-gradle-distribution.sh
+
       # linuxArm64's BoringSSL is cross-compiled with the aarch64 GNU toolchain (webrtc-dtls'
       # buildBoringsslSslArm64); the runner doesn't ship it. linuxX64 uses the native gcc already present.
       - name: Install aarch64 cross-toolchain (linuxArm64 BoringSSL)

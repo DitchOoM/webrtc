@@ -77,6 +77,13 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6.3.0
 
+      # Primed on the HOST, before the emulator step: the emulator-runner's `script:` runs on the runner
+      # (not inside the AVD), so it inherits this same GRADLE_USER_HOME. Worth being explicit because
+      # that lane's own retry is `1/1` — the emulator boots once, and a wrapper fetch failing inside the
+      # script reads as "no emulator detected" three lines later, which is not what went wrong.
+      - name: Prime the Gradle distribution (retry a flaky CDN)
+        run: .ci/prime-gradle-distribution.sh
+
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules

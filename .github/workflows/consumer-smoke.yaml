@@ -124,6 +124,13 @@ jobs:
           set -euo pipefail
           guh="${RUNNER_TEMP}/consumer-smoke-gradle-home"
           rm -rf "$guh"
+          # Primed INSIDE this step, after the rm and against $guh rather than the default home, because
+          # `-g` redirects the WRAPPER's own distribution download and not merely the build's caches —
+          # measured, not assumed: priming a fresh throwaway home lands 163MB under $guh/wrapper/dists.
+          # So this lane re-downloads the full distribution every run and is the least protected of all
+          # of them, and priming the default home would not have covered it. Coldness is untouched:
+          # `--version` resolves no dependency and reads no build cache.
+          .ci/prime-gradle-distribution.sh "$guh"
           if [ "$SOURCE" = "maven-local" ]; then
             repo_arg="-PmavenRepoPath=/tmp/maven-local-merged"
           else

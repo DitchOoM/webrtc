@@ -1668,7 +1668,8 @@ public final class com/ditchoom/webrtc/ice/TieBreaker$Companion {
 }
 
 public final class com/ditchoom/webrtc/ice/TurnAllocation : com/ditchoom/buffer/flow/AddressedDatagramChannel {
-	public static final field TURN_OVERHEAD_BYTES I
+	public static final field V4_SEND_INDICATION_OVERHEAD_BYTES I
+	public static final field V6_SEND_INDICATION_OVERHEAD_BYTES I
 	public synthetic fun <init> (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Ljava/lang/String;Ljava/lang/String;Lkotlin/random/Random;Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/buffer/BufferFactory;Lcom/ditchoom/webrtc/ice/TurnMaintenance;JILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public synthetic fun <init> (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lcom/ditchoom/buffer/flow/SocketAddress;Ljava/lang/String;Ljava/lang/String;Lkotlin/random/Random;Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/buffer/BufferFactory;Lcom/ditchoom/webrtc/ice/TurnMaintenance;JLkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun allocate-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;

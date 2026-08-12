@@ -143,7 +143,29 @@ public class TurnAllocation(
     public val permissionRefused: Flow<TurnPermissionRefusal> get() = permissionRefusals.receiveAsFlow()
     override val capabilities: DatagramCapabilities get() = underlying.capabilities
     override val isOpen: Boolean get() = !closed && underlying.isOpen
-    override val maxWritableSize: Int get() = (underlying.maxWritableSize - TURN_OVERHEAD_BYTES).coerceAtLeast(0)
+    override val maxWritableSize: Int get() = (underlying.maxWritableSize - sendIndicationOverhead()).coerceAtLeast(0)
+
+    /**
+     * What one Send indication adds to a relayed payload (RFC 8656 §12.1), and so what [maxWritableSize]
+     * must hold back: the 20-byte STUN header, the XOR-PEER-ADDRESS attribute, the DATA attribute's TLV
+     * header, and the up-to-3 bytes padding DATA's value onto STUN's 32-bit attribute boundary (RFC 8489
+     * §14 — `ofRaw` copies into the *padded* value, so that padding is on the wire).
+     *
+     * **Family-dependent, which one constant could not be.** XOR-PEER-ADDRESS carries the peer's
+     * transport address — 4 bytes of it for IPv4, 16 for IPv6 — and TURN does not translate between
+     * families: [allocateRequest] asks for a relay matching the server's family, and a peer is reachable
+     * only from a relayed address of its own family, so the relayed address's family *is* the peer's.
+     * The fixed 40 this replaces was the IPv4 figure; on a v6 allocation it under-reserved by 12 bytes,
+     * so a caller writing exactly [maxWritableSize] built a datagram overrunning [underlying]'s ceiling.
+     *
+     * Before [allocate] answers there is no relayed address to read, and the conservative direction is
+     * the larger one: reserving the v6 cost cannot overrun a v4 path, while the reverse can.
+     */
+    private fun sendIndicationOverhead(): Int =
+        when (relayed?.family ?: AddressFamily.IPv6) {
+            AddressFamily.IPv4 -> V4_SEND_INDICATION_OVERHEAD_BYTES
+            AddressFamily.IPv6 -> V6_SEND_INDICATION_OVERHEAD_BYTES
+        }
 
     /**
      * Allocate a relayed transport address (RFC 8656 §7), retrying once with the server's REALM/NONCE if
@@ -822,7 +844,12 @@ public class TurnAllocation(
     }
 
     private companion object {
-        const val TURN_OVERHEAD_BYTES = 40 // Send-indication STUN header + XOR-PEER-ADDRESS + DATA TLV
+        // 20 STUN header + 12 XOR-PEER-ADDRESS (4 TLV + 4 reserved/family/port + 4 address)
+        // + 4 DATA TLV header + 3 worst-case DATA padding. See [sendIndicationOverhead].
+        const val V4_SEND_INDICATION_OVERHEAD_BYTES = 39
+
+        // The same with a 16-byte address in XOR-PEER-ADDRESS: 20 + 24 + 4 + 3.
+        const val V6_SEND_INDICATION_OVERHEAD_BYTES = 51
     }
 }
 

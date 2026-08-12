@@ -13,18 +13,28 @@ import com.ditchoom.buffer.ReadBuffer
 /**
  * The UTF-8 byte length of [s] without allocating an array. Signaling payloads (SDP + `candidate:` lines,
  * ICE ufrag/pwd) are ASCII in practice, so this equals `s.length` there; the multi-byte arms keep it
- * correct for any BMP text. Used to size the exact buffer and to write the length prefix before the bytes.
+ * correct for any text. Used to size the exact buffer and to write the length prefix before the bytes.
+ *
+ * The surrogate arm is load-bearing rather than defensive: [textBuffer] sets its buffer's limit from this
+ * count, so an over-count publishes uninitialised bytes past what `writeString` actually wrote. An
+ * astral-plane character (an emoji, say) is ONE code point encoding to four bytes but TWO `Char`s, so
+ * counting each half as three said six — two bytes of whatever the allocator last held.
  */
 internal fun utf8Len(s: String): Int {
     var n = 0
-    for (c in s) {
-        val code = c.code
-        n +=
-            when {
-                code < 0x80 -> 1
-                code < 0x800 -> 2
-                else -> 3
-            }
+    var i = 0
+    while (i < s.length) {
+        val code = s[i].code
+        val isHighSurrogate = code in 0xD800..0xDBFF
+        val pairedWithLow = isHighSurrogate && i + 1 < s.length && s[i + 1].code in 0xDC00..0xDFFF
+        when {
+            code < 0x80 -> { n += 1; i += 1 }
+            code < 0x800 -> { n += 2; i += 1 }
+            // A well-formed pair is one code point in four bytes. An UNPAIRED surrogate is not encodable
+            // at all; three is what a replacement character costs, which is what an encoder substitutes.
+            pairedWithLow -> { n += 4; i += 2 }
+            else -> { n += 3; i += 1 }
+        }
     }
     return n
 }

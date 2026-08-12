@@ -486,6 +486,18 @@ above) and a `gradle.properties`, and `include(":…")` it in `settings.gradle.k
 - Version is auto-derived from Maven Central metadata + the label bump.
 - Every published artifact (including `webrtc-testsuite`) goes through `validate-artifacts` from its
   first release.
+- **`Attempt 1/1 failed. Reason: …` is the Gradle WRAPPER, and it means "a retry loop bounded at one",
+  not "no retry".** Misreading that line cost a whole rebuild of the wrong fix. The wrapper fetches the
+  distribution itself and `gradle-wrapper.properties` takes `retries` (ADDITIONAL attempts — `retries=5`
+  logs `Attempt 1/6`) and `retryBackOffMs` (DOUBLING; measured 7s for 3+1000ms, 62s for 5+2000ms), now
+  pinned there. Configure it at the wrapper, never per lane: `./gradlew` is the only way anything here
+  invokes Gradle, so one file covers all 14 CI call sites, a laptop, and `consumer-smoke`'s throwaway
+  `GRADLE_USER_HOME` — where `-g` redirects the wrapper's OWN download (measured: 163MB lands under
+  `$guh/wrapper/dists`), which is why that lane refetched the whole distribution, unprotected, every run
+  and was the last one still failing. A per-lane shell step also buys a portability surface a properties
+  file cannot have: the deleted one died on macOS only, because runners ship **bash 3.2**, where
+  expanding an EMPTY array under `set -u` aborts. A dev Mac will not reproduce that — `#!/usr/bin/env
+  bash` finds Homebrew's 5.x while the runner gets `/bin/bash`.
 
 ## Source docs in sibling repos to consult
 

@@ -59,6 +59,32 @@ public sealed interface SctpEvent {
     /** Abort the association immediately (RFC 4960 §9.1): emit ABORT and close. */
     public data object Abort : SctpEvent
 
+    /**
+     * The layer below moved, or named itself for the first time — RFC 8261 §6.1: *"If the SCTP layer is
+     * notified about a path change by its lower layers, SCTP SHOULD retest the path MTU and reset the
+     * congestion state to the initial state."* **Nothing could say this before**, which is the gap this
+     * event closes: after an RFC 8445 §9 ICE restart moved the 5-tuple, the association carried the
+     * retired path's cwnd, ssthresh and SRTT, a T3 armed from a backed-off RTO, and a
+     * consecutive-error budget that a migration performed *because* the old path was failing had already
+     * half spent.
+     *
+     * **One event, not two.** "The path was assessed for the first time" and "the path migrated" are the
+     * same notification with different histories, and the association is the only party that knows which
+     * it is — it holds the previous [SctpPathProfile]. Splitting them would have made every driver
+     * responsible for a distinction it has to re-derive, and a driver that got it wrong would reset a
+     * healthy path's congestion state on the first packet of every session.
+     *
+     * [SctpPathProfile.Assessed.identity] is the whole discriminant. An identity equal to the current one
+     * is a re-statement — the profile is adopted and nothing is discarded — which is what lets a session
+     * layer republish on every ICE event without having to filter first.
+     *
+     * Delivering this is **optional**: an association that never receives one stays
+     * [SctpPathProfile.Unassessed] and behaves exactly as it did before the event existed.
+     */
+    public data class PathChanged(
+        public val path: SctpPathProfile.Assessed,
+    ) : SctpEvent
+
     /** The driver's timer reached [SctpAssociation.nextDeadline] — run every retransmit/SACK/timer due now. */
     public data object TimerFired : SctpEvent
 }

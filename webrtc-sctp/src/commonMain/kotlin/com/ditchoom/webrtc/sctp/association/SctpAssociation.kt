@@ -157,6 +157,35 @@ public class SctpAssociation(
      */
     private var ride: PathRide = PathRide.first(config)
 
+    /**
+     * What the layer below has said about the path it carries us on (RFC 8261 §6.1). [SctpPathProfile]
+     * for why this is sealed rather than a nullable, and [SctpEvent.PathChanged] for who sets it.
+     *
+     * Internal-readable for the same reason the verification tags are: no output carries the profile, so a
+     * fixture asserting that a re-statement was adopted without a reset has no other way to see it.
+     */
+    internal var pathProfile: SctpPathProfile = SctpPathProfile.Unassessed
+        private set
+
+    /**
+     * The largest user-data payload one DATA chunk may carry right now (RFC 4960 §6.9).
+     *
+     * Two ceilings, and the **smaller always wins**. `SctpConfig.maxPayloadBytes` is what the caller asked
+     * for and is honoured to the byte — a fixture that configures 40-byte fragments gets them whatever the
+     * path could carry. The path's own ceiling is what physics permits, and a path assessment may only
+     * *lower* the configured value, never raise it: raising it would put a fragment size on the wire that
+     * nobody configured, on the strength of an unprobed assumption about the link.
+     *
+     * With no profile this is `config.maxPayloadBytes` exactly, which is the behaviour that shipped before
+     * path events existed.
+     */
+    internal val fragmentCeiling: Int
+        get() =
+            when (val profile = pathProfile) {
+                SctpPathProfile.Unassessed -> config.maxPayloadBytes
+                is SctpPathProfile.Assessed -> minOf(config.maxPayloadBytes, profile.unprobedFragmentCeiling.value)
+            }
+
     // Retained handshake artifacts (rebuilt-identical retransmits).
     private var localInit: SctpChunk.Init? = null
     private var cookieEcho: SctpChunk.CookieEcho? = null
@@ -316,6 +345,7 @@ public class SctpAssociation(
             is SctpEvent.DatagramReceived -> onDatagram(event.payload, now, out)
             is SctpEvent.SendMessage -> onSendMessage(event, now, out)
             is SctpEvent.ResetStreams -> onResetStreams(event.scope, now, out)
+            is SctpEvent.PathChanged -> onPathChanged(event.path, now, out)
             SctpEvent.Shutdown -> onShutdownRequested(now, out)
             SctpEvent.Abort -> onAbortRequested(out)
             SctpEvent.TimerFired -> onTimers(now, out)
@@ -943,6 +973,59 @@ public class SctpAssociation(
         }
 
         if (rq.outstandingBytes > 0 && deadlines.t3 is Deadline.Unarmed) deadlines = deadlines.copy(t3 = Deadline.At(now + ride.rtt.rto))
+    }
+
+    // ────────────────────────────────── the path underneath ──────────────────────────────────
+
+    /**
+     * RFC 8261 §6.1: the lower layer says the path changed, so *"SCTP SHOULD retest the path MTU and reset
+     * the congestion state to the initial state"*.
+     *
+     * Three cases, decided by [PathIdentity] and nothing else:
+     *
+     * - **First assessment.** Adopt the profile and reset **nothing**. There was no previous path, so
+     *   there is no measurement describing one — and cwnd/SRTT at this point are the initial values a
+     *   reset would restore anyway. Resetting here would look harmless and would be: it is skipped
+     *   because "a path change resets measurements" and "learning what the path is resets measurements"
+     *   are different claims, and only the first is true.
+     * - **A re-statement** (the same identity). Adopt the profile — the family or the overhead may have
+     *   been recomputed — and reset nothing. This is what lets a session layer republish on every ICE
+     *   event without filtering, which is the difference between a fold it can get wrong and one it
+     *   cannot.
+     * - **A migration.** Everything measured describes a link that is gone: [PathRide.onNewPath] discards
+     *   cwnd, ssthresh, SRTT/RTTVAR and the RFC 4960 §8.1 consecutive-error budget as one value, and
+     *   advances the epoch so an ack for a chunk sent on the old path cannot contribute an RTT sample
+     *   spanning both networks.
+     *
+     * **T3 is disarmed here and re-armed by [trySend], deliberately.** The timer belongs to
+     * [AssociationDeadlines] — the one place every timer lives — rather than beside the measurements, so
+     * the migration does both halves rather than moving one timer out to keep them together. Disarming
+     * without re-arming would hang an association with data outstanding, so the re-arm is not optional:
+     * [trySend]'s own "outstanding data and no T3" rule arms it from the *fresh* RTO, which is precisely
+     * the value RFC 8261 §6.1 asks for. Leaving the old deadline in place instead would keep a T3
+     * computed from a backed-off RTO on the retired path, i.e. up to `rtoMax` of silence before the new
+     * path's first retransmission.
+     *
+     * The error budget is the half that turns a slow recovery into a dead session: a migration is most
+     * often performed *because* the old path was failing, so without this the new path inherits a budget
+     * already spent and aborts every data channel on it at the next expiry.
+     */
+    private fun onPathChanged(
+        profile: SctpPathProfile.Assessed,
+        now: Instant,
+        out: MutableList<SctpOutput>,
+    ) {
+        val previous = pathProfile
+        pathProfile = profile
+        val migrated =
+            when (previous) {
+                SctpPathProfile.Unassessed -> false
+                is SctpPathProfile.Assessed -> previous.identity != profile.identity
+            }
+        if (!migrated) return
+        ride = ride.onNewPath()
+        deadlines = deadlines.copy(t3 = Deadline.Unarmed)
+        trySend(now, out)
     }
 
     // ─────────────────── stream reconfiguration (RFC 6525) — the requester half ───────────────────
@@ -1592,20 +1675,25 @@ public class SctpAssociation(
     }
 
     /**
-     * Split one user message into per-chunk payloads of at most [SctpConfig.maxPayloadBytes] (RFC 4960
-     * §6.9). The results are **zero-copy views over the caller's borrowed payload**, valid only for the
-     * duration of this `handle` call — [onSendMessage] consumes each one immediately by encoding it into
-     * its wire packet, which is the copy that survives. A sub-MTU message is therefore not copied here at
-     * all; it is simply the whole payload as one view.
+     * Split one user message into per-chunk payloads of at most [fragmentCeiling] (RFC 4960 §6.9). The
+     * results are **zero-copy views over the caller's borrowed payload**, valid only for the duration of
+     * this `handle` call — [onSendMessage] consumes each one immediately by encoding it into its wire
+     * packet, which is the copy that survives. A sub-MTU message is therefore not copied here at all; it
+     * is simply the whole payload as one view.
+     *
+     * The ceiling is read **once** per message rather than per fragment: a path event cannot land
+     * mid-`handle` (the core is a serialized state machine), but reading it once is what guarantees every
+     * fragment of one message is sized against one path, which the count computed just below assumes.
      */
     private fun fragment(payload: ReadBuffer): List<ReadBuffer> {
+        val ceiling = fragmentCeiling
         val slice = payload.slice()
         val total = slice.remaining()
-        if (total <= config.maxPayloadBytes) return listOf(slice)
-        val out = ArrayList<ReadBuffer>((total + config.maxPayloadBytes - 1) / config.maxPayloadBytes)
+        if (total <= ceiling) return listOf(slice)
+        val out = ArrayList<ReadBuffer>((total + ceiling - 1) / ceiling)
         var offset = 0
         while (offset < total) {
-            val len = minOf(config.maxPayloadBytes, total - offset)
+            val len = minOf(ceiling, total - offset)
             val fragment = slice.slice()
             fragment.position(offset)
             fragment.setLimit(offset + len)

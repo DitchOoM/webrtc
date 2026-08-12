@@ -19,6 +19,7 @@ import com.ditchoom.webrtc.sctp.association.SctpConfig
 import com.ditchoom.webrtc.sctp.association.SctpEvent
 import com.ditchoom.webrtc.sctp.association.SctpFailureReason
 import com.ditchoom.webrtc.sctp.association.SctpOutput
+import com.ditchoom.webrtc.sctp.association.SctpPathProfile
 import com.ditchoom.webrtc.sctp.association.SctpReliability
 import com.ditchoom.webrtc.sctp.association.SctpSendOptions
 import com.ditchoom.webrtc.sctp.association.StreamResetOutcome
@@ -201,6 +202,25 @@ public class SctpDataChannelStack(
 
     override suspend fun acceptUnidirectional(): Receiver<DataChannelPayload> = accepted.receive()
 
+    /**
+     * Tell the association which path it is riding, or that the path moved (RFC 8261 §6.1 — see
+     * [SctpEvent.PathChanged]). Routed through the drive loop like every other input, so `handle` stays
+     * serialized and a path event can never interleave with a datagram.
+     *
+     * **Fail-quiet on a torn-down stack**, like [shutdown] and unlike [open]: the session layer publishes
+     * this from a path watcher whose cancellation races the teardown it is watching for, so a path event
+     * arriving one dispatch late is the ordinary shape of a closing session rather than a caller error
+     * worth an exception.
+     */
+    public suspend fun pathChanged(profile: SctpPathProfile.Assessed) {
+        if (closed) return
+        try {
+            inbox.send(DriveItem.Command(PathChangedCommand(profile)))
+        } catch (_: kotlinx.coroutines.channels.ClosedSendChannelException) {
+            // already torn down
+        }
+    }
+
     /** Begin a graceful association shutdown (RFC 4960 §9.2). No-op once the stack has closed. */
     public suspend fun shutdown() {
         if (closed) return
@@ -347,6 +367,7 @@ public class SctpDataChannelStack(
                 }
             }
             is CloseChannelCommand -> onCloseChannel(command.streamId)
+            is PathChangedCommand -> apply(association.handle(SctpEvent.PathChanged(command.profile), now()))
             ShutdownCommand -> apply(association.handle(SctpEvent.Shutdown, now()))
         }
     }
@@ -826,7 +847,7 @@ public class SctpDataChannelStack(
         when (command) {
             is OpenCommand -> command.deferred.completeExceptionally(cause)
             is SendCommand -> command.deferred.completeExceptionally(cause)
-            is CloseChannelCommand, ShutdownCommand -> Unit
+            is CloseChannelCommand, ShutdownCommand, is PathChangedCommand -> Unit
         }
     }
 
@@ -937,6 +958,11 @@ internal class SendCommand(
 
 internal class CloseChannelCommand(
     val streamId: StreamId,
+) : Command
+
+/** The lower layer named the path, or moved it — RFC 8261 §6.1; see [SctpDataChannelStack.pathChanged]. */
+internal class PathChangedCommand(
+    val profile: SctpPathProfile.Assessed,
 ) : Command
 
 internal data object ShutdownCommand : Command

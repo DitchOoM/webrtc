@@ -156,7 +156,14 @@ class SctpBenchmark {
                     val peer = if (fromSender) receiver else sender
                     pump(!fromSender, peer.handle(SctpEvent.DatagramReceived(output.packet.slice()), now))
                 }
-                is SctpOutput.MessageReceived -> delivered++
+                is SctpOutput.MessageReceived -> {
+                    delivered++
+                    // Stand in for an application that reads promptly. Without the credit this harness
+                    // measures an association whose own a_rwnd shrinks by every message it receives, so the
+                    // throughput number would be reporting flow-control stalls rather than the send path.
+                    val consumer = if (fromSender) sender else receiver
+                    pump(fromSender, consumer.handle(SctpEvent.MessageConsumed(output.receipt), now))
+                }
                 else -> Unit
             }
         }

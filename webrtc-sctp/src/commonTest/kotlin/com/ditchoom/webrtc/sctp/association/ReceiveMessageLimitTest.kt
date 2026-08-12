@@ -46,7 +46,7 @@ class ReceiveMessageLimitTest {
     private val stream1 = StreamId(1)
 
     private fun queue(ceiling: ReceiveMessageLimit = ReceiveMessageLimit.Bytes(CEILING.toLong())) =
-        ReassemblyQueue(peerInitialTsn = Tsn(1u), config = SctpConfig(receiveMessageLimit = ceiling))
+        reassemblyQueue(peerInitialTsn = Tsn(1u), config = SctpConfig(receiveMessageLimit = ceiling))
 
     private fun data(
         tsn: Int,
@@ -70,6 +70,7 @@ class ReceiveMessageLimitTest {
         val ingest = receive(chunk)
         val delivered = assertIs<ChunkIngest.Delivered>(ingest, "chunk ${chunk.tsn.value} was refused: $ingest").messages
         assertTrue(runsAgreeWithFragments(), "the run index drifted from `fragments` after TSN ${chunk.tsn.value}")
+        assertTrue(heldBytesAgreeWithContents(), "the held-bytes ledger drifted after TSN ${chunk.tsn.value}")
         return delivered
     }
 

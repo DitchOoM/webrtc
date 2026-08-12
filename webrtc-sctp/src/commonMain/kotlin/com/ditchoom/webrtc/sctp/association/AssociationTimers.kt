@@ -108,8 +108,9 @@ internal sealed interface Deadline {
  * Held as five independent fields, cancelling them was five assignments a caller had to remember, and
  * `cancelAllTimers` enumerated them by hand — so a timer added later is cancelled everywhere the author
  * thought to look and left running everywhere they did not. That is not hypothetical: the RFC 4960 §6.1
- * zero-window probe and the RFC 8899 PMTU probe both arrive in this same change set, and each would have
- * been one more line to forget in a function whose name promises it cancels everything.
+ * zero-window probe and the RFC 8899 PMTU probe both arrived after this class did, and each would have
+ * been one more line to forget in a function whose name promises it cancels everything. Neither needed an
+ * edit to [cancelAll], which is the property this shape was for.
  *
  * [cancelAll] is therefore a fresh instance rather than a sequence of assignments: a new timer added
  * below defaults to [Deadline.Unarmed] and is cancelled correctly without anyone editing [cancelAll].
@@ -134,6 +135,20 @@ internal data class AssociationDeadlines(
      * association's single timer fold can see it.
      */
     val probe: Deadline = Deadline.Unarmed,
+    /**
+     * RFC 4960 §6.1 rule A's zero-window probe — the persist timer, and the one this class predicted.
+     *
+     * Armed while the peer's advertised window will not admit the head of the send queue and nothing is
+     * outstanding to keep T3 running. Without it the send path has two bad options and takes the second:
+     * probe on every call, which streams the queue through a shut window at RTT cadence (RFC 1122 §4.2.3.4
+     * silly-window syndrome), or do not probe at all, which is a permanent stall with no timer armed
+     * anywhere. It paces the probe to one per RTO instead.
+     *
+     * Separate from [t3] because they answer different questions. T3 asks "was that chunk lost"; this asks
+     * "has the receiver made room" — and the second is not a congestion signal, which is why the answer to
+     * it must not spend the RFC 4960 §8.1 error budget (see `SctpAssociation.onT3Timeout`).
+     */
+    val zeroWindowProbe: Deadline = Deadline.Unarmed,
 ) {
     /**
      * The earliest armed deadline, or [Deadline.Unarmed] when nothing is armed. The single enumeration
@@ -141,7 +156,7 @@ internal data class AssociationDeadlines(
      */
     fun earliest(): Deadline {
         var soonest: Deadline = Deadline.Unarmed
-        for (candidate in listOf(handshake, t3, sack, shutdown, reConfig, probe)) {
+        for (candidate in listOf(handshake, t3, sack, shutdown, reConfig, probe, zeroWindowProbe)) {
             val current = soonest
             soonest =
                 when {

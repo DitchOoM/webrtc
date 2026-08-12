@@ -115,12 +115,20 @@ public sealed interface SctpOutput {
      * that ownership on to the application or by freeing it. [unordered] and [payloadProtocolId] let the
      * DataChannel layer route DCEP vs. app data (RFC 8831 §6.6) — and a DCEP message is one no application
      * ever sees, so nothing but the driver can free those.
+     *
+     * The driver owes **two** things for this message, and [receipt] is the second. Until it comes back as
+     * [SctpEvent.MessageConsumed] these bytes are still counted against the a_rwnd this endpoint advertises
+     * (RFC 4960 §3.3.2), so a driver that delivers without ever crediting closes its own receive window one
+     * message at a time — which is why the two duties are discharged together wherever possible (see
+     * `InboundDelivery.discard`). Crediting a receipt twice credits once; crediting one from an association
+     * that has since torn down does nothing.
      */
     public data class MessageReceived(
         public val streamId: StreamId,
         public val payloadProtocolId: PayloadProtocolId,
         public val unordered: Boolean,
         public val payload: ReadBuffer,
+        public val receipt: DeliveryReceipt,
     ) : SctpOutput
 
     /**

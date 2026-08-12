@@ -190,15 +190,71 @@ public class SctpAssociation(
     // Tracked as a running counter rather than summed on demand: this is read once per drive-loop item, and
     // walking the deque there would make a full send buffer quadratic in the number of queued fragments.
     //
-    // INTERNAL, deliberately. This is the truth the *driver* needs to apply backpressure (see
-    // SctpDataChannelStack), not a consumer-facing `bufferedAmount` — the data-channel API stays
-    // suspend-only, so nothing above this module observes a byte count.
+    // INTERNAL, deliberately. This is the association-wide depth the *driver* uses to park and release
+    // senders (see SctpDataChannelStack), and it is NOT what a consumer sees: W3C's `bufferedAmount` is
+    // per channel and counts application bytes only, which is [bufferedAmount] below. Two different
+    // questions over the same queue, and conflating them would report DCEP traffic to an application that
+    // did not send it.
     private var pendingSendBytes: Int = 0
 
     /** Bytes queued for transmission but not yet sent — the driver's backpressure signal. */
     internal val bufferedBytes: Int get() = pendingSendBytes
 
+    // Per-stream APPLICATION bytes in [pendingSend] — the projection W3C's `bufferedAmount` is (S5). One
+    // source of truth, not a second counter kept alongside: a gauge that tracked its own additions would
+    // drift the first time a fragment left the queue by a path nobody thought to instrument, and a
+    // `bufferedAmount` that disagrees with the queue is worse than none.
+    private val pendingApplicationBytes = HashMap<StreamId, Long>()
+
+    /**
+     * Application bytes queued on [streamId] and not yet handed to the wire (W3C `bufferedAmount`).
+     *
+     * A projection of [pendingSend], read on demand. A refused send never enters the association at all, so
+     * there is no path by which this can hold a value for a message that was never accepted.
+     */
+    internal fun bufferedAmount(streamId: StreamId): Long = pendingApplicationBytes[streamId] ?: 0L
+
+    // The two ways a fragment enters and leaves the unsent queue. Funnelled so the per-stream projection
+    // cannot be updated at one of them and forgotten at the other — the same argument as the reassembly
+    // queue's held-bytes ledger, one layer up.
+    private fun enqueuePending(data: OutstandingData) {
+        pendingSend.addLast(data)
+        pendingSendBytes += data.bytes
+        if (data.origin == SendOrigin.Application) {
+            pendingApplicationBytes[data.streamId] = (pendingApplicationBytes[data.streamId] ?: 0L) + data.bytes
+        }
+    }
+
+    private fun dequeuePending(data: OutstandingData) {
+        pendingSendBytes -= data.bytes
+        if (data.origin != SendOrigin.Application) return
+        val remaining = (pendingApplicationBytes[data.streamId] ?: 0L) - data.bytes
+        if (remaining > 0L) pendingApplicationBytes[data.streamId] = remaining else pendingApplicationBytes.remove(data.streamId)
+    }
+
     private var tcb: Tcb = Tcb.NoAssociation
+
+    /**
+     * The RFC 4960 §3.3.2 a_rwnd accountant — what this endpoint still has room for, and how far past it
+     * arriving DATA is still stored (see [ReceiveWindow]).
+     *
+     * A `val` outside the [Tcb], because a [DeliveryReceipt] can come back after the control block that
+     * issued it is gone: the driver hands messages to an application coroutine, and the teardown that drops
+     * the TCB is a different one. Inside the TCB every credit would be a "does the association still exist"
+     * question at the call site; here it is a lookup that finds nothing, which is the same answer without
+     * the branch.
+     */
+    private val receiveWindow = ReceiveWindow(config.receiveWindowBytes, config.receiveOverrun)
+
+    /**
+     * Bytes delivered upward whose [DeliveryReceipt] has not come back — test-visible, and the only direct
+     * read of "the driver still owes for these".
+     *
+     * Internal for the same reason the verification tags are: no output carries it. It is what tells a
+     * fixture apart a driver that credits at *delivery* — which would read zero here forever and provide no
+     * backpressure at all — from one that credits when the application is genuinely finished.
+     */
+    internal val outstandingReceiveBytes: Long get() = receiveWindow.outstandingBytes
 
     /**
      * What is measured about the path currently underneath this association — RTT, congestion, the
@@ -436,6 +492,35 @@ public class SctpAssociation(
         ) : RequestAdmission
     }
 
+    /**
+     * Whether the data currently outstanding is an RFC 4960 §6.1 rule A **window probe**, and whether the
+     * peer has been heard from since the last T3 expiry that was excused because of it.
+     *
+     * Three states rather than two Booleans, because the pair `probing`/`sackedSinceLastExpiry` can spell
+     * "not probing, but the excuse is available", which is the combination that would silently disarm the
+     * RFC 4960 §8.1 error budget for an ordinary retransmission — i.e. the opposite failure from the one
+     * this whole mechanism fixes, and a much worse one. Here the excuse only exists in a state that says
+     * a probe is what is outstanding.
+     */
+    private sealed interface WindowProbe {
+        /** Not probing: the peer's window admitted what was sent, so a T3 expiry is an ordinary failure. */
+        data object None : WindowProbe
+
+        /**
+         * A probe is outstanding and nothing has been heard from the peer since probing began, or since the
+         * last expiry that was excused. RFC 8540 §3.20 keys the excuse on the sender *continuing* to
+         * receive SACKs, so this state is charged: a peer that goes quiet the moment it shuts its window is
+         * indistinguishable from a peer that died with its window shut, and the association must still give
+         * up on it.
+         */
+        data object Silent : WindowProbe
+
+        /** A probe is outstanding and the peer has SACKed since the last expiry — the next one is excused. */
+        data object Answered : WindowProbe
+    }
+
+    private var windowProbe: WindowProbe = WindowProbe.None
+
     // ── Timers as absolute deadlines (ARCHITECTURE §5.1: nextDeadline is the whole clock contract) ──
     private var deadlines = AssociationDeadlines()
     private var handshakeRetransmits = 0
@@ -466,6 +551,7 @@ public class SctpAssociation(
             is SctpEvent.ResetStreams -> onResetStreams(event.scope, now, out)
             is SctpEvent.PathChanged -> onPathChanged(event.path, now, out)
             is SctpEvent.RequestMoreOutgoingStreams -> onRequestMoreOutgoingStreams(event.count, now, out)
+            is SctpEvent.MessageConsumed -> onMessageConsumed(event.receipt, out)
             SctpEvent.Shutdown -> onShutdownRequested(now, out)
             SctpEvent.Abort -> onAbortRequested(out)
             SctpEvent.TimerFired -> onTimers(now, out)
@@ -883,7 +969,7 @@ public class SctpAssociation(
         tcb =
             Tcb.Live(
                 retransmission = retransmission,
-                reassembly = ReassemblyQueue(peerInitialTsn, config),
+                reassembly = ReassemblyQueue(peerInitialTsn, config, receiveWindow),
                 negotiated = negotiated,
             )
         // The stream-id allocator above this layer cannot pick an id until it knows the ceiling, and the
@@ -1007,19 +1093,21 @@ public class SctpAssociation(
         // exact failure this module already avoids by *answering* the RE-CONFIG requests it will not
         // perform rather than ignoring them.
         //
-        // This gate precedes reassembly deliberately: it is the cheaper of the two peer-paced-allocator
-        // refusals, and a chunk on a stream that does not exist should never reach the message-size
-        // accounting that the other one guards.
+        // This gate precedes reassembly deliberately: it is the cheapest of the three peer-paced-allocator
+        // refusals here, and a chunk on a stream that does not exist should reach neither the message-size
+        // accounting nor the receive-window accounting that the other two guard.
         if (!live.negotiated.incomingStreams.admits(chunk.streamId)) {
             live.reassembly.discard(chunk.tsn)
             emitPacket(listOf(SctpChunk.Error(listOf(invalidStreamIdentifier(chunk.streamId)))), peerVerificationTag, out)
             return
         }
         when (val ingest = live.reassembly.receive(chunk)) {
-            is ChunkIngest.Delivered ->
-                for (message in ingest.messages) {
-                    out += SctpOutput.MessageReceived(message.streamId, message.ppid, message.unordered, message.payload)
-                }
+            is ChunkIngest.Delivered -> for (message in ingest.messages) out += deliver(message)
+            // RFC 4960 §6.2, want of buffer: nothing was stored and nothing is owed. The caller SACKs on the
+            // way out of this packet — `receive` has already flagged it immediate — and that SACK reports
+            // the TSN as still missing (it never entered the gap map), which is what asks the peer to send
+            // it again once the window this endpoint is advertising has reopened.
+            ChunkIngest.RefusedForBuffer -> Unit
             // The peer is sending a message larger than we advertised we would take (RFC 8841 §6), which
             // RFC 8831 §6.6 forbids. Nothing was stored, so there is no partial message to release —
             // `fail` below drains the rest — and nothing further in this packet is processed, because
@@ -1027,6 +1115,50 @@ public class SctpAssociation(
             is ChunkIngest.MessageTooLarge -> abortOversizedMessage(ingest, out)
         }
     }
+
+    /**
+     * The upper layer finished with a delivered message (RFC 4960 §3.3.2): give its space back, and tell
+     * the peer at once if that reopened a window it had been told was shut.
+     *
+     * The SACK is the load-bearing half. A shut window stops inbound DATA by construction, and inbound DATA
+     * is the only thing that arms the delayed-SACK timer — so a receiver that drains has no other way to
+     * say so, and the peer would wait out its own RFC 4960 §6.1 probe to discover it. Emitted only on the
+     * zero-to-nonzero edge, because a SACK per consumed message on a healthy session is a packet per
+     * message for no information.
+     */
+    private fun onMessageConsumed(
+        receipt: DeliveryReceipt,
+        out: MutableList<SctpOutput>,
+    ) {
+        val live =
+            tcb.liveOrElse {
+                // No control block: the charges were dropped whole at teardown, so this finds nothing. It
+                // is still called rather than skipped, because "credit is a no-op without a TCB" is the
+                // window's rule to state, not every caller's to remember.
+                receiveWindow.credit(receipt)
+                return
+            }
+        val wasShut = advertisedWindow(live.reassembly) == 0u
+        if (receiveWindow.credit(receipt) == 0) return
+        if (wasShut && advertisedWindow(live.reassembly) > 0u) emitSack(out)
+    }
+
+    /**
+     * Hand one reassembled message to the driver, charging its bytes to the receive window.
+     *
+     * The charge and the hand-off are one expression because they are one event: a message that leaves here
+     * uncharged is receive-buffer space this endpoint keeps advertising while the memory is still out with
+     * the application, and a charge with no message is a window that shuts and never reopens. There is one
+     * call site per message-producing path, and both are directly below.
+     */
+    private fun deliver(message: ReassembledMessage): SctpOutput.MessageReceived =
+        SctpOutput.MessageReceived(
+            message.streamId,
+            message.ppid,
+            message.unordered,
+            message.payload,
+            receiveWindow.issue(message.bytes),
+        )
 
     /**
      * ABORT because the peer overran the ceiling we advertised (RFC 4960 §3.3.7 with a §3.3.10 Protocol
@@ -1092,6 +1224,12 @@ public class SctpAssociation(
                 Tsn(sack.cumulativeTsnAck.value + block.start.toUInt()) to Tsn(sack.cumulativeTsnAck.value + block.end.toUInt())
             }
         val outcome = rq.onSack(sack.cumulativeTsnAck, sack.advertisedReceiverWindow, gapsAbsolute, now, ride.epoch)
+        // RFC 8540 §3.20's clarification of RFC 4960 §6.1 rule A: *"If the sender continues to receive SACKs
+        // from the peer while doing zero window probing, the unacknowledged window probes SHOULD NOT
+        // increment the error counter for the association or any destination transport address."* This is
+        // where "continues to receive SACKs" is observed. `trySend` below resets it to None if the window
+        // has reopened enough to admit an ordinary chunk.
+        if (windowProbe != WindowProbe.None) windowProbe = WindowProbe.Answered
         reclaim(outcome.reclaimed, out)
         if (outcome.rttSample != null) ride.rtt.observe(outcome.rttSample)
         cc.onDataAcked(outcome.bytesNewlyAcked, wasCwndLimited)
@@ -1117,9 +1255,7 @@ public class SctpAssociation(
         out: MutableList<SctpOutput>,
     ) {
         val reassembly = tcb.liveOrElse { return }.reassembly
-        for (message in reassembly.onForwardTsn(chunk.newCumulativeTsn, chunk.streams)) {
-            out += SctpOutput.MessageReceived(message.streamId, message.ppid, message.unordered, message.payload)
-        }
+        for (message in reassembly.onForwardTsn(chunk.newCumulativeTsn, chunk.streams)) out += deliver(message)
     }
 
     // ────────────────────────────────── send path ──────────────────────────────────
@@ -1167,9 +1303,9 @@ public class SctpAssociation(
                     packet = encodePacket(listOf(chunk), peerVerificationTag),
                     reliability = options.reliability,
                     enqueuedAt = now,
+                    origin = options.origin,
                 )
-            pendingSend.addLast(data)
-            pendingSendBytes += data.bytes
+            enqueuePending(data)
             nextTsn = nextTsn.next()
         }
         // The views are spent the moment their bytes are inside the encoded packets above. They must be
@@ -1180,8 +1316,29 @@ public class SctpAssociation(
         trySend(now, out)
     }
 
-    // The RFC 4960 §6.1 send routine: flush retransmits first, then new data while cwnd and the peer
-    // receive window allow, arming the T3-rtx timer whenever data is outstanding.
+    /**
+     * The RFC 4960 §6.1 send routine: flush retransmits first, then new data while cwnd and the peer
+     * receive window allow, arming the T3-rtx timer whenever data is outstanding.
+     *
+     * ## Rule A's window probe, generalized past zero
+     *
+     * *"Regardless of the value of rwnd (including if it is 0), the data sender can always have one DATA
+     * chunk in flight to the receiver"*, and *"a zero window probe SHOULD only be sent when all outstanding
+     * DATA chunks have been cumulatively acknowledged and no DATA chunks are in flight."*
+     *
+     * This used to test `peerReceiveWindow == 0u`, which is rule A read as though only an exactly-zero
+     * window blocks a sender. It does not: a peer advertising 100 bytes blocks a 1200-byte fragment just as
+     * completely, and nothing was outstanding to keep T3 armed — so the association went **silent with data
+     * queued and no timer running anywhere**, permanently. Unreachable before receive-side flow control,
+     * because nothing ever advertised less than a full window; reachable now, because a receiver near its
+     * ceiling advertises exactly that. The test is therefore what rule A actually says: the window will not
+     * admit the head of the queue, and nothing is in flight.
+     *
+     * The probe is paced by [AssociationDeadlines.zeroWindowProbe] rather than sent on every call. Without
+     * the gate, each SACK acknowledging the previous probe would immediately release the next one, which
+     * walks the whole send queue through a shut window one chunk per round trip — RFC 1122 §4.2.3.4's silly
+     * window syndrome, arrived at by trying to avoid a stall.
+     */
     private fun trySend(
         now: Instant,
         out: MutableList<SctpOutput>,
@@ -1203,13 +1360,24 @@ public class SctpAssociation(
             val next = pendingSend.first()
             val projected = rq.outstandingBytes + next.bytes
             val cwndOk = projected <= cc.cwnd
-            val zeroWindowProbe = rq.peerReceiveWindow == 0u && rq.outstandingBytes == 0
-            val rwndOk = projected.toUInt() <= rq.peerReceiveWindow || zeroWindowProbe
-            if (!cwndOk || !rwndOk) break
+            val windowAdmits = projected.toUInt() <= rq.peerReceiveWindow
+            // Rule A's one-chunk exemption: nothing in flight, and the persist timer has not already spent
+            // this interval's probe. cwnd still binds — a probe is DATA and RFC 4960 §7.2 governs it.
+            val probing = !windowAdmits && rq.outstandingBytes == 0 && deadlines.zeroWindowProbe is Deadline.Unarmed
+            if (!cwndOk || !(windowAdmits || probing)) break
             pendingSend.removeFirst()
-            pendingSendBytes -= next.bytes
+            dequeuePending(next)
             rq.onSent(next, now, ride.epoch)
             out += SctpOutput.Transmit.Retained(next.wirePacket())
+            if (probing) {
+                // No SACK has arrived *since probing began*, so the first expiry is charged (RFC 8540
+                // §3.20 excuses only a sender that keeps hearing from its peer). `onSack` promotes it.
+                windowProbe = WindowProbe.Silent
+                deadlines = deadlines.copy(zeroWindowProbe = Deadline.At(now + ride.rtt.rto))
+            } else {
+                // The window admitted this chunk, so whatever it was doing before, it is not probing now.
+                windowProbe = WindowProbe.None
+            }
         }
 
         if (rq.outstandingBytes > 0 && deadlines.t3 is Deadline.Unarmed) deadlines = deadlines.copy(t3 = Deadline.At(now + ride.rtt.rto))
@@ -1359,7 +1527,7 @@ public class SctpAssociation(
         while (pendingSend.isNotEmpty()) {
             val next = pendingSend.removeFirst()
             if (next.bytes > ceiling) {
-                pendingSendBytes -= next.bytes
+                dequeuePending(next)
                 rq.adoptAbandoned(next)
             } else {
                 remaining.addLast(next)
@@ -1852,10 +2020,21 @@ public class SctpAssociation(
 
     private fun emitSack(out: MutableList<SctpOutput>) {
         val reassembly = tcb.liveOrElse { return }.reassembly
-        emitPacket(listOf(reassembly.buildSack()), peerVerificationTag, out)
+        emitPacket(listOf(reassembly.buildSack(advertisedWindow(reassembly))), peerVerificationTag, out)
         packetsSinceSack = 0
         deadlines = deadlines.copy(sack = Deadline.Unarmed)
     }
+
+    /**
+     * The a_rwnd to put on the next SACK (RFC 4960 §3.3.2): what is left of the configured window after
+     * everything currently held against it — the reassembly queue's partial and order-blocked messages, and
+     * everything delivered upward that has not been credited back.
+     *
+     * Read here rather than stored, so it cannot be stale: the two quantities move on entirely different
+     * events (a chunk arriving, an application finishing with a message), and a cached sum would have to be
+     * invalidated by both.
+     */
+    private fun advertisedWindow(reassembly: ReassemblyQueue): UInt = receiveWindow.advertised(reassembly.bufferedBytes)
 
     // ────────────────────────────────── shutdown ──────────────────────────────────
 
@@ -1942,6 +2121,14 @@ public class SctpAssociation(
         if (deadlines.sack.dueAt(now)) emitSack(out)
         if (deadlines.shutdown.dueAt(now)) onShutdownTimeout(now, out)
         if (deadlines.reConfig.dueAt(now)) onReConfigTimeout(now, out)
+        // The persist timer (RFC 4960 §6.1 rule A): disarm, then let `trySend` decide whether the window is
+        // still shut and another probe is owed. Deliberately not "re-send the probe" — the previous one may
+        // have been acknowledged, in which case the next chunk in the queue is the probe, and asking
+        // `trySend` is what keeps that decision in the one place that knows both windows.
+        if (deadlines.zeroWindowProbe.dueAt(now)) {
+            deadlines = deadlines.copy(zeroWindowProbe = Deadline.Unarmed)
+            trySend(now, out)
+        }
         if (deadlines.probe.dueAt(now)) {
             // Read before the tracker runs: `fragmentCeiling` is derived from what the tracker has
             // measured, so evaluating it as an argument would read it *after* the call that changes it.
@@ -2021,15 +2208,48 @@ public class SctpAssociation(
         }
         cc.onTimeout()
         ride.rtt.backoff()
-        if (ride.retransmitFailed()) {
-            fail(SctpFailureReason.RetransmissionLimitReached, out)
-            return
+        if (!excuseWindowProbe()) {
+            if (ride.retransmitFailed()) {
+                fail(SctpFailureReason.RetransmissionLimitReached, out)
+                return
+            }
         }
         // RFC 3758: abandon partially-reliable chunks past their budget before retransmitting.
         abandonExpired(now, out)
         trySend(now, out)
         deadlines = deadlines.copy(t3 = Deadline.At(now + ride.rtt.rto))
     }
+
+    /**
+     * Whether this T3 expiry is a **window probe going unanswered by a peer that is otherwise talking**,
+     * and therefore must not be charged to the RFC 4960 §8.1 error budget. Consumes the excuse.
+     *
+     * RFC 4960 §6.1 rule A, as clarified by RFC 8540 §3.20: *"If the sender continues to receive SACKs from
+     * the peer while doing zero window probing, the unacknowledged window probes SHOULD NOT increment the
+     * error counter for the association or any destination transport address."* The reason the RFC gives is
+     * the whole argument — the receiver may keep its window closed for an indefinite time, and it is
+     * entitled to. An application that stops reading is not a network failure.
+     *
+     * **This is what made the excuse necessary rather than theoretical.** `consecutiveRtxErrors` was bumped
+     * unconditionally, so a peer whose application stalled for ~10 backed-off RTOs aborted us — every data
+     * channel on the association, with `RetransmissionLimitReached`, over a path that was working. It was
+     * unreachable webrtc↔webrtc only because neither side ever advertised a window below its configured
+     * maximum, which is precisely what receive-side flow control has just changed.
+     *
+     * The excuse is **consumed**, not standing, and that is the safety property. It is granted once per
+     * intervening SACK, so a peer that goes silent while its window is shut gets exactly one free expiry
+     * and every one after it is charged — the association still aborts a genuinely dead peer at the usual
+     * budget. Without the consumption, a stack that shut its window and then died would hold the far end
+     * open forever, which trades one hang for another.
+     */
+    private fun excuseWindowProbe(): Boolean =
+        when (windowProbe) {
+            WindowProbe.None, WindowProbe.Silent -> false
+            WindowProbe.Answered -> {
+                windowProbe = WindowProbe.Silent
+                true
+            }
+        }
 
     private fun onShutdownTimeout(
         now: Instant,
@@ -2167,9 +2387,18 @@ public class SctpAssociation(
             }
         }
         tcb = Tcb.NoAssociation
+        // Whatever was outstanding belonged to the association going away, so nothing is being probed now.
+        // A survivor here would carry the RFC 4960 §8.1 excuse into the next association's first T3.
+        windowProbe = WindowProbe.None
+        // Every receipt still outstanding names a message of the association that is going away. Its buffer
+        // is the driver's to release (it was transferred), and the space it was holding is not this
+        // endpoint's to keep reserved — a peer that restarts gets the whole window back. Dropping the
+        // charges whole is also what makes a credit that arrives after this a clean no-op.
+        receiveWindow.forgetAll()
         reclaim(pendingSend.map { it.packet }, out)
         pendingSend.clear()
         pendingSendBytes = 0
+        pendingApplicationBytes.clear()
         orderedSendSsn.clear()
         clearCookieEcho()
         // Both reconfiguration halves belong to the association that is going away: a pending or in-flight

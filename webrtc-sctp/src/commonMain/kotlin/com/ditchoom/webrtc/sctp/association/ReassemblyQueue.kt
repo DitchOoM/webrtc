@@ -23,6 +23,14 @@ internal class ReassembledMessage(
     val streamId: StreamId,
     val ppid: PayloadProtocolId,
     val unordered: Boolean,
+    /**
+     * User-data bytes this message occupies, recorded at assembly rather than read off [payload].
+     *
+     * It is what the receive window is charged for the message (see [ReceiveWindow.issue]), and the charge
+     * has to survive the payload being read: delivery moves the buffer's cursor, so `payload.remaining()`
+     * answers a different number every time somebody looks. The same reason [Fragment] records its own.
+     */
+    val bytes: Int,
     val payload: ReadBuffer,
 )
 
@@ -48,14 +56,26 @@ private class Fragment(
  * the refusal is fatal to the association — it cannot be reported as "nothing became deliverable", which
  * is what an empty list means.
  *
- * Track F adds a third variant here (`RefusedForBuffer`, RFC 4960 §6.2's want-of-buffer drop). It is
- * deliberately not forward-declared: a variant nothing produces is a branch nothing exercises.
+ * The two refusals are **not** one variant with a reason, because what the association does about them
+ * could not be more different: one ABORTs the association, the other SACKs and waits. Merging them would
+ * put that decision in a `when` inside the handler instead of in the type the handler switches on.
  */
 internal sealed interface ChunkIngest {
     /** Stored, or a duplicate; [messages] is what became deliverable, possibly empty. */
     data class Delivered(
         val messages: List<ReassembledMessage>,
     ) : ChunkIngest
+
+    /**
+     * RFC 4960 §6.2: refused for want of buffer. Nothing was stored, nothing was copied, and nothing will
+     * be gap-acked — the TSN never entered the gap map, so the SACK this forces reports the chunk as
+     * missing and the peer retransmits it once the window reopens.
+     *
+     * Non-fatal, and the difference from [MessageTooLarge] is the whole reason they are separate variants:
+     * a peer that overruns the ceiling we advertised is misbehaving, while a peer that outruns our
+     * *buffer* is doing exactly what a sender is supposed to do when its window estimate is stale.
+     */
+    data object RefusedForBuffer : ChunkIngest
 
     /**
      * The message this chunk joins already holds more than [ceilingBytes] bytes, so it crosses the
@@ -115,6 +135,7 @@ private class PartialRun(
 internal class ReassemblyQueue(
     peerInitialTsn: Tsn,
     private val config: SctpConfig,
+    private val window: ReceiveWindow,
 ) {
     /** Highest TSN below which everything has been received (the value a SACK's Cumulative TSN Ack carries). */
     var cumulativeTsn: Tsn = Tsn(peerInitialTsn.value - 1u)
@@ -139,16 +160,33 @@ internal class ReassemblyQueue(
         private set
 
     /**
+     * User-data bytes this queue is holding right now: stored fragments plus assembled messages waiting on
+     * a Stream Sequence Number. The first half of what the receive window is charged (the other half is
+     * delivered-but-unconsumed, which [ReceiveWindow] keeps).
+     *
+     * A running counter, not a walk. It is read once per arriving chunk — for the admission test — and a
+     * walk there would cost a pass over everything already held per chunk, which is O(n²) over a full
+     * window and is the same denial of service the [PartialRun] index exists to avoid. It stays correct
+     * because `fragments` and `orderedReady` are only ever mutated through the five helpers below;
+     * [heldBytesAgreeWithContents] is the executable statement of that, asserted in the fixtures.
+     */
+    var bufferedBytes: Int = 0
+        private set
+
+    /**
      * Ingest one DATA chunk (RFC 4960 §6.2): dedup, refuse an oversized message, store the copied
      * fragment, advance the cumulative TSN, then reassemble and return every message now deliverable in
      * order. A duplicate or an out-of-order arrival flips [sackImmediatelyRequested] so the association
      * SACKs promptly.
      *
-     * The order of the two guards is fixed and load-bearing. **Dedup first**, so a retransmission of a
+     * The order of the three guards is fixed and load-bearing. **Dedup first**, so a retransmission of a
      * chunk already stored is not counted a second time into the run it is already part of — which would
-     * abort a healthy association on a lossy path. **Size before the copy**, so a refusal costs nothing:
-     * checking after `copyOf` would make the ceiling a peer-paced allocator, which is the opposite of
-     * what it is for.
+     * abort a healthy association on a lossy path, and which would also charge the receive window twice for
+     * bytes held once. **Both refusals before the copy**, so a refusal costs nothing: checking after
+     * `copyOf` would make either ceiling a peer-paced allocator, which is the opposite of what they are
+     * for. And **size before buffer**, because the two refusals are not interchangeable — a message past
+     * the advertised `a=max-message-size` is a protocol violation whatever the buffer happens to hold, so
+     * it must not be reported as a transient want of buffer the peer is invited to retry.
      */
     fun receive(chunk: SctpChunk.Data): ChunkIngest {
         val tsn = chunk.tsn
@@ -160,8 +198,15 @@ internal class ReassemblyQueue(
         }
         val bytes = chunk.userData.remaining()
         refuseOversized(chunk, projectedMessageBytes(chunk, bytes.toLong()))?.let { return it }
+        // RFC 4960 §6.2, applied at the overrun ceiling rather than at the advertised window — see
+        // [ReceiveOverrunWindows] for why the literal reading deadlocks a receiver holding partial messages.
+        if (!window.admits(bufferedBytes, bytes)) {
+            sackImmediatelyRequested = true
+            return ChunkIngest.RefusedForBuffer
+        }
 
-        fragments[tsn.value] =
+        putFragment(
+            tsn.value,
             Fragment(
                 chunk.flags,
                 chunk.streamId,
@@ -169,7 +214,8 @@ internal class ReassemblyQueue(
                 chunk.payloadProtocolId,
                 bytes,
                 copyOf(chunk.userData),
-            )
+            ),
+        )
         admitToRun(chunk, bytes.toLong())
         aboveCumulative += tsn.value
 
@@ -183,6 +229,89 @@ internal class ReassemblyQueue(
         if (!advancedContiguously || gapFilled || chunk.flags.immediate) sackImmediatelyRequested = true
 
         return ChunkIngest.Delivered(reassembleDeliverable())
+    }
+
+    // ── the held-bytes ledger: the only five ways `fragments` and `orderedReady` may change ──
+    //
+    // Funnelled rather than open-coded because [bufferedBytes] is a running counter and every alternative
+    // is a site somebody adds later without the matching adjustment. That failure is silent in the worst
+    // direction: an under-count advertises space this endpoint does not have, and nothing observes it until
+    // memory runs out. Here a store and a drop cannot be spelled at all without moving the counter.
+
+    private fun putFragment(
+        tsn: UInt,
+        fragment: Fragment,
+    ) {
+        fragments[tsn] = fragment
+        bufferedBytes += fragment.bytes
+    }
+
+    /** Remove a stored fragment and un-charge it. The caller decides whether it is released or assembled. */
+    private fun takeFragment(tsn: UInt): Fragment? {
+        val fragment = fragments.remove(tsn) ?: return null
+        bufferedBytes -= fragment.bytes
+        return fragment
+    }
+
+    private fun clearFragments() {
+        for (fragment in fragments.values) bufferedBytes -= fragment.bytes
+        fragments.clear()
+    }
+
+    private fun holdOrdered(
+        ssn: Int,
+        message: ReassembledMessage,
+    ) {
+        orderedReady.getOrPut(message.streamId) { HashMap() }[ssn] = message
+        bufferedBytes += message.bytes
+    }
+
+    private fun takeOrdered(
+        streamId: StreamId,
+        ssn: Int,
+    ): ReassembledMessage? {
+        val message = orderedReady[streamId]?.remove(ssn) ?: return null
+        bufferedBytes -= message.bytes
+        return message
+    }
+
+    // Drop and un-charge every held ordered message a predicate selects, returning them for release.
+    private fun takeOrderedWhere(
+        streamId: StreamId,
+        select: (Int) -> Boolean,
+    ): List<ReassembledMessage> {
+        val ready = orderedReady[streamId] ?: return emptyList()
+        val taken = ArrayList<ReassembledMessage>()
+        for (ssn in ready.keys.filter(select)) takeOrdered(streamId, ssn)?.let { taken += it }
+        return taken
+    }
+
+    private fun clearOrdered(): List<ReassembledMessage> {
+        val taken = ArrayList<ReassembledMessage>()
+        for (ready in orderedReady.values) {
+            for (message in ready.values) {
+                taken += message
+                bufferedBytes -= message.bytes
+            }
+        }
+        orderedReady.clear()
+        return taken
+    }
+
+    /**
+     * Whether [bufferedBytes] still equals what is actually held — the executable form of the one claim the
+     * type system cannot make about a running counter, and the companion to [runsAgreeWithFragments].
+     *
+     * Checked by the receive-side fixtures rather than in production for the same reason: a drift is not
+     * something the association can act on. It would mean the advertised window is wrong in one of two
+     * directions — a spurious stall, or an over-advertisement that ends in memory exhaustion — and both are
+     * bugs to be caught before shipping.
+     */
+    internal fun heldBytesAgreeWithContents(): Boolean {
+        var total = 0L
+        for (fragment in fragments.values) total += fragment.bytes
+        for (ready in orderedReady.values) for (message in ready.values) total += message.bytes
+        return total == bufferedBytes.toLong()
     }
 
     // ── the RFC 8841 §6 receive ceiling ──
@@ -446,7 +575,7 @@ internal class ReassemblyQueue(
             while (t.sackPrecedes(newCumulativeTsn) || t.value == newCumulativeTsn.value) {
                 aboveCumulative.remove(t.value)
                 // The peer abandoned this fragment, so its copy has no reader left: this is its last one.
-                fragments.remove(t.value)?.payload?.freeIfNeeded()
+                takeFragment(t.value)?.payload?.freeIfNeeded()
                 t = t.next()
             }
             cumulativeTsn = newCumulativeTsn
@@ -462,10 +591,7 @@ internal class ReassemblyQueue(
                 // orderedReady forever, growing the map under sustained partial-reliability abandonment.
                 // Each one is a reassembly buffer that will now never be delivered, so this is where it
                 // is released; dropping the map entry alone would leak the copy behind it.
-                orderedReady[s.streamId]?.let { ready ->
-                    val skipped = ready.keys.filter { it < skipTo }
-                    for (ssn in skipped) ready.remove(ssn)?.payload?.freeIfNeeded()
-                }
+                for (skipped in takeOrderedWhere(s.streamId) { it < skipTo }) skipped.payload.freeIfNeeded()
             }
         }
         // The abandoned span can have taken the front off a held run, leaving a survivor that must not
@@ -493,15 +619,15 @@ internal class ReassemblyQueue(
         when (scope) {
             StreamResetScope.AllStreams -> {
                 nextOrderedSsn.clear()
-                releaseHeld(orderedReady.values)
-                orderedReady.clear()
+                releaseHeld(clearOrdered())
                 releaseFragments(fragments.values)
-                fragments.clear()
+                clearFragments()
             }
             is StreamResetScope.Streams -> {
                 for (id in scope.ids) {
                     nextOrderedSsn.remove(id)
-                    orderedReady.remove(id)?.let { releaseHeld(listOf(it)) }
+                    releaseHeld(takeOrderedWhere(id) { true })
+                    orderedReady.remove(id)
                 }
                 // The TSNs, materialised BEFORE anything is removed. This used to keep the `Map.Entry`
                 // objects and read `entry.key` after the first removal, which works on the JVM (a
@@ -516,7 +642,7 @@ internal class ReassemblyQueue(
                 // `entry.key` read and nothing is invalidated.
                 val dropped = ArrayList<UInt>()
                 for ((tsn, fragment) in fragments) if (fragment.streamId in scope.ids) dropped += tsn
-                for (tsn in dropped) fragments.remove(tsn)?.payload?.freeIfNeeded()
+                for (tsn in dropped) takeFragment(tsn)?.payload?.freeIfNeeded()
             }
         }
         // A reset drops one stream's fragments out of a TSN space it shares with every other stream, so
@@ -530,10 +656,9 @@ internal class ReassemblyQueue(
      * still waiting on its Stream Sequence Number, so the last reader is this call.
      */
     fun drain() {
-        releaseHeld(orderedReady.values)
-        orderedReady.clear()
+        releaseHeld(clearOrdered())
         releaseFragments(fragments.values)
-        fragments.clear()
+        clearFragments()
         runByFirstTsn.clear()
         runByLastTsn.clear()
         nextOrderedSsn.clear()
@@ -541,18 +666,24 @@ internal class ReassemblyQueue(
         duplicates.clear()
     }
 
-    private fun releaseHeld(streams: Collection<HashMap<Int, ReassembledMessage>>) {
-        for (ready in streams) {
-            for (message in ready.values) message.payload.freeIfNeeded()
-        }
+    private fun releaseHeld(messages: List<ReassembledMessage>) {
+        for (message in messages) message.payload.freeIfNeeded()
     }
 
     private fun releaseFragments(held: Collection<Fragment>) {
         for (fragment in held) fragment.payload.freeIfNeeded()
     }
 
-    /** The SACK to send now (RFC 4960 §3.3.4): cumulative ack, gap blocks, duplicate TSNs; clears dups. */
-    fun buildSack(): SctpChunk.Sack {
+    /**
+     * The SACK to send now (RFC 4960 §3.3.4): cumulative ack, gap blocks, duplicate TSNs; clears dups.
+     *
+     * [advertisedWindow] is the a_rwnd (§3.3.2) and is a **parameter** rather than being read from the
+     * config, because this queue holds only half of what the window is charged — the other half is
+     * delivered-but-unconsumed, which the association tracks in [ReceiveWindow]. Passing it in is what keeps
+     * a single arithmetic in one place instead of two objects each computing part of a number that has to
+     * agree.
+     */
+    fun buildSack(advertisedWindow: UInt): SctpChunk.Sack {
         val gaps = ArrayList<com.ditchoom.webrtc.sctp.GapAckBlock>()
         val sorted = aboveCumulative.sorted()
         var i = 0
@@ -579,7 +710,7 @@ internal class ReassemblyQueue(
         val dups = duplicates.toList()
         duplicates.clear()
         sackImmediatelyRequested = false
-        return SctpChunk.Sack(cumulativeTsn, config.receiveWindowBytes, gaps, dups)
+        return SctpChunk.Sack(cumulativeTsn, advertisedWindow, gaps, dups)
     }
 
     // Advance the cumulative TSN over the contiguous prefix of the gap map (RFC 4960 §6.2).
@@ -595,15 +726,17 @@ internal class ReassemblyQueue(
         val delivered = ArrayList<ReassembledMessage>()
         for ((beginTsn, run) in collectCompleteRuns()) {
             val head = run.first()
-            val message = ReassembledMessage(head.streamId, head.ppid, head.flags.unordered, assemble(run))
-            run.indices.forEach { fragments.remove(beginTsn + it.toUInt()) }
+            val message = ReassembledMessage(head.streamId, head.ppid, head.flags.unordered, run.sumOf { it.bytes }, assemble(run))
+            // Un-charges the fragments as it removes them; the message re-charges the same total the moment
+            // it is held, or leaves with it as a [DeliveryReceipt] when it is delivered.
+            run.indices.forEach { takeFragment(beginTsn + it.toUInt()) }
             // A complete run is exactly one index entry (see [forgetRun]), so this retires it whole
             // rather than needing the rebuild the removal paths above pay for.
             forgetRun(beginTsn)
             if (head.flags.unordered) {
                 delivered += message
             } else {
-                orderedReady.getOrPut(head.streamId) { HashMap() }[head.ssn.value.toInt()] = message
+                holdOrdered(head.ssn.value.toInt(), message)
             }
         }
         drainOrdered(delivered)
@@ -650,10 +783,10 @@ internal class ReassemblyQueue(
     }
 
     private fun drainOrdered(out: MutableList<ReassembledMessage>) {
-        for ((streamId, ready) in orderedReady) {
+        for (streamId in orderedReady.keys.toList()) {
             var expected = nextOrderedSsn[streamId] ?: 0
             while (true) {
-                val message = ready.remove(expected) ?: break
+                val message = takeOrdered(streamId, expected) ?: break
                 out += message
                 // The Stream Sequence Number is a u16 that wraps (RFC 4960 §6.6): mask so that after the
                 // 65535th ordered message on a stream `expected` folds back to 0 to match the sender's

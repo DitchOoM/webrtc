@@ -116,6 +116,15 @@ internal class OutstandingData(
      * origin for an RTT sample, which is what [rttOrigin] exists to keep separate.
      */
     val enqueuedAt: Instant,
+    /**
+     * Whose message this fragment belongs to (see [SendOrigin]).
+     *
+     * Carried on the fragment rather than looked up per stream, because a stream carries both kinds — the
+     * DCEP OPEN and every application message on that channel ride the same stream id — so the id cannot
+     * answer the question. It is what keeps `bufferedAmount` counting only what `send()` queued, at the
+     * moment a fragment leaves the queue as well as when it entered.
+     */
+    val origin: SendOrigin,
 ) {
     /**
      * Whether this chunk can yield an RTT sample, and from when. A chunk sits in `pendingSend` for as long

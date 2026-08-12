@@ -49,6 +49,7 @@ class RetransmissionQueueRttTest {
         packet = BufferFactory.managed().allocate(16, ByteOrder.BIG_ENDIAN),
         reliability = reliability,
         enqueuedAt = enqueuedAt,
+        origin = SendOrigin.Application,
     )
 
     /** The bug: a chunk that queued for 900 ms on a 40 ms path must sample 40 ms, not 940 ms. */

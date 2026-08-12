@@ -210,15 +210,25 @@ internal class SctpSimWith(
         fromA: Boolean,
         outputs: List<SctpOutput>,
     ) {
+        var consumed: ArrayList<DeliveryReceipt>? = null
         for (output in outputs) {
             when (output) {
                 is SctpOutput.Transmit -> {
                     output.packet.position(0)
                     queue += InFlight(toB = fromA, payload = output.packet.slice(), at = now)
                 }
-                is SctpOutput.MessageReceived -> if (!fromA) inboxB += output
+                is SctpOutput.MessageReceived -> {
+                    if (!fromA) inboxB += output
+                    // Credited like [SctpSim] does, and for the same reason: this stand-in is the driver,
+                    // and a driver that never returns a receipt shrinks its own a_rwnd to nothing.
+                    val receipts = consumed ?: ArrayList<DeliveryReceipt>().also { consumed = it }
+                    receipts += output.receipt
+                }
                 else -> Unit
             }
         }
+        val receipts = consumed ?: return
+        val endpoint = if (fromA) a else b
+        for (receipt in receipts) apply(fromA, endpoint.handle(SctpEvent.MessageConsumed(receipt), now))
     }
 }

@@ -61,6 +61,15 @@ public data class SctpConfig(
     /** The buffer allocator for encoded packets and reassembly copies — inject a tracking factory in tests. */
     public val bufferFactory: BufferFactory = BufferFactory.Default,
     /**
+     * How far above [receiveWindowBytes] this endpoint still stores arriving DATA before invoking RFC 4960
+     * §6.2's want-of-buffer drop — the deliberate departure documented on [ReceiveOverrunWindows].
+     *
+     * It is a multiple of [receiveWindowBytes] rather than a byte count so that "the ceiling is below the
+     * window" is unconstructible: the multiplier's own `require(value >= 1)` makes the ceiling at least the
+     * window by construction, and no `init` block here has to restate it.
+     */
+    public val receiveOverrun: ReceiveOverrunWindows = ReceiveOverrunWindows.Default,
+    /**
      * The largest user message this endpoint will reassemble (RFC 8841 §6). One value with two jobs: the
      * session layer advertises it as `a=max-message-size`, and the reassembly queue refuses a peer's
      * message that crosses it (RFC 4960 §3.3.7 ABORT, Protocol Violation).
@@ -117,6 +126,15 @@ public data class SctpConfig(
      * Both are caller mistakes rather than peer behaviour, so they are `require` — the house rule that
      * errors are typed and never stringly (directive #3) governs protocol outcomes, and a
      * programming-error precondition is not one of those.
+     *
+     * The third is the same shape and arrived with receive-side flow control. A message the peer is *allowed*
+     * to send ([receiveMessageLimit]) must fit under the ceiling at which this endpoint starts dropping for
+     * want of buffer (`receiveWindowBytes × receiveOverrun`). Inverted, a legal message can never be
+     * assembled: every chunk past the ceiling is refused, the run never completes, its bytes are never
+     * released, and the window stays shut — a deadlock produced by two knobs that are individually
+     * reasonable, which is exactly the class the other two belong to. Only [ReceiveMessageLimit.Bytes] can
+     * be compared; [ReceiveMessageLimit.Unbounded] states no number and is the caller's decision to accept
+     * whatever the peer sends.
      */
     init {
         require(sendBufferLowWaterBytes <= sendBufferHighWaterBytes) {
@@ -126,6 +144,12 @@ public data class SctpConfig(
         require(rtoMin <= rtoMax) {
             "rtoMin ($rtoMin) must be <= rtoMax ($rtoMax); an inverted pair clamps every RTO to the floor " +
                 "and defeats the RFC 4960 §6.3.3 backoff"
+        }
+        val overrunCeilingBytes = receiveWindowBytes.toLong() * receiveOverrun.value
+        require(receiveMessageLimit !is ReceiveMessageLimit.Bytes || receiveMessageLimit.value <= overrunCeilingBytes) {
+            "receiveMessageLimit (${(receiveMessageLimit as ReceiveMessageLimit.Bytes).value}) must be <= " +
+                "receiveWindowBytes × receiveOverrun ($overrunCeilingBytes); a message this endpoint permits " +
+                "but cannot buffer can never be reassembled, and the receive window never reopens"
         }
     }
 }

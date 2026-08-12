@@ -80,6 +80,19 @@ public sealed interface SctpOutput {
     ) : SctpOutput
 
     /**
+     * How many outgoing streams this endpoint may use has been settled or raised (RFC 4960 §5.1.1, and
+     * RFC 6525 §4.5 when it grows). Emitted once when the handshake completes and again after every
+     * successful Add Outgoing Streams exchange.
+     *
+     * It is an output rather than a property the driver reads because the stream-id allocator above this
+     * layer has to *react* to it: an open parked for want of capacity is released by this event and by
+     * nothing else, and a driver that polled would have to guess when to look.
+     */
+    public data class OutgoingCapacityChanged(
+        public val capacity: OutgoingStreamCapacity.Negotiated,
+    ) : SctpOutput
+
+    /**
      * A complete user message was reassembled and is ready for delivery to the upper layer, in the
      * correct order for its stream. [payload] is a fresh buffer from `SctpConfig.bufferFactory` (the
      * reassembly copy) and is **transferred**: the driver owns it and owes it a release, either by passing

@@ -21,9 +21,13 @@ internal class SctpSim(
     seedB: Long = 2L,
     config: SctpConfig = SctpConfig(),
     var impairment: Impairment = Impairment.PERFECT,
+    // Endpoint B's configuration, when it must differ from A's. Defaults to the same value, so every
+    // existing fixture is unchanged; a *symmetric* configuration is exactly what hides an asymmetric
+    // negotiation, because the two RFC 4960 §5.1.1 minima coincide whenever OS equals MIS on both sides.
+    configB: SctpConfig = config,
 ) {
     val a: SctpAssociation = SctpAssociation(config, Random(seedA))
-    val b: SctpAssociation = SctpAssociation(config, Random(seedB))
+    val b: SctpAssociation = SctpAssociation(configB, Random(seedB))
 
     private val epoch = Instant.fromEpochSeconds(0)
     var now: Instant = epoch
@@ -62,6 +66,10 @@ internal class SctpSim(
     val incomingResetsB = ArrayList<StreamResetScope>()
     val outgoingResetsA = ArrayList<SctpOutput.OutgoingStreamsReset>()
     val outgoingResetsB = ArrayList<SctpOutput.OutgoingStreamsReset>()
+
+    /** Every RFC 4960 §5.1.1 / RFC 6525 §4.5 outgoing-capacity settlement each endpoint announced. */
+    val capacitiesA = ArrayList<OutgoingStreamCapacity.Negotiated>()
+    val capacitiesB = ArrayList<OutgoingStreamCapacity.Negotiated>()
 
     /**
      * Feed [event] to one endpoint and route its side effects. Returns those side effects as well, so a
@@ -155,6 +163,7 @@ internal class SctpSim(
                 is SctpOutput.IncomingStreamsReset -> (if (fromA) incomingResetsA else incomingResetsB) += output.scope
                 is SctpOutput.OutgoingStreamsReset -> (if (fromA) outgoingResetsA else outgoingResetsB) += output
                 is SctpOutput.StateChanged -> Unit
+                is SctpOutput.OutgoingCapacityChanged -> (if (fromA) capacitiesA else capacitiesB) += output.capacity
                 // Deliberately NOT released here, and the reason is worth stating rather than eliding: a
                 // real driver frees these behind the sends it has queued, but this sim's in-flight queue
                 // holds views for a modelled *delay*, so a reclaim applied inline could outrun a datagram

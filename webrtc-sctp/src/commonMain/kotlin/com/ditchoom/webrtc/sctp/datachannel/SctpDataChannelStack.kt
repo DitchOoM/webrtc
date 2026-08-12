@@ -13,6 +13,7 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.webrtc.sctp.DeliveryOrder
 import com.ditchoom.webrtc.sctp.PayloadProtocolId
 import com.ditchoom.webrtc.sctp.StreamId
+import com.ditchoom.webrtc.sctp.association.OutgoingStreamCapacity
 import com.ditchoom.webrtc.sctp.association.SctpAssociation
 import com.ditchoom.webrtc.sctp.association.SctpAssociationState
 import com.ditchoom.webrtc.sctp.association.SctpConfig
@@ -94,6 +95,12 @@ public class SctpDataChannelStack(
     private var nextStreamId: Int = if (role == SctpRole.Client) 0 else 1
     private var closed = false
 
+    // How many outgoing streams the association negotiated (RFC 4960 §5.1.1) — the ceiling every stream id
+    // this side hands out must sit under. Tracked from SctpOutput.OutgoingCapacityChanged rather than read
+    // off the association, because the driver only ever touches the core through the serialized loop and
+    // an open parked for want of capacity has to be released by an *event*, not by polling.
+    private var outgoingCapacity: OutgoingStreamCapacity = OutgoingStreamCapacity.NotNegotiated
+
     // Stream ids mid-close: RFC 8831 §6.7 closes a data channel by resetting BOTH directions, and the two
     // resets are independent RFC 6525 exchanges that complete in either order. An id sits here holding
     // whichever half has landed; when the other one arrives the entry is dropped and the id recycled.
@@ -146,6 +153,12 @@ public class SctpDataChannelStack(
      */
     internal var discardedInbound: Int = 0
         private set
+
+    /**
+     * The outgoing stream capacity the association settled (RFC 4960 §5.1.1) — test-visible only. It is
+     * the ceiling on every stream id this side allocates, and nothing a consumer can otherwise observe.
+     */
+    internal val negotiatedOutgoingCapacity: OutgoingStreamCapacity get() = outgoingCapacity
 
     /** Queued-but-unsent user bytes, and how many senders are parked on backpressure — test-visible only. */
     internal val bufferedBytes: Int get() = association.bufferedBytes
@@ -425,6 +438,7 @@ public class SctpDataChannelStack(
                 // Ordered behind every Send already queued, which is what makes freeing these safe at all.
                 is SctpOutput.ReclaimRetained -> enqueue(OutboundItem.Release(output.packet))
                 is SctpOutput.StateChanged -> onStateChanged(output.state)
+                is SctpOutput.OutgoingCapacityChanged -> outgoingCapacity = output.capacity
                 is SctpOutput.MessageReceived -> onMessage(output)
                 is SctpOutput.Aborted -> tearDown(output.reason)
                 // The association survived the peer's restart, but every channel on it did not: the peer

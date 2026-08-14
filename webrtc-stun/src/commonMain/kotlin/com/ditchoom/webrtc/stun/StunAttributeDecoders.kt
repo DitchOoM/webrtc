@@ -1,7 +1,8 @@
 package com.ditchoom.webrtc.stun
 
-import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.DecodedText
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.Utf8
 
 /**
  * Typed interpreters for a [RawAttribute]'s zero-copy value view (RFC 8489 §14). Each returns `null`
@@ -66,6 +67,20 @@ public fun RawAttribute.asErrorCode(): StunErrorCode? {
  */
 public fun RawAttribute.asText(): String? = readUtf8OrNull(value, 0, length)
 
+/**
+ * [end] - [start] bytes of [v] as UTF-8, or null when they are not.
+ *
+ * The null is a **typed absence, not a swallowed crash**: [Utf8.Checked] reports ill-formed bytes as a
+ * value, so there is no catch here at all. This is the site the "catch Throwable, never a named type"
+ * lesson came from — `readString` threw `MalformedInputException` on the JVM, `CharacterCodingException`
+ * on Apple and wasmJs, and a raw JS `TypeError` carrying no Kotlin class on JS, so nothing narrower was
+ * portable. That reasoning is now buffer's problem rather than ours.
+ *
+ * Note that [Utf8.Checked] turns ill-formed *text* into a value and deliberately leaves bounds failures
+ * throwing. Totality here therefore rests on `RawAttribute.value` being `sliceOf(0, length)` — exactly the
+ * declared length — so a read of `end - start` within it can never underflow. Callers must keep passing
+ * offsets inside `value`, which is the property `StunMalformedCorpusTest` and the Jazzer lane exercise.
+ */
 private fun readUtf8OrNull(
     v: ReadBuffer,
     start: Int,
@@ -75,12 +90,10 @@ private fun readUtf8OrNull(
     val savedPos = v.position()
     return try {
         v.position(start)
-        v.readString(end - start, Charset.UTF8)
-    } catch (_: Throwable) {
-        // Not decodable as UTF-8: a typed absence, not a crash. Must be Throwable, not Exception —
-        // on Kotlin/JS the platform TextDecoder throws a raw JS error that is not a Kotlin Exception,
-        // so only a Throwable catch is portable. The one place a broad catch is right (bytes→text edge).
-        null
+        when (val decoded = v.readText(end - start, Utf8.Checked)) {
+            is DecodedText.Text -> decoded.value
+            is DecodedText.Malformed -> null
+        }
     } finally {
         v.position(savedPos)
     }

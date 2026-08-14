@@ -222,7 +222,6 @@ public final class com/ditchoom/webrtc/ice/Ice {
 }
 
 public final class com/ditchoom/webrtc/ice/IceAgent {
-	public static final field MAX_UTF8_PER_CHAR I
 	public static final field ROLE_CONFLICT I
 	public fun <init> (Lcom/ditchoom/webrtc/ice/IceRole;Lkotlin/random/Random;Lcom/ditchoom/webrtc/ice/IceConfig;)V
 	public synthetic fun <init> (Lcom/ditchoom/webrtc/ice/IceRole;Lkotlin/random/Random;Lcom/ditchoom/webrtc/ice/IceConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V

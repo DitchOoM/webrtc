@@ -4,8 +4,10 @@ package com.ditchoom.webrtc.ice
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
-import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.Utf8
+import com.ditchoom.buffer.utf8Size
+import com.ditchoom.buffer.writeText
 import com.ditchoom.webrtc.ice.IceAttributes.asPriority
 import com.ditchoom.webrtc.ice.IceAttributes.asTieBreaker
 import com.ditchoom.webrtc.stun.IpAddress
@@ -1112,8 +1114,12 @@ public class IceAgent(
         block: (ReadBuffer) -> T,
     ): T {
         val text = password.value
-        val buffer = config.bufferFactory.allocate(maxOf(1, text.length * MAX_UTF8_PER_CHAR), ByteOrder.BIG_ENDIAN)
-        buffer.writeString(text, Charset.UTF8)
+        // Sized exactly rather than by the 3-bytes-per-char upper bound: an ICE password is
+        // `ice-char` (RFC 8445 §5.3, ASCII) in every implementation, so the bound only ever
+        // over-allocated, and this buffer comes from the injected factory — on a pooled one, a
+        // three-times-oversized request can take a larger chunk class for the whole call.
+        val buffer = config.bufferFactory.allocate(maxOf(1, text.utf8Size()), ByteOrder.BIG_ENDIAN)
+        buffer.writeText(text, Utf8.Lenient)
         buffer.resetForRead()
         try {
             return block(buffer)
@@ -1415,7 +1421,6 @@ public class IceAgent(
 
     private companion object {
         const val ROLE_CONFLICT = 487
-        const val MAX_UTF8_PER_CHAR = 3
 
         // RFC 7675 §4.1: "each interval MUST be randomized from between 0.8 and 1.2 times the basic period".
         // Deliberately not `const`: a const in a private companion is still emitted as a public static

@@ -180,7 +180,7 @@ buffer = "6.28.1"
 # This does NOT move the buffer pin either. socket-udp 4.2.0's POM still declares buffer 6.25.0, so the
 # deliberate resolve-up to buffer 6.26.0 recorded above is unchanged — buffer 6.26.0 is still the latest
 # release, so there is nothing to re-align onto yet.
-socket = "4.2.0"
+socket = "4.3.1"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"

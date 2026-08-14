@@ -83,7 +83,35 @@ kotlinxCoroutines = "1.11.0"
 # a release as *content*, not as a commit). buffer-crypto's android sources at 6.28.1 are byte-identical
 # to 6.27.1's, and the sole file separating 6.28.1 from 6.28.0 is `KeyAgreement.jvmCommon.kt` — the #343
 # fix itself. 6.28.0 stays the one version in this line to never resolve to.
-buffer = "6.28.1"
+#
+# 6.30.1 is where we pin now, and the range 6.29.0..6.30.1 is dominated by ONE theme — text encoding
+# grew a real API, so three separate workarounds in this repo are now upstream-solvable:
+#   - #352 fixes `CharSequence.utf8Length()`'s unpaired-surrogate defect — the one webrtc#178 found and
+#     had to fix a local copy of. The high-surrogate arm now requires a real low surrogate to follow, so
+#     a lone one counts 3 (the U+FFFD substitution cost) instead of charging 4 and swallowing the next
+#     char's bytes. It ALSO fixes Apple's `MutableDataBuffer.writeString` NPEing on text Foundation
+#     cannot represent. Neither reaches us today: `SessionDescription.wellFormed` substitutes ahead of
+#     the encode, so no unpaired surrogate has been handed to buffer since #178.
+#   - #353/#355 add the replacement: `TextPolicy` — a sealed policy family covering encode AND decode,
+#     with `writeText`/`readText`/`utf8Size`, where `Utf8.Lenient` substitutes and `utf8Size()` is
+#     guaranteed to match what it writes byte-for-byte on every platform, and `Utf8.Strict` raises ONE
+#     typed `MalformedTextException` everywhere. That is the upstream answer to both of this repo's text
+#     memos — the five hand-rolled counters and "catch `Throwable`, never a named type, because decode
+#     throws three different classes across four targets". Migration is deliberately NOT in this bump:
+#     `writeString`/`readString` are untouched and undeprecated, so nothing here changes yet.
+#   - `utf8Length` and `maxBufferSize` ARE deprecated (WARNING, "Removed in v7"), as is the one-arg
+#     `configureWasmMemory`. **We call none of the three** — our only `utf8Length` mention is prose in
+#     `SessionDescription.kt` — so this bump adds no deprecation warnings anywhere.
+# The rest: #351 grows the wasmJs linear-memory pool on demand, #356/#359/#360 are codec-processor
+# framing (frame detection without a payload codec; a dispatch family must frame uniformly), #361 adds
+# `ByteSink.writeFully` after two buffer-flow defaults dropped a partial write's residue — that one is
+# real corruption for a length-prefixed protocol, and it does not touch us: `ByteSink` appears nowhere
+# in this repo, our wire path is buffer-flow's DATAGRAM trichotomy, where a datagram is all-or-nothing.
+# Content-completeness re-verified in the published `-sources.jar` rather than the tag order (6.28.0's
+# lesson): `KeyAgreement.jvmCommon.kt` is md5-identical at 6.29.0 and 6.30.1 with its 44 X25519 markers
+# intact, and 6.30.1's `BufferFactory.kt` carries the #352 fix (relocated to
+# `Utf8TextEncoder.sizeSubstituting`, low-surrogate guard present).
+buffer = "6.30.1"
 # DitchOoM socket sibling — the UDP `DatagramChannel` **actuals** webrtc's transport track binds to for
 # real-network candidate gathering (host/srflx/relay). The seam itself is buffer-flow's
 # `DatagramChannel` (on Central, above); `socket-udp` is only the platform real-socket implementation
@@ -177,10 +205,39 @@ buffer = "6.28.1"
 #         `equals`/`hashCode`/`copy`/`componentN` all changed. Our single positional construction
 #         (LinkTopologyTest) still compiles precisely because the parameter is last; a future release
 #         inserting one mid-list would break it silently.
-# This does NOT move the buffer pin either. socket-udp 4.2.0's POM still declares buffer 6.25.0, so the
-# deliberate resolve-up to buffer 6.26.0 recorded above is unchanged — buffer 6.26.0 is still the latest
-# release, so there is nothing to re-align onto yet.
-socket = "4.2.0"
+#   - 4.4.0 is twenty-odd commits over 4.2.0. Four touch surfaces we consume: #313 (`NetworkMonitor
+#     .observations`, additive beside the `state` that `linkTopology()` folds), #315/#319 (trace-format
+#     observation-sequence gaps, a defaulted `droppedBefore` — the v1 handset capture still decodes,
+#     proven by `DeviceFlapReplayTest` at 4/0/0), #316/#317 (`transientNow` seam on FallbackTransport,
+#     defaulted to today's behaviour) and #303/#341, which replace `socket-udp`'s `sendWithBackpressure`
+#     polling ladder with an OP_WRITE readiness wait. That last one is OUR SEND PATH; upstream still
+#     asserts `sendDoesNotConsumeCallerBuffer`, which is this repo's "`send` does not consume" trap, so
+#     the invariant we ride is pinned on their side rather than merely believed.
+#     `DatagramCapabilities.requiresNativeMemoryBuffers` is unchanged from 4.1.0 through 4.4.1.
+#   - 4.4.1 is ONE commit over 4.4.0 — `fix(quic): stream read policy is a fixed 15s deadline,
+#     independent of the connection's idle timer` (#346). It touches `socket-quic` only, which this repo
+#     does not depend on at any coordinate (see [libraries]: socket-udp, socket, network-monitor,
+#     socket-testkit). Taken to stay on the latest published pin, not for any fix we consume.
+#   - 4.5.0 is FOUR commits over 4.4.1, and `socket-udp` and `network-monitor` — the two modules whose
+#     behaviour we ride — have **no source change at all** in the range (`git diff v4.4.1..v4.5.0 --
+#     socket-udp network-monitor` is empty). #350 is a QUIC test race, #351 is CI cache hygiene, #348 is
+#     the buffer bump above. The one production line that lands in a module we depend on is in `socket`
+#     core (#353): a new `SocketWriteStalledException` re-homing buffer-flow's `ByteSinkStalledException`
+#     into the `SocketException` family, so JVM/Android's `catch (e: IOException)` convention keeps
+#     covering it. `SocketException` IS sealed, so a new direct subtype would break an exhaustive `when`
+#     — checked, and this repo has none: every mention of `SocketException` here is prose, and the only
+#     `import java.net.SocketException` is the unrelated JDK type in `SystemNetworkMonitor.javaMain.kt`.
+#     The rest of #353 is HTTP/3 + QPACK. `DatagramCapabilities.requiresNativeMemoryBuffers` is
+#     unchanged from 4.1.0 all the way through 4.5.0.
+# The buffer pin does not follow socket's, and for the first time since 4.4.0 it does not have to argue
+# with it either: socket #348 took socket-udp's POM off **6.28.0** — the one version in that line to
+# never resolve to — and 4.5.0's POM now declares buffer/buffer-flow/buffer-codec at **6.30.1**, exactly
+# our pin, so the graph is skew-free rather than merely resolving up in our favour.
+# The rule survives the skew that motivated it, because it was never really about socket's POM: this
+# file drives `buffer-crypto` off the same `buffer` version ref, so dropping that ref to 6.28.0 takes
+# buffer-crypto down with it and reverts the Android X25519 fix. Never let this repo's buffer pin fall
+# to or below 6.28.0, whatever any upstream POM says.
+socket = "4.5.0"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"

@@ -215,9 +215,13 @@ public class SessionDescription internal constructor(
          * or [text] itself when there is none — the overwhelmingly common case, since SDP line values are
          * token/OpaqueString text. See [encode] for why this cannot be skipped.
          *
-         * Kotlin has no common-source `String.isWellFormedUtf16`, and buffer's own `utf8Length()` carries
-         * the same unpaired-surrogate defect this replaced (DitchOoM/buffer — reported 2026-08-12), so
-         * neither is available to delegate to. Fold this into a shared helper if buffer grows one.
+         * Kotlin has no common-source `String.isWellFormedUtf16` to delegate to. buffer's `utf8Length()`
+         * carried the same unpaired-surrogate defect this replaced (reported 2026-08-12); that is
+         * **fixed upstream as of buffer 6.30.0** (DitchOoM/buffer#352), which also deprecates it in
+         * favour of `utf8Size()` and adds `writeText(text, Utf8.Lenient)` — an encoder that substitutes
+         * U+FFFD itself and whose byte count `utf8Size()` is guaranteed to match on every platform.
+         * That pair subsumes both this helper and [utf8ByteLength], but swapping them in is an encode
+         * path change with its own fixtures, not a pin bump; see `SdpEncodeLoneSurrogateTest`.
          */
         private fun wellFormed(text: String): String {
             var out: StringBuilder? = null

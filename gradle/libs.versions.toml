@@ -118,10 +118,32 @@ kotlinxCoroutines = "1.11.0"
 # present in `sizeSubstituting`, and `buffer-crypto` 6.30.3's `KeyAgreement.jvmCommon.kt` still has its
 # 44 X25519 markers. Tag history is linear too — v6.30.1 and v6.30.2 are both ancestors of v6.30.3 — so
 # there is no repeat of the 6.28.0 "highest number is not the newest content" inversion.
+# 6.30.4 (buffer PR #367) is the one this repo FOUND, and the only reason to take it: `Utf8.Lenient`
+# wrote NOTHING on Android for any text ENDING in an unpaired surrogate. `BaseJvmBuffer`'s heap fallback
+# called `CharsetEncoder.encode(endOfInput = true)` and never `flush`ed. The two runtimes disagree about
+# what is still owed at that point — the JDK emits the pending replacement during `encode`, so the
+# omission was invisible for years, while Android's ICU-backed encoder emits it only on `flush`. A
+# surrogate anywhere but **last** was already correct, because the following char forces the encoder to
+# resolve it during `encode`; that asymmetry is why every corpus missed this, since the ill-formed cases
+# people write tend to have something after them.
+# It reaches US because nothing on Android overrides `tryWriteUtf8LenientToNative` — the overrides live in
+# buffer's `jvmMain`/`jvm21Main`, neither of which Android compiles — so every Android `writeText` takes
+# that fallback, and the migration above sizes an SCTP send buffer from `utf8Size()` and writes it with
+# `Utf8.Lenient`. A data-channel text message ending in an unpaired surrogate was therefore transmitted
+# **empty** on Android while the RFC 8841 §6 gate had already charged it three bytes.
+# `Utf8ByteCountTest` is the fixture, and it needed no change: it went red on API 28 and API 35 with
+# `expected:<0> but was:<3>`, where the 0 is what the encoder wrote. Note WHICH lane caught it — the
+# emulator one, on the single platform where that fallback is the only path. buffer has no device lane of
+# its own (no `withDeviceTest` in any of its build scripts), so its `TextPolicyTests` has never executed
+# on ART; the fix's own new JVM fixture passes with and WITHOUT the fix, and its KDoc says so.
+# Content-verified the same way as 6.30.3, in the artifacts rather than from the tag order: the published
+# `buffer-android` AND `buffer-jvm` 6.30.4 `-sources.jar`s both carry `encoder.flush(byteBuffer)` in
+# `jvmCommonMain/BaseJvmBuffer.kt` (it is `jvmCommonMain`, so one fix covers both), and `buffer-crypto`
+# 6.30.4's `KeyAgreement.jvmCommon.kt` still has its 44 X25519 markers — same count as 6.30.3.
 # NOTE the POM skew is back, deliberately and in the safe direction: socket 4.5.0's POM declares buffer
-# 6.30.1, so we now resolve UP by two patches. Gradle resolves conflicts up, and 6.30.3 strictly contains
-# 6.30.1, so this is the same "buffer rides ahead" posture as 6.26.0..6.28.1 — not the inversion.
-buffer = "6.30.3"
+# 6.30.1, so we now resolve UP by three patches. Gradle resolves conflicts up, and 6.30.4 strictly
+# contains 6.30.1, so this is the same "buffer rides ahead" posture as 6.26.0..6.28.1 — not the inversion.
+buffer = "6.30.4"
 # DitchOoM socket sibling — the UDP `DatagramChannel` **actuals** webrtc's transport track binds to for
 # real-network candidate gathering (host/srflx/relay). The seam itself is buffer-flow's
 # `DatagramChannel` (on Central, above); `socket-udp` is only the platform real-socket implementation

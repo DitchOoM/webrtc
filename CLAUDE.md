@@ -29,19 +29,21 @@ against Chrome, Firefox, WebKit, Pion and werift over real NAT kernels in CI acr
 shutdown). Every interop lane runs a **Linux or JVM** peer, which is why Android being non-functional
 (Traps, below) went unseen for so long: no lane anywhere executed on ART until the emulator lane landed,
 and the full common suite — 611 tests — now runs there per PR. Pinned at **socket 4.5.0 + buffer
-6.30.1**, both the latest published. socket
+6.30.4**, both the latest published. socket
 4.1.0 + buffer 6.25.0 is the pair that introduced `DatagramCapabilities.requiresNativeMemoryBuffers`,
 which is what the send-side buffer check consumes, and that seam is why the two normally move together;
 it is unchanged from 4.1.0 through 4.5.0. 4.5.0 changes **no `socket-udp` or `network-monitor` source at
 all** over 4.4.1 (the diff over those two modules is empty); its one production line in a module we
 depend on is an additive `SocketWriteStalledException` in socket core, and `SocketException` being sealed
 costs us nothing because no `when` here is exhaustive over it.
-Buffer rides ahead deliberately: 6.26.0 is the Apple AEAD ownership fix and #343 the Android X25519
-fix (both below), pure internal fixes with no API change, so resolving buffer up underneath a socket
-built against an older one is safe. The **POM skew is gone as of socket 4.5.0** — socket #348 took
-socket-udp off buffer 6.28.0, the one version never to resolve to (below), and its POM now declares
-6.30.1, exactly our pin. For the first time since 4.4.0 the graph agrees rather than resolving up in our
-favour.
+Buffer rides ahead deliberately: 6.26.0 is the Apple AEAD ownership fix, #343 the Android X25519 fix and
+#367 the Android trailing-unpaired-surrogate fix (all below), pure internal fixes with no API change, so
+resolving buffer up underneath a socket built against an older one is safe. The POM skew went to zero
+exactly once and did not stay there — socket #348 took socket-udp off buffer 6.28.0, the one version
+never to resolve to (below), and socket 4.5.0's POM declares 6.30.1, which was our pin on the day we took
+it. At 6.30.4 we are three patches ahead again, in the safe direction as always. An earlier revision of
+this line read "for the first time since 4.4.0 the graph agrees"; that was true for one commit, and the
+durable statement is the posture, not the moment.
 
 Do not read the old skew as "socket can break Android X25519", which an earlier revision of this line
 implied. It cannot: #343 lives in **`buffer-crypto`**, and socket declares only `buffer`, `buffer-flow`
@@ -229,8 +231,8 @@ catch-all maps every exception to "mDNS is unavailable here" and would swallow t
     `size_t`-typed CommonCrypto/Security function across a width-mixed target set (112 errors over 17
     files). `.convert()` cannot help — the reference offends, not the argument. Admitting it means
     splitting `buffer-crypto`'s `appleMain` by pointer width. `buffer-crypto-watchosarm64` is still a 404
-    on Central at 6.30.1; `socket-udp-watchosarm64` publishes fine at 4.5.0, so socket is not the blocker
-    here.
+    on Central at 6.30.4 (re-checked when this repo took it); `socket-udp-watchosarm64` publishes fine at
+    4.5.0, so socket is not the blocker here.
   - `watchosDeviceArm64` (64-bit device — Series 9 / Ultra) — blocked in **socket**, and our own matrix
     omits the target entirely. buffer #342 added it everywhere including `buffer-crypto`, but
     `socket-udp-watchosdevicearm64` is a 404 at 4.2.0 **and still at 4.5.0** (re-checked against Central
@@ -304,7 +306,23 @@ Things that have cost real time here. Read before acting on a premise that sound
   it found the above on its first run. `withDeviceTestBuilder { sourceSetTreeName = "test" }` is the
   load-bearing line — it grafts the device compilation onto `commonTest`; without it the lane builds an
   empty APK and passes. `androidDeviceTest` is also a `socketTest` leaf, which is the only way real UDP
-  is exercised on Android.
+  is exercised on Android. It has now paid for itself twice, and the second find was **upstream**:
+  buffer's `Utf8.Lenient` wrote nothing at all for text ending in an unpaired surrogate on ART
+  (buffer#367, taken as 6.30.4). ART is the one platform where buffer's heap encode fallback is the only
+  path — and the one platform buffer itself has no lane for — so the bug was reachable only from a
+  consumer's device lane. **When a dependency's behaviour is target-specific, our device lane is testing
+  the dependency too**, which is an argument for keeping the common suite grafted onto it rather than
+  trimming it to our own surface.
+- **Central's `<latest>` flips before a KMP release is RESOLVABLE.** Taking buffer 6.30.4 the minute
+  `maven-metadata.xml` named it failed configuration outright with `Could not find
+  com.ditchoom:buffer-watchosx64:6.30.4`, while `buffer-android`, `buffer-jvm`, `buffer-linuxx64`,
+  `buffer-macosarm64`, `buffer-iosarm64` and `buffer-js` were all already up. Nothing was wrong with the
+  release — buffer's deploy and its own `validate-artifacts` had both gone green — the per-target
+  artifacts simply land **progressively**, and the four missing ones were watchOS/tvOS simulator targets
+  that appeared over the following minutes (`buffer-tvosx64` was watched going 404 → 200). So `<latest>`
+  answers "was it published", never "can I resolve it", which is the same shape as the trap below.
+  Before bumping, check the POMs of the targets **our** matrix names — a KMP consumer needs every one of
+  them, so the umbrella metadata is the one thing that cannot tell you.
 - **A fix reaches a release as *content*, not as a commit.** Rebases, squashes and merge commits all
   detach a subject line from the sha that shipped it, so `git tag --contains <sha>` answers "was this
   object released", which is a different question. **Check the tree at the tag** (`git show v<x>:<file>`)

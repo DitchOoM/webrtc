@@ -84,34 +84,66 @@ kotlinxCoroutines = "1.11.0"
 # to 6.27.1's, and the sole file separating 6.28.1 from 6.28.0 is `KeyAgreement.jvmCommon.kt` — the #343
 # fix itself. 6.28.0 stays the one version in this line to never resolve to.
 #
-# 6.30.1 is where we pin now, and the range 6.29.0..6.30.1 is dominated by ONE theme — text encoding
-# grew a real API, so three separate workarounds in this repo are now upstream-solvable:
+# 6.30.3 is where we pin now. The range 6.29.0..6.30.1 was dominated by ONE theme — text encoding grew a
+# real API — and **that migration is now done here** rather than deferred, which is what the previous
+# revision of this comment said. The three workarounds it named are deleted:
 #   - #352 fixes `CharSequence.utf8Length()`'s unpaired-surrogate defect — the one webrtc#178 found and
 #     had to fix a local copy of. The high-surrogate arm now requires a real low surrogate to follow, so
 #     a lone one counts 3 (the U+FFFD substitution cost) instead of charging 4 and swallowing the next
 #     char's bytes. It ALSO fixes Apple's `MutableDataBuffer.writeString` NPEing on text Foundation
-#     cannot represent. Neither reaches us today: `SessionDescription.wellFormed` substitutes ahead of
-#     the encode, so no unpaired surrogate has been handed to buffer since #178.
+#     cannot represent.
 #   - #353/#355 add the replacement: `TextPolicy` — a sealed policy family covering encode AND decode,
 #     with `writeText`/`readText`/`utf8Size`, where `Utf8.Lenient` substitutes and `utf8Size()` is
 #     guaranteed to match what it writes byte-for-byte on every platform, and `Utf8.Strict` raises ONE
-#     typed `MalformedTextException` everywhere. That is the upstream answer to both of this repo's text
-#     memos — the five hand-rolled counters and "catch `Throwable`, never a named type, because decode
-#     throws three different classes across four targets". Migration is deliberately NOT in this bump:
-#     `writeString`/`readString` are untouched and undeprecated, so nothing here changes yet.
+#     typed `MalformedTextException` everywhere. Four of this repo's five hand-rolled UTF-8 counters and
+#     all four `catch (Throwable)` decode sites are gone onto it. The counter that survives is
+#     `DataChannelPayload.utf8ByteCount`, and only because it must return a **`Long`** for the RFC 8841
+#     §6 gate where `utf8Size()` returns an `Int`.
 #   - `utf8Length` and `maxBufferSize` ARE deprecated (WARNING, "Removed in v7"), as is the one-arg
-#     `configureWasmMemory`. **We call none of the three** — our only `utf8Length` mention is prose in
-#     `SessionDescription.kt` — so this bump adds no deprecation warnings anywhere.
-# The rest: #351 grows the wasmJs linear-memory pool on demand, #356/#359/#360 are codec-processor
-# framing (frame detection without a payload codec; a dispatch family must frame uniformly), #361 adds
-# `ByteSink.writeFully` after two buffer-flow defaults dropped a partial write's residue — that one is
-# real corruption for a length-prefixed protocol, and it does not touch us: `ByteSink` appears nowhere
-# in this repo, our wire path is buffer-flow's DATAGRAM trichotomy, where a datagram is all-or-nothing.
-# Content-completeness re-verified in the published `-sources.jar` rather than the tag order (6.28.0's
-# lesson): `KeyAgreement.jvmCommon.kt` is md5-identical at 6.29.0 and 6.30.1 with its 44 X25519 markers
-# intact, and 6.30.1's `BufferFactory.kt` carries the #352 fix (relocated to
-# `Utf8TextEncoder.sizeSubstituting`, low-surrogate guard present).
-buffer = "6.30.1"
+#     `configureWasmMemory`. We call none of the three, before or after the migration.
+# 6.30.2/6.30.3 are both **wasmJs pool** fixes and touch nothing else — the diff over `buffer/src`,
+# `buffer-flow/src`, `buffer-codec/src` and `buffer-crypto/src` is confined to `LinearBuffer`,
+# `MemoryManager`, `LinearMemoryFault` and `NativeDataConversions.wasmJs.kt`. #363 re-bases the pool off
+# memory the Kotlin/Wasm runtime owns; **#366 is the one to know about** — a wasmJs view of a released
+# buffer now *refuses* access instead of silently reading reissued memory. That converts a class of
+# latent use-after-release into a loud failure, so a wasmJs lane that goes red after this bump is
+# evidence of an OUR-side ownership bug, not of a bad buffer. (Our wasmJs suites pass at 6.30.3.)
+# The rest of the range: #351 grows the wasmJs linear-memory pool on demand, #356/#359/#360 are
+# codec-processor framing, #361 adds `ByteSink.writeFully` after two buffer-flow defaults dropped a
+# partial write's residue — real corruption for a length-prefixed protocol, and it does not touch us:
+# `ByteSink` appears nowhere here, our wire path is buffer-flow's DATAGRAM trichotomy, where a datagram
+# is all-or-nothing.
+# Content-completeness verified in the published `-sources.jar` rather than the tag order (6.28.0's
+# lesson): 6.30.3's jar carries `TextPolicy.kt` / `Utf8TextEncoder.kt` with #352's low-surrogate guard
+# present in `sizeSubstituting`, and `buffer-crypto` 6.30.3's `KeyAgreement.jvmCommon.kt` still has its
+# 44 X25519 markers. Tag history is linear too — v6.30.1 and v6.30.2 are both ancestors of v6.30.3 — so
+# there is no repeat of the 6.28.0 "highest number is not the newest content" inversion.
+# 6.30.4 (buffer PR #367) is the one this repo FOUND, and the only reason to take it: `Utf8.Lenient`
+# wrote NOTHING on Android for any text ENDING in an unpaired surrogate. `BaseJvmBuffer`'s heap fallback
+# called `CharsetEncoder.encode(endOfInput = true)` and never `flush`ed. The two runtimes disagree about
+# what is still owed at that point — the JDK emits the pending replacement during `encode`, so the
+# omission was invisible for years, while Android's ICU-backed encoder emits it only on `flush`. A
+# surrogate anywhere but **last** was already correct, because the following char forces the encoder to
+# resolve it during `encode`; that asymmetry is why every corpus missed this, since the ill-formed cases
+# people write tend to have something after them.
+# It reaches US because nothing on Android overrides `tryWriteUtf8LenientToNative` — the overrides live in
+# buffer's `jvmMain`/`jvm21Main`, neither of which Android compiles — so every Android `writeText` takes
+# that fallback, and the migration above sizes an SCTP send buffer from `utf8Size()` and writes it with
+# `Utf8.Lenient`. A data-channel text message ending in an unpaired surrogate was therefore transmitted
+# **empty** on Android while the RFC 8841 §6 gate had already charged it three bytes.
+# `Utf8ByteCountTest` is the fixture, and it needed no change: it went red on API 28 and API 35 with
+# `expected:<0> but was:<3>`, where the 0 is what the encoder wrote. Note WHICH lane caught it — the
+# emulator one, on the single platform where that fallback is the only path. buffer has no device lane of
+# its own (no `withDeviceTest` in any of its build scripts), so its `TextPolicyTests` has never executed
+# on ART; the fix's own new JVM fixture passes with and WITHOUT the fix, and its KDoc says so.
+# Content-verified the same way as 6.30.3, in the artifacts rather than from the tag order: the published
+# `buffer-android` AND `buffer-jvm` 6.30.4 `-sources.jar`s both carry `encoder.flush(byteBuffer)` in
+# `jvmCommonMain/BaseJvmBuffer.kt` (it is `jvmCommonMain`, so one fix covers both), and `buffer-crypto`
+# 6.30.4's `KeyAgreement.jvmCommon.kt` still has its 44 X25519 markers — same count as 6.30.3.
+# NOTE the POM skew is back, deliberately and in the safe direction: socket 4.5.0's POM declares buffer
+# 6.30.1, so we now resolve UP by three patches. Gradle resolves conflicts up, and 6.30.4 strictly
+# contains 6.30.1, so this is the same "buffer rides ahead" posture as 6.26.0..6.28.1 — not the inversion.
+buffer = "6.30.4"
 # DitchOoM socket sibling — the UDP `DatagramChannel` **actuals** webrtc's transport track binds to for
 # real-network candidate gathering (host/srflx/relay). The seam itself is buffer-flow's
 # `DatagramChannel` (on Central, above); `socket-udp` is only the platform real-socket implementation

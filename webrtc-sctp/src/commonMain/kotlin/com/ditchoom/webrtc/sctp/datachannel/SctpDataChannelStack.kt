@@ -3,8 +3,9 @@
 package com.ditchoom.webrtc.sctp.datachannel
 
 import com.ditchoom.buffer.ByteOrder
-import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.DecodedText
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.Utf8
 import com.ditchoom.buffer.flow.Connection
 import com.ditchoom.buffer.flow.Receiver
 import com.ditchoom.buffer.flow.Sender
@@ -1045,9 +1046,13 @@ public class SctpDataChannelStack(
      * `setLimit` rather than returning it, so a 64 KiB text message took a 256 KiB chunk to send 64 KiB.
      * On a pooled factory that is the chunk size the pool actually hands out, held for the whole send.
      *
-     * Safe because `wireByteCount` is asserted never to under-state what `writeString` writes, on every
-     * target, by `Utf8ByteCountTest` — the one direction that would overflow this buffer. That fixture is
-     * now load-bearing for the allocation and not only for the RFC 8841 §6 gate.
+     * Safe because `wireByteCount` and [Utf8.Lenient] agree **exactly**, on every target, which
+     * `Utf8ByteCountTest` asserts against the encoder itself. That is stronger than what this could claim
+     * before buffer 6.30.0, when the best available was "never under-states": `writeString` threw on the
+     * JVM for an unpaired surrogate where a `TextEncoder`-backed target substituted U+FFFD, so a text
+     * message carrying one — reachable from any application `send(Text(…))` — failed the send on one
+     * platform and succeeded on another. [Utf8.Lenient] substitutes everywhere, so all four targets now
+     * put the same bytes on the wire, and the allocation is exact rather than merely sufficient.
      */
     private fun encodeUtf8(
         text: CharSequence,
@@ -1055,10 +1060,11 @@ public class SctpDataChannelStack(
     ): ReadBuffer {
         if (text.isEmpty()) return ReadBuffer.EMPTY_BUFFER
         val scratch = bufferFactory.allocate(sizeBytes.toInt(), ByteOrder.BIG_ENDIAN)
-        scratch.writeString(text, Charset.UTF8)
-        val written = scratch.position()
+        scratch.writeText(text, Utf8.Lenient)
+        // `resetForRead` is flip — limit becomes the position the write left — so the exact agreement
+        // above is what makes the buffer's window the encoded text and nothing else. No trailing
+        // `setLimit` is needed to trim an over-allocation, because there no longer is one.
         scratch.resetForRead()
-        scratch.setLimit(written)
         return scratch
     }
 
@@ -1102,17 +1108,17 @@ public class SctpDataChannelStack(
         // RFC 8831 §6.6 requires a string message to be UTF-8, but a peer is not obliged to be correct.
         // Decoding is the only place this stack parses attacker-supplied bytes into a higher type, so a
         // failure is contained here and reported as a typed discard — never a throw into the drive loop
-        // (T0 discipline), which would take the whole association down with it.
+        // (T0 discipline), which would take the whole association down with it. [Utf8.Checked] makes that
+        // containment structural: the malformed case is a `when` arm, so it cannot be lost the way a
+        // `catch (Throwable)` could quietly stop matching if the decoder's failure mode changed.
         //
         // Either way the buffer is spent here: a decoded Text owns no buffer, and a malformed one is
         // dropped. So both arms relinquish, and what they hand on is Unmetered.
-        return try {
-            val text = buffer.readString(buffer.remaining(), Charset.UTF8)
-            relinquish(buffer, message.receipt)
-            InboundMessage.Deliver(InboundDelivery.Unmetered(DataChannelPayload.Text(text)))
-        } catch (_: Throwable) {
-            relinquish(buffer, message.receipt)
-            InboundMessage.Discarded(InboundDiscardReason.MalformedUtf8)
+        val decoded = buffer.readText(buffer.remaining(), Utf8.Checked)
+        relinquish(buffer, message.receipt)
+        return when (decoded) {
+            is DecodedText.Text -> InboundMessage.Deliver(InboundDelivery.Unmetered(DataChannelPayload.Text(decoded.value)))
+            is DecodedText.Malformed -> InboundMessage.Discarded(InboundDiscardReason.MalformedUtf8)
         }
     }
 

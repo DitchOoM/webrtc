@@ -102,13 +102,20 @@ public sealed interface DataChannelPayload {
  * astral-plane code point is ONE code point in FOUR bytes carried as TWO `Char`s, so charging three per
  * `Char` says six.
  *
- * An **unpaired** surrogate charges three and cannot claim to agree with anything, because the targets do
- * not agree with each other: it is not encodable, and `writeString` **throws** on the JVM where a
- * `TextEncoder`-backed target substitutes U+FFFD (three bytes). Three is therefore the smallest count
- * that never under-states any target's answer, which is the only property the gate needs — and where the
- * encoder throws, the send fails on the encode before this number is consulted at all.
+ * An **unpaired** surrogate charges three, which is exactly `Utf8.Lenient`'s U+FFFD substitution cost, so
+ * the agreement is now **equality on every target**. It used to be the weaker "never under-states any
+ * target's answer", because the targets did not agree with each other: `writeString` threw on the JVM
+ * where a `TextEncoder`-backed target substituted. The send path moved to `Utf8.Lenient`, which
+ * substitutes everywhere, and `SctpDataChannelStack.encodeUtf8` sizes its allocation from this number —
+ * so equality is what that buffer's exactness rests on, not just the RFC 8841 §6 gate.
  *
- * `Utf8ByteCountTest` measures the expectation from `writeString` itself rather than from a second
+ * **This is deliberately not buffer's `CharSequence.utf8Size()`**, which is the same count and is what
+ * every other site here uses. `utf8Size()` returns an `Int`; `wireByteCount` is a `Long` because the gate
+ * compares it against a peer-advertised `maxMessageSize` that is a 32-bit unsigned quantity, and a
+ * count that overflowed into a negative `Int` would pass a ceiling check it should fail. The width is the
+ * whole reason this one survived the migration.
+ *
+ * `Utf8ByteCountTest` measures the expectation from the encoder itself rather than from a second
  * hand-written counter, which would only assert that two implementations of the same mistake agree.
  */
 private fun utf8ByteCount(text: CharSequence): Long {

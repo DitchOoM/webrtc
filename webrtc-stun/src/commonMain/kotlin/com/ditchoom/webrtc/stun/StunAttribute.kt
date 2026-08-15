@@ -2,10 +2,11 @@ package com.ditchoom.webrtc.stun
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
-import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.Utf8
+import com.ditchoom.buffer.utf8Size
 
 /**
  * One STUN attribute as a **type + zero-copy value view** (RFC 8489 §14). The TLV framing (2-byte
@@ -147,14 +148,22 @@ public class RawAttribute internal constructor(
             paddedView: ReadBuffer,
         ): RawAttribute = RawAttribute(type, length, paddedView)
 
-        /** UTF-8 text attribute (USERNAME/REALM/NONCE/SOFTWARE), value = the string's bytes. */
+        /**
+         * UTF-8 text attribute (USERNAME/REALM/NONCE/SOFTWARE), value = the string's bytes.
+         *
+         * `utf8Size` is buffer's, and is guaranteed to equal what [Utf8.Lenient] writes, so the
+         * allocation is exact. The local counter this replaced charged three bytes per UTF-16 code unit
+         * and so said six for a four-byte emoji — harmless, because `resetForRead` flips the limit to
+         * what was actually written, but it meant the allocation was up to 50% larger than the attribute
+         * for any supplementary-plane text and the two numbers were never checked against each other.
+         */
         public fun ofText(
             type: StunAttributeType,
             text: String,
             factory: BufferFactory = BufferFactory.Default,
         ): RawAttribute {
-            val bytes = factory.allocate(utf8Size(text), ByteOrder.BIG_ENDIAN)
-            bytes.writeString(text, Charset.UTF8)
+            val bytes = factory.allocate(text.utf8Size(), ByteOrder.BIG_ENDIAN)
+            bytes.writeText(text, Utf8.Lenient)
             bytes.resetForRead()
             return ofScratch(type, bytes, factory)
         }
@@ -186,11 +195,11 @@ public class RawAttribute internal constructor(
             factory: BufferFactory = BufferFactory.Default,
         ): RawAttribute {
             val reason = error.reason
-            val body = factory.allocate(ADDR_HEADER_BYTES + utf8Size(reason), ByteOrder.BIG_ENDIAN)
+            val body = factory.allocate(ADDR_HEADER_BYTES + reason.utf8Size(), ByteOrder.BIG_ENDIAN)
             body.writeShort(0) // 2 reserved bytes
             body.writeByte((error.code / ERROR_CLASS_DIVISOR).toByte()) // class (3..6)
             body.writeByte((error.code % ERROR_CLASS_DIVISOR).toByte()) // number (0..99)
-            body.writeString(reason, Charset.UTF8)
+            body.writeText(reason, Utf8.Lenient)
             body.resetForRead()
             return ofScratch(StunAttributeType.ErrorCode, body, factory)
         }
@@ -230,21 +239,6 @@ public class RawAttribute internal constructor(
                 is IpAddress.V4 -> IpAddress.V4.SIZE_BYTES
                 is IpAddress.V6 -> IpAddress.V6.SIZE_BYTES
             }
-
-        // UTF-8 byte length without allocating (STUN text attributes are OpaqueString/qdtext).
-        private fun utf8Size(text: String): Int {
-            var n = 0
-            for (c in text) {
-                val cp = c.code
-                n +=
-                    when {
-                        cp < 0x80 -> 1
-                        cp < 0x800 -> 2
-                        else -> 3
-                    }
-            }
-            return n
-        }
     }
 }
 

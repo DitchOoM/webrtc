@@ -4,11 +4,13 @@ package com.ditchoom.webrtc.testsuite.vnet
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
-import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.Utf8
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.buffer.utf8Size
+import com.ditchoom.buffer.writeText
 import com.ditchoom.webrtc.stun.IpAddress
 import com.ditchoom.webrtc.stun.TransportAddress
 
@@ -51,10 +53,18 @@ internal fun vnetAddress(
     port: Int,
 ): SocketAddress = SocketAddress.ofLiteral(ip, port)
 
-/** A read-ready buffer of [text]'s UTF-8 bytes — a STUN short-term-credential key or attribute value. */
+/**
+ * A read-ready buffer of [text]'s UTF-8 bytes — a STUN short-term-credential key or attribute value.
+ *
+ * Sized by `utf8Size()`. It used to size by `text.encodeToByteArray().size`, which allocated an entire
+ * `ByteArray` copy of the text purely to read `.size` off it and then threw it away — precisely the
+ * guaranteed copy standing directive #1 exists to forbid, in `commonMain` of a published module. The
+ * tripwire grep could not see it: its pattern is `\bByteArray\b`, and there is no word boundary inside
+ * `encodeToByteArray`, so a camelCase method name hides the type from it.
+ */
 internal fun utf8Buffer(text: String): PlatformBuffer {
-    val buffer = BufferFactory.Default.allocate(maxOf(1, text.encodeToByteArray().size), ByteOrder.BIG_ENDIAN)
-    buffer.writeString(text, Charset.UTF8)
+    val buffer = BufferFactory.Default.allocate(maxOf(1, text.utf8Size()), ByteOrder.BIG_ENDIAN)
+    buffer.writeText(text, Utf8.Lenient)
     buffer.resetForRead()
     return buffer
 }

@@ -2,56 +2,45 @@ package com.ditchoom.webrtc.harness
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
-import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.Utf8
+import com.ditchoom.buffer.readText
+import com.ditchoom.buffer.utf8Size
+import com.ditchoom.buffer.writeText
 
 // Text↔buffer helpers for the harness peer. Deliberately array-free (no `encodeToByteArray()`): the
-// standing-directive grep forbids primitive arrays in *Main/, and buffer's writeString/readString give
-// us UTF-8 transcoding straight over the zero-copy buffer with no intermediate ByteArray.
+// standing-directive grep forbids primitive arrays in *Main/, and buffer's text policies transcode UTF-8
+// straight over the zero-copy buffer with no intermediate ByteArray.
+//
+// The local `utf8Len` these used to size against is gone. It was one of five hand-rolled UTF-8 counters
+// in this repo, and the only reason any of them existed was that buffer's own `utf8Length()` carried an
+// unpaired-surrogate defect and no guarantee of agreeing with the encoder. Both halves landed in buffer
+// 6.30.0 (DitchOoM/buffer#352 fixed the count, #353 made `utf8Size()` exactly what `Utf8.Lenient` writes),
+// so a counter here could now only be a second implementation of a solved problem — and `utf8Len` had
+// already been wrong once, charging three bytes per `Char` and so six for a four-byte emoji.
 
 /**
- * The UTF-8 byte length of [s] without allocating an array. Signaling payloads (SDP + `candidate:` lines,
- * ICE ufrag/pwd) are ASCII in practice, so this equals `s.length` there; the multi-byte arms keep it
- * correct for any text. Used to size the exact buffer and to write the length prefix before the bytes.
+ * Allocate a read-ready [ReadBuffer] holding the UTF-8 bytes of [s] (allocation is never zero-length —
+ * min 1 byte — though an empty [s] still yields an empty read window).
  *
- * The surrogate arm is load-bearing rather than defensive: [textBuffer] sets its buffer's limit from this
- * count, so an over-count publishes uninitialised bytes past what `writeString` actually wrote. An
- * astral-plane character (an emoji, say) is ONE code point encoding to four bytes but TWO `Char`s, so
- * counting each half as three said six — two bytes of whatever the allocator last held.
+ * `resetForRead` is flip, so the window ends where the write ended. That is only the encoded text because
+ * [utf8Size] and [Utf8.Lenient] are guaranteed equal; when the size came from a local counter this needed
+ * a trailing `setLimit` to trim it, and an over-count would have published uninitialised bytes past the
+ * text.
  */
-internal fun utf8Len(s: String): Int {
-    var n = 0
-    var i = 0
-    while (i < s.length) {
-        val code = s[i].code
-        val isHighSurrogate = code in 0xD800..0xDBFF
-        val pairedWithLow = isHighSurrogate && i + 1 < s.length && s[i + 1].code in 0xDC00..0xDFFF
-        when {
-            code < 0x80 -> { n += 1; i += 1 }
-            code < 0x800 -> { n += 2; i += 1 }
-            // A well-formed pair is one code point in four bytes. An UNPAIRED surrogate is not encodable
-            // at all, and the targets do not agree about it: `writeString` THROWS on the JVM, where a
-            // TextEncoder-backed target substitutes U+FFFD. Three is the smallest count that never
-            // under-states either answer — this used to claim the encoder always substitutes, which
-            // `Utf8ByteCountTest` measured false. Every string this harness sends is ASCII, so the arm
-            // remains unreachable in practice; it is stated correctly rather than removed.
-            pairedWithLow -> { n += 4; i += 2 }
-            else -> { n += 3; i += 1 }
-        }
-    }
-    return n
-}
-
-/** Allocate a read-ready [ReadBuffer] holding the UTF-8 bytes of [s] (never empty — min 1 byte). */
 internal fun textBuffer(s: String): ReadBuffer {
-    val n = utf8Len(s)
-    val buf = BufferFactory.Default.allocate(maxOf(1, n), ByteOrder.BIG_ENDIAN)
-    buf.writeString(s, Charset.UTF8)
+    val buf = BufferFactory.Default.allocate(maxOf(1, s.utf8Size()), ByteOrder.BIG_ENDIAN)
+    buf.writeText(s, Utf8.Lenient)
     buf.resetForRead()
-    buf.setLimit(n)
     return buf
 }
 
-/** Decode a [ReadBuffer]'s remaining bytes as UTF-8 text (does not mutate beyond a normal read). */
-internal fun ReadBuffer.text(): String = readString(remaining(), Charset.UTF8)
+/**
+ * Decode a [ReadBuffer]'s remaining bytes as UTF-8 text (does not mutate beyond a normal read).
+ *
+ * Lenient: ill-formed bytes become U+FFFD rather than throwing, so a corrupted echo surfaces as a content
+ * mismatch in the phase that asserts on it — which names the string it expected — instead of an exception
+ * out of a decode three frames away from anything that knows what was being tested.
+ */
+internal fun ReadBuffer.text(): String = readText(remaining())

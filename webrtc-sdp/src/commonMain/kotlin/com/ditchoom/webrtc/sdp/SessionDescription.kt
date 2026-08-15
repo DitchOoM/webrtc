@@ -2,10 +2,12 @@ package com.ditchoom.webrtc.sdp
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
-import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.DecodedText
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.Utf8
+import com.ditchoom.buffer.utf8Size
 import com.ditchoom.webrtc.sdp.SdpParseResult.Reject
 import com.ditchoom.webrtc.sdp.SdpParseResult.Success
 
@@ -87,25 +89,27 @@ public class SessionDescription internal constructor(
     /**
      * Serializes [toText] into a freshly allocated read-ready buffer (UTF-8), sized exactly.
      *
-     * **Never throws** — the contract `SdpCodecFuzzer` and `SdpMalformedCorpusTest` both assert. Holding
-     * it requires [wellFormed], because the line values reaching here are arbitrary application text
-     * ([SessionDescriptionBuilder.line] takes a raw `String`), and buffer's `writeString` answers invalid
-     * UTF-16 three different ways at 6.28.1 — **measured, not assumed** (`SdpEncodeLoneSurrogateTest`):
+     * **Never throws** — the contract `SdpCodecFuzzer` and `SdpMalformedCorpusTest` both assert. Line
+     * values reaching here are arbitrary application text ([SessionDescriptionBuilder.line] takes a raw
+     * `String`), so invalid UTF-16 is reachable, and buffer's older `writeString` answered it three
+     * different ways — **measured, not assumed** (`SdpEncodeLoneSurrogateTest`): a
+     * `MalformedInputException` on the JVM, 6 substituted bytes on Apple and JS, and a silent write of
+     * nothing on Linux K/N. Against a count that charged 4 for the surrogate pair it assumed, that was an
+     * exception on one target, a 2-byte overrun on two, and a truncation to an empty document on the
+     * fourth.
      *
-     * | target | `writeString("\uD800€")` |
-     * |---|---|
-     * | JVM | throws `MalformedInputException` |
-     * | Apple, JS | writes 6 (substitutes U+FFFD) |
-     * | Linux K/N | writes 0, position unchanged (buffer's own `WriteStringLoneSurrogateTest`) |
-     *
-     * So a lone surrogate was an exception on one target, a 2-byte under-allocation on two (the counter
-     * charged 4 for the pair it assumed), and a silent truncation on the fourth. Substituting first makes
-     * every target write the same bytes, which is also what two of them already did.
+     * [Utf8.Lenient] answers all of it in one policy (buffer 6.30.0): it substitutes U+FFFD for each
+     * unpaired surrogate — which is what two of the four targets already did — and [utf8Size] is
+     * *guaranteed* to equal the bytes it writes on every platform, so the allocation is exact by
+     * construction rather than by a local counter that has to be kept in agreement with an encoder it
+     * cannot see. That pair replaced this file's own `wellFormed` + `utf8ByteLength`, whose
+     * unpaired-surrogate defect buffer's `utf8Length` had independently shipped and fixed in the same
+     * release (DitchOoM/buffer#352).
      */
     public fun encode(factory: BufferFactory = BufferFactory.Default): PlatformBuffer {
-        val text = wellFormed(toText())
-        val dest = factory.allocate(utf8ByteLength(text), ByteOrder.BIG_ENDIAN)
-        dest.writeString(text, Charset.UTF8)
+        val text = toText()
+        val dest = factory.allocate(text.utf8Size(), ByteOrder.BIG_ENDIAN)
+        dest.writeText(text, Utf8.Lenient)
         dest.resetForRead()
         return dest
     }
@@ -119,15 +123,15 @@ public class SessionDescription internal constructor(
         public fun parse(source: ReadBuffer): SdpParseResult {
             val remaining = source.remaining()
             if (remaining == 0) return Reject(SdpRejectReason.Empty)
-            val text =
-                try {
-                    source.readString(remaining, Charset.UTF8)
-                } catch (_: Throwable) {
-                    // Kotlin/JS's TextDecoder throws a raw JS error (not an Exception) on invalid UTF-8;
-                    // catch Throwable so a hostile datagram is a typed reject, never a crash (STUN lesson).
-                    return Reject(SdpRejectReason.NotText)
-                }
-            return parseText(text)
+            // [Utf8.Checked] reports ill-formed bytes as a value, so the reject is a `when` arm rather
+            // than a `catch (Throwable)` — which is what this needed before buffer 6.30.0, because
+            // `readString` threw three unrelated types across four targets and a raw JS `TypeError`
+            // (carrying no Kotlin class at all) on one of them. Rejection is atomic: on the malformed
+            // arm nothing is consumed and `source`'s position is where it was.
+            return when (val decoded = source.readText(remaining, Utf8.Checked)) {
+                is DecodedText.Text -> parseText(decoded.value)
+                is DecodedText.Malformed -> Reject(SdpRejectReason.NotText)
+            }
         }
 
         /**
@@ -193,88 +197,5 @@ public class SessionDescription internal constructor(
         }
 
         private const val MIN_LINE_LENGTH = 2 // "<type>=" — value may be empty (e.g. "a=")
-
-        private const val ONE_BYTE_LIMIT = 0x80
-        private const val TWO_BYTE_LIMIT = 0x800
-        private const val HIGH_SURROGATE_FIRST = 0xD800
-        private const val HIGH_SURROGATE_LAST = 0xDBFF
-        private const val LOW_SURROGATE_FIRST = 0xDC00
-        private const val LOW_SURROGATE_LAST = 0xDFFF
-
-        /** U+FFFD REPLACEMENT CHARACTER — what a surrogate that is not part of a pair is encoded as. */
-        private const val REPLACEMENT = '�'
-
-        /** True when [text] holds a low surrogate at [i] — i.e. the char at [i] - 1 was a real pair's lead. */
-        private fun lowSurrogateAt(
-            text: String,
-            i: Int,
-        ): Boolean = i < text.length && text[i].code in LOW_SURROGATE_FIRST..LOW_SURROGATE_LAST
-
-        /**
-         * [text] with every surrogate that is not part of a well-formed pair replaced by [REPLACEMENT],
-         * or [text] itself when there is none — the overwhelmingly common case, since SDP line values are
-         * token/OpaqueString text. See [encode] for why this cannot be skipped.
-         *
-         * Kotlin has no common-source `String.isWellFormedUtf16` to delegate to. buffer's `utf8Length()`
-         * carried the same unpaired-surrogate defect this replaced (reported 2026-08-12); that is
-         * **fixed upstream as of buffer 6.30.0** (DitchOoM/buffer#352), which also deprecates it in
-         * favour of `utf8Size()` and adds `writeText(text, Utf8.Lenient)` — an encoder that substitutes
-         * U+FFFD itself and whose byte count `utf8Size()` is guaranteed to match on every platform.
-         * That pair subsumes both this helper and [utf8ByteLength], but swapping them in is an encode
-         * path change with its own fixtures, not a pin bump; see `SdpEncodeLoneSurrogateTest`.
-         */
-        private fun wellFormed(text: String): String {
-            var out: StringBuilder? = null
-            var i = 0
-            while (i < text.length) {
-                val c = text[i]
-                val code = c.code
-                when {
-                    code in HIGH_SURROGATE_FIRST..HIGH_SURROGATE_LAST && lowSurrogateAt(text, i + 1) -> {
-                        out?.append(c)?.append(text[i + 1])
-                        i += 2
-                    }
-                    code in HIGH_SURROGATE_FIRST..LOW_SURROGATE_LAST -> {
-                        // A high surrogate with no low after it, or a low surrogate with no high before it.
-                        if (out == null) out = StringBuilder(text.length).append(text, 0, i)
-                        out.append(REPLACEMENT)
-                        i++
-                    }
-                    else -> {
-                        out?.append(c)
-                        i++
-                    }
-                }
-            }
-            return out?.toString() ?: text
-        }
-
-        /**
-         * UTF-8 byte length of [text] without allocating (SDP lines are OpaqueString/token text).
-         *
-         * Only ever called on [wellFormed] text, but correct standalone: a high surrogate is charged 4 —
-         * and its low half consumed — **only when one follows**. Charging 4 unconditionally, as this did,
-         * swallowed the next char without counting its bytes at all, so `"\uD800€"` measured 4 against the
-         * 6 that Apple and JS write.
-         */
-        private fun utf8ByteLength(text: String): Int {
-            var bytes = 0
-            var i = 0
-            while (i < text.length) {
-                val cp = text[i].code
-                bytes +=
-                    when {
-                        cp < ONE_BYTE_LIMIT -> 1
-                        cp < TWO_BYTE_LIMIT -> 2
-                        cp in HIGH_SURROGATE_FIRST..HIGH_SURROGATE_LAST && lowSurrogateAt(text, i + 1) -> {
-                            i++
-                            4
-                        } // a real pair → one 4-byte code point; consume the low half
-                        else -> 3
-                    }
-                i++
-            }
-            return bytes
-        }
     }
 }

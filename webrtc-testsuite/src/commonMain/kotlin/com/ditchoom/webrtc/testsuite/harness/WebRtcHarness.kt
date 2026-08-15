@@ -3,11 +3,11 @@
 package com.ditchoom.webrtc.testsuite.harness
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.buffer.readText
 import com.ditchoom.webrtc.DtlsTransportFactory
 import com.ditchoom.webrtc.NativePeerConnection
 import com.ditchoom.webrtc.PeerConnectionConfig
@@ -418,5 +418,10 @@ public class WebRtcHarnessConnection internal constructor(
     public val answerer: RtcPeerConnection,
 )
 
-/** Decode a whole [ReadBuffer]'s remaining bytes as UTF-8 via buffer-native readString (no array copy). */
-private fun ReadBuffer.decodeUtf8(): String = readString(remaining(), Charset.UTF8)
+/**
+ * Decode a whole [ReadBuffer]'s remaining bytes as UTF-8, buffer-native (no array copy).
+ *
+ * Lenient: ill-formed bytes substitute U+FFFD rather than throwing, so a scenario that corrupts a payload
+ * fails on the assertion that names the expected text instead of on an exception raised inside the decode.
+ */
+private fun ReadBuffer.decodeUtf8(): String = readText(remaining())

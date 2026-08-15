@@ -2,11 +2,13 @@ package com.ditchoom.webrtc.sctp.dcep
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
-import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.DecodedText
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.Utf8
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.managed
+import com.ditchoom.buffer.utf8Size
 
 /**
  * A DCEP (Data Channel Establishment Protocol, RFC 8832) control message — the payload of an SCTP DATA
@@ -42,7 +44,7 @@ public sealed interface DataChannelMessage {
         /** Serializes this OPEN into a fresh read-ready buffer (RFC 8832 §5.1 layout). */
         override fun encode(factory: BufferFactory): PlatformBuffer {
             // Encode the text bodies first and measure the ACTUAL UTF-8 byte counts, so the Label/
-            // Protocol Length fields match `writeString` exactly. A hand-count over UTF-16 chars
+            // Protocol Length fields match what was written exactly. A hand-count over UTF-16 chars
             // mis-sizes any supplementary-plane code point (an emoji is a surrogate pair — two chars,
             // 4 UTF-8 bytes — not 6), which would desync the receiver.
             val labelBuf = encodeUtf8(label, factory)
@@ -93,7 +95,6 @@ public sealed interface DataChannelMessage {
         private const val LABEL_LEN_OFFSET = 8
         private const val PROTOCOL_LEN_OFFSET = 10
         private const val TEXT_OFFSET = 12
-        private const val MAX_UTF8_BYTES_PER_UNIT = 3 // ≤ 3 UTF-8 bytes per UTF-16 code unit (upper bound)
 
         /**
          * Parses one DCEP message from [payload] (its current position to its limit — the DATA chunk's
@@ -125,11 +126,15 @@ public sealed interface DataChannelMessage {
                 return DataChannelDecodeResult.Reject(DataChannelRejectReason.LabelProtocolBeyondMessage)
             }
             val label =
-                readUtf8(payload, start + TEXT_OFFSET, labelLen)
-                    ?: return DataChannelDecodeResult.Reject(DataChannelRejectReason.InvalidUtf8)
+                when (val decoded = readUtf8(payload, start + TEXT_OFFSET, labelLen)) {
+                    is DecodedText.Text -> decoded.value
+                    is DecodedText.Malformed -> return DataChannelDecodeResult.Reject(DataChannelRejectReason.InvalidUtf8)
+                }
             val protocol =
-                readUtf8(payload, start + TEXT_OFFSET + labelLen, protocolLen)
-                    ?: return DataChannelDecodeResult.Reject(DataChannelRejectReason.InvalidUtf8)
+                when (val decoded = readUtf8(payload, start + TEXT_OFFSET + labelLen, protocolLen)) {
+                    is DecodedText.Text -> decoded.value
+                    is DecodedText.Malformed -> return DataChannelDecodeResult.Reject(DataChannelRejectReason.InvalidUtf8)
+                }
             return DataChannelDecodeResult.Success(Open(channelType, priority, reliabilityParameter, label, protocol))
         }
 
@@ -143,36 +148,42 @@ public sealed interface DataChannelMessage {
             i: Int,
         ): UInt = ((beU16(b, i).toLong() shl 16) or beU16(b, i + 2).toLong()).toUInt()
 
-        // Reads [len] bytes at absolute [start] as UTF-8, or null if not valid UTF-8 (a typed miss, not
-        // a throw). Must catch Throwable, not Exception — Kotlin/JS's TextDecoder throws a raw JS error
-        // (the STUN asText lesson). Restores position.
+        // Reads [len] bytes at absolute [start] as UTF-8 — a typed [DecodedText], never a throw. RFC 8832
+        // §5.1 requires both text fields to be UTF-8 and a peer is not obliged to comply, so this parses
+        // attacker-supplied bytes. It needed a `catch (Throwable)` before buffer 6.30.0 — Exception was
+        // not enough, because Kotlin/JS's TextDecoder throws a raw JS error carrying no Kotlin class at
+        // all (the STUN asText lesson) — and [Utf8.Checked] now answers with a value on every target.
+        // Restores position: the caller decodes both fields off the same borrowed view.
         private fun readUtf8(
             b: ReadBuffer,
             start: Int,
             len: Int,
-        ): String? {
-            if (len == 0) return ""
+        ): DecodedText {
+            if (len == 0) return DecodedText.Text("")
             val saved = b.position()
             return try {
                 b.position(start)
-                b.readString(len, Charset.UTF8)
-            } catch (_: Throwable) {
-                null
+                b.readText(len, Utf8.Checked)
             } finally {
                 b.position(saved)
             }
         }
 
-        // Encodes [text] to a fresh read-ready UTF-8 buffer whose remaining() is the exact byte count.
-        // Sized by an upper bound (≤ 3 UTF-8 bytes per UTF-16 code unit — a surrogate pair is 2 units
-        // and 4 bytes, so 2 bytes/unit), then trimmed to the real length by resetForRead.
+        // Encodes [text] to a fresh read-ready UTF-8 buffer whose remaining() is the exact byte count —
+        // `utf8Size` is guaranteed to equal what [Utf8.Lenient] writes, so this allocates precisely
+        // rather than taking the old 3-bytes-per-code-unit upper bound and trimming it back.
+        //
+        // The policy matters beyond sizing: `label` and `protocol` are application text (`open(label =
+        // …)`), so an unpaired surrogate is reachable from ordinary API use, and `writeString` THREW on
+        // it on the JVM — an exception raised inside DCEP encode, on the send path, for a value the
+        // caller was entitled to pass. [Utf8.Lenient] substitutes U+FFFD on every target instead.
         private fun encodeUtf8(
             text: String,
             factory: BufferFactory,
         ): ReadBuffer {
             if (text.isEmpty()) return ReadBuffer.EMPTY_BUFFER
-            val scratch = factory.allocate(text.length * MAX_UTF8_BYTES_PER_UNIT, ByteOrder.BIG_ENDIAN)
-            scratch.writeString(text, Charset.UTF8)
+            val scratch = factory.allocate(text.utf8Size(), ByteOrder.BIG_ENDIAN)
+            scratch.writeText(text, Utf8.Lenient)
             scratch.resetForRead()
             return scratch
         }

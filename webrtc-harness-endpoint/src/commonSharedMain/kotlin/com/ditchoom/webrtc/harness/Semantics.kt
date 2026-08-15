@@ -4,9 +4,9 @@ package com.ditchoom.webrtc.harness
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
-import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.readText
 import com.ditchoom.buffer.flow.Connection
 import com.ditchoom.webrtc.NativePeerConnection
 import com.ditchoom.webrtc.PeerConnectionState
@@ -1335,7 +1335,7 @@ internal fun ReadBuffer.peekText(): String? {
     val start = position()
     val n = remaining()
     if (n == 0 || n > MAX_PEEK_BYTES) return null
-    val text = readString(n, Charset.UTF8)
+    val text = readText(n)
     position(start)
     return text
 }
@@ -1359,8 +1359,8 @@ internal fun DataChannelPayload.peekText(): String? =
  *
  * `DataChannelPayload.wireByteCount` is the number the send gate refuses against (RFC 8841 §6), so a
  * harness that reported its own count could disagree with the stack about what it just sent and keep
- * passing. The local [utf8Len] survives for [textBuffer], which sizes a raw `String` and has no payload
- * to ask.
+ * passing. [textBuffer] sizes a raw `String` and has no payload to ask, so it goes to buffer's
+ * `utf8Size()` — which is the same count, guaranteed against the same encoder, rather than a local one.
  */
 internal fun DataChannelPayload.wireSize(): Int = wireByteCount.toInt()
 

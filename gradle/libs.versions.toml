@@ -269,7 +269,7 @@ buffer = "6.30.4"
 # file drives `buffer-crypto` off the same `buffer` version ref, so dropping that ref to 6.28.0 takes
 # buffer-crypto down with it and reverts the Android X25519 fix. Never let this repo's buffer pin fall
 # to or below 6.28.0, whatever any upstream POM says.
-socket = "4.5.0"
+socket = "4.6.0"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"

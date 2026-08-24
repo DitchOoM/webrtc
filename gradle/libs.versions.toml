@@ -143,7 +143,7 @@ kotlinxCoroutines = "1.11.0"
 # NOTE the POM skew is back, deliberately and in the safe direction: socket 4.5.0's POM declares buffer
 # 6.30.1, so we now resolve UP by three patches. Gradle resolves conflicts up, and 6.30.4 strictly
 # contains 6.30.1, so this is the same "buffer rides ahead" posture as 6.26.0..6.28.1 — not the inversion.
-buffer = "6.30.4"
+buffer = "6.30.5"
 # DitchOoM socket sibling — the UDP `DatagramChannel` **actuals** webrtc's transport track binds to for
 # real-network candidate gathering (host/srflx/relay). The seam itself is buffer-flow's
 # `DatagramChannel` (on Central, above); `socket-udp` is only the platform real-socket implementation
@@ -269,7 +269,7 @@ buffer = "6.30.4"
 # file drives `buffer-crypto` off the same `buffer` version ref, so dropping that ref to 6.28.0 takes
 # buffer-crypto down with it and reverts the Android X25519 fix. Never let this repo's buffer pin fall
 # to or below 6.28.0, whatever any upstream POM says.
-socket = "4.5.0"
+socket = "4.9.0"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"

@@ -42,7 +42,7 @@ jobs:
           set -euo pipefail
           version="${{ inputs.version }}"
           root="/tmp/maven-local-merged/com/ditchoom"
-          modules="webrtc webrtc-sdp webrtc-stun webrtc-ice webrtc-dtls webrtc-sctp webrtc-testsuite"
+          modules="webrtc webrtc-sdp webrtc-stun webrtc-ice webrtc-dtls webrtc-sctp webrtc-testsuite webrtc-quic"
 
           # Say what the tree ACTUALLY holds before judging it against `version`. The two disagreeing is
           # the failure this job is most likely to see and was, until run 31504316359, the one it

@@ -303,6 +303,9 @@ buffer-codec = { module = "com.ditchoom:buffer-codec", version.ref = "buffer" }
 buffer-codec-processor = { module = "com.ditchoom:buffer-codec-processor", version.ref = "buffer" }
 buffer-crypto = { module = "com.ditchoom:buffer-crypto", version.ref = "buffer" }
 socket-udp = { module = "com.ditchoom:socket-udp", version.ref = "socket" }
+# The QUIC engine bundle webrtc-quic opens QUIC with (quiche where it exists, UnsupportedQuicEngine
+# elsewhere) — consumed ONLY in webrtc-quic's socketMain, never by the data-channel stack.
+socket-quic-default = { module = "com.ditchoom:socket-quic-default", version.ref = "socket" }
 network-monitor = { module = "com.ditchoom:network-monitor", version.ref = "socket" }
 socket-core = { module = "com.ditchoom:socket", version.ref = "socket" }
 # socket's published test harness — TEST SOURCE SETS ONLY. We take exactly two things from it:

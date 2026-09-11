@@ -143,7 +143,7 @@ kotlinxCoroutines = "1.11.0"
 # NOTE the POM skew is back, deliberately and in the safe direction: socket 4.5.0's POM declares buffer
 # 6.30.1, so we now resolve UP by three patches. Gradle resolves conflicts up, and 6.30.4 strictly
 # contains 6.30.1, so this is the same "buffer rides ahead" posture as 6.26.0..6.28.1 — not the inversion.
-buffer = "6.30.4"
+buffer = "6.30.6"
 # DitchOoM socket sibling — the UDP `DatagramChannel` **actuals** webrtc's transport track binds to for
 # real-network candidate gathering (host/srflx/relay). The seam itself is buffer-flow's
 # `DatagramChannel` (on Central, above); `socket-udp` is only the platform real-socket implementation
@@ -261,15 +261,22 @@ buffer = "6.30.4"
 #     `import java.net.SocketException` is the unrelated JDK type in `SystemNetworkMonitor.javaMain.kt`.
 #     The rest of #353 is HTTP/3 + QPACK. `DatagramCapabilities.requiresNativeMemoryBuffers` is
 #     unchanged from 4.1.0 all the way through 4.5.0.
-# The buffer pin does not follow socket's, and for the first time since 4.4.0 it does not have to argue
-# with it either: socket #348 took socket-udp's POM off **6.28.0** — the one version in that line to
-# never resolve to — and 4.5.0's POM now declares buffer/buffer-flow/buffer-codec at **6.30.1**, exactly
-# our pin, so the graph is skew-free rather than merely resolving up in our favour.
-# The rule survives the skew that motivated it, because it was never really about socket's POM: this
+#   - 4.17.2 is twelve minors over 4.5.0, taken for the shared-port QUIC bindings QUIC-over-ICE rides
+#     (webrtc#190): `QuicPortBinding.Shared` (socket#301, 4.16) and `QuicClientBinding.Shared`
+#     (socket#306, 4.17). Across the whole range the ONE source-level break in a module we consume is
+#     `socket-udp`'s sealed `DatagramSendError` growing `PortUnreachable` and `SourceAddressUnavailable`,
+#     which `TypedSendChannel.toIceReason()` in webrtc-ice's `socketMain` matches exhaustively — the
+#     compile error is the point of that `when`. `network-monitor` and `socket-testkit` (the flap-replay
+#     decoder) are source-compatible; `DatagramCapabilities.requiresNativeMemoryBuffers` is unchanged.
+#     `socket-quic-quiche` publishes NO watchOS/tvOS/js/wasm artifacts, so `socket-quic-default`
+#     resolves to an `UnsupportedQuicEngine` there — webrtc-quic keeps its QUIC opening in `socketMain`.
+# The buffer pin follows socket's POM again: 4.17.2 declares buffer/buffer-flow/buffer-codec at
+# **6.30.6**, which is our pin, so the graph is skew-free (6.30.4 → 6.30.6 is two pool-refcount fixes,
+# buffer#374/#381, no API change). The rule that outlives every skew was never about socket's POM: this
 # file drives `buffer-crypto` off the same `buffer` version ref, so dropping that ref to 6.28.0 takes
 # buffer-crypto down with it and reverts the Android X25519 fix. Never let this repo's buffer pin fall
 # to or below 6.28.0, whatever any upstream POM says.
-socket = "4.5.0"
+socket = "4.17.2"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"
@@ -296,6 +303,9 @@ buffer-codec = { module = "com.ditchoom:buffer-codec", version.ref = "buffer" }
 buffer-codec-processor = { module = "com.ditchoom:buffer-codec-processor", version.ref = "buffer" }
 buffer-crypto = { module = "com.ditchoom:buffer-crypto", version.ref = "buffer" }
 socket-udp = { module = "com.ditchoom:socket-udp", version.ref = "socket" }
+# The QUIC engine bundle webrtc-quic opens QUIC with (quiche where it exists, UnsupportedQuicEngine
+# elsewhere) — consumed ONLY in webrtc-quic's socketMain, never by the data-channel stack.
+socket-quic-default = { module = "com.ditchoom:socket-quic-default", version.ref = "socket" }
 network-monitor = { module = "com.ditchoom:network-monitor", version.ref = "socket" }
 socket-core = { module = "com.ditchoom:socket", version.ref = "socket" }
 # socket's published test harness — TEST SOURCE SETS ONLY. We take exactly two things from it:

@@ -2,6 +2,7 @@
 
 package com.ditchoom.webrtc.ice
 
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
@@ -73,7 +74,7 @@ public interface IceDataTransport {
 public sealed interface IceDataReadResult {
     /** A packet arrived. Ownership of [packet] transfers to the caller. */
     public data class Received(
-        public val packet: ReadBuffer,
+        public val packet: PlatformBuffer,
     ) : IceDataReadResult
 
     /** The seam is closed and will deliver nothing further. Terminal. */
@@ -154,6 +155,12 @@ public class IceAgentDriver(
     /** This agent's local ICE credentials (ufrag/pwd) — signal them to the peer. */
     public val localCredentials: IceCredentials get() = agent.localCredentials
 
+    /**
+     * The role this agent holds now — the constructor's, unless an RFC 8445 §7.3.1.1 conflict flipped
+     * it. Read it after nomination when a role-derived decision hangs on it, such as which side dials.
+     */
+    public val role: IceRole get() = agent.role
+
     private val inbox = Channel<Command>(Channel.UNLIMITED)
     private val channels = HashMap<TransportAddress, AddressedDatagramChannel>()
 
@@ -178,7 +185,7 @@ public class IceAgentDriver(
 
     // App-data (non-STUN) demux (RFC 7983): datagrams that are not STUN connectivity checks are DTLS/SCTP
     // and are routed here rather than into the agent, which ignores them. This is the seam SCTP rides.
-    private val appInbound = Channel<ReadBuffer>(Channel.UNLIMITED)
+    private val appInbound = Channel<PlatformBuffer>(Channel.UNLIMITED)
 
     private val _state = MutableStateFlow<IceConnectionState>(IceConnectionState.New)
 

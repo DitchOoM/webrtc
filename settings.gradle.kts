@@ -34,6 +34,7 @@ include(":webrtc-ice")        // ICE agent (RFC 8445 + trickle) — sans-io core
 include(":webrtc-dtls")       // DTLS 1.2/1.3 + SRTP exporter — pure Kotlin
 include(":webrtc-sctp")       // SCTP subset over DTLS + DCEP — pure Kotlin, sans-io
 include(":webrtc-testsuite")  // published consumer harness: vnet, timeline engine, control plane
+include(":webrtc-quic")       // QUIC over the ICE-nominated pair — socket-quic's shared-port bindings on ICE's seam
 
 // L2/L3 interop harness endpoint — a NON-published executable, not a library. It composes the real
 // stack (:webrtc NativePeerConnection + PureKotlinDtls) over real UDP (socket-udp) and is driven as a

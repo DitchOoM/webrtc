@@ -38,8 +38,9 @@ internal sealed interface IceTransmitResult {
 /**
  * Why a datagram could not be transmitted, **in this module's vocabulary rather than the socket's**.
  *
- * socket-udp answers with a sealed `DatagramSendError` (`TooLarge`, `Unreachable`, `NotPermitted`,
- * `WouldBlock`, `OsError`, `PlatformError`, `Transport`), and its KDoc names our use case directly:
+ * socket-udp answers with a sealed `DatagramSendError` (`TooLarge`, `Unreachable`, `PortUnreachable`,
+ * `NotPermitted`, `SourceAddressUnavailable`, `WouldBlock`, `OsError`, `PlatformError`, `Transport`),
+ * and its KDoc names our use case directly:
  * *"consumers that want to branch (ICE marking a candidate pair unusable)"*. We cannot read that type
  * here — it lives in `com.ditchoom.socket.udp`, and the sans-io side of this module must not depend on
  * socket at all (ARCHITECTURE §11.6). So the classification crosses the boundary as **ours**, translated

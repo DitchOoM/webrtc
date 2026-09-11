@@ -28,22 +28,18 @@ against Chrome, Firefox, WebKit, Pion and werift over real NAT kernels in CI acr
 (fragmentation, unordered, PR-SCTP, multiplexing, reverse-direction, per-channel close, graceful
 shutdown). Every interop lane runs a **Linux or JVM** peer, which is why Android being non-functional
 (Traps, below) went unseen for so long: no lane anywhere executed on ART until the emulator lane landed,
-and the full common suite — 611 tests — now runs there per PR. Pinned at **socket 4.5.0 + buffer
-6.30.4**, both the latest published. socket
+and the full common suite — 611 tests — now runs there per PR. Pinned at **socket 4.17.2 + buffer
+6.30.6**, the buffer being exactly what socket 4.17.2's POM declares. socket
 4.1.0 + buffer 6.25.0 is the pair that introduced `DatagramCapabilities.requiresNativeMemoryBuffers`,
 which is what the send-side buffer check consumes, and that seam is why the two normally move together;
-it is unchanged from 4.1.0 through 4.5.0. 4.5.0 changes **no `socket-udp` or `network-monitor` source at
-all** over 4.4.1 (the diff over those two modules is empty); its one production line in a module we
-depend on is an additive `SocketWriteStalledException` in socket core, and `SocketException` being sealed
-costs us nothing because no `when` here is exhaustive over it.
-Buffer rides ahead deliberately: 6.26.0 is the Apple AEAD ownership fix, #343 the Android X25519 fix and
-#367 the Android trailing-unpaired-surrogate fix (all below), pure internal fixes with no API change, so
-resolving buffer up underneath a socket built against an older one is safe. The POM skew went to zero
-exactly once and did not stay there — socket #348 took socket-udp off buffer 6.28.0, the one version
-never to resolve to (below), and socket 4.5.0's POM declares 6.30.1, which was our pin on the day we took
-it. At 6.30.4 we are three patches ahead again, in the safe direction as always. An earlier revision of
-this line read "for the first time since 4.4.0 the graph agrees"; that was true for one commit, and the
-durable statement is the posture, not the moment.
+it is unchanged from 4.1.0 through 4.17.2. The 4.5.0 → 4.17.2 repin (twelve minors, taken for the
+shared-port QUIC bindings `webrtc-quic` rides) broke exactly one line: `socket-udp`'s sealed
+`DatagramSendError` grew two members, and the exhaustive `when` in `TypedSendChannel` refused to compile
+until each was given an ICE meaning — which is that `when` doing its job.
+Buffer may ride ahead of socket's POM deliberately: 6.26.0 is the Apple AEAD ownership fix, #343 the
+Android X25519 fix and #367 the Android trailing-unpaired-surrogate fix (all below), pure internal fixes
+with no API change, so resolving buffer up underneath a socket built against an older one is safe. The
+skew is zero at the moment; the durable statement is the posture, not the moment.
 
 Do not read the old skew as "socket can break Android X25519", which an earlier revision of this line
 implied. It cannot: #343 lives in **`buffer-crypto`**, and socket declares only `buffer`, `buffer-flow`

@@ -61,6 +61,7 @@ webrtc            PeerConnection + JSEP state machine + DataChannel (the consume
 ├── webrtc-ice    ICE agent (RFC 8445 + trickle 8838) — sans-io core + gathering seams
 ├── webrtc-dtls   DTLS 1.2/1.3 + the DTLS-SRTP exporter — pure Kotlin
 ├── webrtc-sctp   SCTP subset over DTLS (RFC 8831) + DCEP (RFC 8832) — pure Kotlin, sans-io
+├── webrtc-quic   QUIC on the ICE-nominated pair (§11.6) — socket-quic's shared-port bindings on ICE's seam; opt-in
 └── webrtc-testsuite  the published consumer harness: vnet, timeline engine, control plane
 ```
 
@@ -343,3 +344,15 @@ That helper now exists, and it obeys the rule structurally rather than by promis
 caller did not hand over. Pass `udpDatagramBinder()` for a session that owns its sockets, or a demuxed
 view of an existing one to share it with QUIC-P2P. This is why the factory was deferred twice before it
 was written: the constraint had to be expressible in the signature, not in a comment above it.
+
+The first thing to ride that seam is `webrtc-quic` — the ICE mode of `draft-seemann-quic-nat-traversal`,
+where ICE gathers, punches and nominates and QUIC handshakes over the result with no extension frames.
+`IceAgentDriver.quicOverIce` adapts the nominated pair's app-data seam (`IceDataTransport`, the RFC 7983
+non-STUN half of the nominated socket) to a buffer-flow `AddressedDatagramChannel` and hands it to
+socket's `QuicClientBinding.Shared` / `QuicPortBinding.Shared`; the controlling agent dials, the
+controlled one listens. Its two lifetime limits are values of a sealed `QuicOverIceOutcome`, not
+comments: a shared-port client cannot migrate (the socket is ICE's — `migrate()` answers
+`BackendCannotMigrate`), and an ICE restart that nominates another pair ends the session as
+`PairMoved(from, to)` — a reconnect, 0-RTT once socket#610 lands. Proven on the vnet through full-cone
+NATs by `QuicOverIceVnetTest`. Sharing that socket with a data channel *as well* is where socket-udp's
+RFC 9443 demultiplexer comes in, and that is the second milestone.

@@ -1,0 +1,79 @@
+public final class com/ditchoom/webrtc/quic/IceDatagramChannelKt {
+	public static final fun asDatagramChannel (Lcom/ditchoom/webrtc/ice/IceDataTransport;Lkotlinx/coroutines/CoroutineScope;Lcom/ditchoom/buffer/flow/SocketAddress;Lcom/ditchoom/buffer/flow/SocketAddress;)Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;
+}
+
+public final class com/ditchoom/webrtc/quic/QuicOverIceIdentity {
+	public fun <init> (Lcom/ditchoom/socket/quic/QuicTlsConfig;Lcom/ditchoom/socket/quic/QuicOptions;)V
+	public final fun getOptions ()Lcom/ditchoom/socket/quic/QuicOptions;
+	public final fun getTls ()Lcom/ditchoom/socket/quic/QuicTlsConfig;
+}
+
+public final class com/ditchoom/webrtc/quic/QuicOverIceKt {
+	public static final fun quicOverIce-1Y68eR8 (Lcom/ditchoom/webrtc/ice/IceAgentDriver;Lcom/ditchoom/webrtc/quic/QuicOverIceIdentity;JLkotlin/jvm/functions/Function3;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun quicOverIce-1Y68eR8$default (Lcom/ditchoom/webrtc/ice/IceAgentDriver;Lcom/ditchoom/webrtc/quic/QuicOverIceIdentity;JLkotlin/jvm/functions/Function3;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/webrtc/quic/QuicOverIceOutcome {
+}
+
+public final class com/ditchoom/webrtc/quic/QuicOverIceOutcome$Completed : com/ditchoom/webrtc/quic/QuicOverIceOutcome {
+	public fun <init> (Ljava/lang/Object;)V
+	public final fun component1 ()Ljava/lang/Object;
+	public final fun copy (Ljava/lang/Object;)Lcom/ditchoom/webrtc/quic/QuicOverIceOutcome$Completed;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/quic/QuicOverIceOutcome$Completed;Ljava/lang/Object;ILjava/lang/Object;)Lcom/ditchoom/webrtc/quic/QuicOverIceOutcome$Completed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getValue ()Ljava/lang/Object;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/quic/QuicOverIceOutcome$IceFailed : com/ditchoom/webrtc/quic/QuicOverIceOutcome {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/IceFailureReason;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/IceFailureReason;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/IceFailureReason;)Lcom/ditchoom/webrtc/quic/QuicOverIceOutcome$IceFailed;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/quic/QuicOverIceOutcome$IceFailed;Lcom/ditchoom/webrtc/ice/IceFailureReason;ILjava/lang/Object;)Lcom/ditchoom/webrtc/quic/QuicOverIceOutcome$IceFailed;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getReason ()Lcom/ditchoom/webrtc/ice/IceFailureReason;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/quic/QuicOverIceOutcome$PairMoved : com/ditchoom/webrtc/quic/QuicOverIceOutcome {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/CandidatePair;Lcom/ditchoom/webrtc/ice/CandidatePair;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/CandidatePair;
+	public final fun component2 ()Lcom/ditchoom/webrtc/ice/CandidatePair;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/CandidatePair;Lcom/ditchoom/webrtc/ice/CandidatePair;)Lcom/ditchoom/webrtc/quic/QuicOverIceOutcome$PairMoved;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/quic/QuicOverIceOutcome$PairMoved;Lcom/ditchoom/webrtc/ice/CandidatePair;Lcom/ditchoom/webrtc/ice/CandidatePair;ILjava/lang/Object;)Lcom/ditchoom/webrtc/quic/QuicOverIceOutcome$PairMoved;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFrom ()Lcom/ditchoom/webrtc/ice/CandidatePair;
+	public final fun getTo ()Lcom/ditchoom/webrtc/ice/CandidatePair;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/quic/QuicOverIcePath {
+	public fun <init> (Lcom/ditchoom/webrtc/ice/CandidatePair;Lcom/ditchoom/webrtc/quic/QuicOverIceRole;)V
+	public final fun component1 ()Lcom/ditchoom/webrtc/ice/CandidatePair;
+	public final fun component2 ()Lcom/ditchoom/webrtc/quic/QuicOverIceRole;
+	public final fun copy (Lcom/ditchoom/webrtc/ice/CandidatePair;Lcom/ditchoom/webrtc/quic/QuicOverIceRole;)Lcom/ditchoom/webrtc/quic/QuicOverIcePath;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/quic/QuicOverIcePath;Lcom/ditchoom/webrtc/ice/CandidatePair;Lcom/ditchoom/webrtc/quic/QuicOverIceRole;ILjava/lang/Object;)Lcom/ditchoom/webrtc/quic/QuicOverIcePath;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getPair ()Lcom/ditchoom/webrtc/ice/CandidatePair;
+	public final fun getRole ()Lcom/ditchoom/webrtc/quic/QuicOverIceRole;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/webrtc/quic/QuicOverIceRole : java/lang/Enum {
+	public static final field Client Lcom/ditchoom/webrtc/quic/QuicOverIceRole;
+	public static final field Companion Lcom/ditchoom/webrtc/quic/QuicOverIceRole$Companion;
+	public static final field Server Lcom/ditchoom/webrtc/quic/QuicOverIceRole;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/webrtc/quic/QuicOverIceRole;
+	public static fun values ()[Lcom/ditchoom/webrtc/quic/QuicOverIceRole;
+}
+
+public final class com/ditchoom/webrtc/quic/QuicOverIceRole$Companion {
+	public final fun of (Lcom/ditchoom/webrtc/ice/IceRole;)Lcom/ditchoom/webrtc/quic/QuicOverIceRole;
+}
+

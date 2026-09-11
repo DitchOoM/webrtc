@@ -251,6 +251,7 @@ public final class com/ditchoom/webrtc/ice/IceAgentDriver {
 	public final fun getPath ()Lkotlinx/coroutines/flow/StateFlow;
 	public final fun getRelayPermissionRefused ()Lkotlinx/coroutines/flow/Flow;
 	public final fun getRemoteCandidateDiscarded ()Lkotlinx/coroutines/flow/Flow;
+	public final fun getRole ()Lcom/ditchoom/webrtc/ice/IceRole;
 	public final fun getState ()Lkotlinx/coroutines/flow/StateFlow;
 	public final fun getTransmitFailed ()Lkotlinx/coroutines/flow/Flow;
 	public final fun pathRidesOneOf (Ljava/util/List;)Z
@@ -520,12 +521,12 @@ public final class com/ditchoom/webrtc/ice/IceDataReadResult$Closed : com/ditcho
 }
 
 public final class com/ditchoom/webrtc/ice/IceDataReadResult$Received : com/ditchoom/webrtc/ice/IceDataReadResult {
-	public fun <init> (Lcom/ditchoom/buffer/ReadBuffer;)V
-	public final fun component1 ()Lcom/ditchoom/buffer/ReadBuffer;
-	public final fun copy (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/webrtc/ice/IceDataReadResult$Received;
-	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/IceDataReadResult$Received;Lcom/ditchoom/buffer/ReadBuffer;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceDataReadResult$Received;
+	public fun <init> (Lcom/ditchoom/buffer/PlatformBuffer;)V
+	public final fun component1 ()Lcom/ditchoom/buffer/PlatformBuffer;
+	public final fun copy (Lcom/ditchoom/buffer/PlatformBuffer;)Lcom/ditchoom/webrtc/ice/IceDataReadResult$Received;
+	public static synthetic fun copy$default (Lcom/ditchoom/webrtc/ice/IceDataReadResult$Received;Lcom/ditchoom/buffer/PlatformBuffer;ILjava/lang/Object;)Lcom/ditchoom/webrtc/ice/IceDataReadResult$Received;
 	public fun equals (Ljava/lang/Object;)Z
-	public final fun getPacket ()Lcom/ditchoom/buffer/ReadBuffer;
+	public final fun getPacket ()Lcom/ditchoom/buffer/PlatformBuffer;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }

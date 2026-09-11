@@ -113,7 +113,10 @@ kotlin {
     // there is no separate `android {}` block. commonTest also runs on the Android host JVM.
     android {
         namespace = androidNamespace
-        compileSdk = 36
+        // 37 is the floor socket 4.17.2's `socket-udp-android` and `network-monitor-android` AARs
+        // declare (`checkAndroidHostTestAarMetadata` refuses 36 against them). compileSdk only decides
+        // which APIs may be referenced; minSdk below is the device floor and is unchanged.
+        compileSdk = 37
         // 28, and every level below it is excluded by evidence rather than by preference. Two separate
         // floors stack here; 28 is the higher, but both are real and removing either one alone changes
         // nothing.

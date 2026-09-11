@@ -63,17 +63,23 @@ internal class TypedSendChannel(
  * socket's reason → ours. Exhaustive with no `else`, so a case added upstream is a compile error here
  * rather than a silent reclassification into [IceTransmitFailureReason.Unknown].
  *
- * The mapping collapses where ICE's response is the same. `Unreachable` and `NotPermitted` are distinct
- * errnos describing distinct kernel decisions, but both mean "this local base will not reach that
- * destination", and ICE has exactly one answer to that — so they are one case. `OsError`,
- * `PlatformError` and `Transport` are the unclassified tail and stay retryable; treating an
- * unrecognized errno as permanent would let one of them cost a candidate.
+ * The mapping collapses where ICE's response is the same. `Unreachable`, `PortUnreachable` and
+ * `NotPermitted` are distinct kernel verdicts, but each means "this local base will not reach that
+ * destination", and ICE has exactly one answer to that — so they are one case. (socket keeps
+ * `PortUnreachable` apart from `Unreachable` for QUIC's sake, which must not migrate on it; ICE fails
+ * the pair either way.) `SourceAddressUnavailable` is unconstructible here — it is only ever raised for
+ * a send that named a `fromLocal` source, and no ICE send names one — and socket's own contract for it
+ * is that it says nothing about the destination, so it must not become `DestinationUnreachable`; it
+ * joins `OsError`, `PlatformError` and `Transport` in the unclassified tail, which stays retryable
+ * because treating an unrecognized failure as permanent would let it cost a candidate.
  */
 private fun DatagramSendError.toIceReason(): IceTransmitFailureReason =
     when (this) {
         is DatagramSendError.TooLarge -> IceTransmitFailureReason.PayloadTooLarge(attempted, limit)
         is DatagramSendError.Unreachable -> IceTransmitFailureReason.DestinationUnreachable
+        DatagramSendError.PortUnreachable -> IceTransmitFailureReason.DestinationUnreachable
         is DatagramSendError.NotPermitted -> IceTransmitFailureReason.DestinationUnreachable
+        is DatagramSendError.SourceAddressUnavailable -> IceTransmitFailureReason.Unknown
         DatagramSendError.WouldBlock -> IceTransmitFailureReason.Transient
         is DatagramSendError.OsError -> IceTransmitFailureReason.Unknown
         is DatagramSendError.PlatformError -> IceTransmitFailureReason.Unknown

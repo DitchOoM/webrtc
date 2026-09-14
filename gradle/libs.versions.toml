@@ -11,7 +11,7 @@ detekt = "2.0.0-alpha.6"
 mavenPublish = "0.37.0"
 dokka = "2.2.0"
 kover = "0.9.9"
-binaryCompatibilityValidator = "0.18.1"
+binaryCompatibilityValidator = "0.18.2"
 kotlinxCoroutines = "1.11.0"
 # DitchOoM buffer stack — the zero-copy substrate this library is built on.
 # 6.9.4 (latest): raw ByteStreamMux primitive (data-channel mux target), buffer-pool use-after-release
@@ -143,7 +143,7 @@ kotlinxCoroutines = "1.11.0"
 # NOTE the POM skew is back, deliberately and in the safe direction: socket 4.5.0's POM declares buffer
 # 6.30.1, so we now resolve UP by three patches. Gradle resolves conflicts up, and 6.30.4 strictly
 # contains 6.30.1, so this is the same "buffer rides ahead" posture as 6.26.0..6.28.1 — not the inversion.
-buffer = "6.30.4"
+buffer = "6.30.8"
 # DitchOoM socket sibling — the UDP `DatagramChannel` **actuals** webrtc's transport track binds to for
 # real-network candidate gathering (host/srflx/relay). The seam itself is buffer-flow's
 # `DatagramChannel` (on Central, above); `socket-udp` is only the platform real-socket implementation
@@ -269,7 +269,7 @@ buffer = "6.30.4"
 # file drives `buffer-crypto` off the same `buffer` version ref, so dropping that ref to 6.28.0 takes
 # buffer-crypto down with it and reverts the Android X25519 fix. Never let this repo's buffer pin fall
 # to or below 6.28.0, whatever any upstream POM says.
-socket = "4.5.0"
+socket = "4.17.0"
 ksp = "2.3.10"
 androidxCore = "1.18.0"
 androidxTestRunner = "1.7.0"
@@ -282,12 +282,12 @@ kotlinWrappers = "2026.6.0"
 jazzer = "0.30.0"
 # kotlinx-benchmark — parse/crypto throughput benchmarks in a shared commonBenchmark source set
 # (the buffer pattern); results tracked in PERFORMANCE.md. Runs on demand + release, JVM + Linux K/N.
-kotlinxBenchmark = "0.4.17"
+kotlinxBenchmark = "0.5.0"
 # Robolectric — the Android framework on the HOST JVM, so `ConnectivityManager` reactivity is a normal
 # `testAndroidHostTest` run with no emulator. Android is the only target whose NetworkMonitor trigger had
 # no runtime proof (webrtc#104); every other one asserts against a real platform API. 4.15.1 ships SDKs up
 # to 35, below our compileSdk 36, so the tests pin `@Config(sdk = ...)` rather than inherit it.
-robolectric = "4.16.1"
+robolectric = "4.17"
 
 [libraries]
 buffer = { module = "com.ditchoom:buffer", version.ref = "buffer" }

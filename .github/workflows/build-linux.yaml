@@ -34,7 +34,7 @@ jobs:
       # temurin, not zulu: it is what the runner image preinstalls, so setup-java resolves it from the
       # tool-cache instead of fetching a floating "latest" build from an external CDN on every job.
       - name: Set up JDK 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: 'temurin'
           java-version: '21'

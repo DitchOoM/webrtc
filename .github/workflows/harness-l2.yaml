@@ -69,13 +69,13 @@ jobs:
 
       # temurin, not zulu — see the note in build-linux.yaml (tool-cache hit, no CDN fetch).
       - name: Set up JDK 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: 'temurin'
           java-version: '21'
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v6.3.0
+        uses: gradle/actions/setup-gradle@v6.4.0
 
       # linuxArm64's BoringSSL is cross-compiled with the aarch64 GNU toolchain (webrtc-dtls'
       # buildBoringsslSslArm64); the runner doesn't ship it. linuxX64 uses the native gcc already present.
